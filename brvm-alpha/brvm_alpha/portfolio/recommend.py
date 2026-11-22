@@ -444,8 +444,9 @@ def stale_panel_message(last_session: Any, now: Any, *, orders: bool = True) -> 
     if not stale:
         return None
     last = pd.Timestamp(last_session).normalize()
+    jusqu_a = "jusqu'à" if closed else "avant"  # hors de la f-string : Python 3.11 (image Odoo 17) refuse « \' » dedans
     msg = (f"PANEL EN RETARD de {len(stale)} séance(s) : dernier BOC du panel le {_d(last)}, "
-           f"séance(s) attendue(s) {'jusqu\'à' if closed else 'avant'} aujourd'hui : "
+           f"séance(s) attendue(s) {jusqu_a} aujourd'hui : "
            f"{', '.join(_d(x) for x in stale[:5])}" + ("…" if len(stale) > 5 else "")
            + " (jours ouvrés hors fériés fixes, hypothèse")
     if closed and stale and stale[-1] == day:
