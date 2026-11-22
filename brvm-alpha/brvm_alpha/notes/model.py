@@ -523,7 +523,7 @@ def target_symbols(code: str, equities: pd.DataFrame | None = None, asof: Any = 
         if "date" in df.columns:
             dates = pd.to_datetime(df["date"])
             if asof is not None:
-                df = df[dates <= pd.Timestamp(asof).tz_localize(None) if pd.Timestamp(asof).tzinfo else dates <= pd.Timestamp(asof)]
+                df = df[dates <= to_day(asof)]
                 dates = pd.to_datetime(df["date"])
             if len(df):
                 snap = df[dates == dates.max()]
@@ -607,6 +607,20 @@ def to_utc(value: Any) -> pd.Timestamp | None:
     if ts.tzinfo is None:
         return ts.tz_localize("UTC")
     return ts.tz_convert("UTC")
+
+
+def asof_utc(value: Any) -> pd.Timestamp | None:
+    """Instant d'une date d'analyse : une date seule désigne la **fin** de cette journée.
+
+    Convention du panel : les données datées ``t`` sont connues en fin de séance ``t`` ;
+    ``asof("2026-11-17")`` inclut donc tout ce qui a été publié le 17/11/2026.
+    """
+    ts = to_utc(value)
+    if ts is None:
+        return None
+    if is_date_only(value):
+        return ts.normalize() + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+    return ts
 
 
 def utc_now() -> pd.Timestamp:
@@ -1177,5 +1191,5 @@ __all__ = [
     "normalize_target", "normalize_targets", "target_kind", "target_label", "index_names",
     "target_symbols", "make_note_id", "to_utc", "to_day", "is_date_only", "fold",
     "fold_with_map", "slug", "normalize_stance", "stance_sign", "normalize_event_type",
-    "set_default_sessions", "default_calendar", "jsonable",
+    "set_default_sessions", "default_calendar", "jsonable", "asof_utc", "utc_now",
 ]

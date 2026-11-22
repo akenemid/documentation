@@ -25,6 +25,10 @@ Fonctions principales
 * :func:`adjusted_prices` (large, cours ajustés des divisions), :func:`total_return_index`
   (large, dividendes nets réinvestis) et :func:`adjusted_table` (table longue
   complète : ratios, dividendes, rendements, indice total return).
+* :func:`shares_outstanding_panel` (nombre de titres date x symbole), :func:`composite_tr_reconstructed`
+  (BRVM Composite Total Return reconstruit avant l'indice officiel, spéc. §1.1),
+  :func:`equal_weight_tr` (panier équipondéré TR des titres éligibles) et :func:`stats_mask`
+  (rendements utilisables pour les statistiques : hors ``multi_session`` et fenêtre 2021).
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
+from .. import reference
 from . import boc_parser
 from .boc_parser import EQUITY_COLUMNS, INDEX_COLUMNS, ORDER_BOOK_COLUMNS, parse_boc_file, warning_code
 
@@ -56,6 +61,7 @@ __all__ = [
     "adjusted_prices",
     "adjusted_table",
     "build_panel",
+    "composite_tr_reconstructed",
     "detect_corporate_actions",
     "detect_dividends",
     "load_corporate_actions",
@@ -66,6 +72,9 @@ __all__ = [
     "load_sessions",
     "parser_version",
     "session_calendar",
+    "equal_weight_tr",
+    "shares_outstanding_panel",
+    "stats_mask",
     "total_return_index",
 ]
 
@@ -1406,6 +1415,305 @@ def total_return_index(
     """Indice total return par titre (date x symbol, base 100), dividendes nets réinvestis."""
     table = adjusted_table(equities, corporate_actions, dividends, panel_dir=panel_dir)
     return table.pivot(index="date", columns="symbol", values="tr_index").sort_index()
+
+
+# ---------------------------------------------------------------------------
+# Nombre de titres, Composite Total Return, panier équipondéré, masque statistique
+# (spéc. §1.1, §3.1.3 et §8.2 ; ajouts sans effet sur les fonctions précédentes)
+# ---------------------------------------------------------------------------
+
+#: Kinds de ``corporate_actions`` qui changent le nombre de titres (ratio = nouveaux / anciens).
+SHARE_COUNT_KINDS = ("split", "reverse_split", "capital_adjustment")
+#: Noms des indices du BOC utilisés comme étalons.
+COMPOSITE_INDEX = "BRVM COMPOSITE"
+COMPOSITE_TR_INDEX = "BRVM COMPOSITE TOTAL RETURN"
+#: Base de l'indice officiel BRVM Composite Total Return (avis 308-2025) : 100 au 02/01/2025.
+COMPOSITE_TR_BASE = ("2025-01-02", 100.0)
+#: Rendement couvrant un trou de plus de ce nombre de jours calendaires : ``multi_session``.
+MULTI_SESSION_GAP_DAYS = 4
+#: Fenêtres exclues des statistiques (spéc. §3.1.3 : trou de 50 jours de 2021).
+EXCLUDED_STATS_WINDOWS: tuple[tuple[str, str], ...] = (("2021-05-06", "2021-06-25"),)
+
+
+def _panel_table(panel_dir: str | Path | None, frame: pd.DataFrame | None, name: str) -> pd.DataFrame:
+    if frame is not None:
+        return frame.reset_index() if name in ("equities",) and "symbol" not in frame.columns else frame
+    if panel_dir is None:
+        raise ValueError(f"fournir {name} ou panel_dir")
+    return _load(panel_dir, name)
+
+
+def _adjusted_long(panel_dir: str | Path) -> pd.DataFrame:
+    path = Path(panel_dir) / "adjusted_prices.parquet"
+    adj = pd.read_parquet(path) if path.exists() else adjusted_table(panel_dir=panel_dir)
+    adj = adj.copy()
+    adj["date"] = pd.to_datetime(adj["date"])
+    return adj
+
+
+def shares_outstanding_panel(
+    panel_dir: str | Path | None = None,
+    *,
+    equities: pd.DataFrame | None = None,
+    corporate_actions: pd.DataFrame | None = None,
+    shares: dict[str, float] | None = None,
+    listed_only: bool = True,
+) -> pd.DataFrame:
+    """Nombre de titres par séance (date x symbole), base des capitalisations.
+
+    Méthode (spéc. §1.1, annexe ``docs/annexes-spec/tr_reconstruction.py``) : nombre actuel
+    de :data:`brvm_alpha.reference.SHARES_OUTSTANDING_2026` (avis 303-2026), propagé vers le
+    passé en divisant par le ratio de chaque division ou ajustement de capital
+    (``corporate_actions`` de kind :data:`SHARE_COUNT_KINDS`, confiance ≠ ``low``) avant sa
+    date. Exceptions : les ajustements « de cours seulement »
+    (:data:`brvm_alpha.reference.PRICE_ONLY_ADJUSTMENTS`, DPS SAFC du 24/04/2026) sont ignorés,
+    et les changements sans facteur de cours (:data:`brvm_alpha.reference.SHARE_COUNT_CHANGES`,
+    SAFC : 8 119 750 titres avant le 11/08/2026) sont appliqués.
+
+    ``listed_only=True`` : NaN quand le titre n'a pas de ligne au BOC (avant l'introduction,
+    après la radiation). Les titres sans nombre connu (radiés : SVOC, TTRC) n'ont pas de
+    colonne.
+    """
+    eq = _panel_table(panel_dir, equities, "equities")
+    if corporate_actions is None:
+        ca = load_corporate_actions(panel_dir) if panel_dir is not None else pd.DataFrame(columns=CORPORATE_ACTION_COLUMNS)
+    else:
+        ca = corporate_actions
+    sh = dict(reference.SHARES_OUTSTANDING_2026 if shares is None else shares)
+    dates = pd.DatetimeIndex(sorted(pd.to_datetime(eq["date"]).unique()))
+    if len(ca):
+        ca = ca[ca["kind"].isin(SHARE_COUNT_KINDS) & (ca["confidence"] != "low") & ca["ratio"].notna()]
+    price_only = [(s, pd.Timestamp(d)) for s, d in reference.PRICE_ONLY_ADJUSTMENTS]
+    out = {}
+    for sym in sorted(sh):
+        factor = np.ones(len(dates))
+        for ev in ca[ca["symbol"] == sym].itertuples(index=False) if len(ca) else ():
+            d = pd.Timestamp(ev.date)
+            if ev.kind == "capital_adjustment" and any(s == sym and abs((d - pd_).days) <= 10 for s, pd_ in price_only):
+                continue
+            factor[dates < d] /= float(ev.ratio)
+        n = float(sh[sym]) * factor
+        for ch in reference.SHARE_COUNT_CHANGES:
+            if ch.symbol == sym:
+                n[dates < pd.Timestamp(ch.effective)] *= ch.shares_before / ch.shares_after
+        out[sym] = n
+    panel = pd.DataFrame(out, index=dates)
+    panel.index.name = "date"
+    if listed_only:
+        listed = (eq.assign(date=pd.to_datetime(eq["date"]), _one=1.0)
+                  .pivot_table(index="date", columns="symbol", values="_one", aggfunc="first")
+                  .reindex(index=dates, columns=panel.columns))
+        panel = panel.where(listed.notna())
+    return panel
+
+
+def composite_tr_reconstructed(
+    panel_dir: str | Path,
+    *,
+    official: bool = True,
+    detail: bool = False,
+    base: tuple[str, float] = COMPOSITE_TR_BASE,
+) -> pd.Series | pd.DataFrame:
+    """BRVM Composite Total Return (dividendes nets réinvestis), étalon principal (spéc. §1.1).
+
+    Reconstruction : ``r_TR,t = r_Composite,t + Σ_i N_i,t × D_net,i,t / Cap_publiée,t−1`` avec
+    N de :func:`shares_outstanding_panel`, les dividendes nets de ``dividends.parquet`` (date
+    de détachement) et la capitalisation publiée au BOC de la séance précédente
+    (``market.parquet``). Niveau ramené à ``base`` (100 au 02/01/2025, base de l'indice
+    officiel).
+
+    * ``official=True`` (défaut) : série **raccordée** : niveaux officiels « BRVM COMPOSITE
+      TOTAL RETURN » à partir de leur premier jour dans les BOC (02/01/2026 dans la base),
+      reconstruction avant, mise à l'échelle pour se raccorder au premier niveau officiel
+      (une séance officielle manquante est chaînée avec le rendement reconstruit) ;
+    * ``official=False`` : reconstruction seule (contrôle : 198,45 au 20/11/2026 contre 198,63
+      publié ; écart quotidien médian 0,18 pb en 2026) ;
+    * ``detail=True`` : DataFrame (composite, capitalisation, dividendes, rendements,
+      ``tr_reconstructed``, ``tr_official``, ``tr``).
+
+    Limites : les dividendes des titres sans nombre de titres connu (radiés) sont omis ; la
+    reconstruction de 2021 peut omettre des dividendes tombés dans les trous de BOC ; un
+    rendement après un BOC manquant couvre plusieurs séances. ``attrs`` en rend compte.
+    """
+    idx = load_indices(panel_dir, indices=[COMPOSITE_INDEX, COMPOSITE_TR_INDEX], wide=True)
+    if COMPOSITE_INDEX not in idx.columns:
+        raise ValueError("indice BRVM COMPOSITE absent du panel")
+    comp = idx[COMPOSITE_INDEX].dropna().sort_index()
+    tr_off = idx[COMPOSITE_TR_INDEX].dropna().sort_index() if COMPOSITE_TR_INDEX in idx.columns else pd.Series(dtype=float)
+    dates = comp.index
+    mc = load_market(panel_dir)["market_cap"]
+    mc = mc[~mc.index.duplicated(keep="last")].reindex(dates)
+    n_panel = shares_outstanding_panel(panel_dir)
+    divs = _load(panel_dir, "dividends") if (Path(panel_dir) / "dividends.parquet").exists() else pd.DataFrame(columns=DIVIDEND_COLUMNS)
+    div_cash = pd.Series(0.0, index=dates)
+    dropped: list[tuple[str, str, str]] = []
+    pos = {d: i for i, d in enumerate(dates)}
+    for dv in divs.itertuples(index=False):
+        d = pd.Timestamp(dv.ex_date)
+        if dv.symbol not in n_panel.columns:
+            dropped.append((dv.symbol, str(d.date()), "nombre de titres inconnu"))
+            continue
+        if d not in pos:
+            dropped.append((dv.symbol, str(d.date()), "date ex hors des séances du Composite"))
+            continue
+        n = n_panel.at[d, dv.symbol] if d in n_panel.index else np.nan
+        if not np.isfinite(n):
+            dropped.append((dv.symbol, str(d.date()), "titre non coté ce jour"))
+            continue
+        div_cash.iloc[pos[d]] += n * float(dv.amount)
+    r_price = comp.pct_change()
+    r_div = (div_cash / mc.shift(1)).fillna(0.0)
+    r_tr = r_price + r_div
+    level = (1.0 + r_tr.fillna(0.0)).cumprod()
+    base_date, base_value = pd.Timestamp(base[0]), float(base[1])
+    ref = level.loc[:base_date]
+    anchor = ref.iloc[-1] if len(ref) else level.iloc[0]
+    tr_rec = level / anchor * base_value
+    tr = tr_rec.copy()
+    official_from = None
+    if official and len(tr_off):
+        tr_off = tr_off.reindex(dates).dropna()
+        if len(tr_off):
+            official_from = tr_off.index[0]
+            tr = tr_rec * (tr_off.iloc[0] / tr_rec.loc[official_from])
+            after = dates[dates >= official_from]
+            prev = None
+            for d in after:
+                if d in tr_off.index:
+                    tr.loc[d] = tr_off.loc[d]
+                elif prev is not None:
+                    tr.loc[d] = tr.loc[prev] * (1.0 + r_tr.loc[d])
+                prev = d
+    tr.name = "BRVM_COMPOSITE_TR"
+    attrs = {
+        "official_from": None if official_from is None else str(official_from.date()),
+        "base": (str(base_date.date()), base_value),
+        "method": "r_TR = r_Composite + Σ N·D_net / Cap_publiée(t-1) (spéc. §1.1)",
+        "dividends_used": int(len(divs) - len(dropped)),
+        "dividends_dropped": dropped,
+    }
+    if not detail:
+        tr.attrs.update(attrs)
+        return tr
+    out = pd.DataFrame({
+        "composite": comp, "market_cap": mc, "div_cash": div_cash, "r_price": r_price, "r_div": r_div,
+        "r_tr": r_tr, "tr_reconstructed": tr_rec, "tr_official": idx[COMPOSITE_TR_INDEX].reindex(dates)
+        if COMPOSITE_TR_INDEX in idx.columns else np.nan, "tr": tr,
+    })
+    out.attrs.update(attrs)
+    return out
+
+
+def _month_end_sessions(dates: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Dernière séance de chaque mois civil (spéc. §3.1.5)."""
+    s = pd.Series(dates, index=dates)
+    return pd.DatetimeIndex(s.groupby(dates.to_period("M")).max().to_numpy())
+
+
+def equal_weight_tr(
+    panel_dir: str | Path,
+    eligible_mask: pd.DataFrame | None = None,
+    *,
+    rebalance: str = "daily",
+    base_value: float = 100.0,
+    detail: bool = False,
+) -> pd.Series | pd.DataFrame:
+    """Panier équipondéré en rendement total des titres éligibles (étalon n° 2, spéc. §8.2).
+
+    ``eligible_mask`` : DataFrame booléen (date x symbole), éligibilité **connue à la clôture
+    de t** ; elle s'applique au rendement de t+1 (décalage d'une séance, pas de biais
+    d'anticipation). Par défaut : titres cotés et non suspendus. Rendements : ``tr_ret`` de
+    ``adjusted_prices.parquet`` (dividendes nets réinvestis, divisions ajustées ; un
+    rendement ``multi_session`` est gardé pour chaîner l'indice).
+
+    * ``rebalance="daily"`` : moyenne simple des rendements des membres chaque séance ;
+    * ``rebalance="monthly"`` : poids égaux fixés à la dernière séance de chaque mois (et à
+      la première séance), puis dérive des poids ; un titre sans cours (radiation) garde sa
+      valeur jusqu'au rebalancement suivant.
+
+    Aucun coût n'est déduit : c'est un étalon, pas une stratégie investissable.
+    """
+    adj = _adjusted_long(panel_dir)
+    tr = adj.pivot(index="date", columns="symbol", values="tr_ret").sort_index()
+    eq = _load(panel_dir, "equities")
+    status = (eq.assign(date=pd.to_datetime(eq["date"]))
+              .pivot_table(index="date", columns="symbol", values="status", aggfunc="last")
+              .reindex(index=tr.index, columns=tr.columns))
+    if eligible_mask is None:
+        elig = status.notna() & status.ne("suspended")
+    else:
+        elig = eligible_mask.reindex(index=tr.index, columns=tr.columns)
+        elig = elig.astype("boolean").fillna(False).astype(bool)
+    member = elig.shift(1).astype("boolean").fillna(False).astype(bool) & tr.notna()
+    if rebalance == "daily":
+        n = member.sum(axis=1)
+        r = tr.where(member).mean(axis=1).where(n > 0, 0.0)
+    elif rebalance == "monthly":
+        rebal = set(_month_end_sessions(tr.index)) | {tr.index[0]}
+        r = pd.Series(0.0, index=tr.index)
+        n = pd.Series(0, index=tr.index, dtype="int64")
+        weights: pd.Series | None = None
+        for i, d in enumerate(tr.index):
+            if weights is not None and weights.sum() > 0:
+                ri = tr.loc[d, weights.index].fillna(0.0)
+                total = float(weights.sum())
+                r.loc[d] = float((weights * ri).sum()) / total
+                weights = weights * (1.0 + ri)
+                n.loc[d] = int(len(weights))
+            if d in rebal:
+                names = elig.columns[elig.loc[d].to_numpy()]
+                weights = pd.Series(1.0, index=names) if len(names) else None
+    else:
+        raise ValueError("rebalance doit valoir 'daily' ou 'monthly'")
+    level = base_value * (1.0 + r).cumprod()  # premier jour : aucun membre, niveau = base
+    level.name = f"EW_TR_{rebalance}"
+    if detail:
+        return pd.DataFrame({"ret": r, "n_names": n, "level": level})
+    return level
+
+
+def stats_mask(
+    panel_dir: str | Path,
+    *,
+    gap_days: int = MULTI_SESSION_GAP_DAYS,
+    exclude_windows: Iterable[tuple[Any, Any]] = EXCLUDED_STATS_WINDOWS,
+    wide: bool = True,
+) -> pd.DataFrame:
+    """Rendements utilisables dans les estimations (volatilité, bêta, covariance), spéc. §3.1.3.
+
+    Un rendement est marqué :
+
+    * ``multi_session`` s'il couvre un trou de plus de ``gap_days`` jours calendaires depuis
+      la ligne précédente du titre **ou** si ``missing_sessions > 0`` (BOC manquants) ;
+    * ``excluded_window`` si sa date tombe dans une fenêtre exclue (2021-05-06 → 2021-06-25
+      incluses) ;
+    * ``suspended`` (statut SP : exclu) ; ``stale`` (non échangé, statut NC : rendement 0
+      gardé mais signalé).
+
+    ``usable = rendement défini & non multi_session & hors fenêtre & non suspendu``. Ces
+    rendements restent valables pour chaîner un indice total return.
+
+    ``wide=True`` : DataFrame booléen date x symbole (``True`` = utilisable, ``False`` sinon,
+    y compris sans ligne) ; ``wide=False`` : table longue avec toutes les colonnes.
+    """
+    adj = _adjusted_long(panel_dir)[["date", "symbol", "ret", "missing_sessions"]]
+    eq = _load(panel_dir, "equities")[["date", "symbol", "status"]].copy()
+    eq["date"] = pd.to_datetime(eq["date"])
+    df = adj.merge(eq, on=["date", "symbol"], how="left").sort_values(["symbol", "date"]).reset_index(drop=True)
+    prev = df.groupby("symbol", sort=False)["date"].shift(1)
+    df["gap_days"] = (df["date"] - prev).dt.days
+    df["multi_session"] = (df["gap_days"] > gap_days) | (df["missing_sessions"].fillna(0) > 0)
+    excl = np.zeros(len(df), dtype=bool)
+    for a, b in exclude_windows:
+        excl |= ((df["date"] >= pd.Timestamp(a)) & (df["date"] <= pd.Timestamp(b))).to_numpy()
+    df["excluded_window"] = excl
+    df["suspended"] = df["status"].eq("suspended")
+    df["stale"] = df["status"].eq("not_traded")
+    df["usable"] = df["ret"].notna() & ~df["multi_session"] & ~df["excluded_window"] & ~df["suspended"]
+    df = df.sort_values(["date", "symbol"]).reset_index(drop=True)
+    if not wide:
+        return df
+    return df.pivot(index="date", columns="symbol", values="usable").fillna(False).astype(bool).sort_index()
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - utilitaire en ligne de commande

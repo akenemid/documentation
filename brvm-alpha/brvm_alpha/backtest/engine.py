@@ -22,36 +22,77 @@ reproduire les frictions qui, sur un marché étroit, séparent une performance
 * **plafond de participation** : quantité exécutable
   ``q_t ≤ ⌊π_max · volume_t⌋`` (``π_max = max_volume_participation``) ; le
   reliquat est reporté aux séances suivantes si ``carry_unfilled`` ;
-* **limites de variation** (±7,5 % à la BRVM, Instruction I-A) : un titre qui
-  clôture à la limite haute signale une file d'acheteurs non servie ⇒ **pas
-  d'achat** ; à la limite basse, file de vendeurs ⇒ **pas de vente** (Kim &
-  Rhee, 1997, sur l'effet des limites de prix) ;
-* **coûts** (cf. :func:`trade_cost`) : frais proportionnels
-  ``CostModel.rate()`` (SGI + TVA, BRVM, DC/BR, AMF-UMOA) et impact de marché
-  en racine carrée de la participation (Almgren, Thum, Hauptmann & Li, 2005 ;
-  Tóth et al., 2011 ; Bouchaud, Bonart, Donier & Gould, 2018) ;
+* **bandes de prix exactes** (±7,5 % à la BRVM, Instruction I-A ; spéc.
+  §7.1.3) : autour de la référence ajustée ``R`` (cours de référence publié
+  la veille), ``basse = ceil(R·0,925 / pas)·pas`` et
+  ``haute = max(floor(R·1,075 / pas)·pas ; R + pas)``, pas de cotation de
+  1 FCFA sous 100 FCFA, 5 FCFA au-delà (:func:`price_band_limits`). Un titre
+  qui clôture à la borne haute signale une file d'acheteurs non servie ⇒
+  **pas d'achat** ; à la borne basse, file de vendeurs ⇒ **pas de vente**
+  (Kim & Rhee, 1997). Par défaut (``band_rule="exact_or_tolerance"``), la
+  clôture est « à la borne » si elle l'atteint exactement **ou** si
+  ``|clôture/R − 1| ≥ 7,5 % − 0,2 %`` (tolérance de la spécification) ;
+* **coûts par côté** (cf. :func:`trade_cost`, spéc. §7.2) : frais
+  proportionnels ``CostModel.rate()`` (SGI × (1 + taxe), BRVM, DC/BR,
+  AMF-UMOA), **demi-spread propre au titre** (½ spread médian de clôture sur
+  120 séances quand les deux côtés du carnet sont présents, plancher
+  ``pas / (2·cours)``, défaut ``CostModel.half_spread_default``, multiplié
+  par ``CostModel.half_spread_mult`` ; :func:`quoted_half_spread`) et impact
+  de marché ``κ·√π`` en racine carrée de la participation (Almgren, Thum,
+  Hauptmann & Li, 2005 ; Tóth et al., 2011 ; Bouchaud, Bonart, Donier &
+  Gould, 2018). Ce sont des **hypothèses** de coûts (plusieurs taux sont
+  [NON VÉRIFIÉ] dans la spécification), pas des coûts observés ;
+* **frais fixes** : droits de garde (``annual_custody`` sur l'encours) et
+  **tenue de compte par ligne détenue** (``account_fee_per_line_fcfa`` par
+  an), au prorata des séances écoulées ;
 * **quantités entières** (quotité ``lot_size``, 1 par défaut), **cash non
   négatif** (pas d'effet de levier, pas de découvert ; les ventes passent
   avant les achats, qui sont réduits au prorata si nécessaire) ;
-* **dividendes** nets crédités en cash à la date de détachement aux titres
-  détenus à l'ouverture de cette séance (rendement total), convertis en
-  unités ajustées par ``adj_factor`` (``D · f``) ; retenue à la source par
-  pays si les montants fournis sont bruts (``TaxModel``). Depuis le panel
-  long, la date de détachement vient de ``store.detect_dividends``
-  (:func:`panels_from_equities`), pas de la mise à jour tardive de la colonne
-  « dernier dividende » du BOC.
+* **règlement-livraison** (spéc. §7.1.5) : J+3 pour une négociation
+  antérieure au ``ExecutionModel.settlement_switch_date`` (04/12/2025), J+2
+  ensuite ; le produit d'une vente ne finance un achat qu'**après**
+  règlement (il reste une créance dans la NAV entre-temps). Les achats
+  mobilisent le cash dès la négociation (provision exigée par la SGI) ;
+* **report des ordres** (spéc. §7.1.1) : un ordre non servi en t+1 est
+  reporté pendant au plus ``ExecutionModel.max_carry_sessions`` séances
+  (t+2 … t+11 par défaut), puis annulé (réévaluation au rebalancement
+  suivant) ;
+* **jour ex et jour de division** (spéc. §7.1.4, §5.2.4) : la BRVM annule
+  les ordres en attente ; le moteur annule les ordres résiduels saisis avant
+  la séance et les **ressaisit le jour même** (journal ``orders`` et
+  ``events``) ;
+* **dividendes** nets reconnus à la date de détachement aux titres détenus à
+  l'ouverture de cette séance (créance dans la NAV), **crédités en cash à la
+  date de paiement** (``dividend_payment_date`` si connue, sinon date ex +
+  2 séances) et laissés en cash jusqu'au rebalancement suivant ; montants
+  convertis en unités ajustées par ``adj_factor`` (``D · f``) ; retenue à
+  la source par pays si les montants fournis sont bruts (``TaxModel``).
+  Depuis le panel long, la date de détachement vient de
+  ``store.detect_dividends`` (:func:`panels_from_equities`) ;
+* **suspension** : position bloquée (aucun ordre exécuté) ; sa valeur est
+  suivie à part (``suspended_value``) pour une décote de risque de 10 % ;
+* **choc pays sévère** (option ``country_shocks``, spéc. §4.3 et §7.1.8) :
+  la première séance qui suit l'annonce est supposée au plancher, sans
+  vendeur servi (hypothèse de stress, pas une observation).
 
 Déroulé d'une séance ``t`` (dans cet ordre)
 -------------------------------------------
-1. rémunération du cash : ``cash ← cash · (1 + r_a)^(1/252)`` ;
-2. dividendes : ``cash += Σ_i q_i(t⁻) · D_i(t)`` (``q(t⁻)`` = positions
+1. rémunération du cash : ``cash ← cash · (1 + r_a)^(n_t/252)`` (``n_t`` =
+   séances écoulées depuis la ligne précédente, BOC manquants compris) ;
+2. règlements : produits de ventes arrivés à échéance et dividendes dont la
+   date de paiement est atteinte versés en cash ;
+3. dividendes : créance ``Σ_i q_i(t⁻) · D_i(t)`` (``q(t⁻)`` = positions
    d'ouverture, donc un achat du jour de détachement n'y a pas droit) ;
-3. droits de garde : ``garde_t = g_a / 252 · Σ_i q_i P_i(t-1)`` (à payer) ;
-4. exécution des ordres en attente : **ventes d'abord**, puis achats limités
-   par le cash disponible ;
-5. valorisation à la clôture : ``NAV_t = cash_t + Σ_i q_i(t) · P̃_i(t)`` où
-   ``P̃`` est le dernier cours de clôture connu ;
-6. si ``t`` est une date de rebalancement : appel de la stratégie sur la vue
+4. frais fixes : ``garde_t = g_a·n_t / 252 · Σ_i q_i P_i(t-1)`` et
+   ``tenue_t = F·n_t / 252 · #{i : q_i > 0}`` (à payer) ;
+5. jour ex / jour de division : annulation et ressaisie des ordres en
+   attente concernés ;
+6. exécution des ordres en attente : **ventes d'abord**, puis achats limités
+   par le cash **réglé** disponible ;
+7. valorisation à la clôture :
+   ``NAV_t = cash_t − dû_t + créances_t + Σ_i q_i(t) · P̃_i(t)`` où ``P̃``
+   est le dernier cours de clôture connu ;
+8. si ``t`` est une date de rebalancement : appel de la stratégie sur la vue
    tronquée à ``t`` et création des ordres (exécutables à partir de t+1).
 
 Dimensionnement des ordres
@@ -73,11 +114,14 @@ Mesures produites (:class:`BacktestResult`)
 
 Limites connues (choix de prudence documentés)
 ----------------------------------------------
-* Règlement-livraison supposé immédiat (le produit des ventes finance les
-  achats du jour) alors qu'il est à J+3 à la BRVM : effet de second ordre
-  pour des rebalancements hebdomadaires ou plus lents.
-* Le carnet d'ordres n'est pas observé : la file d'attente à la limite est
-  approchée par le statut de clôture (à la limite ⇒ non servi).
+* Les ordres du moteur sont « au mieux » (exécutés au VWAP) : la ressaisie
+  du jour ex ne change donc ni leur prix ni leur quantité (en titres
+  ajustés) ; elle est journalisée pour la traçabilité.
+* Le carnet d'ordres n'est pas observé en séance : la file d'attente à la
+  limite est approchée par le cours de clôture (à la borne ⇒ non servi).
+* Le VWAP se situe déjà à l'intérieur de la fourchette : y ajouter le
+  demi-spread est prudent (coût probablement surestimé), conforme à la
+  spécification §7.2.
 * Les dates de fin de période (``'M'``, ``'Q'``, ``'W-FRI'``) supposent le
   calendrier des séances connu à l'avance (jours fériés publiés), hypothèse
   standard ; ``anchor="first"`` l'évite.
@@ -124,18 +168,30 @@ import pandas as pd
 from brvm_alpha.config import Constraints, CostModel, ExecutionModel, PlatformConfig, TaxModel
 
 __all__ = [
+    "BAND_RULES",
     "BacktestResult",
     "Backtester",
     "PanelView",
     "Strategy",
+    "band_flags",
     "limit_flags",
     "panels_from_equities",
+    "price_band_limits",
+    "quoted_half_spread",
     "rebalance_dates",
+    "settlement_lag_sessions",
+    "tick_size",
     "trade_cost",
     "truncate_asof",
 ]
 
 TRADING_DAYS = 252
+
+#: Règles de détection de la clôture « à la borne » (spéc. §7.1.3) :
+#: ``"exact"`` (clôture égale à la borne calculée au pas), ``"tolerance"``
+#: (``|clôture/réf − 1| ≥ limite − tolérance``, comportement historique du
+#: moteur) ou l'union des deux (défaut, prudent dans les deux sens).
+BAND_RULES = ("exact_or_tolerance", "exact", "tolerance")
 
 #: Signature d'une stratégie : ``(asof, vue tronquée) -> poids cibles``.
 #: ``None`` signifie « ne rien changer » (les ordres en attente sont conservés).
@@ -590,25 +646,163 @@ def trade_cost(
     amount: np.ndarray | float,
     participation: np.ndarray | float,
     costs: CostModel,
+    half_spread: np.ndarray | float | None = None,
 ) -> np.ndarray:
     """Coût total (FCFA) d'une exécution de montant ``A`` à la participation ``π``.
 
-    ``coût = max(τ · A, m) + κ · sqrt(π) · A`` pour ``A > 0`` (0 sinon), avec
-    ``τ = CostModel.rate()`` (frais proportionnels d'un aller simple, TVA sur
-    la commission SGI incluse), ``m = min_ticket_fcfa`` (minimum de frais par
-    ordre) et ``κ = impact_coef``. ``π = q / volume_jour`` ∈ [0, 1].
+    ``coût = max(τ · A, m) + s · A + κ · sqrt(π) · A`` pour ``A > 0`` (0
+    sinon), avec ``τ = CostModel.rate()`` (frais proportionnels d'un aller
+    simple, taxe sur la commission SGI incluse), ``m = min_ticket_fcfa``
+    (minimum de frais par ordre), ``s`` le **demi-spread** de la ligne
+    (fraction, déjà multiplié par ``half_spread_mult`` et plancher compris ;
+    ``None`` ⇒ 0, comportement historique) et ``κ = impact_coef``.
+    ``π = q / volume_jour`` ∈ [0, 1]. Formule par côté de la spécification
+    §7.2 : ``courtage × (1 + taxe) + 0,0020 + 0,0010 + demi_spread_i + κ·√π``.
 
     Le terme ``κ sqrt(π)`` est la « loi en racine carrée » de l'impact de
     marché (Almgren et al., 2005 ; Tóth et al., 2011), exprimée ici en
     fraction du montant et calibrée par ``impact_coef`` ; elle est comptée
-    comme un coût (équivalent d'un prix d'exécution dégradé).
+    comme un coût (équivalent d'un prix d'exécution dégradé). Le κ central
+    (0,016) est une **hypothèse** : aucune étude d'impact publiée sur la BRVM.
     """
+    prop, spread, impact = _cost_parts(amount, participation, costs, half_spread)
+    return prop + spread + impact
+
+
+def _cost_parts(
+    amount: np.ndarray | float,
+    participation: np.ndarray | float,
+    costs: CostModel,
+    half_spread: np.ndarray | float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Décomposition ``(frais proportionnels, demi-spread, impact)`` de :func:`trade_cost`."""
     a = np.asarray(amount, dtype=float)
     p = np.clip(np.asarray(participation, dtype=float), 0.0, None)
     positive = a > 0
     prop = np.where(positive, np.maximum(costs.rate() * a, float(costs.min_ticket_fcfa)), 0.0)
+    hs = 0.0 if half_spread is None else np.clip(np.nan_to_num(np.asarray(half_spread, dtype=float)), 0.0, None)
+    spread = np.where(positive, hs * a, 0.0)
     impact = np.where(positive, float(costs.impact_coef) * np.sqrt(p) * a, 0.0)
-    return prop + impact
+    return prop, spread, impact
+
+
+def tick_size(price: Any) -> Any:
+    """Pas de cotation (FCFA) : 1 sous 100 FCFA, 5 au-delà (BOC 2017-2026, spéc. §6 et §11).
+
+    Scalaire ⇒ ``float`` ; tableau ⇒ ``np.ndarray`` (NaN conservés).
+    """
+    if np.ndim(price) == 0:
+        p = float(price)
+        return math.nan if not math.isfinite(p) else (1.0 if p < 100.0 else 5.0)
+    arr = np.asarray(price, dtype=float)
+    return np.where(np.isfinite(arr), np.where(arr < 100.0, 1.0, 5.0), np.nan)
+
+
+#: Marge numérique des arrondis au pas (évite ``ceil(812.0000000001)``).
+_BAND_EPS = 1e-9
+
+
+def price_band_limits(ref: Any, pct: float = 0.075, tick: Any = None) -> tuple[Any, Any]:
+    """Bornes de cotation autour de la référence **ajustée** ``R`` (spéc. §7.1.3, §11).
+
+    ``basse = ceil(R·(1 − pct) / pas)·pas`` et
+    ``haute = max(floor(R·(1 + pct) / pas)·pas ; R + pas)``, avec le pas de
+    :func:`tick_size` (calculé sur ``R``) sauf si ``tick`` est fourni.
+    Exemples de non-régression (§12.3 n° 3) : ``R = 4385`` ⇒ (4060, 4710) ;
+    ``R = 13`` (ETIT) ⇒ haute = 14. Vectorisé (NaN ⇒ NaN).
+
+    Returns
+    -------
+    (basse, haute)
+        Scalaires ``float`` ou tableaux de la forme de ``ref``.
+    """
+    scalar = np.ndim(ref) == 0
+    r = np.asarray(ref, dtype=float)
+    step = tick_size(r) if tick is None else np.broadcast_to(np.asarray(tick, dtype=float), r.shape)
+    with np.errstate(invalid="ignore"):
+        low = np.ceil(r * (1.0 - pct) / step - _BAND_EPS) * step
+        high = np.maximum(np.floor(r * (1.0 + pct) / step + _BAND_EPS) * step, r + step)
+    ok = np.isfinite(r) & (r > 0)
+    low = np.where(ok, low, np.nan)
+    high = np.where(ok, high, np.nan)
+    if scalar:
+        return float(low), float(high)
+    return low, high
+
+
+def band_flags(
+    close: np.ndarray,
+    ref: np.ndarray,
+    pct: float = 0.075,
+    max_plausible_move: float = 0.20,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Clôture **exactement** à la borne haute / basse (bornes au pas, :func:`price_band_limits`).
+
+    ``haut = clôture ≥ haute(R)`` ; ``bas = clôture ≤ basse(R)``, en unités
+    **brutes** du jour (le pas dépend du cours publié). Une référence
+    invraisemblable (``|clôture/R − 1| > max_plausible_move``) ou manquante
+    ne donne aucun drapeau.
+    """
+    c = np.asarray(close, dtype=float)
+    r = np.asarray(ref, dtype=float)
+    low, high = price_band_limits(r, pct)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        plausible = np.isfinite(c) & np.isfinite(r) & (r > 0) & (np.abs(c / r - 1.0) <= float(max_plausible_move))
+        up = plausible & (c >= high - _BAND_EPS)
+        down = plausible & (c <= low + _BAND_EPS)
+    return up, down
+
+
+def settlement_lag_sessions(date: Any, switch_date: Any = "2025-12-04", before: int = 3, after: int = 2) -> int:
+    """Délai de règlement (séances) d'une négociation à ``date`` (spéc. §7.1.5, instruction 03-2025).
+
+    J+3 pour une négociation antérieure au ``switch_date`` (04/12/2025), J+2
+    à partir de cette date.
+    """
+    return int(before) if pd.Timestamp(date).normalize() < pd.Timestamp(switch_date) else int(after)
+
+
+def quoted_half_spread(
+    bid: pd.DataFrame,
+    ask: pd.DataFrame,
+    *,
+    window: int = 120,
+    min_obs: int = 20,
+    lag: int = 1,
+) -> pd.DataFrame:
+    """Demi-spread relatif médian du carnet de clôture (spéc. §7.2, revue 01 §5.2).
+
+    Pour chaque séance où **les deux côtés** sont présents (``bid > 0``,
+    ``ask > 0``, ``ask ≥ bid``) : ``s_t = (ask − bid) / ((ask + bid)/2)``.
+    Le demi-spread retenu en ``t`` est ``½ · médiane(s)`` sur les ``window``
+    dernières séances **jusqu'à t − lag** inclus (``lag = 1`` : seule
+    l'information publiée avant la séance d'exécution est utilisée), avec au
+    moins ``min_obs`` observations, sinon NaN (le moteur prend alors
+    ``CostModel.half_spread_default``). Le plancher ``pas / (2·cours)`` est
+    appliqué par le moteur au cours d'exécution.
+
+    Parameters
+    ----------
+    bid, ask
+        Panels larges (date × symbole) des meilleures limites de clôture
+        (``order_book.parquet`` : colonnes ``bid`` et ``ask``) ; une limite
+        « au prix du marché » doit être NaN.
+    """
+    if window < 1 or min_obs < 1 or lag < 0:
+        raise ValueError("window et min_obs doivent être >= 1, lag >= 0")
+    b = _as_wide(bid, "bid").apply(pd.to_numeric, errors="coerce")
+    a = _as_wide(ask, "ask").apply(pd.to_numeric, errors="coerce")
+    idx = b.index.union(a.index)
+    cols = b.columns.union(a.columns)
+    b = b.reindex(index=idx, columns=cols)
+    a = a.reindex(index=idx, columns=cols)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mid = 0.5 * (a + b)
+        rel = (a - b) / mid
+    ok = (b > 0) & (a > 0) & (a >= b) & np.isfinite(rel)
+    rel = rel.where(ok)
+    med = rel.rolling(int(window), min_periods=int(min_obs)).median()
+    return 0.5 * med.shift(int(lag))
 
 
 def limit_flags(

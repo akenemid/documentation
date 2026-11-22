@@ -45,6 +45,22 @@ from brvm_alpha.portfolio.risk import (
 ROOT = Path(__file__).resolve().parents[1]
 TOL = 1e-8
 
+#: Contraintes que ces tests supposaient avant le calibrage de ``config.py`` d'après la
+#: spécification v1 (anciens défauts : poids max 15 %, 6 à 15 lignes, secteur 40 %,
+#: pays 60 %, participation 20 %). Elles sont fixées explicitement pour que le
+#: comportement testé ne change pas ; les défauts v1 sont testés dans
+#: ``tests/test_portfolio_v1.py``.
+LEGACY_CONSTRAINTS = Constraints(
+    max_weight=0.15,
+    min_weight=0.02,
+    max_names=15,
+    min_names=6,
+    max_sector_weight=0.40,
+    max_country_weight=0.60,
+    max_adv_participation=0.20,
+    max_days_to_liquidate=20.0,
+)
+
 
 # ---------------------------------------------------------------------------
 # Données synthétiques
@@ -452,7 +468,7 @@ def test_average_daily_value_has_no_lookahead():
 @pytest.mark.parametrize("seed", list(range(8)))
 def test_build_portfolio_respects_constraints(method, seed):
     alpha, cov, liq, prev, sectors, countries = _problem(seed)
-    cons = Constraints()
+    cons = LEGACY_CONSTRAINTS
     w = build_portfolio(alpha, cov, cons, liq, prev, sectors, countries, method=method)
     _assert_feasible(w, cons, liq, sectors, countries)
     assert w.attrs["feasible_full_budget"]
@@ -467,7 +483,7 @@ def test_build_portfolio_respects_constraints(method, seed):
 def test_build_portfolio_tight_liquidity_keeps_cash(method, seed):
     """Plafonds de liquidité trop serrés : on n'investit que la capacité (PL)."""
     alpha, cov, liq, prev, sectors, countries = _problem(seed, tight=True)
-    cons = Constraints()
+    cons = LEGACY_CONSTRAINTS
     w = build_portfolio(alpha, cov, cons, liq, prev, sectors, countries, method=method)
     _assert_feasible(w, cons, liq, sectors, countries)
     assert not w.attrs["feasible_full_budget"]
@@ -479,7 +495,7 @@ def test_build_portfolio_tight_liquidity_keeps_cash(method, seed):
 
 def test_build_portfolio_custom_tight_groups():
     alpha, cov, liq, prev, sectors, countries = _problem(30)
-    cons = replace(Constraints(), max_sector_weight=0.25, max_country_weight=0.35, max_weight=0.10, max_names=12)
+    cons = replace(LEGACY_CONSTRAINTS, max_sector_weight=0.25, max_country_weight=0.35, max_weight=0.10, max_names=12)
     for method in ("mv_alpha", "hrp_tilt", "equal"):
         w = build_portfolio(alpha, cov, cons, liq, prev, sectors, countries, method=method)
         _assert_feasible(w, cons, liq, sectors, countries)
@@ -489,7 +505,7 @@ def test_build_portfolio_custom_tight_groups():
 def test_mv_alpha_is_optimal():
     """Sans élagage ni coûts, la solution coïncide avec un solveur indépendant."""
     alpha, cov, liq, _, sectors, countries = _problem(40, n=12)
-    cons = replace(Constraints(), min_weight=0.0, max_names=12, min_names=1, max_weight=0.3)
+    cons = replace(LEGACY_CONSTRAINTS, min_weight=0.0, max_names=12, min_names=1, max_weight=0.3)
     lam = 4.0
     w = build_portfolio(alpha, cov, cons, liq, None, sectors, countries, risk_aversion=lam, tcost=0.0)
     _assert_feasible(w, cons, liq, sectors, countries)
@@ -519,7 +535,7 @@ def test_mv_alpha_low_risk_aversion_fills_best_names_to_cap():
     names = [f"N{i}" for i in range(10)]
     alpha = pd.Series(np.linspace(0.30, 0.01, 10), index=names)
     cov = pd.DataFrame(np.eye(10) * 0.04, index=names, columns=names)
-    w = build_portfolio(alpha, cov, Constraints(), None, None, risk_aversion=1e-6, tcost=0.0)
+    w = build_portfolio(alpha, cov, LEGACY_CONSTRAINTS, None, None, risk_aversion=1e-6, tcost=0.0)
     # 6 meilleurs à 15 %, puis 8 % sur le 7e : Σ = 0,98
     np.testing.assert_allclose(w.iloc[:6].to_numpy(), 0.15, atol=1e-7)
     assert w.iloc[6] == pytest.approx(0.08, abs=1e-7)
@@ -528,7 +544,7 @@ def test_mv_alpha_low_risk_aversion_fills_best_names_to_cap():
 
 def test_mv_alpha_transaction_costs_create_inertia():
     alpha, cov, _, _, sectors, countries = _problem(50, n=20)
-    cons = replace(Constraints(), max_names=20, min_names=1)
+    cons = replace(LEGACY_CONSTRAINTS, max_names=20, min_names=1)
     prev = pd.Series(0.0, index=alpha.index)
     prev.iloc[:10] = 0.098  # portefeuille réalisable : Σ = 0,98, ≤ 15 %
     w_free = build_portfolio(alpha, cov, cons, None, prev, method="mv_alpha", tcost=0.0)
@@ -541,7 +557,7 @@ def test_mv_alpha_transaction_costs_create_inertia():
 
 def test_max_names_min_weight_and_min_names():
     alpha, cov, *_ = _problem(60, n=30)
-    cons = replace(Constraints(), max_names=8, min_names=6, min_weight=0.05, max_weight=0.3)
+    cons = replace(LEGACY_CONSTRAINTS, max_names=8, min_names=6, min_weight=0.05, max_weight=0.3)
     for method in ("mv_alpha", "hrp_tilt", "equal"):
         w = build_portfolio(alpha, cov, cons, None, None, method=method)
         nz = w[w > 0]
@@ -557,7 +573,7 @@ def test_min_names_overrides_pruning():
     names = [f"N{i}" for i in range(10)]
     alpha = pd.Series([1.0, 0.9] + [-0.5] * 8, index=names)
     cov = pd.DataFrame(np.eye(10) * 0.04, index=names, columns=names)
-    cons = replace(Constraints(), max_weight=0.6, min_names=6, max_names=10)
+    cons = replace(LEGACY_CONSTRAINTS, max_weight=0.6, min_names=6, max_names=10)
     w = build_portfolio(alpha, cov, cons, None, None, risk_aversion=0.01, tcost=0.0)
     nz = w[w > 0]
     assert len(nz) == 6
@@ -567,7 +583,7 @@ def test_min_names_overrides_pruning():
 
 def test_equal_and_untilted_hrp_when_constraints_slack():
     alpha, cov, *_ = _problem(70, n=20)
-    cons = replace(Constraints(), max_weight=1.0, min_weight=0.0, max_names=10, min_names=1)
+    cons = replace(LEGACY_CONSTRAINTS, max_weight=1.0, min_weight=0.0, max_names=10, min_names=1)
     top = alpha.nlargest(10).index
     w_eq = build_portfolio(alpha, None, cons, method="equal")
     np.testing.assert_allclose(w_eq.loc[top].to_numpy(), 0.098)
@@ -587,8 +603,8 @@ def test_sector_cap_binds_when_alpha_concentrated():
     sectors = pd.Series(["FIN"] * 8 + ["IND", "TEL", "CB", "SPU"] * 2, index=names)
     cov = pd.DataFrame(np.eye(16) * 0.04, index=names, columns=names)
     for method in ("mv_alpha", "hrp_tilt", "equal"):
-        w = build_portfolio(alpha, cov, Constraints(), None, None, sectors=sectors, method=method)
-        _assert_feasible(w, Constraints(), sectors=sectors)
+        w = build_portfolio(alpha, cov, LEGACY_CONSTRAINTS, None, None, sectors=sectors, method=method)
+        _assert_feasible(w, LEGACY_CONSTRAINTS, sectors=sectors)
         assert w[sectors == "FIN"].sum() <= 0.40 + 1e-9
         assert w.sum() == pytest.approx(0.98, abs=1e-8)
 
@@ -598,20 +614,20 @@ def test_ineligible_names_get_zero():
     alpha.iloc[0] = np.nan
     liq = liq.drop(liq.index[1])  # liquidité inconnue -> non détenable
     cov2 = cov.copy()
-    w = build_portfolio(alpha, cov2, Constraints(), liq, None)
+    w = build_portfolio(alpha, cov2, LEGACY_CONSTRAINTS, liq, None)
     assert w.iloc[0] == 0.0 and w.iloc[1] == 0.0
     with pytest.warns(RuntimeWarning):
-        empty = build_portfolio(alpha, cov, Constraints(), liq * 0.0, None)
+        empty = build_portfolio(alpha, cov, LEGACY_CONSTRAINTS, liq * 0.0, None)
     assert (empty == 0).all() and empty.attrs["budget"] == 0.0
     with pytest.raises(ValueError):
-        build_portfolio(alpha, cov, replace(Constraints(), long_only=False), None, None)
+        build_portfolio(alpha, cov, replace(LEGACY_CONSTRAINTS, long_only=False), None, None)
 
 
 def test_build_portfolio_is_deterministic():
     alpha, cov, liq, prev, sectors, countries = _problem(90)
-    w1 = build_portfolio(alpha, cov, Constraints(), liq, prev, sectors, countries)
+    w1 = build_portfolio(alpha, cov, LEGACY_CONSTRAINTS, liq, prev, sectors, countries)
     perm = np.random.default_rng(0).permutation(len(alpha))
-    w2 = build_portfolio(alpha.iloc[perm], cov, Constraints(), liq, prev, sectors, countries)
+    w2 = build_portfolio(alpha.iloc[perm], cov, LEGACY_CONSTRAINTS, liq, prev, sectors, countries)
     np.testing.assert_allclose(w1.to_numpy(), w2.reindex(w1.index).to_numpy(), atol=1e-7)
 
 
@@ -692,7 +708,7 @@ def test_selection_reaches_full_budget_with_liquid_names(method):
     feasible_full_budget=False. Or 10 illiquides + 5 liquides (15 lignes)
     permettent d'investir 98 %."""
     alpha, cov, liq = _illiquid_top_problem()
-    cons = Constraints()
+    cons = LEGACY_CONSTRAINTS
     w = build_portfolio(alpha, cov, cons, liq, None, method=method)
     _assert_feasible(w, cons, liq)
     assert w.sum() == pytest.approx(0.98, abs=1e-8)
@@ -712,11 +728,11 @@ def test_mv_alpha_selection_beats_hand_built_feasible_portfolio():
     construit à la main (5 liquides à 15 % + 8 meilleurs illiquides)."""
     alpha, cov, liq = _illiquid_top_problem()
     lam = 5.0
-    w = build_portfolio(alpha, cov, Constraints(), liq, None, risk_aversion=lam, tcost=0.0)
+    w = build_portfolio(alpha, cov, LEGACY_CONSTRAINTS, liq, None, risk_aversion=lam, tcost=0.0)
     alt = pd.Series(0.0, index=alpha.index)
     alt.iloc[15:] = 0.15
     alt.iloc[:8] = 0.23 / 8  # Σ = 0,98, ≤ 3 %
-    assert constraint_violations(alt, Constraints(), liq)["liquidity"] == 0.0
+    assert constraint_violations(alt, LEGACY_CONSTRAINTS, liq)["liquidity"] == 0.0
     s = cov.to_numpy()
 
     def obj(x: pd.Series) -> float:
@@ -767,7 +783,7 @@ def test_selection_capacity_matches_brute_force(scale, seed):
     """Investissement = capacité exacte (énumération) ; feasible_full_budget et
     max_investable reflètent cette capacité, pas la sélection retenue."""
     alpha, liq, sectors = _anti_liquid_problem(seed, scale)
-    cons = replace(Constraints(), max_weight=0.3, max_names=5, min_names=2, max_sector_weight=0.4)
+    cons = replace(LEGACY_CONSTRAINTS, max_weight=0.3, max_names=5, min_names=2, max_sector_weight=0.4)
     u = np.minimum(liq.to_numpy(), cons.max_weight)
     ref = _brute_force_capacity(u, sectors.to_numpy(), cons)
     b = 1.0 - cons.cash_buffer
@@ -789,7 +805,7 @@ def test_select_is_lexicographically_best_among_max_capacity_sets(seed):
     from brvm_alpha.portfolio.construct import _group_matrix, _select
 
     alpha, liq, sectors = _anti_liquid_problem(seed, 0.25)
-    cons = replace(Constraints(), max_weight=0.3, max_names=5, min_names=2, max_sector_weight=0.4)
+    cons = replace(LEGACY_CONSTRAINTS, max_weight=0.3, max_names=5, min_names=2, max_sector_weight=0.4)
     names = alpha.index
     u = np.minimum(liq.to_numpy(), cons.max_weight)
     b = 1.0 - cons.cash_buffer
@@ -817,7 +833,7 @@ def test_selection_realistic_brvm_liquidity(capital, seed):
     n = 45
     names = pd.Index([f"S{i:02d}" for i in range(n)])
     adv = pd.Series(np.exp(rng.normal(np.log(5e6), 1.5, n)), index=names)
-    liq = liquidity_caps(adv, capital)
+    liq = liquidity_caps(adv, capital, max_adv_participation=0.20, max_days_to_liquidate=20)
     alpha = pd.Series(rng.normal(0.05, 0.1, n), index=names)
     sectors = pd.Series(
         rng.choice(["FIN", "TEL", "CB", "IND", "SPU", "DIS", "AGR"], n, p=[0.35, 0.05, 0.15, 0.1, 0.1, 0.15, 0.1]),
@@ -828,7 +844,7 @@ def test_selection_realistic_brvm_liquidity(capital, seed):
         index=names,
     )
     cov = pd.DataFrame(np.eye(n) * 0.06 + 0.02, index=names, columns=names)
-    cons = Constraints()
+    cons = LEGACY_CONSTRAINTS
     b = 1.0 - cons.cash_buffer
     u = np.minimum(liq.to_numpy(), cons.max_weight)
     u = np.where(u >= cons.min_weight, u, 0.0)
@@ -854,7 +870,7 @@ def test_pruning_keeps_capacity_with_overlapping_groups():
     countries = pd.Series(["C1", "C0", "C1", "C1", "C1", "C1", "C0", "C1"], index=names)
     cov = pd.DataFrame(np.eye(8) * 0.04, index=names, columns=names)
     cons = replace(
-        Constraints(),
+        LEGACY_CONSTRAINTS,
         max_weight=0.3,
         min_weight=0.02,
         max_names=18,
@@ -879,7 +895,7 @@ def test_pruning_keeps_capacity_with_overlapping_groups():
 def test_selection_fast_path_unchanged_when_top_names_suffice():
     """Si les max_names meilleurs scores suffisent, aucun PLNE : sélection « top »."""
     alpha, cov, liq, prev, sectors, countries = _problem(3)
-    w = build_portfolio(alpha, cov, Constraints(), liq, prev, sectors, countries)
+    w = build_portfolio(alpha, cov, LEGACY_CONSTRAINTS, liq, prev, sectors, countries)
     assert w.attrs["selection"] == "top"
     assert w.attrs["max_investable"] == pytest.approx(0.98)
 
@@ -993,8 +1009,10 @@ def test_smoke_on_real_panel():
     assert hrp.sum() == pytest.approx(1.0)
     mom = (close.iloc[-1] / close.iloc[-120] - 1).reindex(cov.index)
     sectors = eq.sort_values("date").groupby("symbol")["sector"].last()
-    liq = liquidity_caps(average_daily_value(value, window=60), capital=10_000_000.0)
-    cons = Constraints()
+    liq = liquidity_caps(
+        average_daily_value(value, window=60), capital=10_000_000.0, max_adv_participation=0.20, max_days_to_liquidate=20
+    )
+    cons = LEGACY_CONSTRAINTS
     for method in ("mv_alpha", "hrp_tilt", "equal"):
         w = build_portfolio(mom * 0.5, cov, cons, liq, None, sectors=sectors, method=method)
         _assert_feasible(w, cons, liq, sectors)

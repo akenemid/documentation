@@ -1,0 +1,33 @@
+titre,type_attendu,cible_attendue
+ERIUM CI : Communiqué - Profit Warning,PROFIT_WARNING,SIVC
+Communiqué – Alerte sur résultats - BOA NIGER,PROFIT_WARNING,BOAN
+LOTERIE NATIONALE DU BENIN : Profit Warning,PROFIT_WARNING,LNBB
+BOA NIGER : Note d'information sur la baisse de résultat,PROFIT_WARNING,BOAN
+ETI TG : Communiqué - Annulation de l'Assemblée Générale Ordinaire,AG_CANCEL,ETIT
+UNIWAX CÔTE D'IVOIRE: Communiqué - Report de l'Assemblée Générale Ordinaire,AG_CANCEL,UNXC
+ETI TG : Avis de convocation - Assemblée Générale Ordinaire,AG_CONVOCATION,ETIT
+SONATEL SN : Avis de convocation - Assemblée Générale Extraordinaire,AG_CONVOCATION,SNTS
+BRVM : Calendrier de paiement de dividendes,DIV_NOTICE,MARCHE
+SERVAIR ABIDJAN CI : Modification du montant du dividende - Exercice 2025,DIV_NOTICE,ABJC
+SONATEL SN : Fractionnement d'actions & Valeur théorique,SPLIT,SNTS
+SUCRIVOIRE S.A : Suspension de la cotation,SUSPENSION,SCRC
+SUCRIVOIRE S.A. : Levée de suspension de la cotation,RESUMPTION,SCRC
+SONOCO METAL PACKAGING SIEM CI (Ex-EVIOSYS PACKAGING SIEM CI) : Suspension de la cotation,SUSPENSION,SEMC
+SICOR S.A : Suspension de la cotation,SUSPENSION,SICC
+MOVIS CÔTE D'IVOIRE : Radiation de la cote,DELISTING,SVOC
+Avis N°289/BRVM/2026 – Composition de l'indice BRVM 30,INDEX_CHANGE,IDX:BRVM-30
+Résultats de première cotation - BRIDGE BANK GROUP COTE D'IVOIRE (BBGC),OPV_IPO,BBGC
+ALIOS FINANCE (SAFCA CI) : Augmentation de capital par apport en numéraire avec DPS,CAP_INC,SAFC
+BICI CÔTE D'IVOIRE : Communiqué - Augmentation de capital par incorporation de réserves,CAP_INC,BICC
+UNIWAX CI : Communiqué - Déclarations de franchissement de seuil,THRESHOLD,UNXC
+SIB CI : Communiqué – Changement important dans la Direction,MGMT_CHANGE,SIBC
+SAPH CI : Avis de nomination,MGMT_CHANGE,SPHC
+SONATEL SENEGAL : Communiqué de presse - Résultats consolidés du groupe du 1er semestre 2025,RES_S1,SNTS
+MOOV BURKINA FASO (ex ONATEL BF) Communiqué de presse - Résultats au 31 décembre 2024,RES_ANNUAL,ONTBF
+BERNABE CI : Rapport d'activités - 3e trimestre 2026,ACT_Q3,BNBC
+BERNABE CI : Attestation des Commissaires Aux Comptes sur le rapport d'activités - 1er semestre 2026,RES_S1,BNBC
+NSIA BANQUE CÔTE D'IVOIRE : Communiqué,OTHER,NSBC
+TOTALENERGIES MARKETING CÔTE D'IVOIRE : Communiqué,OTHER,TTLC
+Ecobank Transnational Incorporated TOGO : Communiqué de presse,OTHER,ETIT
+Avis : Transactions sur dossier,OTHER,
+"TPCI 5,75 % 2019-2026 (TPCI.O38) : Radiation de la cote",DELISTING,PAYS:CI

@@ -1,0 +1,174 @@
+# BRVM Alpha — stratégie v1 (SPECIFICATION_STRATEGIE.md, 22/11/2026). Paramètres FIGÉS avant le test S1.
+# Fichier : configs/strategy_v1.yaml, chargé par brvm_alpha/settings.py (load_strategy_config).
+# La spécification (§12.1) le nomme « brvm_alpha/config/strategy_v1.yaml » ; un dossier brvm_alpha/config/
+# masquerait le module brvm_alpha/config.py, d'où ce chemin. Contenu identique au §12.1 (mêmes clés, mêmes valeurs).
+version: "1.0"
+capital_fcfa_reference: 10_000_000
+capacity_variants_fcfa: [100_000_000, 1_000_000_000]
+
+data:
+  price_source: "BOC"                       # jamais le bandeau du site ni les transactions sur dossier
+  dividend_amount: "boc_d_line_net"         # ligne (d) ; jamais les BOC suivants (BOAC 594,53)
+  multi_session_gap_days: 4
+  exclude_stats_windows: [["2021-05-06", "2021-06-25"]]
+  missing_boc_is_not_holiday: true
+  fundamentals_availability: "first_preopen_after(max(prefix+1 session, http_last_modified))"
+  fundamentals_fallback_lag_sessions: 2
+  eps_override: {ETIT: 10.00, ORGT: 264}
+  max_abs_daily_return_guard: 0.50
+  cap_reconstruction_tolerance: 0.03
+
+benchmark:
+  primary: "BRVM_COMPOSITE_TR"
+  official_from: "2025-01-02"
+  pre_official: "reconstructed_full_cap"   # r_TR = r_Composite + Σ N_i·D_net_i / Cap_publiée(t-1) ; validé : 0,18 pb/jour
+  secondary: ["EW_TR_ELIGIBLE", "BRVM_COMPOSITE", "BRVM_10_until_2022-12-30", "BRVM_30_from_2023-01-02", "OPCVM_EQUITY_MEDIAN"]
+
+universe:
+  exclude_status: ["suspended"]
+  resume_buffer_sessions: 5
+  min_history_sessions: 126
+  min_obs_63: 40
+  min_traded_fraction_120: 0.50
+  min_free_float: 0.15
+  mdv63_floor_fcfa: "max(500000, 0.05 * capital)"   # valeur médiane sur 63 séances, séances sans échange = 0
+  low_liquidity_tier_fcfa: 2_000_000                  # en dessous : poids max x 0,5
+  max_spread_full_weight: 0.015                       # au-delà : poids max x 0,5
+  stale_financials_days: 546
+  min_names_for_selection: 15                         # sinon panier équipondéré éligible
+
+signals:
+  transform: {winsor_pct: [1, 99], zscore: "rank_gauss", clip: 3.0, missing: 0.0, min_valid_blocks: 3}
+  ep: {def: "1/PER if PER>0 else rank_min", per_basis: "group_share_if_available"}
+  dy: {def: "dps_net_ordinary(last_fy_with_known_AGM)/price", zero_if_no_dividend_voted: true, max_age_months: 15, cap: 0.15, exclude_exceptional: true}
+  mom6_1: {lookback_sessions: 126, skip_sessions: 21, min_obs: 100}
+  lowvol: {window_sessions: 250, min_obs: 200, fallback_window: 126, fallback_min_obs: 100, sign: -1}
+  quality_proxy: {dividend_years_of_5: 0.5, per_sane_range: [3, 40], per_sane_weight: 0.5}
+  neutralization: none                                # variante D : value dans les secteurs >= 4 titres
+
+composite:
+  A: {ep: 0.15, dy: 0.20, mom6_1: 0.35, lowvol: 0.20, quality_proxy: 0.10}
+  B: {ep: 0.25, dy: 0.25, mom6_1: 0.50}
+  C: {ep: 0.15, dy: 0.20, mom6_1: 0.20, mom12_1: 0.15, lowvol: 0.20, quality_proxy: 0.10}
+  momentum_vol_scaling: {window_sessions: 126, target: "expanding_median", min_history_months: 24, floor: 0.5}
+  momentum_crash_filter: {bear_lookback_months: 24, vol_window_sessions: 63, vol_percentile: 80, multiplier: 0.5, duration_months: 3}
+  s2_post_ex_penalty_sd: -0.5
+  s2_sessions: 20
+
+learning:                                             # phase 2 seulement
+  ic_method: spearman
+  ic_horizon_sessions: 21
+  ic_min_names: 15
+  ic_prior: {documented: 0.02, new: 0.0}
+  ic_prior_strength_months: 36
+  ic_cap: 0.08
+  shrink_to_equal: 0.5
+  min_oos_months: 36
+  walk_forward: {train_years: 2, test_months: 3, embargo_days: 42, expanding: true, min_train_days: 480}
+  factor_momentum_min_months: 120
+
+portfolio:
+  long_only: true
+  gross_equity: 0.98
+  n_holdings: "clip(round(N_elig/3), 12, 20)"
+  band: {enter_top_pct: 30, exit_below_top_pct: 50}
+  weighting: equal                                    # G : hrp_tilt(gamma=0.5) ; H : mv_alpha(lambda=5)
+  max_weight: 0.10
+  min_weight: 0.02
+  country_multiplier: {CI: 1.0, BJ: 1.0, TG: 0.9, SN: 0.85, BF: 0.75, ML: 0.7, NE: 0.6}
+  sector_cap: "max(0.15, min(0.45, 1.5*u_s))"
+  country_cap_non_ci: "min(0.30, max(0.10, 1.5*max(u_c, b_c)))"
+  aes_cap_multiple: 1.25                              # siège ET exposition λ
+  liquidity: {max_participation: 0.10, days_to_liquidate: 20}
+  rebalance: "last_session_of_month"
+  no_trade_band: 0.02
+  max_turnover_per_rebalance: 0.50
+  kelly: {fraction: 0.25, fraction_max: 0.5, max_gross: 1.0, scope: "active_weights_variant_H_only"}
+
+execution:
+  price: "vwap_t_plus_1"
+  carry_unfilled_max_sessions: 10
+  max_volume_participation: 0.10
+  price_limit: 0.075
+  limit_tolerance: 0.002
+  block_buy_at_upper_limit: true
+  block_sell_at_lower_limit: true
+  cancel_orders_on_ex_and_split_days: true
+  settlement: [{until: "2025-12-03", lag: 3}, {from: "2025-12-04", lag: 2}]
+  dividends: "net_credited_on_payment_date_kept_in_cash"
+
+costs:
+  scenarios:
+    optimistic: {sgi: 0.005, tax: 0.10, half_spread_mult: 1.0, impact_coef: 0.010, custody: 0.0,    line_fee: 0}
+    central:    {sgi: 0.008, tax: 0.18, half_spread_mult: 1.0, impact_coef: 0.016, custody: 0.0025, line_fee: 5000}
+    stress:     {sgi: 0.010, tax: 0.18, half_spread_mult: 1.5, impact_coef: 0.032, custody: 0.005,  line_fee: 5000}
+    severe:     {sgi: 0.015, tax: 0.18, half_spread_mult: 2.0, impact_coef: 0.050, custody: 0.005,  line_fee: 10000}
+  brvm_fee: 0.0020
+  dcbr_fee: 0.0010
+  regulator_fee: 0.0
+  half_spread: "0.5 * median_close_spread_120 ; floor tick/(2*price) ; default 0.0035"
+  capital_gains_tax: 0.0                               # NON VÉRIFIÉ
+
+events:
+  news_cutoff_utc: "09:00"
+  ex_date_rule: [{until: "2025-12-03", bd_before_record: 2}, {from: "2025-12-04", bd_before_record: 1}]
+  sell_deferral_to_ex: {max_sessions_to_ex: 15, min_net_yield: 0.04}
+  S1: {enabled_in_variant: E, activate_live_if_round_trip_le: 0.020, min_net_yield: 0.04, min_mdv60_fcfa: 1_000_000, min_sessions_to_ex: 3, limit_mult: 1.02, exit: "close_fixing_ex_date", max_per_name: 0.05, max_total: 0.20, kill_switch: {trades: 30, min_mean_net: 0.0, min_hit: 0.50}}
+  S3: {enabled: false}
+  S4: {enabled: false, types: [RES_ANNUAL, ACT_Q1], min_ar_0_1: 0.03, entry_lag_sessions: 2, hold_sessions: 20, max_per_name: 0.05, max_total: 0.15}
+  S5_news_score: {weight: 0.0, min_ic: 0.05, min_years: 3, decay_sessions: 10}
+  risk_filters:
+    R1: {block_buys: true, resume_buffer: 5, liquidity_haircut: 0.10}
+    R2: {quality_penalty: -1, sessions: 60}
+    R3: {exclude: true}
+    R4: {max_weight_mult: 0.5, sessions: 120}
+    R5: {block_buys_until_rights_detached: true}
+    R6: {freeze_auto_signals: true}
+    R7: {deadlines: {RES_ANNUAL: "04-30", ACT_Q1: "04-30", RES_S1: "10-31", ACT_Q3: "10-31"}, red_after_days: 61, quality_penalty_at_red: -0.5}
+    R8: {sessions: 5}
+    R9: {block_buys: true, disable: [S1, S4], quality_penalty: -1, sessions: 60}
+    R10: {rn_drop: -0.25, lookback_days: 120, quality_penalty: -0.5, effective_from: "2025-10-01"}
+    R11_fin_flags: {one_flag_weight_mult: 0.5, two_flags: exclude}
+    R12_nonfin_flags: {weight_mult: 0.5}
+
+macro_overlay:
+  rf_local: {method: "median20(100/PER - prime)", outlier_pp: 0.10, confirm_sessions: 5}
+  country_event_rules: {severe: {cap_x_ref: 0.25, freeze_buys_sessions: 60, rampback_sessions: 20, sell_from: "t+1", backtest_first_session_limit_down: true},
+                        coup_no_sanctions: {freeze_buys_sessions: 20, max_x_ref: 1.0},
+                        relief: {sessions: 20, max_x_ref: 1.0},
+                        election: {window: [-30, 10], no_overweight: true},
+                        downgrade_or_fiscal: {country_cap_mult: 0.75, sessions: 120},
+                        bond_discount: {median_lt: 0.97, lookback: 20, min_trades: 5, country_cap_mult: 0.75}}
+  regime: {model: "markov_2state_weekly_TR", probabilities: "filtered", variant_F: {p_turbulent: 0.8, tr_drawdown: -0.08, exposure_mult: 0.75, exit_p_lt: 0.5, exit_weeks: 4}}
+  valuation_bands: {expensive_lt: 1.0, cheap_gt: 4.0, use: "information_and_stress_only"}
+  country_score_weight: 0.0
+
+risk:
+  no_price_stop_loss: true
+  review_if_rel_underperf_63: -0.25
+  relative_dd: {alert: -0.10, halve_active: -0.15, recover_to: -0.075, halve_max_months: 6, stop: -0.20}
+  te_target: [0.06, 0.12]
+  te_cap: 0.14
+  cvar: {alpha: 0.95, horizon_sessions: 5, scenarios: 5000, block_weeks: 8, max_ratio_vs_tr: 1.25}
+  stress_tests: [ST1_bear_2017_2020, ST2_2018, ST3_minus15_8w, ST4_AES_severe, ST5_senegal, ST6_liquidity, ST7_costs_severe, ST8_suspension, ST9_split_error, ST10_peg]
+
+validation:
+  samples: {S0_contaminated: ["2022-11-17", "2026-11-20"], S1_preregistered: ["2017-01-02", "2022-11-16"], S2_live_from: "2026-12-01"}
+  subperiods_S1: [["2017-01-02", "2019-12-31"], ["2020-01-01", "2022-11-16"]]
+  variants: [A, B, C, D, E, F, G, H]
+  eval_frequency: "W-FRI"
+  sharpe_report: [naive, lo, glm]
+  lo_q: {daily: 10, weekly: 4, monthly: 2}
+  psr_min: 0.95
+  dsr_min: 0.95
+  pbo: {n_splits_weekly: 10, n_splits_daily: 16, max_promoted: 0.25, max_candidate: 0.5, min_slope: -0.5, metric: "sharpe_lo_active_net"}
+  haircut: {method: "bhy", min_hsr: 0.3}
+  min_t: {new: 3.0, documented: 2.0}
+  bootstrap: {method: "stationary", mean_block_weekly: 8, mean_block_daily: 20, floor_daily: 10, n_boot: 5000}
+  cpcv: {n_groups: 10, k_test: 2, purge: 21, embargo: 21}
+  n_trials_start: 63
+  reject_if: {active_net_central_le: 0.0, active_net_stress_lt: -0.01, subperiod_ir_lt: -0.5, rel_dd_lt: -0.20, abs_dd_worse_than_tr_by: 0.10}
+  candidate_if: {active_net_central_gt: 0.0, active_net_stress_ge: -0.005, ir_ge: 0.20, both_subperiods_positive: true, rel_dd_ge: -0.20, turnover_month_le: 0.20, pbo_le: 0.5, cvar_ratio_le: 1.25}
+  promoted_if: "G1-G9 sur S1 ET >= 12 mois de S2"
+  fallback_mode: "indice_discipline"      # 15-20 plus grosses capitalisations éligibles, rebalancement annuel
+  live_stop: {rolling_months: 36, active_net_lt: 0.0, t_lt: -1.0}

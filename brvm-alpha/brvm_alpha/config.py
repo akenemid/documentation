@@ -23,6 +23,7 @@ class CostModel:
     impact_coef: float = 0.016  # impact κ·√participation (0,010 / 0,032 / 0,050), hypothèse
     annual_custody: float = 0.0025  # droits de garde annuels sur l'encours
     half_spread_default: float = 0.0035  # demi-spread par défaut (spread médian 0,69 % en 2026)
+    half_spread_mult: float = 1.0  # multiplicateur du demi-spread par titre : 1 / 1 / 1,5 / 2 (scénarios §7.2)
     account_fee_per_line_fcfa: float = 5_000.0  # tenue de compte par ligne et par an (0 chez FGI)
 
     def rate(self) -> float:

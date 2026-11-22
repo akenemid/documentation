@@ -17,6 +17,13 @@ avec les conventions par défaut de :func:`forward_returns`, ``h = 21``,
 ``embargo=0`` n'est légitime que pour un historique d'IC déjà daté de sa date
 d'observation. Lopez de Prado (2018, ch. 7) pour la purge et l'embargo.
 
+Score composite v1 (``docs/SPECIFICATION_STRATEGIE.md`` §3.1.6, §3.2, §3.4, §5.2) :
+:func:`rank_gauss_z` (winsorisation 1-99, ``Φ⁻¹((rang - 0,5)/N)``, ±3, manquant -> 0),
+:func:`composite_score` (règle des 3 blocs, malus S2 pour les nouveaux achats,
+re-standardisation en rang, variante D par secteur), :func:`modulate_weights`
+(redistribution du poids libéré par les modulateurs du momentum),
+:func:`s2_penalty_panel` et :data:`VARIANT_WEIGHTS` (variantes A à D).
+
 Convention d'orientation : un signal doit être orienté de sorte qu'une valeur
 élevée soit attractive (par ex. ``-volatilité`` pour l'anomalie de faible
 volatilité) **avant** normalisation, combinaison et calcul des poids par IC.
@@ -45,22 +52,32 @@ Références
 from __future__ import annotations
 
 import warnings
-from collections.abc import Mapping
-from typing import Literal, TypeAlias
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypeAlias
 
 import numpy as np
 import pandas as pd
 from scipy.special import ndtri
 
 __all__ = [
+    "MOMENTUM_BLOCKS",
+    "VARIANT_SECTOR_NEUTRAL",
+    "VARIANT_WEIGHTS",
+    "CompositeResult",
     "combine",
+    "composite_score",
     "cross_sectional_zscore",
     "forward_returns",
     "information_coefficient",
+    "modulate_weights",
     "neutralize",
     "quantile_returns",
+    "rank_gauss_z",
     "rolling_ic_weights",
+    "s2_penalty_panel",
     "shrunk_ic_weights",
+    "variant_weights",
 ]
 
 Frame: TypeAlias = pd.DataFrame
@@ -684,3 +701,411 @@ def rolling_ic_weights(
     w = np.clip((1.0 - shrinkage) * w_ic + shrinkage * prior_row, 0.0, None)
     w = w / w.sum(axis=1, keepdims=True)
     return pd.DataFrame(w, index=ic.index, columns=names)
+
+
+# ===========================================================================
+# Score composite de la stratégie v1 (SPECIFICATION_STRATEGIE.md §3.1.6, §3.2, §3.4, §5.2)
+# ===========================================================================
+
+#: Poids pré-enregistrés des variantes (§3.4, §11 ``weights.*``, §12.1 ``composite``).
+#: D = poids de A, avec EP et DY classés à l'intérieur des secteurs (voir
+#: :data:`VARIANT_SECTOR_NEUTRAL`). E, F, G et H réutilisent le score de A (surcouches de
+#: portefeuille) : ils ne figurent pas ici.
+VARIANT_WEIGHTS: dict[str, dict[str, float]] = {
+    "A": {"ep": 0.15, "dy": 0.20, "mom6_1": 0.35, "lowvol": 0.20, "quality_proxy": 0.10},
+    "B": {"ep": 0.25, "dy": 0.25, "mom6_1": 0.50},
+    "C": {"ep": 0.15, "dy": 0.20, "mom6_1": 0.20, "mom12_1": 0.15, "lowvol": 0.20, "quality_proxy": 0.10},
+    "D": {"ep": 0.15, "dy": 0.20, "mom6_1": 0.35, "lowvol": 0.20, "quality_proxy": 0.10},
+}
+
+#: Blocs classés à l'intérieur des secteurs (variante D : value neutralisée par secteur).
+VARIANT_SECTOR_NEUTRAL: dict[str, tuple[str, ...]] = {"D": ("ep", "dy")}
+
+#: Blocs du « bloc momentum » soumis aux modulateurs (dosage par la volatilité, filtre
+#: de crash). Dans C, le bloc momentum (0,35) est formé de MOM6_1 (0,20) et MOM12_1 (0,15) :
+#: les deux sont modulés (choix documenté, la spécification ne décrit les modulateurs
+#: que pour A).
+MOMENTUM_BLOCKS: tuple[str, ...] = ("mom6_1", "mom12_1")
+
+#: Taille minimale d'un secteur pour être classé à part (variante D) ; les autres sont regroupés.
+MIN_SECTOR_SIZE: int = 4
+_POOLED_SECTOR = "__autres__"
+
+
+def variant_weights(code: str) -> dict[str, float]:
+    """Poids d'une variante pré-enregistrée (copie) ; ``KeyError`` si le code est inconnu."""
+    key = str(code).upper()
+    if key not in VARIANT_WEIGHTS:
+        raise KeyError(f"variante inconnue {code!r} ; choix : {sorted(VARIANT_WEIGHTS)}")
+    return dict(VARIANT_WEIGHTS[key])
+
+
+def _truthy(x: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
+    """Booléens tels quels ; nombres (par ex. poids détenus) : ``> 0`` ; autres : ``== True``."""
+    dtypes = [x.dtype] if isinstance(x, pd.Series) else list(x.dtypes)
+    if dtypes and all(pd.api.types.is_numeric_dtype(d) and not pd.api.types.is_bool_dtype(d) for d in dtypes):
+        return x.gt(0)
+    return x.eq(True)
+
+
+def _bool_like(mask: pd.DataFrame | pd.Series | None, like: pd.DataFrame) -> pd.DataFrame | None:
+    """Masque booléen aligné sur ``like`` (``Series`` : même masque à toutes les dates)."""
+    if mask is None:
+        return None
+    if isinstance(mask, pd.Series):
+        vals = _truthy(mask.reindex(like.columns)).to_numpy(dtype=bool)
+        return pd.DataFrame(np.broadcast_to(vals[None, :], like.shape), index=like.index, columns=like.columns)
+    return _truthy(mask.reindex(index=like.index, columns=like.columns)).astype(bool)
+
+
+def _sector_groups(sectors: pd.Series | pd.DataFrame, member: pd.DataFrame, min_size: int) -> pd.DataFrame:
+    """Libellés de groupe date × symbole : secteurs d'au moins ``min_size`` membres, sinon regroupés."""
+    g = _group_labels(sectors, member)
+    g = g.where(member, _NA_GROUP)
+    out = g.copy()
+    for label in pd.unique(g.to_numpy().ravel()):
+        if label == _NA_GROUP:
+            continue
+        in_g = g.eq(label) & member
+        cnt = in_g.sum(axis=1).to_numpy()
+        small = in_g & np.broadcast_to((cnt < min_size)[:, None], in_g.shape)
+        out = out.mask(small, _POOLED_SECTOR)
+    # Sans secteur connu : groupe regroupé.
+    return out.mask(member & g.eq(_NA_GROUP), _POOLED_SECTOR)
+
+
+def rank_gauss_z(
+    df: pd.DataFrame,
+    universe: pd.DataFrame | pd.Series | None = None,
+    winsor_pct: tuple[float, float] | None = (1.0, 99.0),
+    clip: float | None = 3.0,
+    missing: float | None = 0.0,
+    groups: pd.Series | pd.DataFrame | None = None,
+    min_group_size: int = MIN_SECTOR_SIZE,
+) -> pd.DataFrame:
+    """Transformation transversale de la spécification (§3.1.6), date par date.
+
+    Sur l'univers éligible ``U_t`` (masque booléen ; défaut : titres observés) :
+
+    (a) winsorisation des valeurs brutes aux centiles ``winsor_pct`` (1 et 99,
+        interpolation linéaire) ;
+    (b) ``z = Φ⁻¹((rang - 0,5) / N)`` (rang moyen des ex aequo, ``N`` titres observés),
+        écrêté à ``±clip`` (3) ;
+    (c) valeur manquante d'un titre de l'univers -> ``z = missing`` (0) ; hors univers :
+        NaN.
+
+    Avec ``groups`` (secteurs : ``Series`` statique ou panel point-in-time), les rangs
+    sont calculés **à l'intérieur** de chaque groupe ; les groupes de moins de
+    ``min_group_size`` membres de l'univers à la date ``t`` sont regroupés (variante
+    D). Note : la formule diffère de ``cross_sectional_zscore(method="rank_gauss")``
+    (positions de Blom) ; c'est celle de la spécification.
+    """
+    x = _finite(df)
+    member = _bool_like(universe, x)
+    member = x.notna() if member is None else member
+    xv = x.where(member)
+    if winsor_pct is not None:
+        lo_p, hi_p = winsor_pct
+        if not 0.0 <= lo_p < hi_p <= 100.0:
+            raise ValueError("winsor_pct doit vérifier 0 <= bas < haut <= 100")
+        arr = xv.to_numpy(dtype=float)
+        has = np.isfinite(arr).any(axis=1)
+        lo = np.full(len(arr), np.nan)
+        hi = np.full(len(arr), np.nan)
+        if has.any():
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                lo[has] = np.nanpercentile(arr[has], lo_p, axis=1)
+                hi[has] = np.nanpercentile(arr[has], hi_p, axis=1)
+        xv = xv.clip(lower=pd.Series(lo, index=xv.index), upper=pd.Series(hi, index=xv.index), axis=0)
+    if groups is None:
+        labels = None
+    else:
+        labels = _sector_groups(groups, member, int(min_group_size))
+    z = np.full(x.shape, np.nan)
+    blocks = [None] if labels is None else [g for g in pd.unique(labels.to_numpy().ravel()) if g != _NA_GROUP]
+    for label in blocks:
+        sub = xv if label is None or labels is None else xv.where(labels.eq(label))
+        ranks = sub.rank(axis=1, method="average").to_numpy(dtype=float)
+        n = sub.notna().sum(axis=1).to_numpy(dtype=float)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            zz = ndtri((ranks - 0.5) / n[:, None])
+        ok = np.isfinite(ranks)
+        z[ok] = zz[ok]
+    if clip is not None:
+        z = np.clip(z, -clip, clip)
+    out = pd.DataFrame(z, index=x.index, columns=x.columns)
+    if missing is not None:
+        out = out.mask(member & out.isna(), float(missing))
+    return out.where(member)
+
+
+def s2_penalty_panel(
+    ex_dates: pd.DataFrame,
+    calendar: pd.DatetimeIndex | pd.Index,
+    sessions: int = 20,
+    penalty: float = -0.5,
+    symbols: Sequence[str] | None = None,
+    start_offset: int = 0,
+) -> pd.DataFrame:
+    """Malus S2 après détachement (§5.2 n° 5), en écarts-types du score.
+
+    Pour chaque date ex ``e`` (première séance ``>= e`` du calendrier, position
+    ``p``), les séances ``p + start_offset, …, p + start_offset + sessions - 1``
+    reçoivent ``penalty`` (-0,5), 0 ailleurs ; les fenêtres qui se chevauchent ne se
+    cumulent pas. Avec ``start_offset = 0`` (défaut), un signal daté du jour ex à
+    ``e + 19`` séances, exécuté en ``t + 1``, couvre les achats de ``e + 1`` à
+    ``e + 20`` : la fenêtre ``CAR[+1, +20]`` mesurée (−2,54 %, revue 07). La date ex
+    est connue en ``t >= e`` (ligne (d) publiée la veille) : aucune anticipation.
+
+    Le malus ne vise que les **nouveaux achats** : ``composite_score(..., held=…)``
+    l'ignore pour les titres détenus (aucune vente forcée).
+
+    Parameters
+    ----------
+    ex_dates
+        Table longue (colonnes ``symbol`` et ``ex_date``, par ex. ``dividends.parquet``)
+        ou panel large booléen (``True`` le jour ex).
+    calendar
+        Séances (index du panel de signaux).
+    """
+    if sessions < 1:
+        raise ValueError("sessions doit être >= 1")
+    cal = pd.DatetimeIndex(calendar).unique().sort_values()
+    if {"symbol", "ex_date"} <= set(ex_dates.columns):
+        ev = ex_dates[["symbol", "ex_date"]].dropna()
+        ev = ev.assign(ex_date=pd.to_datetime(ev["ex_date"]))
+    else:
+        if not isinstance(ex_dates.index, pd.DatetimeIndex):
+            raise TypeError("ex_dates : table (symbol, ex_date) ou panel booléen indexé par date")
+        rows, cols_ = np.nonzero(ex_dates.eq(True).to_numpy())
+        ev = pd.DataFrame({"symbol": ex_dates.columns[cols_].astype(str), "ex_date": ex_dates.index[rows]})
+    cols = list(symbols) if symbols is not None else sorted(pd.unique(ev["symbol"].astype(str)))
+    out = np.zeros((len(cal), len(cols)))
+    pos_of = {s: j for j, s in enumerate(cols)}
+    for sym, e in zip(ev["symbol"].astype(str), ev["ex_date"], strict=False):
+        j = pos_of.get(sym)
+        if j is None:
+            continue
+        p = int(cal.searchsorted(pd.Timestamp(e), side="left")) + int(start_offset)
+        lo, hi = max(p, 0), min(p + sessions, len(cal))
+        if lo < hi:
+            out[lo:hi, j] = np.minimum(out[lo:hi, j], penalty) if penalty < 0 else np.maximum(out[lo:hi, j], penalty)
+    return pd.DataFrame(out, index=cal, columns=pd.Index(cols, name="symbol"))
+
+
+def modulate_weights(
+    weights: Mapping[str, float],
+    multiplier: pd.Series | float | None,
+    momentum_blocks: Sequence[str] = MOMENTUM_BLOCKS,
+) -> pd.DataFrame | dict[str, float]:
+    """Poids modulés du momentum, poids libéré redistribué au prorata (§3.2).
+
+    ``w_mom,t = w_mom · m_t`` pour chaque bloc momentum présent ; le poids libéré
+    ``Σ w_mom · (1 - m_t)`` est réparti sur les autres blocs au prorata de leurs poids :
+    ``w_b,t = w_b · (1 + libéré_t / Σ_autres w)``. La somme des poids est conservée.
+    ``multiplier`` : nombre (renvoie un dict) ou série datée (renvoie un DataFrame date
+    × bloc) ; ``None`` : poids inchangés. ``m_t`` doit être dans ``[0, 1]``.
+    """
+    w = {k: float(v) for k, v in weights.items()}
+    mom = [k for k in w if k in momentum_blocks and w[k] != 0]
+    other = [k for k in w if k not in mom]
+    other_sum = sum(w[k] for k in other)
+    if multiplier is None or not mom:
+        if isinstance(multiplier, pd.Series):
+            return pd.DataFrame({k: np.full(len(multiplier), v) for k, v in w.items()}, index=multiplier.index)
+        return dict(w)
+    if other and other_sum <= 0:
+        raise ValueError("impossible de redistribuer : somme des poids hors momentum <= 0")
+    m = pd.to_numeric(multiplier, errors="coerce") if isinstance(multiplier, pd.Series) else float(multiplier)
+    if isinstance(m, pd.Series):
+        m = m.astype(float).fillna(1.0)
+        if ((m < 0) | (m > 1)).any():
+            raise ValueError("le multiplicateur du momentum doit être dans [0, 1]")
+    elif not 0.0 <= m <= 1.0:
+        raise ValueError("le multiplicateur du momentum doit être dans [0, 1]")
+    freed = sum(w[k] for k in mom) * (1.0 - m)
+    res: dict[str, Any] = {}
+    for k, wk in w.items():
+        if k in mom:
+            res[k] = wk * m
+        elif other:
+            res[k] = wk * (1.0 + freed / other_sum)
+        else:
+            res[k] = wk
+    if not other:  # aucun bloc pour recevoir le poids libéré : il est perdu (documenté)
+        warnings.warn("modulate_weights : aucun bloc hors momentum, le poids libéré n'est pas redistribué",
+                      stacklevel=2)
+    if isinstance(m, pd.Series):
+        return pd.DataFrame({k: (v if isinstance(v, pd.Series) else pd.Series(v, index=m.index))
+                             for k, v in res.items()}, index=m.index)
+    return {k: float(v) for k, v in res.items()}
+
+
+@dataclass
+class CompositeResult:
+    """Détail du score composite (voir :func:`composite_score`)."""
+
+    score: pd.DataFrame  # score final, re-standardisé en rang (z de rang gaussien)
+    raw: pd.DataFrame  # S = Σ w_b z_b (0 si moins de min_blocks blocs valides)
+    with_malus: pd.DataFrame  # S + malus S2 (en écarts-types de S), avant re-standardisation
+    z: dict[str, pd.DataFrame] = field(default_factory=dict)  # z par bloc (manquant = 0)
+    n_valid: pd.DataFrame | None = None  # nombre de blocs valides par titre
+    weights: pd.DataFrame | None = None  # poids effectifs date × bloc
+    malus: pd.DataFrame | None = None  # malus appliqué (écarts-types), 0 pour les titres détenus
+
+
+def composite_score(
+    blocks: Mapping[str, pd.DataFrame],
+    weights: Mapping[str, float] | pd.DataFrame | str = "A",
+    min_blocks: int = 3,
+    s2_malus: pd.DataFrame | None = None,
+    *,
+    universe: pd.DataFrame | pd.Series | None = None,
+    held: pd.DataFrame | pd.Series | None = None,
+    momentum_multiplier: pd.Series | float | None = None,
+    momentum_blocks: Sequence[str] = MOMENTUM_BLOCKS,
+    sector_neutral: Sequence[str] | None = None,
+    sectors: pd.Series | pd.DataFrame | None = None,
+    min_sector_size: int = MIN_SECTOR_SIZE,
+    winsor_pct: tuple[float, float] | None = (1.0, 99.0),
+    clip: float | None = 3.0,
+    missing: float = 0.0,
+    s2_units: Literal["sd", "raw"] = "sd",
+    params: Mapping[str, Any] | None = None,
+    return_details: bool = False,
+) -> pd.DataFrame | CompositeResult:
+    """Score composite v1 (§3.2) : ``S = Σ_b w_b z_b``, malus S2, re-standardisation en rang.
+
+    1. Chaque bloc brut (orienté « élevé = attractif ») est transformé par
+       :func:`rank_gauss_z` sur l'univers éligible ``universe`` (winsorisation 1-99,
+       ``Φ⁻¹((rang - 0,5)/N)``, écrêtage ±3, manquant -> 0). Blocs de
+       ``sector_neutral`` (variante D : ``ep``, ``dy``) : rangs à l'intérieur des
+       secteurs d'au moins ``min_sector_size`` (4) titres, les autres regroupés.
+    2. ``S_i,t = Σ_b w_b,t z_b,i,t`` ; ``S = 0`` (neutre) si moins de ``min_blocks``
+       (3) blocs de poids non nul sont valides (valeur brute observée) pour le titre.
+    3. Poids : dict, code de variante (``"A"``…``"D"``, :data:`VARIANT_WEIGHTS`) ou
+       DataFrame date × bloc. ``momentum_multiplier`` (``features.vol_scaling`` ×
+       ``features.crash_filter``) module les blocs momentum ; le poids libéré est
+       redistribué au prorata (:func:`modulate_weights`).
+    4. Malus S2 (``s2_malus``, par ex. :func:`s2_penalty_panel`, en écarts-types) :
+       ``S' = S + malus · sd_t(S)`` (``s2_units="sd"`` : écart-type transversal de S sur
+       l'univers ; ``"raw"`` : ajout tel quel), **sauf** pour les titres détenus
+       (``held`` : masque booléen, ou poids détenus ``> 0``, panel ou ``Series``). Sans
+       ``held``, le malus s'applique à tous les titres : à n'utiliser que pour des
+       décisions d'achat.
+    5. ``S'`` est re-standardisé en rang (:func:`rank_gauss_z`, sans winsorisation).
+
+    Entrées : panels date × symbole, ou ``Series`` (une seule coupe transversale : le
+    score est alors une ``Series`` et ``momentum_multiplier`` un nombre). Hors univers :
+    NaN. ``params`` : clés ``winsor_pct``, ``clip``, ``missing``,
+    ``min_valid_blocks`` (alias de ``min_blocks``), ``min_sector_size``. Aucune
+    information postérieure à ``t`` n'est utilisée (opérations date par date).
+    """
+    a: dict[str, Any] = {"winsor_pct": winsor_pct, "clip": clip, "missing": missing, "min_blocks": min_blocks,
+                         "min_sector_size": min_sector_size}
+    for k, v in (params or {}).items():
+        k = {"min_valid_blocks": "min_blocks"}.get(k, k)
+        if k in a:
+            a[k] = v
+    if a["winsor_pct"] is not None:
+        a["winsor_pct"] = (float(a["winsor_pct"][0]), float(a["winsor_pct"][1]))
+    w_static: Mapping[str, float] | None
+    if isinstance(weights, str):
+        w_static = variant_weights(weights)
+        if sector_neutral is None:
+            sector_neutral = VARIANT_SECTOR_NEUTRAL.get(weights.upper(), ())
+    elif isinstance(weights, pd.DataFrame):
+        w_static = None
+    else:
+        w_static = {k: float(v) for k, v in weights.items()}
+    sector_neutral = tuple(sector_neutral or ())
+    if sector_neutral and sectors is None:
+        raise ValueError("sector_neutral exige sectors (Series symbole -> secteur ou panel daté)")
+    names = list(weights.columns) if isinstance(weights, pd.DataFrame) else list(w_static or {})
+    active = [k for k in names if (w_static is None or w_static[k] != 0)]
+    missing_blocks = [k for k in active if k not in blocks]
+    if missing_blocks:
+        raise KeyError(f"blocs absents pour des poids non nuls : {missing_blocks}")
+    if not active:
+        raise ValueError("aucun poids non nul")
+
+    single = all(isinstance(blocks[k], pd.Series) for k in active)
+    if single:
+        if isinstance(momentum_multiplier, pd.Series):
+            raise ValueError("coupe unique (Series) : momentum_multiplier doit être un nombre")
+        key = pd.Index([0])
+        frames = {k: _finite(pd.DataFrame([blocks[k].to_numpy()], index=key, columns=blocks[k].index))
+                  for k in active}
+        if isinstance(s2_malus, pd.Series):
+            s2_malus = pd.DataFrame([s2_malus.to_numpy()], index=key, columns=s2_malus.index)
+    else:
+        frames = {k: _finite(_as_frame(blocks[k])[0]) for k in active}
+    index, columns = frames[active[0]].index, frames[active[0]].columns
+    for k in active[1:]:
+        index, columns = index.union(frames[k].index), columns.union(frames[k].columns)
+    if isinstance(universe, pd.DataFrame):
+        index, columns = index.union(universe.index), columns.union(universe.columns)
+    frames = {k: f.reindex(index=index, columns=columns) for k, f in frames.items()}
+    like = pd.DataFrame(index=index, columns=columns, dtype=float)
+    member = _bool_like(universe, like)
+    if member is None:
+        member = pd.DataFrame(False, index=index, columns=columns)
+        for f in frames.values():
+            member |= f.notna()
+
+    if isinstance(weights, pd.DataFrame):
+        W = weights.reindex(index=index).ffill()[active].astype(float)
+        if momentum_multiplier is not None:
+            raise ValueError("momentum_multiplier ne se combine pas avec des poids datés (DataFrame)")
+    else:
+        mult = momentum_multiplier
+        if isinstance(mult, pd.Series):
+            mult = pd.to_numeric(mult, errors="coerce").astype(float)
+            mult = mult.reindex(mult.index.union(index)).ffill().reindex(index).fillna(1.0)
+        mod = modulate_weights(w_static or {}, mult, momentum_blocks)
+        if isinstance(mod, pd.DataFrame):
+            W = mod[active]
+        else:
+            W = pd.DataFrame({k: np.full(len(index), mod[k]) for k in active}, index=index)
+
+    z: dict[str, pd.DataFrame] = {}
+    n_valid = np.zeros((len(index), len(columns)))
+    S = np.zeros((len(index), len(columns)))
+    for k in active:
+        grp = sectors if k in sector_neutral else None
+        zk = rank_gauss_z(frames[k], universe=member, winsor_pct=a["winsor_pct"], clip=a["clip"],
+                          missing=a["missing"], groups=grp, min_group_size=int(a["min_sector_size"]))
+        z[k] = zk
+        wk = W[k].to_numpy(dtype=float)[:, None]
+        n_valid += ((frames[k].notna() & member).to_numpy()) * (wk != 0)
+        S += np.nan_to_num(zk.to_numpy(dtype=float), nan=0.0) * wk
+    mem = member.to_numpy(dtype=bool)
+    S = np.where(n_valid >= int(a["min_blocks"]), S, 0.0)
+    S = np.where(mem, S, np.nan)
+    raw = pd.DataFrame(S, index=index, columns=columns)
+
+    malus_df = None
+    S2 = raw.copy()
+    if s2_malus is not None:
+        mal = _finite(s2_malus).reindex(index=index, columns=columns).fillna(0.0)
+        hmask = _bool_like(held, like)
+        if hmask is not None:
+            mal = mal.mask(hmask, 0.0)
+        mal = mal.where(member, 0.0)
+        if s2_units == "sd":
+            sd = raw.std(axis=1, ddof=1).fillna(0.0)
+            S2 = raw + mal.mul(sd, axis=0)
+        elif s2_units == "raw":
+            S2 = raw + mal
+        else:
+            raise ValueError("s2_units doit valoir 'sd' ou 'raw'")
+        malus_df = mal
+    score = rank_gauss_z(S2, universe=member, winsor_pct=None, clip=a["clip"], missing=a["missing"])
+    if not return_details:
+        return score.iloc[0] if single else score
+    return CompositeResult(
+        score=score, raw=raw, with_malus=S2, z=z,
+        n_valid=pd.DataFrame(n_valid, index=index, columns=columns).where(member),
+        weights=W, malus=malus_df,
+    )

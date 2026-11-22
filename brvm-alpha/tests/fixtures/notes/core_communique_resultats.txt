@@ -1,0 +1,8 @@
+# Texte d'essai construit pour les tests (chiffres de l'énoncé de la mission), pas un document réel.
+SONATEL SN : Communiqué de presse - Résultats annuels de l'exercice 2025
+
+Le Conseil d'Administration de SONATEL a arrêté les comptes de l'exercice clos le 31 décembre 2025.
+Résultat net : 245,3 milliards FCFA contre 210,1 milliards en 2024, soit +16,8 %.
+Le chiffre d'affaires consolidé s'établit à 1 834,5 milliards FCFA, en hausse de 8,2 %.
+Le Conseil proposera à l'Assemblée Générale Ordinaire un dividende net de 1 740 FCFA par action,
+contre 1 655 FCFA au titre de l'exercice précédent.
