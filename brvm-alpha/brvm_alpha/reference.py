@@ -600,3 +600,105 @@ def sector_of(symbol: str) -> str | None:
 def sectors(symbols) -> pd.Series:
     """Série symbole -> secteur BRVM 2025."""
     return pd.Series({s: sector_of(s) for s in symbols}, name="sector", dtype=object)
+
+
+# ---------------------------------------------------------------------------
+# Événements pays datés (additif v1.1, D10 ; règles du §4.3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CountryEvent:
+    """Événement pays daté à la **date de l'annonce publique** (additif v1.1, D10).
+
+    ``rule`` : règle du §4.3 (``severe``, ``coup``, ``relief``, ``election``, ``downgrade``,
+    ``bond_discount``) ; ``event_date`` : jour J d'une élection (fenêtre de la règle
+    « élection ») ; ``confidence`` : ``"M"`` = date **[NON VÉRIFIÉ]** en source primaire
+    (revue 05 §8-9 ou connaissance générale). L'action a lieu à la **première séance BOC qui
+    suit** l'annonce (:func:`country_event_action_date`).
+    """
+
+    date: str
+    country: str
+    rule: str
+    source: str
+    confidence: str = "M"
+    remark: str = ""
+    event_date: str | None = None
+
+
+_GEN = "connaissance générale (présidentielle) [NON VÉRIFIÉ]"
+
+#: Chronologie **exacte** de l'additif v1.1 (§8.4) pour S1, puis événements postérieurs (S0 et
+#: suivi réel). Aucune autre information future n'est utilisée (D10).
+COUNTRY_EVENT_RECORDS: tuple[CountryEvent, ...] = (
+    # --- S1 (2017-01-02 -> 2022-11-16) -----------------------------------------------------
+    CountryEvent("2018-07-29", "ML", "election", _GEN, remark="présidentielle (2e tour le 12/08/2018)",
+                 event_date="2018-07-29"),
+    CountryEvent("2019-02-24", "SN", "election", _GEN, remark="présidentielle", event_date="2019-02-24"),
+    CountryEvent("2020-02-22", "TG", "election", _GEN, remark="présidentielle", event_date="2020-02-22"),
+    CountryEvent("2020-08-18", "ML", "coup", "revue 05 §9 (BOAM −1,5 %) [NON VÉRIFIÉ]",
+                 remark="coup d'État sans sanctions UEMOA"),
+    CountryEvent("2020-10-31", "CI", "election", _GEN, remark="présidentielle", event_date="2020-10-31"),
+    CountryEvent("2020-11-22", "BF", "election", _GEN, remark="présidentielle", event_date="2020-11-22"),
+    CountryEvent("2020-12-27", "NE", "election", _GEN, remark="présidentielle (2e tour le 21/02/2021)",
+                 event_date="2020-12-27"),
+    CountryEvent("2021-04-11", "BJ", "election", _GEN, remark="présidentielle", event_date="2021-04-11"),
+    CountryEvent("2021-05-24", "ML", "coup", "additif v1.1 (second coup d'État au Mali) [NON VÉRIFIÉ]",
+                 remark="coup d'État sans sanctions UEMOA"),
+    CountryEvent("2022-01-09", "ML", "severe", "revue 05 §9 (BOAM −7,47 % à t+1) [NON VÉRIFIÉ]",
+                 remark="sanctions CEDEAO/UEMOA, gel BCEAO ; dimanche : action le 10/01/2022"),
+    CountryEvent("2022-01-24", "BF", "coup", "revue 05 §9 [NON VÉRIFIÉ]", remark="coup d'État sans sanctions UEMOA"),
+    CountryEvent("2022-07-03", "ML", "relief", "revue 05 §9 (+35,7 % en 5 séances) [NON VÉRIFIÉ]",
+                 remark="levée des sanctions, sommet CEDEAO du 03/07/2022"),
+    CountryEvent("2022-09-30", "BF", "coup", "revue 05 §9 [NON VÉRIFIÉ]", remark="coup d'État sans sanctions UEMOA"),
+    # --- Postérieurs (S0 et suivi réel) ------------------------------------------------------
+    CountryEvent("2023-07-26", "NE", "coup", "revue 05 §8.1 [NON VÉRIFIÉ]", remark="coup d'État au Niger"),
+    CountryEvent("2023-07-30", "NE", "severe", "revue 05 §8.1 [NON VÉRIFIÉ]",
+                 remark="sanctions CEDEAO/UEMOA, gel BCEAO (dimanche)"),
+    CountryEvent("2024-02-24", "NE", "relief", "revue 05 §8.1 [NON VÉRIFIÉ]", remark="levée des sanctions"),
+    CountryEvent("2024-03-24", "SN", "election", "revue 05 §8.3 [NON VÉRIFIÉ]", remark="présidentielle",
+                 event_date="2024-03-24"),
+    CountryEvent("2025-10-25", "CI", "election", "revue 05 §8.2 [NON VÉRIFIÉ]", remark="présidentielle",
+                 event_date="2025-10-25"),
+    CountryEvent("2026-04-12", "BJ", "election", _GEN, remark="présidentielle", event_date="2026-04-12"),
+)
+
+#: Fin de l'échantillon vierge S1 (§8.1).
+_S1_END = pd.Timestamp("2022-11-16")
+
+
+def country_event_action_date(date, calendar=None) -> pd.Timestamp:
+    """Première séance **strictement postérieure** à la date d'annonce (D10).
+
+    ``calendar`` : séances BOC (``DatetimeIndex`` ou itérable de dates) ; à défaut, jour
+    ouvré suivant (approximation sans jours fériés). Ex. : Mali, annonce le dimanche
+    09/01/2022 -> action le lundi 10/01/2022.
+    """
+    d = _ts(date)
+    if calendar is not None:
+        cal = pd.DatetimeIndex(pd.to_datetime(list(calendar))).normalize().sort_values()
+        pos = int(cal.searchsorted(d, side="right"))
+        if pos < len(cal):
+            return pd.Timestamp(cal[pos])
+    return pd.Timestamp(d + pd.offsets.BDay(1)).normalize()
+
+
+def country_events_table(calendar=None) -> pd.DataFrame:
+    """Table des événements pays (D10) : ``date`` (annonce), ``country``, ``rule``,
+    ``event_date``, ``action_date`` (première séance suivante), ``sample`` (S1 / postérieur),
+    ``source``, ``confidence``, ``label``."""
+    rows = []
+    for e in COUNTRY_EVENT_RECORDS:
+        d = _ts(e.date)
+        rows.append({"date": d, "country": e.country, "rule": e.rule,
+                     "event_date": _ts(e.event_date) if e.event_date else pd.NaT,
+                     "action_date": country_event_action_date(d, calendar),
+                     "sample": "S1" if d <= _S1_END else "posterieur",
+                     "source": e.source, "confidence": e.confidence, "label": e.remark})
+    return pd.DataFrame(rows).sort_values(["date", "country"]).reset_index(drop=True)
+
+
+#: Table par défaut des événements pays utilisée par ``BrvmAlpha`` (``country_events=None``).
+#: Actions datées sur les jours ouvrés (le modèle les recale sur les séances BOC).
+COUNTRY_EVENTS: pd.DataFrame = country_events_table()

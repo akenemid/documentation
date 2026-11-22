@@ -1,8 +1,11 @@
 # BRVM Alpha — stratégie v1 (SPECIFICATION_STRATEGIE.md, 22/11/2026). Paramètres FIGÉS avant le test S1.
 # Fichier : configs/strategy_v1.yaml, chargé par brvm_alpha/settings.py (load_strategy_config).
 # La spécification (§12.1) le nomme « brvm_alpha/config/strategy_v1.yaml » ; un dossier brvm_alpha/config/
-# masquerait le module brvm_alpha/config.py, d'où ce chemin. Contenu identique au §12.1 (mêmes clés, mêmes valeurs).
-version: "1.0"
+# masquerait le module brvm_alpha/config.py, d'où ce chemin. Contenu du §12.1 (v1.0), plus les clés de
+# l'additif v1.1 (§8.4, décisions D1-D12 figées le 22/11/2026 AVANT toute exécution sur S1), marquées « v1.1 ».
+# Toute modification change l'empreinte de configuration (settings.config_fingerprint) : un essai de plus.
+version: "1.1"
+addendum: "v1.1 du 22/11/2026 (SPECIFICATION_STRATEGIE.md §8.4, D1-D12)"
 capital_fcfa_reference: 10_000_000
 capacity_variants_fcfa: [100_000_000, 1_000_000_000]
 
@@ -17,6 +20,17 @@ data:
   eps_override: {ETIT: 10.00, ORGT: 264}
   max_abs_daily_return_guard: 0.50
   cap_reconstruction_tolerance: 0.03
+  # v1.1, D1 : fenêtres comptées en SÉANCES (numéros de BOC) ; bornes de rendement au dernier cours
+  # disponible à 5 séances au plus ; seuils m_eff = ceil(m × n_BOC_disponibles / L), planchers absolus.
+  window_basis: "sessions"                  # "sessions" (défaut v1.1) ou "boc" (lignes du panel, v1.0)
+  window_bound_max_stale_sessions: 5
+  min_obs_prorata: {signal_floor: 40, filter_floor: 20}
+  # v1.1, D3 : écart de capitalisation > 3 % = alerte journalisée NON bloquante ; |rendement| > 50 % bloquant.
+  cap_guard_blocking: false
+  return_guard_blocking: true
+  # v1.1, D6 : signaux (DY, S1, S2) = montant connu en t (ligne (d)) ; flux du backtest = montant corrigé.
+  dividend_amount_signals: "known_at_t_boc_d_line"
+  dividend_amount_cashflows: "corrected_best_estimate"
 
 benchmark:
   primary: "BRVM_COMPOSITE_TR"
@@ -84,6 +98,19 @@ portfolio:
   no_trade_band: 0.02
   max_turnover_per_rebalance: 0.50
   kelly: {fraction: 0.25, fraction_max: 0.5, max_gross: 1.0, scope: "active_weights_variant_H_only"}
+  # v1.1, D4 : si les plafonds empêchent d'investir 98 % sur la bande, ajout par ordre de score (au-delà des
+  # 50 % si nécessaire) jusqu'à 20 lignes ; chaque titre ajouté <= 98 % / n_cible ; reliquat en liquidités, publié.
+  capacity_fill: {max_names: 20, beyond_exit: true, cap_per_added: "gross_equity/n_target", residual: "cash_published"}
+  # v1.1, D8 : « indice discipliné » (repli du §8.3 ET étalon investissable REF) : 20 plus grosses capitalisations
+  # éligibles PIT, poids ∝ capitalisation, ligne <= max(10 % × m_pays ; min(30 % ; 1,25 × b_i)), plancher 0,5 %,
+  # secteur <= max(15 % ; 1,25 × b_s), plafonds pays / AES / liquidité de A, filtres R et règles pays actifs.
+  disciplined_index: {n_names: 20, line_base: 0.10, line_bench_cap: 0.30, bench_mult: 1.25, min_weight: 0.005,
+                      sector_floor: 0.15, sector_bench_mult: 1.25, rebalance: "first_decision_of_january",
+                      forced_exits: ["R_filters", "ineligible"]}
+  # v1.1, D9 : variante I = 0,5 × w_REF + 0,5 × w_A (chevauchements additionnés), projection sur les plafonds
+  # de groupe de D8 ; satellite A mensuel, cœur annuel. Aucun paramètre libre.
+  core_satellite: {core_share: 0.5, core: "disciplined_index", satellite: "A", core_rebalance: "annual",
+                   satellite_rebalance: "monthly", projection: "group_caps_D8"}
 
 execution:
   price: "vwap_t_plus_1"
@@ -117,6 +144,8 @@ events:
   S3: {enabled: false}
   S4: {enabled: false, types: [RES_ANNUAL, ACT_Q1], min_ar_0_1: 0.03, entry_lag_sessions: 2, hold_sessions: 20, max_per_name: 0.05, max_total: 0.15}
   S5_news_score: {weight: 0.0, min_ic: 0.05, min_years: 3, decay_sessions: 10}
+  # v1.1, D11 : notes de l'analyste sans rôle sur S1 (validation_s1=True : notes=None, ni veto ni inclinaison).
+  notes_in_validation_s1: false
   risk_filters:
     R1: {block_buys: true, resume_buffer: 5, liquidity_haircut: 0.10}
     R2: {quality_penalty: -1, sessions: 60}
@@ -142,11 +171,17 @@ macro_overlay:
   regime: {model: "markov_2state_weekly_TR", probabilities: "filtered", variant_F: {p_turbulent: 0.8, tr_drawdown: -0.08, exposure_mult: 0.75, exit_p_lt: 0.5, exit_weeks: 4}}
   valuation_bands: {expensive_lt: 1.0, cheap_gt: 4.0, use: "information_and_stress_only"}
   country_score_weight: 0.0
+  # v1.1, D10 : chronologie datée reference.COUNTRY_EVENTS (date de l'annonce publique), action à la première
+  # séance BOC qui suit ; aucune autre information future.
+  country_events: {source: "reference.COUNTRY_EVENTS", date: "announcement", action: "first_session_after"}
 
 risk:
   no_price_stop_loss: true
   review_if_rel_underperf_63: -0.25
-  relative_dd: {alert: -0.10, halve_active: -0.15, recover_to: -0.075, halve_max_months: 6, stop: -0.20}
+  # v1.1, D5 : ratio VL / TR rebasé à t0 (premier jour investi) ; panier w_EW = 20 éligibles les mieux classés,
+  # ses entrées et sorties exemptées de la bande de non-transaction.
+  relative_dd: {alert: -0.10, halve_active: -0.15, recover_to: -0.075, halve_max_months: 6, stop: -0.20,
+                start: "first_investment", ew_basket_top_n: 20, ew_basket_band_exempt: true}
   te_target: [0.06, 0.12]
   te_cap: 0.14
   cvar: {alpha: 0.95, horizon_sessions: 5, scenarios: 5000, block_weeks: 8, max_ratio_vs_tr: 1.25}
@@ -155,7 +190,11 @@ risk:
 validation:
   samples: {S0_contaminated: ["2022-11-17", "2026-11-20"], S1_preregistered: ["2017-01-02", "2022-11-16"], S2_live_from: "2026-12-01"}
   subperiods_S1: [["2017-01-02", "2019-12-31"], ["2020-01-01", "2022-11-16"]]
-  variants: [A, B, C, D, E, F, G, H]
+  variants: [A, B, C, D, E, F, G, H, I]        # v1.1, D9 : famille de la PBO et du DSR, N = 9
+  reference_variant: REF                       # v1.1, D8 : essai REF-ID, hors famille de la PBO
+  evaluation_start: "first_investment"         # v1.1, D2 : t0 = premier rebalancement exécuté de A
+  g7_ic_series: "S1_then_S2"                   # v1.1, D7 (appliqué par le module de validation)
+  single_run_lock: true                        # v1.1, D12 (appliqué par le module de validation)
   eval_frequency: "W-FRI"
   sharpe_report: [naive, lo, glm]
   lo_q: {daily: 10, weekly: 4, monthly: 2}
@@ -166,9 +205,10 @@ validation:
   min_t: {new: 3.0, documented: 2.0}
   bootstrap: {method: "stationary", mean_block_weekly: 8, mean_block_daily: 20, floor_daily: 10, n_boot: 5000}
   cpcv: {n_groups: 10, k_test: 2, purge: 21, embargo: 21}
-  n_trials_start: 63
+  n_trials_start: 63                           # v1.0 : 55 (S0) + 8 (S1)
+  n_trials_start_v11: 65                       # v1.1 : 55 (S0) + 9 (famille) + 1 (REF-ID), §8.2 et §12.3 n° 8
   reject_if: {active_net_central_le: 0.0, active_net_stress_lt: -0.01, subperiod_ir_lt: -0.5, rel_dd_lt: -0.20, abs_dd_worse_than_tr_by: 0.10}
   candidate_if: {active_net_central_gt: 0.0, active_net_stress_ge: -0.005, ir_ge: 0.20, both_subperiods_positive: true, rel_dd_ge: -0.20, turnover_month_le: 0.20, pbo_le: 0.5, cvar_ratio_le: 1.25}
   promoted_if: "G1-G9 sur S1 ET >= 12 mois de S2"
-  fallback_mode: "indice_discipline"      # 15-20 plus grosses capitalisations éligibles, rebalancement annuel
+  fallback_mode: "indice_discipline"      # v1.1, D8 : voir portfolio.disciplined_index
   live_stop: {rolling_months: 36, active_net_lt: 0.0, t_lt: -1.0}

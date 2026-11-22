@@ -25,9 +25,18 @@ brvm-alpha/
     portfolio/
       risk.py              # covariance (Ledoit-Wolf), HRP
       construct.py         # optimisation sous contraintes, Kelly fractionnel, lots
+      recommend.py         # ordre de bataille : titres, prix limites, coûts au franc, exécution, revenus
+      stress.py            # scénarios de stress ST1-ST10 du §9.3 (stress_tests)
     backtest/
       engine.py            # moteur de backtest quotidien réaliste
-      walkforward.py       # validation walk-forward / CSCV
+      metrics.py           # mesures hebdomadaires de validation (§8.2), fenêtre t0 (D2), IC mensuel
+      walkforward.py       # validation walk-forward / CSCV, registre des essais, statut §8.3
+    validation/            # exécuteur du test unique S1 et du diagnostic S0 (additif v1.1, D12)
+      runner.py            # run_validation, plan des 30 runs, métriques, registre, sorties
+      lock.py              # verrou S1 (arbre git = HEAD, refus de relance, lock.json)
+      benchmarks.py        # étalons : Composite TR, EW des éligibles de A, prix, BRVM 10/30/Prestige
+      controls.py          # contrôles comptables et d'exécution de chaque run (cash, identités, bornes, coûts)
+      report_md.py         # rapport resultats.md en français
     strategy/
       alpha.py             # le modèle BRVM Alpha (signaux de la spécification)
     report/                # (à venir)
@@ -112,6 +121,10 @@ un indice de rendement total par titre (dividendes nets réinvestis).
 Fonctions pures `f(panel_dict) -> pd.DataFrame` (date × symbol), à partir d'un
 dictionnaire de panels larges : `close_adj`, `tr_index`, `volume`, `value`,
 `status`, `net_yield_pct`, `per`, `last_div_net`, `last_div_date`, `ref_price`.
+Additif v1.1 (D1) : `mom_sessions`, `lowvol`, `vol_scaling`, `crash_filter` acceptent la base
+« sessions » (`session_no`) avec seuils au prorata (`prorata_min_obs`, `missing_sessions_in_window`,
+planchers `SIGNAL_MIN_OBS_FLOOR = 40`, `FILTER_MIN_OBS_FLOOR = 20`) et bornes de rendement à
+`MAX_BOUND_STALE_SESSIONS = 5` séances au plus.
 
 ### `quant/scoring.py`
 - `cross_sectional_zscore(df, winsor=3.0, method="rank_gauss")`
@@ -143,6 +156,67 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
 - `target_portfolio(scores, eligible, held_weights, context, params) -> (pd.Series, dict)`
   (`params["weighting"]` : `"equal"` (A), `"hrp_tilt"` (G), `"mv_alpha"` (H))
 - `weekly_covariance(returns, asof)` (Ledoit-Wolf, W-FRI, 104 semaines, min 52, plancher 0,5)
+- Additif v1.1 : `disciplined_index_portfolio(capitalisation, eligible, context, params, index_params)`
+  et `disciplined_index_constraints(...)` (D8, `DISCIPLINED_INDEX_V11`) ;
+  `core_satellite_weights(core, satellite, upper, groups, core_share=0.5)` (D9) ; paramètre
+  `capacity_cap_per_name="budget/n_target"` et `capacity_beyond_exit=True` (D4).
+
+### `portfolio/stress.py` (scénarios du §9.3)
+- `stress_tests(weights, panels, asof, capital, params=None) -> DataFrame` : une ligne par scénario
+  ST1-ST10 (et par variante) : `code`, `variante`, `scenario`, `perte_fcfa` (variation de valeur,
+  **négative = perte**), `perte_pct` (fraction du capital), `hypothese`, `base`, `nature`
+  (`estimation` / `contrôle`) ; `attrs` : `beta`, `beta_note`, `investi_fcfa`, `bandeau`. Marché (ST1-ST3) :
+  β hebdomadaire du panier contre le Composite TR (104 semaines au plus, 52 au moins, jamais avant le début
+  de S0, borné à [0,5 ; 1,5], 1 à défaut) × chocs mesurés de la spécification (aucun rejeu des titres sur
+  S1) ; pays (ST4, ST5, ST10) : exposition λ (`reference.economic_exposure`), sévère 21 %, stress 26 %,
+  modéré 8 % ; ST6 : liquidation en 20 séances à 5 % de la MDV63, demi-spread × 2 ; ST7 : coûts sévères du
+  §7.2 sur 12 mois (rotation 15 %/mois, hypothèse) ; ST8 : plus grosse ligne −10 % / −30 % ; ST9 : division
+  non ajustée injectée, le contrôle `data_guard` de la stratégie doit bloquer. `STRESS_DEFAULTS`,
+  `portfolio_beta(weights, panels, asof)`. Découvert par l'ordre de bataille (`recommend`).
+
+### `portfolio/recommend.py` (ordre de bataille)
+- `recommend(asof, capital, *, panels=None, holdings=None, cash=None, variant=None, costs="central",
+  notes_store=None, validation_dir="reports/validation_S1", horizon_months=12, n_boot=5000, seed=0,
+  registry_path=None, panel_dir=None, sessions=None, tolerance=0.01, max_participation=0.10,
+  mean_block_weeks=8, comparison=True, explanations=True, index_evaluation=True) -> OrdreDeBataille`
+  (`holdings` : symbole → nombre de titres ; `cash=None` : `capital − titres détenus` ;
+  `notes_store=None` : journal du dépôt, `False` : aucune note). Export : `from brvm_alpha.portfolio
+  import recommend` donne le sous-module, **appelable** comme la fonction ; alias `ordre_de_bataille`.
+- `OrdreDeBataille` (dataclass) : `lignes` (titres détenus / cibles, `sens`, `quantite`, poids cible et
+  réalisé, cours de référence, bornes, `prix_limite`, `montant_brut`, `courtage`, `tva`, `brvm`, `dcbr`,
+  `demi_spread`, `impact`, `couts_total`, `montant_net`, `pire_cas`, `seances`), `tranches` (échéancier par
+  séance : date, titres, limite, provision pire cas, date de règlement, financement), `execution`, `couts`,
+  `dividendes`, `revenus`, `distribution`, `stress`, `declencheurs`, `explications`, `comparaison`,
+  `faits`, `estimations`, `hypotheses`, `avertissements` ; `to_dict()` (JSON), `to_markdown()`,
+  `to_html_fragment()` (`<section>` autonome, texte échappé) ; bandeau « Performance passée ≠ garantie.
+  Aucun gain n'est garanti. » et statut toujours affichés, `PHRASE_ETUDE` tant que rien n'est PROMU.
+- `choose_variant(variant=None, validation_dir, registry_path)` : `metrics.json` de S1 absent ou statut
+  INDÉTERMINÉ ⇒ REF (D8) avec A en comparaison et avertissement ; A CANDIDAT ou PROMU ⇒ A, ou la variante
+  promue par la règle du §3.4 ; A REJETÉ ⇒ REF. `s1_executed(registry_path)` lit le registre.
+- Arrondis : `limit_prices(dernier_cours, reference_price=None, tolerance=0.01)` (achat
+  `min(borne haute ; C × 1,01)` au pas inférieur, vente `max(borne basse ; C × 0,99)` au pas supérieur ;
+  bornes `macro.price_band` de la référence de la prochaine séance) ; `floor_to_tick`, `ceil_to_tick`,
+  `round_fcfa` (chaque composante de coût arrondie au franc) ; titres = `⌊w × valeur / cours⌋` (quotité 1),
+  bande de non-transaction de 2 points pour les lignes détenues ; quantités réduites si la provision
+  pire cas (tout exécuté à la limite) dépasse les liquidités disponibles.
+- Coûts : `fee_breakdown(montant, costs)` (frais facturés), `order_costs(qty, cours, costs, side,
+  half_spread, mdv63, tranches, limit)` (demi-spread du carnet sur 120 séances comme le moteur, impact
+  `κ√π` avec `π = tranche / MDV63`, coûts implicites plafonnés par `|limite − cours| × qty`).
+- Exécution : `participation_schedule(qty, cours, mdv63, 0.10)` (tranches ≤ 10 % de la MDV63 en valeur),
+  `plan_execution(orders, cash, calendar, costs)` (ventes d'abord ; provision pire cas des achats dès la
+  négociation ; produit d'une vente utilisable à partir de sa date de règlement, `settlement_date`,
+  J+3 / J+2 de `macro.settlement_lag` ; liquidités initiales d'abord), `future_sessions` (calendrier connu,
+  puis jours ouvrés hors fériés fixes : hypothèse).
+- Revenus : `irvm_rate(symbol, date, taxes)` (exceptions par émetteur, pays de l'émetteur, historique
+  daté `IRVM_HISTORY` pour reconstituer le brut), `dividend_schedule(quantities, asof, panels)` (dernier
+  net publié connu en t, part ordinaire, ajusté des divisions, mois habituel, absences annoncées, garde-fou
+  de 15 mois).
+- Distribution : `estimation_window(asof, s1_done)` (S0 seulement tant que le registre n'a pas exécuté S1),
+  `weekly_tr_returns` (données coupées à la fenêtre avant tout calcul), `stationary_bootstrap_indices`,
+  `return_distribution(weekly, weights, horizon_weeks=52, n_boot=5000, mean_block=8, seed, cost_drag)`
+  (portefeuille et Composite TR tirés ensemble ; médiane, P10, P90, P(perte), P(battre le TR) :
+  « distribution historique, pas une prévision ») ; stress : `brvm_alpha.portfolio.stress` s'il existe,
+  sinon `stress_scenarios` (§9.3).
 
 ### `backtest/engine.py`
 - `Backtester(panels, costs: CostModel, constraints, capital, ...)`
@@ -151,6 +225,12 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
 - Exécution en t+1 au prix moyen pondéré (value/volume) si le titre est
   échangé, avec plafond de participation au volume ; pas d'achat à la limite
   haute ni de vente à la limite basse ; dividendes nets d'impôt crédités.
+- Dividendes (additif v1.1, D6, côté flux) : le moteur crédite le montant **corrigé**
+  (`dividend_net`, meilleure estimation du versement réel) ; le panel facultatif
+  `dividend_net_boc` (ligne « (d) » du BOC, montant vu par les signaux ;
+  `panels_from_equities` le construit depuis `amount_first`) sert à publier l'écart :
+  `BacktestResult.dividends_boc`, `dividend_events` (`date, symbol, qty, per_share,
+  per_share_boc, credited, boc, gap`), `meta["dividend_gap_vs_boc"]`, `summary()["dividend_gap_vs_boc"]`.
 - Quantités : `qty` et `positions` en titres ajustés (`float` seulement si une
   attribution non entière l'impose), `trades["raw_qty"]` en titres réels du jour
   (entiers) ; l'arrondi à la quotité se fait en titres réels (aucune dépendance à une
@@ -160,41 +240,143 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
   inconnue (dict plat ou section `execution` du YAML) lève `KeyError`.
 
 ### `backtest/metrics.py` et `backtest/walkforward.py` (validation, §8)
-- `weekly_returns(daily, exclude_windows=EXCLUDE_STATS_WINDOWS, max_sessions=6, session_no=None)`,
-  `weekly_observation_mask(...)`, `monthly_one_way_turnover(result)`, `first_investment_date(result)`
+- `weekly_returns(daily, exclude_windows=EXCLUDE_STATS_WINDOWS, max_sessions=6, session_no=None)` (la
+  fenêtre du 06/05 au 25/06/2021 est exclue **par défaut**), `weekly_observation_mask(...)`,
+  `monthly_one_way_turnover(result)`, `first_investment_date(result)`
+- Fenêtre d'évaluation de l'additif v1.1 (D2) : `evaluation_window(daily, t0, end)` (rendements de
+  `[t0 ; fin]`, rendement de t0 compté), `rebase_at(level, t0)` (base 100 à la veille de t0),
+  `evaluation_subperiods(t0, S1_SUBPERIODS, end=None)` (`[t0 ; 2019-12-31]`, `[2020-01-01 ; 2022-11-16]`) ;
+  `S0_SUBPERIODS` (diagnostic), `FAMILY_SIZE_V11 = 9`
+- `monthly_ic(scores, tr_index, horizon=21, lag=1, min_names=15, end=None, eligible=None)` (IC mensuel de
+  Spearman, aucune fenêtre à terme au-delà de `end`)
 - `evaluate_status(..., s2_ic_monthly=None, s2_pbo=None, s2_pbo_slope=None, start=None, result=None,
-  exposure=None, expected_period=None, exclude_windows=None) -> StatusReport`
-- `variant_promotion(weekly_active, benchmark=None, pbo=None, baseline="A", n_trials=8) -> PromotionReport`
-  (règle du §3.4)
+  exposure=None, expected_period=None, exclude_windows=None, rules="v1.1", expected_weeks=None) -> StatusReport`
+  (statuts REJETÉ / CANDIDAT / INDÉTERMINÉ / PROMU ; **D7** : G7 du suivi réel sur les IC S1 puis S2 bout à
+  bout, au moins 36 mois, autres filtres de S2 sur S2 seul, au moins 12 mois ; `rules="v1.0"` : lecture
+  antérieure ; échantillon trop court ou incomplet : tous les critères `None`, statut INDÉTERMINÉ ;
+  `expected_weeks` : semaines attendues explicites, les retraits légitimes ne sont pas des manques)
+- `variant_promotion(weekly_active, benchmark=None, pbo=None, baseline="A", n_trials=None) -> PromotionReport`
+  (règle du §3.4 ; `n_trials=None` : taille de la famille, 9 pour A-I)
+- `TrialRegistry.initialize(path, addendum_v11=False)` (`True` : ajoute `S1-I`, `REF-ID` et les essais de
+  diagnostic S0 déjà exécutés, `N = 68`), `.record(..., rerun_reason=None)` (relance motivée : nouvel essai
+  `S1-<v>-R<k>`), `.executed(sample)`, `.set_metrics(trial_id, metrics)` ; constantes `FAMILY_V11`,
+  `REFERENCE_VARIANT = "REF"`, `REFERENCE_TRIAL_ID = "REF-ID"`, `N_TRIALS_START_V11 = 65`
 - `cpcv(..., min_train=1)`, `purged_kfold(..., min_train=1)` : `ValueError` si un apprentissage est trop court
+
+### `validation/` (exécuteur du test unique S1 et du diagnostic S0, additif v1.1 D2, D6, D7, D12)
+- `run_validation(sample="S1"|"S0", out_dir=None, rerun_reason=None, panel_dir=None, workers=None, *,
+  registry_path=None, repo_root=None, panels=None, model_factory=None, plan=None,
+  allow_nonstandard_plan=False, n_boot=5000, seed=0, log=None, decision_mode="evenementiel") -> ValidationResult`
+  (`out_dir`, `metrics`, `statuses`, `trial_ids`, `duration_s`, `files`, `lock`) ; `decision_mode` :
+  `"evenementiel"` (défaut depuis le pré-vol du 22/11/2026 : `strategy_fn(event_driven=True, calendar)` et
+  `rebalance="D"` : décisions de fin de mois plus les ordres entre deux du §6 « Fréquence » : règles pays
+  dès la première séance qui suit l'annonce (D10), poche S1, ventes reportées) ou `"mensuel"`
+  (`strategy_fn()` et `rebalance="M"` : aucun ordre entre deux fins de mois) ; consigné dans le verrou, le
+  registre et `metrics.json` ; sur S1, un run dont le mode effectif diffère du mode consigné (repli) est un
+  échec ; sur le panel réel, S1 exige `n_boot = 5 000`
+- `run_plan() -> list[RunSpec]` : 30 runs dans un ordre fixe — A-I et REF aux coûts centraux et de stress
+  à 10 M FCFA ; A et I aux coûts optimistes et sévères ; A, I et REF à 100 M et 1 Md FCFA (centraux).
+  `RunSpec(variant, costs, capital)` : `run_id` (`A_central_10M`…), `is_trial` (central à 10 M : seuls ces
+  runs entrent au registre, dans la PBO et le DSR), `in_family` (A-I), `role`
+- Modèle par défaut `brvm_alpha_model(spec, config, sample)` : `BrvmAlpha(config, variant, capital=K,
+  notes=None, window_basis="sessions", validation_s1=(S1), history_start=(None | début de S0))`,
+  `.strategy_fn(event_driven=True, calendar)` pour `Backtester.run(fn, rebalance="D", start, end)` (mode
+  événementiel ; `.strategy_fn()` et `rebalance="M"` en mode mensuel) ; chocs pays du moteur
+  `model.engine_country_shocks()` ; univers éligible et score composite lus dans `model.last_decision`
+- D2 : `t0` = `first_investment_date` du run `A_central_10M` ; métriques, critères du §8.3 et étalons sur
+  `[t0 ; fin]`, rebasés à t0 ; fenêtre complète publiée pour information
+- Étalons (`benchmarks.benchmark_levels`) : `TR` (`store.composite_tr_reconstructed(official=True)`), `EW`
+  (`store.equal_weight_tr` avec le masque d'éligibilité PIT de A, mensuel ; au même capital pour 100 M et
+  1 Md), `PRIX`, `BRVM10` (jusqu'au 30/12/2022), `BRVM30` et `PRESTIGE` (dès le 02/01/2023), `FONDS`
+  (« non disponible » explicite)
+- Métriques par run (§8.2, hebdomadaires W-FRI, nettes) : rendement et volatilité annualisés, actif contre
+  TR et EW, IR, TE, Sharpe naïf / Lo / GLM (alerte > 25 %), PSR(0), DSR avec N = registre et N = 9, PBO
+  CSCV de la famille (10 blocs, Sharpe de Lo des actifs nets), bootstrap stationnaire `n_boot = 5 000`
+  explicite et blocs de 8 semaines (IR, actif moyen), drawdowns absolu et relatif, CVaR 95 % à 5 séances
+  contre le TR, rotation mensuelle aller, coûts payés, lignes, part investie, sous-périodes, haircut BHY,
+  dividendes crédités contre ligne (d) (D6) ; statut §8.3 de chaque variante et règle de promotion §3.4
+- Contrôles de chaque run (`controls.accounting_controls(bt, res)`, aucune performance) : cash réglé ≥ 0,
+  exposition maximale, identités `VL = cash − frais dus + créances + Σ q·P` et `ΔVL = Σ q·ΔP + exécutions +
+  dividendes − coûts` (rompus de division compris, tolérance 1e-6 de la VL), aucune vente à la borne basse ni
+  achat à la borne haute, coût par aller (médiane, moyenne pondérée), ordres bloqués par motif ;
+  `metrics.json` : `runs[...]["controles"]` et synthèse `controles` (`tous_ok`, `runs_en_anomalie`)
+- Verrou (`lock.py`, S1 seulement) : `git diff --quiet HEAD -- brvm_alpha configs` exigé **et** aucun fichier
+  non suivi (non ignoré) sous `brvm_alpha/` ni `configs/` (pré-vol du 22/11/2026 : un module non commité
+  serait importé sans figurer dans le commit) ; `lock.json` (commit, empreinte `settings.config_fingerprint`
+  et `empreinte_controle` : comparaison avec l'empreinte des essais pré-enregistrés S1-I et REF-ID, version et
+  SHA-256 du YAML, horodatage UTC, plan, `n_boot`, statut `en cours` / `terminé` / `échec`, empreinte de
+  `metrics.json`) ; refus (`ValidationRefused`, code 2) si le registre contient des essais S1 « exécuté » ou
+  si un verrou existe, sauf `rerun_reason` (nouveaux essais, anciens résultats déplacés dans
+  `precedent_<horodatage>/`, les deux publiés). Un run S1 en échec : aucune métrique calculée ni publiée
+  (`ValidationFailed`), verrou « échec »
+- Parallélisme : `ProcessPoolExecutor` (contexte `spawn`, au plus 3 processus), résultats remis dans l'ordre
+  du plan (déterministes), durée de chaque run journalisée
+- Sorties : `reports/validation_S1/` (`resultats.md`, `metrics.json`, `weekly_returns.parquet`,
+  `nav.parquet`, `trades.parquet`, `lock.json`) ; S0 : `reports/diagnostic_S0/` (mêmes fichiers,
+  `contexte.json` au lieu du verrou, mention « contaminé, aucune valeur de preuve ») ; registre
+  `reports/trials.parquet` mis à jour (essais S0 de diagnostic : `S0-DIAG-<horodatage>-<variante>`)
 
 ### `strategy/alpha.py`
 - `BrvmAlpha(config).signals(asof, panels) -> dict[str, pd.Series]`
 - `BrvmAlpha(config).target_weights(asof, panels) -> pd.Series`
 - `BrvmAlpha(config).explain(asof, panels, symbol) -> dict` (décomposition du score)
 
-Modèle v1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §9.1 ; paramètres = `configs/strategy_v1.yaml`) :
+Modèle v1 + additif v1.1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §8.4, §9.1 ; paramètres =
+`configs/strategy_v1.yaml`, `version: "1.1"`) :
 - `BrvmAlpha(config=None, variant="A", capital=None, params=None, *, notes="auto", country_events=None,
   dividend_calendar=None, history_start=None, risk_overlay=True, defer_sales=None, sectors=None,
-  window_basis=None, validation_s1=False, capital_increases=None)`
-  (`variant` ∈ A…H ; `params` = surcharges du YAML, validées par `settings.load_strategy_config`, clé
-  inconnue refusée ; `window_basis` ∈ `"boc"`, `"sessions"` : comptage des fenêtres, à trancher avant S1 ;
-  hors `validation_s1`, aucune série de performance n'est calculée sur S1)
+  window_basis=None, validation_s1=False, capital_increases=None, cfg=None)`
+  - `variant` ∈ `VARIANT_SPECS` : famille `FAMILY_V11 = ("A", …, "H", "I")` (PBO et DSR, N = 9) et
+    référence `REFERENCE_VARIANT = "REF"` (« indice discipliné » D8, essai REF-ID hors famille) ;
+    `VariantSpec.kind` : `"alpha"` (A-H), `"core_satellite"` (I, D9), `"reference"` (REF, D8) ;
+  - `cfg` (contrat v1.1) : `PlatformConfig` (alias de `config`) ou dictionnaire de paramètres (alias de
+    `params` = surcharges du YAML, validées par `settings.load_strategy_config`, clé inconnue refusée) ;
+  - `window_basis=None` ⇒ `data.window_basis` du YAML = `"sessions"` (D1), y compris avec
+    `validation_s1=True` ; `"boc"` reste disponible (lecture v1.0) ;
+  - `country_events=None` ⇒ `reference.COUNTRY_EVENTS` (D10) ; `False` : aucune règle pays datée ;
+  - `validation_s1=True` : réservé au test unique S1 ; notes forcées à `None` (D11) ; hors
+    `validation_s1`, aucune série de performance n'est calculée sur S1.
+- Additif v1.1 appliqué : **D1** fenêtres en séances, bornes de rendement ≤ 5 séances, seuils
+  `m_eff = ⌈m × n_BOC_disponibles / L⌉` (planchers 40 signaux / 20 filtres) ; **D3** garde de
+  capitalisation = alerte (`diagnostics["cap_guard"]["alert"]`), |r| > 50 % bloquant ; **D4** titres
+  ajoutés pour la capacité ≤ 98 %/n_cible, au-delà des 50 % si nécessaire, reliquat publié
+  (`diagnostics["portfolio"]["capacity_fill"]`) ; **D5** drawdown relatif depuis t0 (premier jour investi,
+  `record_nav(asof, nav, invested=...)`, `relative_dd_start`), panier w_EW = 20 éligibles les mieux
+  classés (`diagnostics["ew_basket"]`), entrées et sorties exemptées de la bande par le moteur ;
+  **D6** signaux sur le montant connu en t ; **D8** REF : 20 plus grosses capitalisations, poids ∝
+  capitalisation, plafonds D8, rebalancement annuel (première décision de janvier) et sorties forcées
+  (`diagnostics["index"]`) ; **D9** I = 0,5 × REF (annuel, dérivé entre deux) + 0,5 × A (mensuel),
+  projeté sur les plafonds de groupe de D8 (`diagnostics["core"]`, `["satellite"]`, `["core_satellite"]`) ;
+  **D2** G et H sans covariance suffisante : pondération de A, journalisée.
 - `.universe(asof, panels) -> DataFrame` (U1-U10 : `eligible`, `reason`, `codes`, MDV63, U6/U7…)
 - `.risk_flags(asof, panels, notes="default") -> DataFrame` (R1-R12 du panel, notes de l'analyste si
   `brvm_alpha.notes` s'importe, règles pays)
 - `.decide(asof, panels, held=None) -> AlphaDecision` (univers, signaux, risque, score, poids, diagnostics)
 - `.strategy_fn(event_driven=False, calendar=None, mode="alpha"|"index")` : fonction
-  `(asof, view) -> poids | None` pour `Backtester.run` (mémorise positions et valeur liquidative)
-- `.disciplined_index_weights(asof, panels)` (mode « indice discipliné », §8.3)
+  `(asof, view) -> poids | None` pour `Backtester.run(fn, rebalance="M", start=, end=)` (mémorise
+  positions, valeur liquidative et « titres détenus » pour t0 ; REF et `mode="index"` renvoient `None`
+  entre deux rebalancements annuels sans sortie forcée). Mode événementiel (`event_driven=True`,
+  `rebalance="D"`) : une décision **intra-mois** (règle pays, poche S1) ne modifie pas l'état des poches
+  annuelles (`_peek_decide` : le rebalancement annuel de REF et du cœur de I reste la première décision
+  mensuelle de janvier ; le satellite A de I garde ses lignes de fin de mois)
+- `.disciplined_index_weights(asof, panels)` (indice discipliné D8 à la date, sans état)
 - `build_panels(panel_dir) -> dict` : panels du moteur et de la stratégie (`close_raw`, `tr_index`,
-  `shares`, `market_tr`, tables datées `dividends_table`, `corporate_actions`, `market`)
+  `shares`, `market_tr`, tables datées `dividends_table`, `corporate_actions`, `market`). Interface D6 :
+  `dividends_table.amount` = montant connu à `date` (ligne (d) ; correction `amount_revised` visible à
+  `revised_seen`) pour les signaux ; `amount_cashflow` = montant corrigé, crédité par le moteur
+  (`dividend_net`) ; `dividend_amount_gap(panels)` : écart par dividende et total (à publier).
+- `reference.COUNTRY_EVENTS` (DataFrame : `date` d'annonce, `country`, `rule`, `event_date`,
+  `action_date`, `sample`, `source`, `confidence`) ; `reference.country_event_action_date(date, calendar)` :
+  première séance qui suit l'annonce (Mali 09/01/2022 → 10/01/2022). Un événement est connu de la décision
+  de t si l'annonce précède la séance d'exécution t + 1.
 
 ### `cli.py`
 `python -m brvm_alpha <commande>`. Disponibles (v1) : `universe --date` (contrôle de forme)
 et `backtest --start --end [--variant] [--capital] [--costs]` ; une période qui recoupe
 l'échantillon vierge S1 est refusée (code 2) sans `--validation-s1`, qui exige aussi
-`--window-basis`. **À venir** : `update`, `panel`, `live`, `news`, `analyze`, `report`
+`--window-basis`. `validate --sample S1|S0 [--rerun-reason TEXTE] [--workers N] [--out-dir]
+[--panel-dir] [--decision-mode evenementiel|mensuel]` (défaut `evenementiel`) : exécuteur de la validation (`validation.run_validation`) ; refus du verrou → code 2,
+run en échec → code 1. **À venir** : `update`, `panel`, `live`, `news`, `analyze`, `report`
 (ainsi que `data/news.py` et `report/html.py`).
 
 ## Module « Notes de l'analyste » (`brvm_alpha/notes/`)

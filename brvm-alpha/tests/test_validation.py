@@ -425,8 +425,14 @@ def test_status_promoted_requires_g1_g9_on_s1_and_12_months_of_s2() -> None:
     assert rep.groupe("promotion_S1")["verifie"].tolist() == [True] * 9
     assert rep.groupe("promotion_S2")["verifie"].tolist() == [True] * 9
     assert rep.statut == STATUT_PROMU
-    default_36 = evaluate_status(a, a - 0.0001, b, SUBS, s2_active_weekly_returns=s2, **{**kw, "params": None})
+    # Règles v1.0 (lecture prudente, conservée pour la traçabilité) : 36 mois d'IC propres à S2.
+    default_36 = evaluate_status(a, a - 0.0001, b, SUBS, s2_active_weekly_returns=s2,
+                                 **{**kw, "params": None, "rules": "v1.0"})
     assert default_36.critere("promotion_S2", "G7")["verifie"] is False and default_36.statut == STATUT_CANDIDAT
+    # Additif v1.1, D7 (défaut) : G7 de S2 sur les IC S1 puis S2 bout à bout (40 + 14 = 54 mois ≥ 36).
+    d7 = evaluate_status(a, a - 0.0001, b, SUBS, s2_active_weekly_returns=s2, **{**kw, "params": None})
+    assert d7.critere("promotion_S2", "G7")["verifie"] is True and d7.mesures["promotion_S2_ic_mois"] == 54
+    assert d7.statut == STATUT_PROMU
     assert any("ERREUR" in x for x in rep.avertissements)  # IR > 1 : suspect par principe
     # moins de 52 semaines de suivi réel : pas de promotion
     rep = evaluate_status(a, a - 0.0001, b, SUBS, s2_active_weekly_returns=s2.iloc[:51], **kw)

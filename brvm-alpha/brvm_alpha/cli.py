@@ -8,7 +8,12 @@ Commandes disponibles (v1) :
   quotidien du modèle BRVM Alpha (moteur ``backtest.engine``), résumé **net de coûts** ;
   toute période qui recoupe l'échantillon vierge S1 (2017-01-02 → 2022-11-16) est
   **refusée** sauf drapeau explicite ``--validation-s1`` (réservé au test unique et
-  pré-enregistré, qui exige aussi ``--window-basis``).
+  pré-enregistré, qui exige aussi ``--window-basis``) ;
+* ``validate --sample S1|S0 [--rerun-reason TEXTE] [--workers N]`` : exécuteur de la validation
+  (``brvm_alpha.validation.runner.run_validation``, additif v1.1 D12). ``S1`` : test **unique**
+  et verrouillé (arbre ``brvm_alpha/`` et ``configs/`` identique à HEAD, refus d'une seconde
+  exécution sauf bogue démontré avec ``--rerun-reason``), sortie ``reports/validation_S1/`` ;
+  ``S0`` : diagnostic contaminé, sans verrou, sortie ``reports/diagnostic_S0/``.
 
 Les commandes ``update``, ``panel``, ``live``, ``news``, ``analyze`` et ``report`` du contrat
 (``docs/ARCHITECTURE.md``) sont **à venir**. Toutes les sorties sont des estimations sous
@@ -55,6 +60,18 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--validation-s1", action="store_true",
                    help="autorise S1 : réservé au test UNIQUE pré-enregistré (§8.1)")
     b.add_argument("--panel-dir", default=None, help="répertoire du panel (défaut : data/panel)")
+
+    v = sub.add_parser("validate", help="validation : test unique S1 (verrouillé) ou diagnostic S0 (contaminé)")
+    v.add_argument("--sample", required=True, choices=("S1", "S0"), help="échantillon : S1 (test unique) ou S0")
+    v.add_argument("--rerun-reason", default=None,
+                   help="S1 : motif d'une relance (bogue démontré) ; nouveaux essais, les deux résultats publiés")
+    v.add_argument("--workers", type=int, default=None, help="processus parallèles (au plus 3)")
+    v.add_argument("--out-dir", default=None, help="dossier de sortie (défaut : reports/validation_S1 ou "
+                                                   "reports/diagnostic_S0)")
+    v.add_argument("--panel-dir", default=None, help="répertoire du panel (défaut : data/panel)")
+    v.add_argument("--decision-mode", default="evenementiel", choices=("evenementiel", "mensuel"),
+                   help="evenementiel (défaut : fins de mois + ordres entre deux du §6, règles pays D10 dès la "
+                        "séance qui suit l'annonce) ou mensuel (fins de mois seulement) ; consigné dans le verrou")
     return parser
 
 
@@ -107,6 +124,38 @@ def _cmd_backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_validate(args: argparse.Namespace) -> int:
+    from brvm_alpha.validation import ValidationFailed, ValidationRefused, run_validation
+
+    def say(msg: str) -> None:
+        print(msg, file=sys.stderr, flush=True)
+
+    try:
+        res = run_validation(args.sample, out_dir=args.out_dir, rerun_reason=args.rerun_reason,
+                             panel_dir=args.panel_dir, workers=args.workers, log=say,
+                             decision_mode=args.decision_mode)
+    except ValidationRefused as exc:
+        print(f"refusé : {exc}", file=sys.stderr)
+        return 2
+    except ValidationFailed as exc:
+        print(f"échec : {exc}", file=sys.stderr)
+        return 1
+    m = res.metrics
+    print(f"Validation {res.sample} : t0 = {pd.Timestamp(m['t0']).date()}, fin = {pd.Timestamp(m['fin']).date()}, "
+          f"durée {res.duration_s:.0f} s (estimations sous hypothèses)")
+    if res.sample == "S0":
+        print("Diagnostic S0 : échantillon contaminé, aucune valeur de preuve.")
+    for v, st in res.statuses.items():
+        r = m["runs"].get(m["variantes"][v]["run_id"], {})
+        act, ir = r.get("actif_tr_an"), r.get("ir_tr")
+        act_s = f"{100 * act:+.1f} %/an" if act is not None and act == act else "n.d."
+        ir_s = f"{ir:.2f}" if ir is not None and ir == ir else "n.d."
+        print(f"  {v:4s} {st:12s} actif net / TR {act_s}, IR {ir_s}")
+    print(f"Rapport : {res.out_dir / 'resultats.md'}")
+    print(BANNER)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Point d'entrée : renvoie le code de sortie (0 : succès ; 2 : refus)."""
     args = build_parser().parse_args(argv)
@@ -114,6 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_universe(args)
     if args.command == "backtest":
         return _cmd_backtest(args)
+    if args.command == "validate":
+        return _cmd_validate(args)
     return 2  # pragma: no cover - argparse impose une commande
 
 

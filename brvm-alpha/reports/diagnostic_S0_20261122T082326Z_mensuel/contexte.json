@@ -1,0 +1,273 @@
+{
+  "echantillon": "S0",
+  "horodatage_utc": "2026-11-22T08:23:26.317686+00:00",
+  "commit": "751d1be729ac1501fe672eb47be084c794dac7a9",
+  "branche": "claude/brvm-stock-analysis-platform-4myn3g",
+  "arbre_propre": false,
+  "fichiers_modifies": [
+    "brvm_alpha/backtest/engine.py",
+    "brvm_alpha/backtest/metrics.py",
+    "brvm_alpha/backtest/walkforward.py",
+    "brvm_alpha/cli.py",
+    "brvm_alpha/portfolio/construct.py",
+    "brvm_alpha/quant/features.py",
+    "brvm_alpha/reference.py",
+    "brvm_alpha/settings.py",
+    "brvm_alpha/strategy/__init__.py",
+    "brvm_alpha/strategy/alpha.py",
+    "configs/strategy_v1.yaml"
+  ],
+  "fichiers_non_suivis": [
+    "brvm_alpha/validation/__init__.py",
+    "brvm_alpha/validation/benchmarks.py",
+    "brvm_alpha/validation/lock.py",
+    "brvm_alpha/validation/report_md.py",
+    "brvm_alpha/validation/runner.py"
+  ],
+  "empreinte_config": "f1582ed8e9fa1c85",
+  "version_yaml": "1.1",
+  "sha256_yaml": "1d40bc143891008db26ee5ab5a3865a8ffef1d95473c9451c8cadda9136b76cf",
+  "periode": [
+    "2022-11-17",
+    "2026-11-20"
+  ],
+  "window_basis": "sessions",
+  "plan": [
+    {
+      "run_id": "A_central_10M",
+      "variant": "A",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "A_stress_10M",
+      "variant": "A",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "B_central_10M",
+      "variant": "B",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "B_stress_10M",
+      "variant": "B",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "C_central_10M",
+      "variant": "C",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "C_stress_10M",
+      "variant": "C",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "D_central_10M",
+      "variant": "D",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "D_stress_10M",
+      "variant": "D",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "E_central_10M",
+      "variant": "E",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "E_stress_10M",
+      "variant": "E",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "F_central_10M",
+      "variant": "F",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "F_stress_10M",
+      "variant": "F",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "G_central_10M",
+      "variant": "G",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "G_stress_10M",
+      "variant": "G",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "H_central_10M",
+      "variant": "H",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "H_stress_10M",
+      "variant": "H",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "I_central_10M",
+      "variant": "I",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (famille)"
+    },
+    {
+      "run_id": "I_stress_10M",
+      "variant": "I",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "REF_central_10M",
+      "variant": "REF",
+      "costs": "central",
+      "capital": 10000000.0,
+      "role": "essai (référence, hors PBO)"
+    },
+    {
+      "run_id": "REF_stress_10M",
+      "variant": "REF",
+      "costs": "stress",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "A_optimistic_10M",
+      "variant": "A",
+      "costs": "optimistic",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "A_severe_10M",
+      "variant": "A",
+      "costs": "severe",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "I_optimistic_10M",
+      "variant": "I",
+      "costs": "optimistic",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "I_severe_10M",
+      "variant": "I",
+      "costs": "severe",
+      "capital": 10000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "A_central_100M",
+      "variant": "A",
+      "costs": "central",
+      "capital": 100000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "A_central_1Md",
+      "variant": "A",
+      "costs": "central",
+      "capital": 1000000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "I_central_100M",
+      "variant": "I",
+      "costs": "central",
+      "capital": 100000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "I_central_1Md",
+      "variant": "I",
+      "costs": "central",
+      "capital": 1000000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "REF_central_100M",
+      "variant": "REF",
+      "costs": "central",
+      "capital": 100000000.0,
+      "role": "sensibilité"
+    },
+    {
+      "run_id": "REF_central_1Md",
+      "variant": "REF",
+      "costs": "central",
+      "capital": 1000000000.0,
+      "role": "sensibilité"
+    }
+  ],
+  "plan_standard": true,
+  "n_boot": 5000,
+  "graine": 0,
+  "workers": 3,
+  "panel": "/home/user/documentation/brvm-alpha/data/panel",
+  "registre": "/home/user/documentation/brvm-alpha/reports/trials.parquet",
+  "n_essais_registre_avant": 68,
+  "relance": null,
+  "bandeau": "Performance passée ≠ garantie. Aucun gain n'est garanti.",
+  "mention": "Diagnostic S0 : échantillon contaminé, aucune valeur de preuve.",
+  "verrou": "aucun (diagnostic S0)",
+  "sha256_metrics": "6e095d2e69bd4a38ba3e5c9e414228e6168cb10c327ed38ad5bc218f0087a834",
+  "essais": {
+    "A_central_10M": "S0-DIAG-20261122T082326Z-A",
+    "B_central_10M": "S0-DIAG-20261122T082326Z-B",
+    "C_central_10M": "S0-DIAG-20261122T082326Z-C",
+    "D_central_10M": "S0-DIAG-20261122T082326Z-D",
+    "E_central_10M": "S0-DIAG-20261122T082326Z-E",
+    "F_central_10M": "S0-DIAG-20261122T082326Z-F",
+    "G_central_10M": "S0-DIAG-20261122T082326Z-G",
+    "H_central_10M": "S0-DIAG-20261122T082326Z-H",
+    "I_central_10M": "S0-DIAG-20261122T082326Z-I",
+    "REF_central_10M": "S0-DIAG-20261122T082326Z-REF"
+  },
+  "n_essais_registre_apres": 78,
+  "duree_totale_s": 602.1
+}

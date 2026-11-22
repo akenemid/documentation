@@ -124,7 +124,7 @@ def model(**kw) -> BrvmAlpha:
 
 
 def test_variants_and_defaults():
-    assert VARIANTS == ("A", "B", "C", "D", "E", "F", "G", "H")
+    assert VARIANTS == ("A", "B", "C", "D", "E", "F", "G", "H", "I", "REF")  # additif v1.1 (D8, D9)
     m = model()
     assert m.capital == 10_000_000
     assert m.mdv_floor() == 500_000
@@ -561,10 +561,15 @@ def test_cap_guard_freezes(synth):
     mk.loc[mk["date"] == t, "market_cap"] *= 1.10
     p["market"] = mk
     held = pd.Series({SYMS[10]: 0.3, SYMS[11]: 0.2})
+    # Additif v1.1, D3 : alerte journalisée, non bloquante (la décision a lieu normalement).
     dec = model().decide(t, p, held=held)
-    assert dec.diagnostics["mode"] == "gel_donnees"
-    assert dec.weights[SYMS[10]] == pytest.approx(0.3) and dec.weights.sum() == pytest.approx(0.5)
-    assert any("contrôle des données" in msg for msg in dec.messages)
+    assert dec.diagnostics["mode"] == "selection" and dec.diagnostics["cap_guard"]["alert"]
+    assert any("ALERTE données" in msg for msg in dec.messages)
+    # Lecture v1.0 (bloquante) toujours disponible par surcharge explicite.
+    old = model(params={"data": {"cap_guard_blocking": True}}).decide(t, p, held=held)
+    assert old.diagnostics["mode"] == "gel_donnees"
+    assert old.weights[SYMS[10]] == pytest.approx(0.3) and old.weights.sum() == pytest.approx(0.5)
+    assert any("contrôle des données" in msg for msg in old.messages)
 
 
 # ---------------------------------------------------------------------------
@@ -687,7 +692,9 @@ def test_smoke_backtest_s0_short(real):
         res = bt.run(m.strategy_fn(), rebalance="M", start=start, end=end)
     assert np.isfinite(res.equity).all()
     w = res.weights
-    assert (w.sum(axis=1) <= 1.0 + 1e-6).all()
+    # Aucun levier : positions ≤ VL + frais dus non payés (cash réglé ≥ 0 ; les frais fixes dus faute de
+    # cash réglé sont déduits de la VL, d'où une somme des poids qui peut dépasser 1 de leur montant).
+    assert (w.sum(axis=1) - res.payables / res.equity <= 1.0 + 1e-6).all() and (res.cash >= -1e-6).all()
     n_lines = (w > 1e-6).sum(axis=1)
     assert n_lines.iloc[-1] >= 10
     tr = res.trades.assign(m=res.trades["date"].dt.to_period("M"))

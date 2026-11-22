@@ -1,4 +1,12 @@
-"""Le modèle BRVM Alpha v1 (spécification ``docs/SPECIFICATION_STRATEGIE.md``, v1.0).
+"""Le modèle BRVM Alpha v1 (spécification ``docs/SPECIFICATION_STRATEGIE.md``, v1.0 + additif v1.1).
+
+Additif v1.1 (§8.4, décisions figées le 22/11/2026 avant toute exécution sur S1), appliqué ici :
+D1 (fenêtres en séances, bornes à 5 séances, seuils au prorata des BOC disponibles), D3 (garde
+de capitalisation non bloquante), D4 (remplissage de capacité plafonné à 98 %/n_cible), D5
+(drawdown relatif depuis t0, panier w_EW des 20 mieux classés), D6 (signaux sur le montant
+de dividende connu en t), D8 (« indice discipliné », variante ``REF``), D9 (variante ``I``
+cœur-satellite), D10 (événements pays datés de ``reference.COUNTRY_EVENTS``) et D11 (aucune
+note de l'analyste en validation S1).
 
 Contrat (``docs/ARCHITECTURE.md``) : ``BrvmAlpha(config).signals(asof, panels)``,
 ``.target_weights(asof, panels)`` et ``.explain(asof, panels, symbol)``.
@@ -67,6 +75,9 @@ from brvm_alpha.quant import macro, scoring
 
 __all__ = [
     "COUNTRY_RULES",
+    "FAMILY_V1",
+    "FAMILY_V11",
+    "REFERENCE_VARIANT",
     "SIGNAL_LABELS",
     "VARIANTS",
     "VARIANT_SPECS",
@@ -74,6 +85,7 @@ __all__ = [
     "BrvmAlpha",
     "VariantSpec",
     "build_panels",
+    "dividend_amount_gap",
     "notes_available",
 ]
 
@@ -107,7 +119,12 @@ _RESEARCH = ("mom3_1", "mom6_0", "mom12_1", "mom12_7", "amihud")
 
 @dataclass(frozen=True)
 class VariantSpec:
-    """Variante pré-enregistrée (§3.4)."""
+    """Variante pré-enregistrée (§3.4 ; additif v1.1, §8.4).
+
+    ``kind`` : ``"alpha"`` (A à H : score factoriel et construction du §6), ``"reference"``
+    (REF : « indice discipliné » D8, rebalancement annuel) ou ``"core_satellite"`` (I :
+    ``core_share × w_REF + (1 − core_share) × w_A``, D9).
+    """
 
     code: str
     weights: str  # code des poids du score (A, B, C ou D)
@@ -116,9 +133,12 @@ class VariantSpec:
     s1_pocket: bool = False
     regime_scaling: bool = False
     description: str = ""
+    kind: str = "alpha"
+    core_share: float = 0.0
 
 
-#: Les huit variantes déclarées avant toute exécution sur S1 (§3.4).
+#: Les variantes déclarées avant toute exécution sur S1 : A à H (§3.4), I (additif v1.1, D9) et
+#: la référence REF (« indice discipliné », D8 ; essai REF-ID, hors famille de la PBO).
 VARIANT_SPECS: dict[str, VariantSpec] = {
     "A": VariantSpec("A", "A", "equal", description="principal : poids du §3.2, équipondéré, mensuel, bande 30/50"),
     "B": VariantSpec("B", "B", "equal", description="EP 0,25 / DY 0,25 / MOM6_1 0,50 (choisi après coup)"),
@@ -128,8 +148,19 @@ VARIANT_SPECS: dict[str, VariantSpec] = {
     "F": VariantSpec("F", "A", "equal", regime_scaling=True, description="A + exposition × 0,75 en régime agité"),
     "G": VariantSpec("G", "A", "hrp_tilt", description="A pondéré par HRP incliné (γ = 0,5)"),
     "H": VariantSpec("H", "A", "mv_alpha", description="A pondéré par moyenne-variance (alpha de Grinold)"),
+    "I": VariantSpec("I", "A", "equal", kind="core_satellite", core_share=0.5,
+                     description="cœur-satellite : 0,5 × indice discipliné (annuel) + 0,5 × A (mensuel), D9"),
+    "REF": VariantSpec("REF", "A", "equal", kind="reference",
+                       description="indice discipliné (D8) : 20 plus grosses capitalisations éligibles, annuel"),
 }
+#: Tous les codes acceptés par :class:`BrvmAlpha` (famille v1.1 puis référence).
 VARIANTS: tuple[str, ...] = tuple(VARIANT_SPECS)
+#: Famille v1.0 (8 variantes du §3.4 d'origine).
+FAMILY_V1: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "H")
+#: Famille de la PBO et du DSR depuis l'additif v1.1 (N = 9, D9).
+FAMILY_V11: tuple[str, ...] = ("A", "B", "C", "D", "E", "F", "G", "H", "I")
+#: Référence « indice discipliné » (D8), évaluée sur S1 comme essai REF-ID hors famille.
+REFERENCE_VARIANT: str = "REF"
 
 #: Règles d'événements pays (§4.3) reconnues dans ``country_events`` ou dans les étiquettes
 #: des notes (``regle_pays:<règle>``). ``sessions`` : durée par défaut.
@@ -206,14 +237,18 @@ def build_panels(
     Hypothèses : nombre de titres et Composite TR **reconstruits** (spéc. §1.1) ; dates de
     connaissance des dividendes = première apparition au BOC (``first_seen``).
 
-    Montants des dividendes (point-in-time, §3.1.2) : dans ``dividends_table``, ``amount``
-    est le montant publié à la première apparition (ligne (d) le plus souvent) ; une
-    correction ultérieure du BOC est portée à part (``amount_revised``, ``revised_seen``) et
-    n'est utilisée par la stratégie qu'à partir de sa date de publication (5 cas : BOAM 2025,
-    CIEC 2021, ETIT 2026, ONTBF 2017 et 2024). Le moteur crédite le montant retenu par
-    ``store.detect_dividends`` (celui qui explique la baisse de la référence au détachement :
-    flux réellement versé, **hypothèse** à faire valider, la spécification donnant la priorité
-    à la ligne (d)).
+    Montants des dividendes (additif v1.1, D6) — interface entre signaux et moteur :
+
+    * **signaux** (DY via ``last_div_net`` du BOC de t, S1 et S2 via ``dividends_table``) :
+      montant **connu en t**. Dans ``dividends_table``, ``amount`` est le montant publié à la
+      première apparition (ligne (d) le plus souvent) ; une correction ultérieure du BOC est
+      portée à part (``amount_revised``, ``revised_seen``) et n'est lue qu'à partir de sa date
+      de publication (5 cas : BOAM 2025, CIEC 2021, ETIT 2026, ONTBF 2017 et 2024) ;
+    * **flux de trésorerie** du backtest : montant **corrigé** (meilleure estimation du
+      versement réel), colonne ``amount_cashflow`` de ``dividends_table`` et panel
+      ``dividend_net`` du moteur (``store.detect_dividends`` : le montant qui explique la
+      baisse de la référence au détachement ; **hypothèse** à faire valider). L'écart total
+      entre les deux est donné par :func:`dividend_amount_gap` (à publier, D6).
     """
     from brvm_alpha.data import store
 
@@ -277,7 +312,8 @@ def build_panels(
     # Montant connu à ``date`` (première publication) ; la correction n'est visible qu'à ``revised_seen``.
     divt["revised_seen"] = pd.to_datetime(divt["revised_seen"])
     divt["amount_revised"] = divt["amount"].where(divt["revised_seen"].notna())
-    divt["amount"] = divt["amount_first"].astype(float)
+    divt["amount_cashflow"] = divt["amount"].astype(float)  # D6 : montant corrigé, crédité par le moteur
+    divt["amount"] = divt["amount_first"].astype(float)  # D6 : montant connu à ``date`` (signaux)
     P["dividends_table"] = divt.sort_values(["date", "symbol"]).reset_index(drop=True)
     cat = ca.copy()
     cat["date"] = pd.to_datetime(cat["date"])
@@ -286,6 +322,33 @@ def build_panels(
     if end is not None:
         P = engine.truncate_asof(P, pd.Timestamp(end))
     return P
+
+
+def dividend_amount_gap(panels: Mapping[str, Any]) -> pd.DataFrame:
+    """Écart entre montants de dividende des signaux et des flux (additif v1.1, D6).
+
+    Une ligne par dividende de ``panels["dividends_table"]`` (:func:`build_panels`) :
+    ``amount_signal`` (montant connu à la date de connaissance : ligne (d) du BOC),
+    ``amount_cashflow`` (montant corrigé crédité par le moteur), ``gap`` (= flux − signal,
+    FCFA par action). ``attrs["total_gap_per_share"]`` et ``attrs["n_differences"]`` résument
+    l'écart, à publier avec les résultats. Aucune performance n'est calculée.
+    """
+    tab = _get(panels, "dividends_table")
+    cols = ["symbol", "ex_date", "date", "amount_signal", "amount_cashflow", "gap"]
+    if not isinstance(tab, pd.DataFrame) or not len(tab) or "amount" not in tab.columns:
+        out = pd.DataFrame(columns=cols)
+        out.attrs.update({"total_gap_per_share": 0.0, "n_differences": 0})
+        return out
+    cash = tab["amount_cashflow"] if "amount_cashflow" in tab.columns else tab["amount"]
+    out = pd.DataFrame({"symbol": tab["symbol"].astype(str), "ex_date": pd.to_datetime(tab["ex_date"]),
+                        "date": pd.to_datetime(tab["date"]) if "date" in tab.columns else pd.NaT,
+                        "amount_signal": tab["amount"].astype(float), "amount_cashflow": cash.astype(float)})
+    out["gap"] = out["amount_cashflow"] - out["amount_signal"]
+    out = out.reset_index(drop=True)
+    diff = out["gap"].abs() > 1e-9
+    out.attrs.update({"total_gap_per_share": float(out["gap"].sum()), "n_differences": int(diff.sum()),
+                      "note": "D6 : signaux = montant connu en t (ligne (d)) ; flux = montant corrigé (hypothèse)"})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -400,16 +463,20 @@ class AlphaDecision:
 
 
 class BrvmAlpha:
-    """Modèle BRVM Alpha v1 (variantes pré-enregistrées A à H, §3.4).
+    """Modèle BRVM Alpha v1 (variantes pré-enregistrées A à I et référence REF, §3.4 et §8.4).
 
     Parameters
     ----------
+    cfg
+        (mot-clé, contrat de l'additif v1.1) ``PlatformConfig`` — alias de ``config`` — ou
+        dictionnaire de paramètres de stratégie — alias de ``params`` ; ``None`` : défauts.
     config
         ``PlatformConfig`` (coûts, contraintes…) ; défaut :
         ``settings.apply_to_platform_config(params)`` (égal à ``PlatformConfig()`` sur le
         fichier livré).
     variant
-        ``"A"`` (principal) … ``"H"``.
+        ``"A"`` (principal) … ``"H"``, ``"I"`` (cœur-satellite, D9) ou ``"REF"`` (indice
+        discipliné, D8 : référence investissable, hors famille de la PBO).
     capital
         Capital K en FCFA (défaut : ``capital_fcfa_reference`` du YAML, 10 M) : il fixe le
         plancher U5 ``max(0,5 M ; 0,05·K)`` et les plafonds de liquidité.
@@ -419,10 +486,15 @@ class BrvmAlpha:
         paramètre FIGÉ est un essai de plus à journaliser (§8.2).
     notes
         ``"auto"`` (défaut : ``NoteStore()`` du dépôt si le module s'importe), un
-        ``NoteStore`` / ``DataFrame`` de notes, ou ``None`` (aucune note).
+        ``NoteStore`` / ``DataFrame`` de notes, ou ``None`` (aucune note). Forcé à ``None``
+        quand ``validation_s1=True`` (additif v1.1, D11 : ni veto ni inclinaison, S5 = 0).
     country_events
         Table ``date, country, rule`` (+ ``event_date``, ``end``, ``sessions``, ``label``)
-        des règles d'événements pays (§4.3) ; ``date`` = date de connaissance.
+        des règles d'événements pays (§4.3) ; ``date`` = date de l'annonce publique. ``None``
+        (défaut) : chronologie de l'additif v1.1 (``reference.COUNTRY_EVENTS``, D10) ;
+        ``False`` : aucune règle pays datée. Un événement est connu de la décision prise à la
+        clôture de t s'il a été annoncé avant la séance d'exécution (t + 1) : l'action a lieu à
+        la **première séance BOC qui suit l'annonce** (Mali, dimanche 09/01/2022 → 10/01/2022).
     dividend_calendar
         Avis de paiement de dividendes connus à l'avance (``date, symbol, ex_date,
         amount``) : poche S1 (variante E) et report des ventes (§5.2.6).
@@ -449,11 +521,12 @@ class BrvmAlpha:
     window_basis
         Comptage des fenêtres glissantes (MOM, LOWVOL, U2, U3, MDV63, malus S2, tampon R1,
         spread 120) : ``"boc"`` (BOC disponibles, convention de l'annexe ``univ_breadth.py``)
-        ou ``"sessions"`` (séances du calendrier des numéros de BOC, lecture littérale du
-        §3.1.3 et du §3.2 ; voir ``quant.features.WINDOW_BASES``). ``None`` (défaut) :
-        ``"boc"``, signalé dans les messages quand des BOC manquent dans la fenêtre. Les deux
-        lectures ne diffèrent qu'autour des BOC manquants (2021) : le choix est **à trancher
-        par un addendum pré-enregistré** et doit être explicite avec ``validation_s1=True``.
+        ou ``"sessions"`` (séances du calendrier des numéros de BOC ; voir
+        ``quant.features.WINDOW_BASES``). ``None`` (défaut) : ``data.window_basis`` du YAML,
+        soit ``"sessions"`` depuis l'additif v1.1 (D1), y compris avec ``validation_s1=True``.
+        En base ``"sessions"`` : bornes de rendement au dernier cours disponible à 5 séances au
+        plus, seuils ``m_eff = ⌈m × n_BOC_disponibles / L⌉`` avec un plancher de 40 (signaux)
+        ou 20 (filtres d'univers).
     validation_s1
         ``False`` (défaut) : aucune série de performance (spread du momentum, TR de marché du
         filtre de crash et du régime) n'est calculée sur des dates de l'échantillon vierge S1
@@ -484,10 +557,27 @@ class BrvmAlpha:
         window_basis: str | None = None,
         validation_s1: bool = False,
         capital_increases: pd.DataFrame | Iterable[Mapping[str, Any]] | None = None,
+        cfg: PlatformConfig | Mapping[str, Any] | None = None,
     ) -> None:
+        # Contrat de l'additif v1.1 : ``cfg`` = ``PlatformConfig`` (alias de ``config``) ou dictionnaire
+        # de paramètres de stratégie (alias de ``params`` : surcharges du YAML, validées).
+        if cfg is not None:
+            if isinstance(cfg, PlatformConfig):
+                if config is not None:
+                    raise ValueError("cfg et config désignent le même PlatformConfig : n'en passer qu'un")
+                config = cfg
+            elif isinstance(cfg, Mapping):
+                if params is not None:
+                    raise ValueError("cfg (dictionnaire de paramètres) et params : n'en passer qu'un")
+                params = cfg
+            else:
+                raise TypeError("cfg doit être un PlatformConfig, un dictionnaire de paramètres ou None")
         code = str(variant).upper().strip()
         if code not in VARIANT_SPECS:
             raise ValueError(f"variante inconnue {variant!r} ; choix : {', '.join(VARIANTS)}")
+        self.validation_s1 = bool(validation_s1)
+        if self.validation_s1:
+            notes = None  # additif v1.1, D11 : aucune note de l'analyste sur S1
         self.variant = code
         self.spec = VARIANT_SPECS[code]
         self.cfg = settings.load_strategy_config(overrides=params)
@@ -500,7 +590,15 @@ class BrvmAlpha:
             raise ValueError("capital doit être > 0")
         self.notes_source = notes
         self._store_cache: Any = None
-        self.country_events = self._normalize_events(country_events)
+        if country_events is None:  # additif v1.1, D10 : chronologie datée par défaut
+            self.country_events = self._normalize_events(reference.COUNTRY_EVENTS)
+            self.country_events_source = "reference.COUNTRY_EVENTS (additif v1.1, D10)"
+        elif country_events is False:
+            self.country_events = None
+            self.country_events_source = "désactivés (country_events=False)"
+        else:
+            self.country_events = self._normalize_events(country_events)
+            self.country_events_source = "table fournie"
         self.dividend_calendar = None if dividend_calendar is None else pd.DataFrame(dividend_calendar).copy()
         self.history_start = None if history_start is None else _as_ts(history_start)
         self.risk_overlay = bool(risk_overlay)
@@ -511,14 +609,12 @@ class BrvmAlpha:
         self.sector_map.index = self.sector_map.index.astype(str)
         self.portfolio_params = construct.portfolio_params(
             {**self.cfg, "capital": self.capital, "weighting": self.spec.weighting})
-        self.validation_s1 = bool(validation_s1)
-        if window_basis is None and self.validation_s1:
-            raise ValueError(
-                "validation_s1=True exige un window_basis explicite ('boc' ou 'sessions') : la base de comptage "
-                "des fenêtres (BOC disponibles ou séances) doit être tranchée par un addendum pré-enregistré "
-                "avant le test S1")
+        # Additif v1.1, D1 : base « sessions » par défaut (clé data.window_basis du YAML), y compris
+        # pour le test unique de S1.
         self.window_basis_explicit = window_basis is not None
-        self.window_basis = F._check_basis(window_basis if window_basis is not None else "boc")
+        self.window_basis = F._check_basis(window_basis if window_basis is not None
+                                           else settings.window_basis_default(self.cfg))
+        self.window_params = settings.min_obs_prorata_params(self.cfg)
         self.capital_increases = self._normalize_capital_increases(capital_increases)
         self._s1_open: dict[tuple[str, pd.Timestamp], pd.Timestamp] = {}
         self._s1_meta: dict[tuple[str, pd.Timestamp], dict[str, Any]] = {}
@@ -527,8 +623,14 @@ class BrvmAlpha:
         self._recording = False
         self._calendar: pd.DatetimeIndex | None = None
         self._nav: dict[pd.Timestamp, float] = {}
+        #: dates de VL où le portefeuille détenait des titres (D5 : t0 = première d'entre elles)
+        self._nav_invested: set[pd.Timestamp] = set()
         self._risk_state: dict[str, Any] = {"halved_since": None, "stopped": False, "alert": False,
                                             "index_year": None}
+        #: état des poches annuelles : REF (``ref``), cœur de I (``core``), côté A de I (``a``)
+        self._sleeves: dict[str, Any] = {"ref": None, "core": None, "a": None}
+        self._state_rev = 0
+        self._mode_override: str | None = None
         self._cache: OrderedDict[tuple[Any, ...], AlphaDecision] = OrderedDict()
         self._event_mode = False
         self.last_decision: AlphaDecision | None = None
@@ -541,9 +643,15 @@ class BrvmAlpha:
 
     @property
     def fingerprint(self) -> str:
-        """Empreinte des paramètres (registre des essais), base de comptage des fenêtres comprise."""
+        """Empreinte des paramètres (registre des essais) : YAML, variante, capital, base des
+        fenêtres, événements pays et statut des notes."""
+        ev = self.country_events
+        ev_key = None if ev is None else [(str(pd.Timestamp(r["date"]).date()), str(r["country"]), str(r["rule"]))
+                                          for r in ev.to_dict("records")]
         return settings.config_fingerprint({**self.cfg, "_variant": self.variant, "_capital": self.capital,
-                                            "_window_basis": self.window_basis})
+                                            "_window_basis": self.window_basis, "_country_events": ev_key,
+                                            "_notes": self.notes_source is not None and self.notes_source is not False,
+                                            "_validation_s1": self.validation_s1})
 
     def mdv_floor(self) -> float:
         """Plancher U5 : ``max(500 000 ; 0,05 × K)`` FCFA (§2)."""
@@ -588,6 +696,32 @@ class BrvmAlpha:
             raise ValueError(f"règles pays inconnues : {bad} ; choix : {sorted(COUNTRY_RULES)}")
         df["country"] = df["country"].astype(str).str.upper().str.replace("PAYS:", "", regex=False)
         return df.sort_values("date").reset_index(drop=True)
+
+    def _next_session(self, t: Any) -> pd.Timestamp:
+        """Séance d'exécution d'une décision prise à la clôture de ``t`` (calendrier publié des
+        séances s'il est connu, sinon jour ouvré suivant)."""
+        t = pd.Timestamp(t).normalize()
+        cal = self._calendar
+        if cal is not None and len(cal) and cal[0] <= t:
+            pos = int(cal.searchsorted(t, side="right"))
+            if pos < len(cal):
+                return pd.Timestamp(cal[pos]).normalize()
+        return pd.Timestamp(t + pd.offsets.BDay(1)).normalize()
+
+    def _events_known(self, events: pd.DataFrame, t: Any) -> pd.DataFrame:
+        """Événements pays connus de la décision de ``t`` (additif v1.1, D10).
+
+        Un événement daté de son annonce publique est pris en compte par la décision dont
+        l'exécution a lieu à la **première séance qui suit l'annonce** : annonce strictement
+        antérieure à la séance d'exécution ``t + 1`` (un dimanche 09/01/2022 est connu de la
+        décision du vendredi 07/01, exécutée le lundi 10/01). Une date qui tombe un jour de
+        séance (notes : première séance négociable) n'est connue qu'à partir de ce jour.
+        """
+        if events is None or not len(events):
+            return events
+        nxt = self._next_session(t)
+        dates = pd.to_datetime(events["date"]).dt.normalize()
+        return events[dates < nxt]
 
     # ------------------------------------------------------------- préparation
 
@@ -691,7 +825,7 @@ class BrvmAlpha:
         ev_tables = []
         for src in (self.country_events, self._normalize_events(_get(panels, "country_events"))):
             if src is not None:
-                ev_tables.append(src[src["date"] <= t])
+                ev_tables.append(self._events_known(src, t))
         country_events = pd.concat(ev_tables, ignore_index=True) if ev_tables else None
         cal_tables = []
         for src in (self.dividend_calendar, _get(panels, "dividend_calendar")):
@@ -739,6 +873,28 @@ class BrvmAlpha:
         """Fenêtre glissante comptée selon ``window_basis`` (BOC disponibles ou séances)."""
         return F.on_session_grid(df, self._grid_sess(d), fn)
 
+    def _window_start(self, d: _Data, n: int) -> int:
+        """Première ligne des ``n`` dernières séances (base « sessions », D1) ou lignes (base « boc »)."""
+        T = len(d.index)
+        gs = self._grid_sess(d)
+        if gs is None or not T:
+            return max(0, T - int(n))
+        return int(np.searchsorted(np.asarray(gs), int(gs[T - 1]) - int(n) + 1, side="left"))
+
+    def _bound_row(self, d: _Data, lag: int) -> int | None:
+        """Ligne de la borne ``t − lag`` séances : dernière ligne à cette séance ou avant, à 5 séances
+        au plus (D1) ; ``None`` sinon. Base « boc » : ``T − 1 − lag`` lignes."""
+        T = len(d.index)
+        gs = self._grid_sess(d)
+        if gs is None:
+            r = T - 1 - int(lag)
+            return r if r >= 0 else None
+        target = int(gs[T - 1]) - int(lag)
+        r = int(np.searchsorted(np.asarray(gs), target, side="right")) - 1
+        if r < 0 or target - int(gs[r]) > int(self.window_params["max_stale"]):
+            return None
+        return r
+
     def _window_note(self, d: _Data) -> str | None:
         """Message si des BOC manquent dans la fenêtre de 126 lignes (lecture « BOC » signalée)."""
         if d.sess is None or len(d.sess) < 2:
@@ -748,16 +904,38 @@ class BrvmAlpha:
         if span <= n:
             return None
         if self.window_basis == "boc":
-            return (f"fenêtres comptées en BOC disponibles : les {n} dernières lignes couvrent {span} séances "
-                    f"({span - n} BOC manquants) ; lecture littérale « en séances » : window_basis='sessions' "
-                    "(choix à trancher par addendum pré-enregistré avant S1)")
-        return (f"fenêtres comptées en séances : {span - n} BOC manquants dans les {span} dernières séances "
-                "(moins de rendements valides : signaux et U2 plus souvent indéfinis)")
+            return (f"fenêtres comptées en BOC disponibles (lecture v1.0) : les {n} dernières lignes couvrent {span} "
+                    f"séances ({span - n} BOC manquants) ; l'additif v1.1 (D1) retient window_basis='sessions'")
+        miss = int(F.missing_sessions_in_window(d.sess, 126)[-1])
+        if miss <= 0:
+            return None
+        return (f"fenêtres comptées en séances (additif v1.1, D1) : {miss} BOC manquants dans les 126 dernières "
+                "séances ; seuils minimaux au prorata des BOC disponibles (planchers 40 / 20), bornes de "
+                "rendement à 5 séances au plus")
 
     # ---------------------------------------------------------------- univers
 
+    def _thr(self, d: _Data, window: int, min_obs: int, kind: str = "filter") -> pd.Series | int:
+        """Seuil minimal d'observations au prorata des BOC disponibles (additif v1.1, D1).
+
+        ``kind="filter"`` : plancher de 20 (univers) ; ``"signal"`` : plancher de 40. Seuil
+        constant ``m`` en base ``"boc"`` (aucune séance manquante dans une fenêtre de lignes).
+        """
+        floor = self.window_params["filter_floor" if kind == "filter" else "signal_floor"]
+        return F.min_obs_thresholds(self._grid_sess(d), int(window), int(min_obs), int(floor), index=d.index)
+
+    @staticmethod
+    def _ge(df: pd.DataFrame, thr: pd.Series | int) -> pd.DataFrame:
+        return df.ge(thr, axis=0) if isinstance(thr, pd.Series) else df >= thr
+
     def _universe_frames(self, d: _Data) -> dict[str, pd.DataFrame]:
-        """Composantes U1-U9 sur tout l'historique tronqué (date × symbole)."""
+        """Composantes U1-U9 sur tout l'historique tronqué (date × symbole).
+
+        Base « sessions » (additif v1.1, D1) : fenêtres de 63, 120 et 60 séances du calendrier
+        des BOC ; seuils au prorata des BOC disponibles (plancher 20) ; historique U2 compté en
+        séances cotées, un BOC manquant entre deux cotations comptant comme une séance cotée
+        (« un BOC manquant est une perte de nos données, pas une absence de cotation »).
+        """
         u = self.cfg["universe"]
         status = d.wide["status"]
         close = d.wide["close_raw"]
@@ -765,21 +943,36 @@ class BrvmAlpha:
         susp = status.eq("suspended").fillna(False).astype(bool) if hasattr(status, "eq") else listed & False
         vol = d.w("volume")
         traded = listed & (vol.fillna(0.0) > 0) if vol is not None else listed & status.eq("traded")
+        gs = self._grid_sess(d)
         n_hist = listed.astype(float).cumsum()  # « séances cotées » : BOC où le titre figure
+        if gs is not None and len(gs) > 1:
+            gap = np.r_[0, np.diff(np.asarray(gs, dtype=np.int64)) - 1].astype(float)
+            both = (listed & listed.shift(1, fill_value=False)).to_numpy(dtype=bool)
+            extra = np.where(both, gap[:, None], 0.0)
+            n_hist = pd.DataFrame(listed.to_numpy(dtype=float) + extra, index=d.index, columns=d.symbols).cumsum()
         tr = d.wide["tr_index"]
         ret_ok = (tr.notna() & tr.shift(1).notna() & ~susp & listed).astype(float)
         # Fenêtres (63, 120, 60 et tampon R1) comptées selon ``window_basis`` : BOC disponibles,
         # ou séances du calendrier (un BOC manquant n'apporte ni rendement ni échange).
         n_ret63 = self._roll(d, ret_ok, lambda x: x.rolling(63, min_periods=1).sum()).fillna(0.0)
-        frac120 = self._roll(d, traded.astype(float).where(listed), lambda x: x.rolling(120, min_periods=60).mean())
+        thr63 = self._thr(d, 63, int(u["min_obs_63"]))
+        tl = traded.astype(float).where(listed)
+        frac_raw = self._roll(d, tl, lambda x: x.rolling(120, min_periods=1).mean())
+        n120 = self._roll(d, tl, lambda x: x.rolling(120, min_periods=1).count())
+        thr120 = self._thr(d, 120, 60)
+        frac120 = frac_raw.where(self._ge(n120, thr120))
         value = d.w("value")
         if value is None:
             mdv63 = pd.DataFrame(np.nan, index=d.index, columns=d.symbols)
             mdv60 = mdv63
         else:
             v0 = value.where(traded, 0.0).where(listed)
-            mdv63 = self._roll(d, v0, lambda x: x.rolling(63, min_periods=40).median())
-            mdv60 = self._roll(d, v0, lambda x: x.rolling(60, min_periods=40).median())
+            med63 = self._roll(d, v0, lambda x: x.rolling(63, min_periods=1).median())
+            cnt63 = self._roll(d, v0, lambda x: x.rolling(63, min_periods=1).count())
+            mdv63 = med63.where(self._ge(cnt63, self._thr(d, 63, 40)))
+            med60 = self._roll(d, v0, lambda x: x.rolling(60, min_periods=1).median())
+            cnt60 = self._roll(d, v0, lambda x: x.rolling(60, min_periods=1).count())
+            mdv60 = med60.where(self._ge(cnt60, self._thr(d, 60, 40)))
         buf = int(u.get("resume_buffer_sessions", 5))
         if buf > 0:
             prior = self._roll(d, susp.astype(float), lambda x: x.shift(1).rolling(buf, min_periods=1).max())
@@ -787,7 +980,7 @@ class BrvmAlpha:
         else:
             recent = susp & False
         u1 = listed & ~susp & ~recent
-        u2 = (n_hist >= int(u["min_history_sessions"])) & (n_ret63 >= int(u["min_obs_63"]))
+        u2 = (n_hist >= int(u["min_history_sessions"])) & self._ge(n_ret63, thr63)
         u3 = frac120 >= float(u["min_traded_fraction_120"])
         # U4 : flottant d'après le dernier avis utilisable à chaque date (inconnu = admis, signalé).
         ff = pd.DataFrame(np.nan, index=d.index, columns=d.symbols)
@@ -805,8 +998,11 @@ class BrvmAlpha:
                 stale[sym] = (d.index >= pd.Timestamp(rec.published)) & (age > max_age)
         u9 = ~stale
         eligible = u1 & u2 & u3 & u4 & u5 & u9
+        thr63_df = pd.DataFrame(np.broadcast_to(np.asarray(thr63, dtype=float).reshape(-1, 1) if isinstance(
+            thr63, pd.Series) else float(thr63), listed.shape), index=d.index, columns=d.symbols)
         return {"listed": listed, "suspended": susp, "recent_suspension": recent, "traded": traded,
-                "n_hist": n_hist, "n_ret63": n_ret63, "frac120": frac120, "mdv63": mdv63, "mdv60": mdv60,
+                "n_hist": n_hist, "n_ret63": n_ret63, "thr_ret63": thr63_df, "frac120": frac120, "mdv63": mdv63,
+                "mdv60": mdv60,
                 "free_float": ff, "stale": stale, "u1": u1, "u2": u2, "u3": u3, "u4": u4, "u5": u5, "u9": u9,
                 "eligible": eligible}
 
@@ -860,8 +1056,11 @@ class BrvmAlpha:
                                  f"{int(u['min_history_sessions'])}) : hors du moteur factoriel")
                 else:
                     codes.append("U2")
+                    thr = int(last["thr_ret63"][s])
                     texts.append(f"U2 : historique insuffisant ({int(n_hist)} séances cotées, {int(n63)} rendements "
-                                 f"sur 63 ; minimum {int(u['min_history_sessions'])} et {int(u['min_obs_63'])})")
+                                 f"sur 63 séances ; minimum {int(u['min_history_sessions'])} et {thr}"
+                                 + (f" (seuil {int(u['min_obs_63'])} au prorata des BOC disponibles)"
+                                    if thr != int(u["min_obs_63"]) else "") + ")")
             frac = float(last["frac120"][s]) if pd.notna(last["frac120"][s]) else float("nan")
             if listed and not bool(last["u3"][s]):
                 codes.append("U3")
@@ -941,17 +1140,20 @@ class BrvmAlpha:
         sf = d.w("split_factor")
         dyd = F.dy_signal_details(fp, split_factor=sf, params=sub("dy"))
         wb = self.window_basis
+        # Additif v1.1, D1 : bornes à 5 séances au plus, seuils au prorata (plancher 40).
+        mk = {"window_basis": wb, "obs_floor": self.window_params["signal_floor"],
+              "max_stale_sessions": self.window_params["max_stale"]}
         blocks = {
             "ep": F.ep_signal(fp, eps_override=eps, split_factor=sf, params=sub("ep")),
             "dy": dyd["dy"],
-            "mom6_1": F.mom6_1(fp, params=sub("mom6_1"), window_basis=wb),
-            "lowvol": F.lowvol(fp, params=sub("lowvol"), window_basis=wb),
+            "mom6_1": F.mom6_1(fp, params=sub("mom6_1"), **mk),
+            "lowvol": F.lowvol(fp, params=sub("lowvol"), window_basis=wb, obs_floor=mk["obs_floor"]),
             "quality_proxy": F.quality_proxy(fp, universe=elig_hist, eps_override=eps, split_factor=sf,
                                              params=sub("quality_proxy")),
-            "mom3_1": F.mom3_1(fp, params=sub("mom3_1"), window_basis=wb),
-            "mom6_0": F.mom6_0(fp, params=sub("mom6_0"), window_basis=wb),
-            "mom12_1": F.mom12_1(fp, params=sub("mom12_1"), window_basis=wb),
-            "mom12_7": F.mom12_7(fp, params=sub("mom12_7"), window_basis=wb),
+            "mom3_1": F.mom3_1(fp, params=sub("mom3_1"), **mk),
+            "mom6_0": F.mom6_0(fp, params=sub("mom6_0"), **mk),
+            "mom12_1": F.mom12_1(fp, params=sub("mom12_1"), **mk),
+            "mom12_7": F.mom12_7(fp, params=sub("mom12_7"), **mk),
         }
         if fp.get("value") is not None and (fp.get("status") is not None or fp.get("volume") is not None):
             blocks["amihud"] = F.amihud_signal(fp, params=sub("amihud"))
@@ -986,6 +1188,9 @@ class BrvmAlpha:
                                "performance calculée")
             out["multiplier"] = 1.0
             return out
+        gs = self._grid_sess(d)
+        sess_s = pd.Series(gs, index=d.index) if gs is not None else None  # D1 : fenêtres en séances
+        floor = self.window_params["signal_floor"]
         try:
             if hs is not None:
                 rows = d.index >= hs
@@ -993,14 +1198,16 @@ class BrvmAlpha:
                 spread = F.momentum_spread_returns(fps, mom=mom.loc[rows], universe=elig_hist.loc[rows])
             else:
                 spread = F.momentum_spread_returns(fp, mom=mom, universe=elig_hist)
-            vs = F.vol_scaling(spread, history_start=hs, params=comp.get("momentum_vol_scaling"))
+            vs = F.vol_scaling(spread, history_start=hs, params=comp.get("momentum_vol_scaling"), sess=sess_s,
+                               obs_floor=floor)
             out["vol_scaling"] = float(vs.iloc[-1]) if len(vs) else 1.0
         except Exception as exc:  # garde-fou : modulateur neutre, signalé
             out["vol_scaling_error"] = f"{exc.__class__.__name__} : {exc}"
         if d.market_tr is not None and len(d.market_tr) > 2:
             try:
                 mtr = d.market_tr if hs is None else d.market_tr[d.market_tr.index >= hs]
-                cf = F.crash_filter(mtr, history_start=hs, params=comp.get("momentum_crash_filter"))
+                cf = F.crash_filter(mtr, history_start=hs, params=comp.get("momentum_crash_filter"), sess=sess_s,
+                                    obs_floor=floor)
                 val = cf.reindex(cf.index.union([d.t])).ffill().get(d.t)
                 out["crash_filter"] = float(val) if val is not None and np.isfinite(val) else 1.0
             except Exception as exc:
@@ -1056,6 +1263,9 @@ class BrvmAlpha:
 
     def _notes_store(self) -> tuple[Any, str]:
         src = self.notes_source
+        if self.validation_s1:
+            return None, ("notes de l'analyste sans rôle en validation S1 (additif v1.1, D11 : ni veto ni "
+                          "inclinaison, S5 = 0)")
         if src is None or src is False:
             return None, "notes désactivées (notes=None)"
         ns, why = self._notes_api()
@@ -1163,12 +1373,18 @@ class BrvmAlpha:
         if events is None or not len(events):
             return out
         idx = d.index
+        gs = self._grid_sess(d)
         for r in events.sort_values("date").to_dict("records"):
             rule = r["rule"]
             spec = COUNTRY_RULES[rule]
             c = str(r["country"]).upper()
             since = pd.Timestamp(r["date"])
+            # Séances écoulées depuis l'action (première séance qui suit l'annonce, D10), comptées en
+            # séances du calendrier des BOC en base « sessions » (D1), en lignes sinon.
             elapsed = int(((idx > since) & (idx <= d.t)).sum())
+            if gs is not None and elapsed > 0:
+                p0 = int(idx.searchsorted(since, side="right"))
+                elapsed = int(gs[len(idx) - 1] - gs[p0]) + 1
             active = False
             ramp = None
             remaining: int | None = None
@@ -1213,14 +1429,28 @@ class BrvmAlpha:
         return out
 
     def _country_vol_normal(self, d: _Data, country: str) -> bool:
-        """Volatilité 20 j d'un panier équipondéré du pays < 1,5 × sa volatilité 250 j (§4.3)."""
+        """Volatilité 20 j d'un panier équipondéré du pays < 1,5 × sa volatilité 250 j (§4.3).
+
+        Base « sessions » (D1) : 20 et 250 dernières séances du calendrier des BOC ; la
+        volatilité « normale » (250) exige ``max(⌈200 × n_dispo / 250⌉ ; 40)`` observations
+        (convention de LOWVOL, plancher des signaux) ; indéfinie : retour progressif permis
+        (comportement antérieur, signalé dans les diagnostics des règles pays).
+        """
         syms = [s for s in d.symbols if reference.country_of(s) == country]
         if not syms:
             return True
         tr = d.wide["tr_index"][syms]
         r = (tr / tr.shift(1) - 1.0).mean(axis=1)
-        v20 = r.iloc[-20:].std(ddof=1)
-        v250 = r.iloc[-250:].std(ddof=1)
+        r20 = r.iloc[self._window_start(d, 20):].dropna()
+        r250 = r.iloc[self._window_start(d, 250):].dropna()
+        gs = self._grid_sess(d)
+        need = 2
+        if gs is not None:
+            miss = F.missing_sessions_in_window(gs, 250)[-1]
+            need = int(F.prorata_min_obs(200, 250, miss, self.window_params["signal_floor"]))
+            need = max(need, 2)
+        v20 = r20.std(ddof=1) if len(r20) >= 2 else float("nan")
+        v250 = r250.std(ddof=1) if len(r250) >= need else float("nan")
         if not (np.isfinite(v20) and np.isfinite(v250)) or v250 <= 0:
             return True
         return bool(v20 < 1.5 * v250)
@@ -1248,15 +1478,17 @@ class BrvmAlpha:
         exd_boc = pd.Series(False, index=syms)
         r8 = pd.Series(False, index=syms)
         detail: dict[str, list[str]] = {s: [] for s in syms}
+        r8_n = int(self.cfg.get("events", {}).get("risk_filters", {}).get("R8", {}).get("sessions", 5))
+        w5 = self._window_start(d, r8_n)  # R8 : 5 séances (comptées en séances en base « sessions », D1)
         if flags is not None:
             f_t = flags.iloc[-1].astype(str)
             exd_boc = f_t.str.contains("EX-D", regex=False).reindex(syms).fillna(False).astype(bool)
-            win = flags.iloc[max(0, T - 5):].astype(str)
+            win = flags.iloc[w5:].astype(str)
             r8 = win.apply(lambda c: c.str.contains(r"VAL-T|\(#\)", regex=True)).any(axis=0).reindex(syms)
             r8 = r8.fillna(False).astype(bool)
         r8_fail = pd.Series(False, index=syms)
         if d.corporate_actions is not None and len(d.corporate_actions):
-            lo = d.index[max(0, T - 5)]
+            lo = d.index[min(w5, T - 1)]
             recent_ca = d.corporate_actions[d.corporate_actions["date"] >= lo]
             for rec in recent_ca.to_dict("records"):
                 s = str(rec["symbol"])
@@ -1276,7 +1508,7 @@ class BrvmAlpha:
                     detail[s].append(f"R8 : saut de cours inexpliqué ({kind}) le {_d(rec['date'])} : contrôle échoué")
         # Contrôle des données (§9.1) : rendement quotidien > |50 %| sur les 5 dernières séances.
         tr = d.wide["tr_index"]
-        rets = (tr / tr.shift(1) - 1.0).iloc[max(0, T - 5):]
+        rets = (tr / tr.shift(1) - 1.0).iloc[self._window_start(d, 5):]
         guard = float(self.cfg.get("data", {}).get("max_abs_daily_return_guard", 0.5))
         bad = (rets.abs() > guard).any(axis=0).reindex(syms).fillna(False).astype(bool)
         for s in syms[bad.to_numpy()]:
@@ -1343,11 +1575,12 @@ class BrvmAlpha:
                 detail[s].append("R12 : payout estimé > 100 % deux ans de suite (approximation)")
         # Revue obligatoire (§9.1) : sous-performance > 25 % contre le TR sur 63 séances.
         review = pd.Series(False, index=syms)
-        if d.market_tr is not None and T > 63:
+        r63 = self._bound_row(d, 63) if T > 63 else None
+        if d.market_tr is not None and r63 is not None:
             m = d.market_tr.reindex(d.index).ffill()
-            if pd.notna(m.iloc[-1]) and pd.notna(m.iloc[-64]) and m.iloc[-64] > 0:
-                mret = m.iloc[-1] / m.iloc[-64] - 1.0
-                sret = tr.iloc[-1] / tr.iloc[-64] - 1.0
+            if pd.notna(m.iloc[-1]) and pd.notna(m.iloc[r63]) and m.iloc[r63] > 0:
+                mret = m.iloc[-1] / m.iloc[r63] - 1.0
+                sret = tr.iloc[-1] / tr.iloc[r63] - 1.0
                 rel = (1.0 + sret) / (1.0 + mret) - 1.0
                 review = (rel < float(self.cfg.get("risk", {}).get("review_if_rel_underperf_63", -0.25)))
                 review = review.reindex(syms).fillna(False).astype(bool)
@@ -1437,7 +1670,7 @@ class BrvmAlpha:
         **approximations** (DY brut × PER) ; les seuils R11 / R12 sont des choix non validés.
         """
         saved = self.notes_source
-        if not (isinstance(notes, str) and notes == "default"):
+        if not (isinstance(notes, str) and notes == "default") and not self.validation_s1:
             self.notes_source = notes
         try:
             dec = self.decide(asof, panels, portfolio=False)
@@ -1517,7 +1750,8 @@ class BrvmAlpha:
         key = (_as_ts(asof), id(panels), objs,
                tuple(sorted((k, round(float(v), 10) if np.isfinite(v) else -1.0) for k, v in held_s.items())),
                bool(portfolio), self._event_mode, len(self._nav), bool(self._risk_state.get("stopped")),
-               self._recording, len(self._s1_journal), len(self._s1_open), self._s1_suspended is not None)
+               self._recording, len(self._s1_journal), len(self._s1_open), self._s1_suspended is not None,
+               self._state_rev, self._mode_override, len(self._nav_invested))
         if key in self._cache:
             self._cache.move_to_end(key)
             return self._cache[key]
@@ -1574,7 +1808,7 @@ class BrvmAlpha:
         ev = pd.concat(events, ignore_index=True) if events else None
         if ev is not None:
             ev = self._normalize_events(ev)
-            ev = ev[ev["date"] <= d.t] if ev is not None else None
+            ev = self._events_known(ev, d.t) if ev is not None else None
         country_state = self._country_rule_state(d, ev)
         risk = self._risk_table(d, panel_risk, notes, country_state)
         elig_t = uni["eligible"].reindex(d.symbols).fillna(False).astype(bool)
@@ -1602,7 +1836,19 @@ class BrvmAlpha:
         if not portfolio:
             w0 = pd.Series(0.0, index=d.symbols, name="weight")
             return AlphaDecision(d.t, self.variant, w0, uni, signals_out, risk, score_tab, diag, _uniq(messages))
-        weights, pdiag, pmsg = self._portfolio(d, fr, uni, risk, score_tab, held, country_state, dyd, elig_t, sig_block)
+        kind = "reference" if self._mode_override == "index" else self.spec.kind
+        if kind == "reference":
+            weights, pdiag, pmsg = self._reference_portfolio(d, uni, risk, held, country_state)
+            guard = self._cap_guard(d)
+            pdiag["cap_guard"] = guard
+            if guard.get("alert"):
+                pmsg = [guard["message"]] + list(pmsg)
+        elif kind == "core_satellite":
+            weights, pdiag, pmsg = self._core_satellite(d, fr, uni, risk, score_tab, held, country_state, dyd,
+                                                        elig_t, sig_block)
+        else:
+            weights, pdiag, pmsg = self._portfolio(d, fr, uni, risk, score_tab, held, country_state, dyd, elig_t,
+                                                   sig_block)
         # Invariants de sortie : poids ≥ 0, somme ≤ exposition visée (98 %), y compris quand des poids
         # détenus (dérivés depuis la dernière décision) sont reconduits.
         budget = float(self.portfolio_params["gross_equity"])
@@ -1699,6 +1945,8 @@ class BrvmAlpha:
             w = held.reindex(syms).fillna(0.0).clip(lower=0.0).rename("weight")
             diag["mode"] = "gel_donnees"
             return w, diag, msgs
+        if guard.get("alert"):
+            msgs.append(guard["message"])
         if self._risk_state.get("stopped"):
             msgs.append("ARRÊT (§9.1) : drawdown relatif ≤ −20 % : mode « indice discipliné » ; "
                         "aucune promesse d'alpha")
@@ -1710,10 +1958,11 @@ class BrvmAlpha:
             diag["relative_drawdown"] = {**{k: v for k, v in rel_track.items() if k not in ("halve", "stop")},
                                          "tracking_only": True}
             year = self._risk_state.get("index_year")
-            if year == d.t.year and len(held) and np.isfinite(held.to_numpy()).all():
-                msgs.append("indice discipliné : rebalancement annuel, positions inchangées jusqu'en janvier")
-                return held.reindex(syms).fillna(0.0).rename("weight"), diag, msgs
-            w, idiag = self._index_weights(d, uni, risk, held)
+            if year == d.t.year and len(held) and np.isfinite(held.to_numpy()).all() and float(held.sum()) > 0:
+                w, idiag = self._index_hold(d, uni, risk, held, country_state)
+                diag.update(idiag)
+                return w, diag, msgs + idiag.get("index", {}).get("messages", [])
+            w, idiag = self._index_weights(d, uni, risk, held, country_state)
             self._risk_state["index_year"] = d.t.year
             diag.update(idiag)
             return w, diag, msgs + idiag.get("index", {}).get("messages", [])
@@ -1771,12 +2020,16 @@ class BrvmAlpha:
         if rel.get("message"):
             msgs.append(rel["message"])
         if rel.get("halve"):
-            w_ew = self._ew_eligible(pdg, elig)
+            w_ew = self._ew_eligible(pdg, elig, scores, held, ctx.get("no_buy", []))
             w = (0.5 * w + 0.5 * w_ew.reindex(syms).fillna(0.0)).rename("weight")
+            diag["ew_basket"] = {"names": list(w_ew[w_ew > 0].index), "weights": w_ew[w_ew > 0],
+                                 "rule": "additif v1.1, D5 : 20 éligibles les mieux classés, équipondérés sous "
+                                         "plafonds ; entrées et sorties exemptées de la bande de non-transaction"}
             msgs.append("§9.1 : drawdown relatif ≤ −15 % : exposition active divisée par 2 (½ cible + ½ panier "
-                        "équipondéré des éligibles ; plancher de 2 % non réappliqué)")
+                        f"équipondéré des {int((w_ew > 0).sum())} éligibles les mieux classés, D5 ; plancher de 2 % "
+                        "non réappliqué)")
         if rel.get("stop"):
-            w, idiag = self._index_weights(d, uni, risk, held)
+            w, idiag = self._index_weights(d, uni, risk, held, country_state)
             self._risk_state["index_year"] = d.t.year
             diag.update(idiag)
             diag["mode"] = "indice_discipline"
@@ -1878,11 +2131,22 @@ class BrvmAlpha:
         out = pd.concat(frames, ignore_index=True).drop_duplicates(["symbol", "ex_date"])
         return out
 
-    def _ew_eligible(self, pdg: Mapping[str, Any], elig: Sequence[str]) -> pd.Series:
+    def _ew_eligible(self, pdg: Mapping[str, Any], elig: Sequence[str], scores: pd.Series | None = None,
+                     held: pd.Series | None = None, no_buy: Iterable[str] = ()) -> pd.Series:
+        """Panier w_EW de la règle −15 % (§9.1) : équipondération, sous les plafonds de A, des
+        **20 éligibles les mieux classés** (additif v1.1, D5), titres achetables ou détenus."""
         caps = pdg.get("caps", {})
         upper = caps.get("upper")
         groups = caps.get("groups", [])
-        names = [s for s in elig if upper is None or float(upper.get(s, 0.0)) > 0]
+        held_set = set(held.index) if held is not None else set()
+        blocked = set(no_buy)
+        names = [s for s in elig if (upper is None or float(upper.get(s, 0.0)) > 0)
+                 and (s not in blocked or s in held_set)]
+        if scores is not None and len(names):
+            ranks = construct.score_ranks(scores.reindex(names), names)
+            names = list(ranks.index)
+        top_n = int(self.cfg.get("risk", {}).get("relative_dd", {}).get("ew_basket_top_n", 20))
+        names = names[:top_n]
         if not names:
             return pd.Series(dtype=float)
         return construct.equal_weight_with_caps(names, upper, groups, float(self.portfolio_params["gross_equity"]),
@@ -2134,15 +2398,32 @@ class BrvmAlpha:
 
     # -------------------------------------------------- risque de portefeuille
 
-    def record_nav(self, asof: Any, nav: float | None) -> None:
-        """Mémorise la valeur liquidative (pour les règles de drawdown relatif du §9.1)."""
+    def record_nav(self, asof: Any, nav: float | None, invested: bool | None = None) -> None:
+        """Mémorise la valeur liquidative (règles de drawdown relatif du §9.1).
+
+        ``invested`` : le portefeuille détient-il des titres à cette date ? (``None`` : inconnu,
+        compté comme investi). Le drawdown relatif est mesuré depuis **t0**, première date
+        investie (additif v1.1, D5 ; en production : début du suivi réel).
+        """
         if nav is None or not np.isfinite(nav):
             return
-        self._nav[_as_ts(asof).normalize()] = float(nav)
+        t = _as_ts(asof).normalize()
+        self._nav[t] = float(nav)
+        if invested is None or bool(invested):
+            self._nav_invested.add(t)
+
+    @property
+    def relative_dd_start(self) -> pd.Timestamp | None:
+        """t0 du drawdown relatif (D5) : première date de VL où le portefeuille détenait des titres."""
+        return min(self._nav_invested) if self._nav_invested else None
 
     def reset_state(self) -> None:
-        """Oublie les valeurs liquidatives, l'état des règles de risque et le journal S1 (nouveau backtest)."""
+        """Oublie les valeurs liquidatives, l'état des règles de risque, des poches annuelles (REF,
+        cœur de I) et le journal S1 (nouveau backtest)."""
         self._nav.clear()
+        self._nav_invested.clear()
+        self._sleeves = {"ref": None, "core": None, "a": None}
+        self._state_rev += 1
         self._risk_state = {"halved_since": None, "stopped": False, "alert": False, "index_year": None}
         self._s1_open.clear()
         self._s1_meta.clear()
@@ -2156,7 +2437,12 @@ class BrvmAlpha:
         if not self.risk_overlay or len(self._nav) < 2 or d.market_tr is None:
             return out
         nav = pd.Series(self._nav).sort_index()
-        nav = nav[nav.index <= d.t]
+        t0 = self.relative_dd_start
+        if t0 is None:
+            return out
+        # Additif v1.1, D5 : ratio VL / TR rebasé à t0 (premier jour investi), contre son plus haut depuis t0.
+        nav = nav[(nav.index >= t0) & (nav.index <= d.t)]
+        out["t0"] = t0
         m = d.market_tr.reindex(d.market_tr.index.union(nav.index)).ffill().reindex(nav.index)
         ok = nav.notna() & m.notna() & (m > 0)
         nav, m = nav[ok], m[ok]
@@ -2219,56 +2505,45 @@ class BrvmAlpha:
             return {"checked": False}
         cap = float((d.wide["close_raw"].iloc[-1] * shares.iloc[-1]).sum(min_count=1))
         ratio = cap / float(last["market_cap"])
-        out: dict[str, Any] = {"checked": True, "ratio": ratio, "tolerance": tol}
+        blocking = bool(self.cfg.get("data", {}).get("cap_guard_blocking", False))
+        out: dict[str, Any] = {"checked": True, "ratio": ratio, "tolerance": tol, "blocking": blocking}
         if not np.isfinite(ratio) or abs(ratio - 1.0) > tol:
-            out["blocked"] = True
-            out["message"] = (f"§9.1 contrôle des données : capitalisation reconstruite / publiée = {ratio:.4f} "
-                              f"(écart > {tol:.0%}) : calcul des signaux bloqué, positions inchangées")
+            out["alert"] = True
+            if blocking:  # lecture v1.0 du §9.1 (désactivée par l'additif v1.1)
+                out["blocked"] = True
+                out["message"] = (f"§9.1 contrôle des données : capitalisation reconstruite / publiée = {ratio:.4f} "
+                                  f"(écart > {tol:.0%}) : calcul des signaux bloqué, positions inchangées")
+            else:  # additif v1.1, D3 : alerte journalisée, non bloquante
+                out["message"] = (f"ALERTE données (additif v1.1, D3) : capitalisation reconstruite / publiée = "
+                                  f"{ratio:.4f} (écart > {tol:.0%}) ; non bloquant : le nombre de titres reconstruit "
+                                  "ne sert qu'à l'étalon et aux références b_c, pas aux signaux")
         return out
 
     # -------------------------------------------------------- indice discipliné
 
-    def _index_weights(self, d: _Data, uni: pd.DataFrame, risk: pd.DataFrame, held: pd.Series) -> tuple[
-            pd.Series, dict[str, Any]]:
+    def _index_inputs(self, d: _Data, uni: pd.DataFrame, risk: pd.DataFrame, held: pd.Series,
+                      country_state: dict[str, dict[str, Any]]) -> tuple[pd.Series, list[str], dict[str, Any],
+                                                                          list[str]]:
+        """Capitalisations (étalon), candidats et contexte de l'indice discipliné (D8), connus en t."""
         syms = d.symbols
         msgs: list[str] = []
         veto = set(syms[risk["veto"].reindex(syms).fillna(False).to_numpy(dtype=bool)])
-        held_ok = {s for s in held.index if np.isfinite(held[s])}
-        no_buy = {s for s in syms if bool(risk.loc[s, "block_buys"]) and s not in held_ok}
-        elig = [s for s in syms if bool(uni.loc[s, "eligible"]) and s not in veto and s not in no_buy]
-        shares = d.w("shares")
+        sig_block = (risk["data_guard"] | risk["R8_fail"]).reindex(syms).fillna(False).astype(bool)
+        elig = [s for s in syms if bool(uni.loc[s, "eligible"]) and s not in veto]
+        ctx, cmsg = self._context(d, uni, risk, held, country_state, elig)
+        msgs.extend(cmsg)
+        no_buy = set(ctx.get("no_buy", [])) | {s for s in syms if bool(sig_block[s])}
         close_t = d.wide["close_raw"].iloc[-1]
+        listed = uni["listed"].reindex(syms).fillna(False).astype(bool)
+        shares = d.w("shares")
+        cap = pd.Series(np.nan, index=syms, dtype=float)
         if shares is not None:
-            cap = (close_t * shares.iloc[-1]).reindex(elig)
-        else:
-            cap = pd.Series(np.nan, index=elig)
+            cap = (close_t * shares.iloc[-1]).reindex(syms)
+        if not cap[listed].notna().any():
+            cap = uni["mdv63"].reindex(syms).astype(float)
             msgs.append("indice discipliné : nombre de titres absent, capitalisation remplacée par la MDV63 "
                         "(approximation)")
-        if cap.isna().all():
-            cap = uni["mdv63"].reindex(elig)
-        cap = cap.dropna()
-        cap = cap[cap > 0].sort_values(ascending=False, kind="mergesort")
-        n = len(cap)
-        n_sel = 20 if n >= 20 else n
-        sel = list(cap.index[:n_sel])
-        if not sel:
-            return pd.Series(0.0, index=syms, name="weight"), {"index": {"selected": [], "messages": msgs}}
-        pp = self.portfolio_params
-        countries = pd.Series({s: reference.country_of(s) for s in sel})
-        sectors = self.sector_map.reindex(sel)
-        rf = pd.DataFrame({"R4": risk["R4"], "R11": risk["R11"].astype(int), "R12": risk["R12"]}).reindex(sel)
-        u6 = uni["low_liquidity"].reindex(sel)
-        u7 = uni["wide_spread"].reindex(sel)
-        lc = construct.line_caps(sel, countries, u6, u7, rf, base=float(pp["max_weight"]),
-                                 multipliers=pp["country_multiplier"], floor=float(pp["min_weight"]))
-        liq = construct.liquidity_caps(uni["mdv63"].reindex(sel).fillna(0.0), self.capital,
-                                       float(pp["max_participation"]), float(pp["days_to_liquidate"]))
-        upper = pd.Series(np.minimum(lc.to_numpy(), liq.reindex(sel).to_numpy()), index=sel)
-        for s in sel:  # achat bloqué (R1, R2, R3, R5, R9, règle pays) : conservation sans renforcement
-            if bool(risk.loc[s, "block_buys"]) and s in held_ok:
-                upper[s] = min(float(upper[s]), float(held[s]))
-        s_caps = construct.sector_caps(sectors, floor=pp["sector_cap_floor"], cap=pp["sector_cap_max"],
-                                       mult=pp["sector_cap_mult"])
+        cap = cap.where(listed)
         seat = expo = None
         if shares is not None:
             try:
@@ -2276,38 +2551,219 @@ class BrvmAlpha:
                 seat, expo = ref_w["seat"], ref_w["exposure"]
             except ValueError:
                 seat = expo = None
-        c_caps = construct.country_caps(countries, seat, cap=pp["country_cap_max"], floor=pp["country_cap_floor"],
-                                        mult=pp["country_cap_mult"], uncapped=pp["uncapped_countries"])
-        aes = construct.aes_caps(countries, seat_reference=seat, lambda_reference=expo,
-                                 multiple=float(pp["aes_cap_multiple"]), aes_countries=pp["aes_countries"]) \
-            if seat is not None else []
-        groups = construct.build_group_caps(sel, sectors, countries, s_caps, c_caps, aes)
-        w = construct.equal_weight_with_caps(sel, upper, groups, float(pp["gross_equity"]), rates=cap.reindex(sel),
-                                             min_weight=float(pp["min_weight"]))
+        ictx = {"countries": ctx["countries"], "sectors": ctx["sectors"], "mdv63": ctx["mdv63"],
+                "capital": self.capital, "risk_flags": ctx["risk_flags"], "no_buy": sorted(no_buy),
+                "held": held[np.isfinite(held)] if len(held) else held, "seat": seat, "exposure": expo,
+                "country_cap_mult": ctx.get("country_cap_mult"), "country_cap_overrides": ctx.get("country_cap_overrides")}
+        return cap, elig, ictx, msgs
+
+    def _index_params(self) -> dict[str, Any]:
+        sec = self.cfg.get("portfolio", {}).get("disciplined_index", {}) or {}
+        return {k: v for k, v in sec.items() if k in construct.DISCIPLINED_INDEX_V11}
+
+    def _index_weights(self, d: _Data, uni: pd.DataFrame, risk: pd.DataFrame, held: pd.Series,
+                       country_state: dict[str, dict[str, Any]] | None = None) -> tuple[pd.Series, dict[str, Any]]:
+        """Rebalancement de l'indice discipliné (additif v1.1, D8) à la date t."""
+        syms = d.symbols
+        cap, elig, ictx, msgs = self._index_inputs(d, uni, risk, held, country_state or {})
+        w, idg = construct.disciplined_index_portfolio(cap.dropna(), elig, ictx, self.portfolio_params,
+                                                       self._index_params())
         out = pd.Series(0.0, index=syms, name="weight")
         out.loc[w.index] = w.to_numpy()
-        msgs.append(f"indice discipliné : {len(sel)} plus grosses capitalisations éligibles, poids proportionnels "
-                    "à la capitalisation sous plafonds, rebalancement annuel (aucune promesse d'alpha)")
-        return out, {"index": {"selected": sel, "capitalisation": cap.reindex(sel), "upper": upper,
-                               "messages": msgs}}
+        sel = list(idg.get("selected", []))
+        rank = {s_: i + 1 for i, s_ in enumerate(sel)}
+        reasons = {s_: (f"indice discipliné : capitalisation n° {rank[s_]} parmi les éligibles"
+                        + ("" if out.get(s_, 0.0) > 0 else " ; poids final nul (plancher de 0,5 %)")) for s_ in sel}
+        idg = {**idg, "messages": _uniq(msgs + list(idg.get("messages", []))), "action": "rebalancement",
+               "changed": True, "reasons": reasons}
+        return out, {"index": idg, "portfolio": {"caps": idg.get("caps", {}), "reasons": reasons,
+                                                  "mode": "indice_discipline"}}
+
+    def _forced_exits(self, d: _Data, uni: pd.DataFrame, risk: pd.DataFrame, names: Iterable[str]) -> dict[str, str]:
+        """Sorties forcées de l'indice discipliné entre deux rebalancements (D8) : inéligibilité,
+        veto, R11 avec deux drapeaux ou plus (exclusion)."""
+        out: dict[str, str] = {}
+        excl = int(self.portfolio_params.get("risk_exclude_flags", 2))
+        for s_ in names:
+            if s_ not in uni.index:
+                out[s_] = "absent du BOC"
+            elif not bool(uni.loc[s_, "eligible"]):
+                out[s_] = f"inéligible ({uni.loc[s_, 'reason'] or uni.loc[s_, 'codes']})"
+            elif bool(risk.loc[s_, "veto"]):
+                out[s_] = "veto"
+            elif int(risk.loc[s_, "R11"]) >= excl:
+                out[s_] = f"R11 : {int(risk.loc[s_, 'R11'])} drapeaux (exclusion)"
+        return out
+
+    def _index_hold(self, d: _Data, uni: pd.DataFrame, risk: pd.DataFrame, held: pd.Series,
+                    country_state: dict[str, dict[str, Any]]) -> tuple[pd.Series, dict[str, Any]]:
+        """Entre deux rebalancements annuels (D8) : positions détenues, moins les sorties forcées
+        (filtres R, inéligibilité) et les réductions imposées par les règles pays (§4.3). Le produit
+        des ventes reste en liquidités jusqu'au rebalancement suivant (publié)."""
+        syms = d.symbols
+        w = held.reindex(syms).astype(float).fillna(0.0).clip(lower=0.0)
+        forced = self._forced_exits(d, uni, risk, [s_ for s_ in syms if w[s_] > 0])
+        for s_ in forced:
+            w[s_] = 0.0
+        reductions: dict[str, dict[str, float]] = {}
+        if country_state:
+            elig = [s_ for s_ in syms if bool(uni.loc[s_, "eligible"])]
+            ctx, _ = self._context(d, uni, risk, held, country_state, elig)
+            caps = dict(ctx.get("country_cap_overrides") or {})
+            for c, cap_c in caps.items():
+                members = [s_ for s_ in syms if reference.country_of(s_) == c and w[s_] > 0]
+                tot = float(w[members].sum()) if members else 0.0
+                if tot > float(cap_c) + 1e-12:
+                    f = max(float(cap_c), 0.0) / tot
+                    w[members] = w[members] * f
+                    reductions[c] = {"before": tot, "after": float(w[members].sum()), "cap": float(cap_c)}
+        changed = bool(forced or reductions)
+        msgs = ["indice discipliné : rebalancement annuel (première décision de janvier), positions conservées"
+                + (" sauf sorties forcées : " + ", ".join(f"{k} ({v})" for k, v in forced.items()) if forced else "")
+                + (" ; règles pays : " + ", ".join(sorted(reductions)) if reductions else "")]
+        idg = {"action": "conservation", "changed": changed, "forced_exits": forced, "country_reductions": reductions,
+               "cash_from_exits": float(held.reindex(syms).fillna(0.0).clip(lower=0.0).sum() - w.sum()),
+               "messages": msgs}
+        return w.rename("weight"), {"index": idg}
+
+    def _reference_portfolio(self, d: _Data, uni: pd.DataFrame, risk: pd.DataFrame, held: pd.Series,
+                             country_state: dict[str, dict[str, Any]]) -> tuple[pd.Series, dict[str, Any], list[str]]:
+        """Variante REF (additif v1.1, D8) : indice discipliné, rebalancement **annuel** (première
+        décision de chaque année civile, ou tant que rien n'est détenu), sorties forcées entre deux.
+
+        Interprétation littérale (signalée) : entre deux rebalancements, aucun ordre hors sorties
+        forcées et règles pays ; la part d'un ordre de janvier non exécutée dans son âge maximal
+        (moteur) reste en liquidités jusqu'au rebalancement suivant. Le cœur de la variante I, qui
+        ne voit pas ses positions réelles, suit au contraire sa cible annuelle dérivée des cours.
+        """
+        st = self._sleeves.get("ref") or {}
+        held_ok = held[np.isfinite(held)] if len(held) else held
+        invested = bool(len(held_ok) and float(held_ok.sum()) > 0)
+        last_t = st.get("t")
+        rebalance = (not st or st.get("year") != d.t.year or not invested
+                     or (last_t is not None and d.t < pd.Timestamp(last_t)))
+        if rebalance:
+            w, idiag = self._index_weights(d, uni, risk, held, country_state)
+            if float(w.sum()) > 0 and (last_t is None or d.t >= pd.Timestamp(last_t)):
+                self._sleeves["ref"] = {"year": d.t.year, "t": d.t}
+                self._state_rev += 1
+        else:
+            w, idiag = self._index_hold(d, uni, risk, held, country_state)
+        diag = {"mode": "indice_discipline", "variant_kind": "reference", **idiag}
+        return w, diag, list(idiag.get("index", {}).get("messages", []))
+
+    def _core_sleeve(self, d: _Data, uni: pd.DataFrame, risk: pd.DataFrame, held: pd.Series,
+                     country_state: dict[str, dict[str, Any]]) -> tuple[pd.Series, dict[str, Any]]:
+        """Cœur de la variante I (D9) : indice discipliné rebalancé chaque année, dérivé entre deux.
+
+        Entre deux rebalancements, le cœur est un portefeuille acheté-conservé : poids
+        ``w0_i × P_i(t)/P_i(t0)`` (cours ajustés des divisions, dividendes en liquidités) sur la
+        valeur du cœur ; un titre en sortie forcée (inéligible, veto, R11 ≥ 2) passe en
+        liquidités. Le cœur ne voit pas les positions réelles (mélangées avec le côté A).
+        """
+        syms = d.symbols
+        st = self._sleeves.get("core") or {}
+        t0 = st.get("t0")
+        w0 = st.get("w0")
+        rebalance = (not st or st.get("year") != d.t.year or w0 is None or float(w0.sum()) <= 0
+                     or (t0 is not None and d.t < pd.Timestamp(t0)) or pd.Timestamp(t0) not in d.index)
+        if rebalance:
+            w, idiag = self._index_weights(d, uni, risk, held, country_state)
+            w0n = w[w > 0]
+            if float(w0n.sum()) > 0 and (t0 is None or d.t >= pd.Timestamp(t0)):
+                self._sleeves["core"] = {"year": d.t.year, "t0": d.t, "w0": w0n.copy()}
+                self._state_rev += 1
+            return w, {**idiag, "core_action": "rebalancement"}
+        px = d.wide["close_adj"]
+        r0 = int(d.index.get_loc(pd.Timestamp(t0)))
+        ratio = (px.iloc[-1] / px.iloc[r0]).reindex(w0.index)
+        ratio = ratio.where(np.isfinite(ratio) & (ratio > 0), 1.0)
+        v = w0 * ratio
+        value = float(v.sum()) + max(1.0 - float(w0.sum()), 0.0)
+        core = (v / value) if value > 0 else v * 0.0
+        forced = self._forced_exits(d, uni, risk, list(core[core > 0].index))
+        for s_ in forced:
+            core[s_] = 0.0
+        out = pd.Series(0.0, index=syms, name="weight")
+        out.loc[[s_ for s_ in core.index if s_ in out.index]] = core.reindex(
+            [s_ for s_ in core.index if s_ in out.index]).to_numpy()
+        msgs = [f"variante I : cœur indice discipliné du {_d(t0)} (rebalancement annuel), dérivé des cours"
+                + (" ; sorties forcées : " + ", ".join(forced) if forced else "")]
+        return out, {"index": {"action": "derive", "t0": t0, "forced_exits": forced, "messages": msgs},
+                     "core_action": "derive"}
+
+    def _core_satellite(self, d: _Data, fr: dict[str, pd.DataFrame], uni: pd.DataFrame, risk: pd.DataFrame,
+                        score_tab: pd.DataFrame, held: pd.Series, country_state: dict[str, dict[str, Any]],
+                        dyd: dict[str, pd.DataFrame], elig_t: pd.Series, sig_block: pd.Series) -> tuple[
+                            pd.Series, dict[str, Any], list[str]]:
+        """Variante I (additif v1.1, D9) : ``0,5 × w_REF + 0,5 × w_A``, projetée sur les plafonds de
+        groupe de D8 ; côté A mensuel (bande 30/50 sur ses propres lignes), cœur annuel."""
+        syms = d.symbols
+        if self._risk_state.get("stopped"):  # arrêt du §9.1 déjà acté : tout le portefeuille en indice discipliné
+            w_s, pdiag, pmsg = self._portfolio(d, fr, uni, risk, score_tab, held, country_state, dyd, elig_t,
+                                               sig_block)
+            return w_s, {**pdiag, "variant_kind": "core_satellite"}, pmsg
+        last_a = self._sleeves.get("a") or {}
+        held_a = last_a.get("w") if last_a.get("t") is not None and pd.Timestamp(last_a["t"]) < d.t else None
+        held_a = held_a if isinstance(held_a, pd.Series) else pd.Series(dtype=float)
+        w_a, pdiag, pmsg = self._portfolio(d, fr, uni, risk, score_tab, held_a, country_state, dyd, elig_t, sig_block)
+        if pdiag.get("mode") == "indice_discipline":  # arrêt du §9.1 : tout le portefeuille en indice discipliné
+            return w_a, {**pdiag, "variant_kind": "core_satellite"}, pmsg
+        core, cdiag = self._core_sleeve(d, uni, risk, held, country_state)
+        cap, elig, ictx, imsgs = self._index_inputs(d, uni, risk, held, country_state)
+        names = sorted(set(core[core > 0].index) | set(w_a[w_a > 0].index))
+        upper, groups, det = construct.disciplined_index_constraints(names, cap.dropna(), elig, ictx,
+                                                                     self.portfolio_params, self._index_params())
+        held_ok = held[np.isfinite(held)] if len(held) else held
+        blocked = {s_: float(held_ok.get(s_, 0.0)) for s_ in ictx.get("no_buy", []) if s_ in names}
+        share = float(self.cfg.get("portfolio", {}).get("core_satellite", {}).get("core_share", self.spec.core_share))
+        w, cs = construct.core_satellite_weights(core, w_a, upper, groups, core_share=share,
+                                                 budget=float(self.portfolio_params["gross_equity"]), blocked=blocked)
+        out = pd.Series(0.0, index=syms, name="weight")
+        out.loc[w.index] = w.to_numpy()
+        if last_a.get("t") is None or d.t >= pd.Timestamp(last_a["t"]):
+            self._sleeves["a"] = {"t": d.t, "w": w_a[w_a > 0].copy()}
+            self._state_rev += 1
+        msgs = list(pmsg) + list(cdiag.get("index", {}).get("messages", [])) + imsgs + list(det.get("messages", []))
+        msgs.append(f"variante I (additif v1.1, D9) : {share:.0%} indice discipliné + {1 - share:.0%} A, "
+                    f"chevauchements additionnés{', projection sur les plafonds de groupe de D8' if cs['projected'] else ''}"
+                    f" ; {int((out > 0).sum())} lignes, {float(out.sum()):.2%} investis")
+        caps = {"upper": cs["upper"], "line": det["line"], "line_detail": det["line_detail"],
+                "liquidity": det["liquidity"], "groups": groups, "sector": det["sector"], "country": det["country"],
+                "aes": det["aes"]}
+        reasons: dict[str, str] = {}
+        a_reasons = (pdiag.get("portfolio") or {}).get("reasons", {}) or {}
+        for s_ in names:
+            parts = []
+            if float(core.get(s_, 0.0)) > 0:
+                parts.append(f"cœur {share * float(core[s_]):.2%}")
+            if float(w_a.get(s_, 0.0)) > 0:
+                parts.append(f"satellite A {(1 - share) * float(w_a[s_]):.2%} ({a_reasons.get(s_, '')})")
+            reasons[s_] = "variante I : " + " + ".join(parts)
+        diag = {**pdiag, "mode": "coeur_satellite", "variant_kind": "core_satellite", "core": cdiag,
+                "satellite": {"weights": w_a[w_a > 0], "mode": pdiag.get("mode"), "portfolio": pdiag.get("portfolio")},
+                "portfolio": {"caps": caps, "reasons": reasons, "violations": cs["violations"],
+                              "mode": "coeur_satellite", "active_constraints": cs["active_constraints"]},
+                "core_satellite": {k: v for k, v in cs.items() if k not in ("upper", "violations")}}
+        return out, diag, msgs
 
     def disciplined_index_weights(self, asof: Any, panels: Any) -> pd.Series:
-        """Mode « indice discipliné » (§8.3) : 15 à 20 plus grosses capitalisations éligibles.
+        """Mode « indice discipliné » (additif v1.1, D8) : 20 plus grosses capitalisations éligibles.
 
-        Poids proportionnels à la capitalisation (cours × nombre de titres reconstruit,
-        point-in-time) puis projetés sous les plafonds de ligne, de secteur, de pays et de
-        liquidité ; 98 % investis au plus. Rebalancement **annuel** : :meth:`strategy_fn`
-        (``mode="index"``) ne recalcule les poids qu'à la première décision de chaque année.
-        Les règles de risque (R1-R12, veto, règles pays via les plafonds) restent actives.
-        Aucune promesse d'alpha : c'est le mode de repli si A est rejeté.
+        Poids proportionnels à la capitalisation point-in-time (cours × nombre de titres
+        reconstruit), plafond de ligne ``max(10 % × m_pays ; min(30 % ; 1,25 × b_i))``,
+        plancher 0,5 %, secteur ``max(15 % ; 1,25 × b_s)``, plafonds pays, AES et liquidité
+        de A, filtres R et règles pays actifs ; 98 % investis au plus. Calcul **à la date**
+        (sans état) : le rebalancement annuel et les sorties forcées sont appliqués par la
+        variante ``REF`` (:meth:`strategy_fn`) et par le repli du §8.3. Aucune promesse d'alpha.
         """
-        d = self._prepare(panels, asof)
-        fr = self._universe_frames(d)
-        uni = self._universe_table(d, fr)
         dec = self.decide(asof, panels, portfolio=False)
-        w, diag = self._index_weights(d, uni, dec.risk, pd.Series(dtype=float))
+        d: _Data = dec.diagnostics["data"]
+        w, diag = self._index_weights(d, dec.universe, dec.risk, pd.Series(dtype=float),
+                                      dec.diagnostics.get("country_rules", {}))
         w.attrs.update({"asof": d.t, "mode": "indice_discipline", "banner": BANNER,
-                        "messages": diag.get("index", {}).get("messages", [])})
+                        "messages": diag.get("index", {}).get("messages", []),
+                        "invested": float(w.sum())})
         return w
 
     # ---------------------------------------------------------------- contrat
@@ -2334,7 +2790,9 @@ class BrvmAlpha:
         """
         nav = getattr(panels, "nav", None)
         if nav is not None:
-            self.record_nav(asof, nav)
+            w_now = getattr(panels, "weights", None)
+            inv = bool((pd.Series(w_now, dtype=float) > 1e-9).any()) if w_now is not None else None
+            self.record_nav(asof, nav, invested=inv)
         return self.decide(asof, panels, held).weights.copy()
 
     def strategy_fn(
@@ -2354,8 +2812,13 @@ class BrvmAlpha:
         lancer avec ``rebalance="D"`` et le calendrier des séances ``calendar`` ; la
         fonction ne renvoie des poids qu'aux fins de mois et lors des événements (règle
         pays nouvelle, poche S1 de la variante E, vente reportée au jour ex), ``None``
-        sinon (aucun ordre). ``mode="index"`` : mode « indice discipliné », recalculé à la
-        première décision de chaque année.
+        sinon (aucun ordre). ``mode="index"`` : mode « indice discipliné » (D8), comme la
+        variante ``REF`` : rebalancement à la première décision de chaque année (ou tant que
+        rien n'est détenu), sorties forcées entre deux, ``None`` les autres mois (aucun ordre).
+
+        Additif v1.1 : la VL est mémorisée avec l'indication « titres détenus » (D5 : drawdown
+        relatif depuis t0, premier jour investi) ; ``reset=True`` oublie aussi l'état annuel de
+        REF et du cœur de I.
         """
         if mode not in ("alpha", "index"):
             raise ValueError("mode doit valoir 'alpha' ou 'index'")
@@ -2382,22 +2845,27 @@ class BrvmAlpha:
 
         def fn(asof: pd.Timestamp, view: Any) -> pd.Series | None:
             self._recording = True  # journal S1 (coupe-circuit) tenu seulement pendant le backtest
+            self._mode_override = "index" if mode == "index" else None
             try:
                 return _fn(asof, view)
             finally:
                 self._recording = False
+                self._mode_override = None
 
         def _fn(asof: pd.Timestamp, view: Any) -> pd.Series | None:
             t = pd.Timestamp(asof).normalize()
             held = held_from(view)
             nav = getattr(view, "nav", None)
             if nav is not None:
-                self.record_nav(t, nav)
-            if mode == "index":
-                if state["year"] == t.year and state["last"] is not None:
-                    return None
-                w = self.disciplined_index_weights(t, view)
-                state["year"], state["last"] = t.year, w
+                self.record_nav(t, nav, invested=bool(len(held) and float(held.sum()) > 0))
+            reference_kind = mode == "index" or self.spec.kind == "reference"
+            if reference_kind and not (event_driven and t not in reb):
+                dec = self.decide(t, view, held)
+                idx_diag = dec.diagnostics.get("index", {}) or {}
+                if idx_diag.get("action") == "conservation" and not idx_diag.get("changed"):
+                    return None  # rebalancement annuel : aucun ordre entre deux
+                w = dec.weights.copy()
+                state["year"], state["held"], state["last"] = t.year, w[w > 0], w
                 return w
             if not event_driven:
                 w = self.decide(t, view, held).weights.copy()
@@ -2418,6 +2886,26 @@ class BrvmAlpha:
 
         return fn
 
+    def _peek_decide(self, t: pd.Timestamp, view: Any, held: pd.Series) -> AlphaDecision:
+        """Décision **intra-mois** sans effet sur l'état des poches annuelles (pré-vol du 22/11/2026).
+
+        Entre deux fins de mois, une décision ne sert qu'à dériver les réductions imposées par une
+        règle pays (§4.3, D10) ou les entrées et sorties de la poche S1 : elle ne doit ni consommer le
+        rebalancement annuel de REF ou du cœur de I (D8 : première décision **mensuelle** de janvier,
+        comme en mode mensuel), ni remplacer les lignes « détenues » du satellite A de I (bande 30/50
+        évaluée d'une fin de mois à l'autre). L'état ``_sleeves`` est donc rétabli après l'appel.
+        """
+        orig = dict(self._sleeves)
+        saved = {k: (dict(v) if isinstance(v, dict) else v) for k, v in orig.items()}
+        try:
+            return self.decide(t, view, held)
+        finally:
+            # Les poches sont remplacées (jamais modifiées sur place) : l'identité suffit à repérer un changement.
+            changed = set(self._sleeves) != set(orig) or any(self._sleeves.get(k) is not v for k, v in orig.items())
+            self._sleeves = saved
+            if changed:
+                self._state_rev += 1  # invalide le cache des décisions calculées avec l'état modifié
+
     def _intramonth(self, t: pd.Timestamp, view: Any, held: pd.Series, state: dict[str, Any],
                     cal: pd.DatetimeIndex | None) -> pd.Series | None:
         """Ordres entre deux fins de mois (§6 « Fréquence ») : règles pays, ventes reportées, S1."""
@@ -2427,7 +2915,7 @@ class BrvmAlpha:
         pv = _get(view, "country_events")
         tables = [x for x in (ev, self._normalize_events(pv) if pv is not None else None) if x is not None]
         for tab in tables:
-            for r in tab[tab["date"] <= t].to_dict("records"):
+            for r in self._events_known(tab, t).to_dict("records"):
                 key = (str(r["country"]), r["rule"], pd.Timestamp(r["date"]))
                 if key not in state["events_seen"] and r["rule"] in ("severe", "coup"):
                     state["events_seen"].add(key)
@@ -2454,7 +2942,7 @@ class BrvmAlpha:
         if hit_countries:
             # Règle pays nouvelle (§4.3) : seules les lignes du pays sont réduites dès t + 1 (ventes
             # échelonnées par le plafond de participation du moteur) ; le reste attend la fin du mois.
-            dec = self.decide(t, view, held)
+            dec = self._peek_decide(t, view, held)
             new_w = dec.weights
             if not len(held):
                 return None
@@ -2473,7 +2961,7 @@ class BrvmAlpha:
             w[s] = 0.0
             state["deferred"].pop(s, None)
         if s1_change:
-            dec = self.decide(t, view, held)
+            dec = self._peek_decide(t, view, held)
             new = set((dec.diagnostics.get("s1") or {}).get("positions", {}))
             if new == state["s1"] and not due:
                 return None

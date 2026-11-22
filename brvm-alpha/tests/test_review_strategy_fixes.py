@@ -182,8 +182,8 @@ def test_momentum_spread_never_computed_on_s1_by_default(monkeypatch):
     seen.clear()
     model().decide("2022-10-31", panels, portfolio=False)  # décision datée de S1 : aucun calcul
     assert not seen
-    with pytest.raises(ValueError, match="window_basis"):
-        BrvmAlpha(notes=None, validation_s1=True)
+    # Additif v1.1 (D1) : base « sessions » par défaut, y compris pour le test unique de S1.
+    assert BrvmAlpha(notes=None, validation_s1=True).window_basis == "sessions"
     seen.clear()
     model(validation_s1=True, window_basis="boc").decide("2023-06-30", panels, portfolio=False)
     assert seen[-1][0] == pd.Timestamp("2022-01-03")  # réservé au test pré-enregistré
@@ -202,10 +202,12 @@ def test_session_window_basis_on_synthetic_gap():
     panels = {"tr_index": tr, "session_no": pd.Series(sess, index=dates)}
     assert F.session_numbers(panels, like=tr).tolist() == sess.tolist()
     boc = F.mom_sessions(panels, window_basis="boc")
-    ses = F.mom_sessions(panels, window_basis="sessions")
+    ses = F.mom_sessions(panels, window_basis="sessions", prorata=False)
     t = dates[-1]
     assert np.isfinite(boc.loc[t, "A"])  # 126 lignes : défini
-    assert np.isnan(ses.loc[t, "A"])  # 126 séances dont 40 sans BOC : < 100 rendements valides
+    assert np.isnan(ses.loc[t, "A"])  # 126 séances dont 40 sans BOC : < 100 rendements valides (sans prorata)
+    # Additif v1.1, D1 : seuil au prorata ⌈100 × 86 / 126⌉ = 69 ≤ 86 rendements valides : défini.
+    assert np.isfinite(F.mom_sessions(panels, window_basis="sessions").loc[t, "A"])
     # 63 dernières séances (178 à 240) : seules 50 lignes ont un BOC (séances 191 à 240)
     valid = F.valid_return_mask(panels, like=tr)
     cnt = F.on_session_grid(valid.astype(float), sess, lambda x: x.rolling(63, min_periods=1).sum())
@@ -222,15 +224,19 @@ def test_universe_u2_counts_sessions_when_requested(synth):
     sess[390:] += 40  # trou de 40 BOC avant la ligne 390
     p["session_no"] = pd.Series(sess, index=idx)
     t = idx[400]
-    u_boc = model().universe(t, p)
+    u_boc = model(window_basis="boc").universe(t, p)
     u_ses = model(window_basis="sessions").universe(t, p)
     assert u_boc.attrs["n_eligible"] > 0
     assert (u_ses["n_returns_63"] <= 23).all()  # au plus 22 rendements sur les 63 dernières séances
-    assert u_ses.attrs["n_eligible"] == 0 and u_ses.attrs["mode"] == "vide"
-    dec = model().decide(t, p, portfolio=False)
+    # Additif v1.1, D1 : seuil U2 au prorata des 23 BOC disponibles, plancher 20 (au lieu de 40) : l'univers
+    # n'est plus vidé par la perte de nos BOC ; un titre sous 20 rendements reste exclu.
+    assert u_ses.attrs["n_eligible"] > 0
+    assert ((u_ses["n_returns_63"] >= 20) | ~u_ses["eligible"]).all()
+    dec = model(window_basis="boc").decide(t, p, portfolio=False)
     assert any("window_basis='sessions'" in x for x in dec.messages)
     assert dec.diagnostics["window_basis"]["basis"] == "boc"
-    assert model().fingerprint != model(window_basis="sessions").fingerprint
+    assert model().window_basis == "sessions"  # défaut v1.1
+    assert model(window_basis="boc").fingerprint != model(window_basis="sessions").fingerprint
 
 
 # ---------------------------------------------------------------------------

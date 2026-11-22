@@ -107,6 +107,12 @@ __all__ = [  # noqa: RUF022 — regroupé par thème (historique, puis construct
     "central_one_way_cost",
     "mv_alpha_weights",
     "target_portfolio",
+    # additif v1.1 (§8.4) : indice discipliné (D8) et cœur-satellite (D9)
+    "DISCIPLINED_INDEX_V11",
+    "disciplined_index_caps",
+    "disciplined_index_constraints",
+    "disciplined_index_portfolio",
+    "core_satellite_weights",
 ]
 
 Method = Literal["mv_alpha", "hrp_tilt", "equal"]
@@ -1498,8 +1504,9 @@ PORTFOLIO_V1_DEFAULTS: dict[str, Any] = {
     "entry_pct": 0.30,  # entrée : rang dans les 30 % supérieurs
     "exit_pct": 0.50,  # sortie : rang hors des 50 % supérieurs
     "fill_beyond_exit": True,  # complément au-delà des 50 % si moins de 12 lignes (interprétation, voir select_with_band)
-    "fill_for_capacity": True,  # complément depuis les 50 % si les plafonds empêchent d'investir 98 % (interprétation)
-    "capacity_beyond_exit": False,  # ce complément de capacité peut-il aller au-delà des 50 % ? (non par défaut)
+    "fill_for_capacity": True,  # complément si les plafonds empêchent d'investir 98 % (additif v1.1, D4)
+    "capacity_beyond_exit": True,  # D4 : par ordre de score, au-delà des 50 % supérieurs si nécessaire
+    "capacity_cap_per_name": "budget/n_target",  # D4 : un titre ajouté pèse au plus 98 % / n_cible
     "weighting": "equal",  # A : "equal" ; G : "hrp_tilt" ; H : "mv_alpha"
     "max_weight": 0.10,
     "min_weight": 0.02,  # plancher : en dessous, la ligne est supprimée
@@ -1554,6 +1561,8 @@ _YAML_PORTFOLIO_KEYS = frozenset({
     "long_only", "gross_equity", "n_holdings", "band", "weighting", "max_weight", "min_weight",
     "country_multiplier", "sector_cap", "country_cap_non_ci", "aes_cap_multiple", "liquidity", "rebalance",
     "no_trade_band", "max_turnover_per_rebalance", "kelly",
+    # additif v1.1 (§8.4) : D4, D8, D9
+    "capacity_fill", "disciplined_index", "core_satellite",
 })
 
 
@@ -1623,6 +1632,19 @@ def portfolio_params_from_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
     windows = get("data.exclude_stats_windows")
     if windows:
         out["exclude_stats_windows"] = tuple((str(a), str(b)) for a, b in windows)
+    fill = get("portfolio.capacity_fill")
+    if isinstance(fill, Mapping):  # additif v1.1, D4
+        if "beyond_exit" in fill:
+            out["capacity_beyond_exit"] = bool(fill["beyond_exit"])
+        rule = fill.get("cap_per_added")
+        if rule is not None:
+            txt = str(rule).replace(" ", "")
+            if txt in ("gross_equity/n_target", "budget/n_target"):
+                out["capacity_cap_per_name"] = "budget/n_target"
+            elif txt.lower() in ("none", "aucun"):
+                out["capacity_cap_per_name"] = None
+            else:
+                out["capacity_cap_per_name"] = float(rule)
     return out
 
 
@@ -1645,6 +1667,9 @@ def _validate_params(p: Mapping[str, Any]) -> None:
     for key in ("low_liquidity_mult", "wide_spread_mult", "risk_flag_mult"):
         if not 0.0 <= float(p[key]) <= 1.0:
             problems.append(f"{key} doit appartenir à [0, 1]")
+    cc = p.get("capacity_cap_per_name")
+    if cc is not None and cc != "budget/n_target" and not (isinstance(cc, (int, float)) and 0.0 < float(cc) <= 1.0):
+        problems.append("capacity_cap_per_name : 'budget/n_target', None ou un nombre de ]0, 1] attendu")
     if not 0.0 <= float(p["kelly_fraction"]) <= 1.0 or not 0.0 < float(p["kelly_fraction_max"]) <= 1.0:
         problems.append("kelly_fraction ∈ [0, 1] et kelly_fraction_max ∈ ]0, 1] attendus")
     if int(p["cov_min_weeks"]) < 2 or int(p["cov_weeks"]) < int(p["cov_min_weeks"]):
@@ -2600,6 +2625,7 @@ def equal_weight_with_caps(
     capacity_reserve: Iterable[str] = (),
     max_names: int | None = None,
     priority: pd.Series | Mapping[str, float] | None = None,
+    capacity_cap: float | None = None,
 ) -> pd.Series:
     """Équipondération de ``selected`` projetée **exactement** sur toutes les contraintes.
 
@@ -2619,9 +2645,10 @@ def equal_weight_with_caps(
        les candidats de ``capacity_reserve`` (les 50 % supérieurs dans
        :func:`target_portfolio`) sont essayés par rang, sans dépasser ``max_names``
        lignes ; un candidat n'est retenu que s'il **augmente** l'investissement et que
-       toutes les lignes restent ≥ ``min_weight``. *Interprétation* : la spécification
-       demande à la fois 98 % d'exposition et des entrées depuis les 30 % supérieurs ;
-       quand les deux sont incompatibles, l'exposition prime, dans la bande des 50 %.
+       toutes les lignes restent ≥ ``min_weight``. Additif v1.1 (D4) : ``capacity_cap``
+       (98 % / n_cible dans :func:`target_portfolio`) plafonne chaque titre ajouté pour la
+       capacité au poids d'une ligne de la bande ; le reliquat reste en liquidités
+       (``attrs["shortfall"]``).
 
     ``rates`` (optionnel) remplace l'équipondération par une pondération
     proportionnelle à ``rates`` (variante G : HRP incliné), avec la même projection.
@@ -2693,16 +2720,25 @@ def equal_weight_with_caps(
             rejected.append(cand)
     capacity_added: list[str] = []
     limit = len(all_names) if max_names is None else int(max_names)
+    cap_add = None if capacity_cap is None else float(capacity_cap)
     for cand in sorted(cap_pool, key=lambda s: (prio[s], s)):
         if float(w.sum()) >= budget - _INVARIANT_TOL or len(current) >= limit:
             break
         if cand in current or cand in rejected or upper_s[cand] < floor - _CAP_TOL:
             continue
+        saved = float(upper_s[cand])
+        if cap_add is not None:
+            upper_s[cand] = min(saved, cap_add)  # D4 : au plus le poids d'une ligne de la bande
+            if upper_s[cand] < floor - _CAP_TOL:
+                upper_s[cand] = saved
+                continue
         trial = sorted(current + [cand], key=lambda s: (prio[s], s))
         w2, info2 = run(trial)
         if all(w2[s] >= floor - _CAP_TOL for s in trial) and w2.sum() > w.sum() + 1e-9:
             current, w, info = trial, w2, info2
             capacity_added.append(cand)
+        else:
+            upper_s[cand] = saved
     tried = set(added) | set(rejected) | set(capacity_added)
     out_index = names + [s for s in all_names if s not in names and s in tried]
     out = pd.Series(0.0, index=pd.Index(out_index, dtype=object), dtype=float, name="weight")
@@ -2732,6 +2768,7 @@ def equal_weight_with_caps(
             "removed": dict(removed),
             "added": list(added),
             "capacity_added": list(capacity_added),
+            "capacity_cap": cap_add,
             "rejected": list(rejected),
             "active_constraints": _active_constraints(out[out > 0], upper_s, groups, budget),
             "messages": messages,
@@ -3410,6 +3447,13 @@ def target_portfolio(
     # 5. Pondération ----------------------------------------------------------
     weighting = str(p["weighting"])
     extra: dict[str, Any] = {}
+    cap_rule = p.get("capacity_cap_per_name")
+    if cap_rule == "budget/n_target":
+        cap_per_added = budget / n_target if n_target > 0 else None
+    elif cap_rule is None:
+        cap_per_added = None
+    else:
+        cap_per_added = float(cap_rule)
     fill_kw: dict[str, Any] = {
         "min_weight": floor,
         "reserve": reserve,
@@ -3417,6 +3461,7 @@ def target_portfolio(
         "capacity_reserve": cap_reserve,
         "max_names": int(p["max_names"]) if mode == "selection" else None,
         "priority": priority,
+        "capacity_cap": cap_per_added if cap_reserve else None,
     }
     w_eq = equal_weight_with_caps(selected, upper, groups, budget, **fill_kw)
     if weighting == "equal" or not selected:
@@ -3435,11 +3480,19 @@ def target_portfolio(
                 linkage=str(p["hrp_linkage"]),
                 distance_of_distances=bool(p["hrp_distance_of_distances"]),
             )
-            w_sel = equal_weight_with_caps(names_w, upper, groups, budget, rates=rates, **fill_kw)
             extra["hrp"] = info["hrp"]
-            if info["no_cov"]:
-                messages.append("variante G : sans covariance (< 52 semaines), rythme équipondéré pour "
-                                + ", ".join(info["no_cov"]))
+            if len(info["hrp"]) < 2:
+                # Additif v1.1, D2 : pondération HRP non calculable (moins de 2 titres avec 52 semaines de
+                # covariance) : la variante G utilise celle de A, et c'est journalisé.
+                w_sel = w_eq
+                extra["weighting_fallback_A"] = True
+                messages.append("variante G : covariance insuffisante (< 52 semaines pour au moins 2 titres) : "
+                                "pondération de A utilisée (additif v1.1, D2)")
+            else:
+                w_sel = equal_weight_with_caps(names_w, upper, groups, budget, rates=rates, **fill_kw)
+                if info["no_cov"]:
+                    messages.append("variante G : sans covariance (< 52 semaines), rythme équipondéré pour "
+                                    + ", ".join(info["no_cov"]))
         else:
             cov_a = cov_w * 52.0
             base = w_eq[w_eq > 0]
@@ -3479,6 +3532,9 @@ def target_portfolio(
             if info.get("no_cov"):
                 messages.append("variante H : sans covariance (< 52 semaines), poids de A conservés pour "
                                 + ", ".join(info["no_cov"]))
+            if (w_sel - w_eq.reindex(w_sel.index).fillna(0.0)).abs().max() <= 1e-12 and info.get("no_cov"):
+                extra["weighting_fallback_A"] = True
+                messages.append("variante H : covariance insuffisante : pondération de A utilisée (additif v1.1, D2)")
             if info.get("message"):
                 messages.append(info["message"])
             messages.append(
@@ -3497,9 +3553,10 @@ def target_portfolio(
             reasons[s] = f"complément après l'élagage (moins de {int(p['min_names'])} lignes), rang {int(ranks[s])}/{n_elig}"
         for s in src.get("capacity_added", []):
             reasons[s] = (
-                f"ajouté pour la capacité : plafonds saturés sous {budget:.0%} d'exposition, "
+                f"ajouté pour la capacité (additif v1.1, D4) : plafonds saturés sous {budget:.0%} d'exposition, "
                 f"rang {int(ranks[s])}/{n_elig}" + (" dans les 50 % supérieurs" if band and ranks[s] <= band.exit_rank
-                                                   else " hors des 50 % supérieurs (capacity_beyond_exit)")
+                                                   else " hors des 50 % supérieurs")
+                + (f", plafonné à {cap_per_added:.2%} (98 % / n_cible)" if cap_per_added else "")
             )
         for s, why in src.get("removed", {}).items():
             if why not in reasons.get(s, ""):
@@ -3567,6 +3624,14 @@ def target_portfolio(
             "groups": groups,
         },
         "band": band,
+        "capacity_fill": {
+            "rule": "additif v1.1, D4 : titres ajoutés par ordre de score jusqu'à 20 lignes, chacun ≤ 98 % / n_cible",
+            "cap_per_added": cap_per_added if cap_reserve else None,
+            "added": [s for s in w_sel.attrs.get("capacity_added", []) if weights.get(s, 0.0) > 0],
+            "band_weights": {s: float(weights.get(s, 0.0)) for s in selected},
+            "residual_cash": max(budget - invested, 0.0),
+            "feasible_full_budget": bool(w_sel.attrs.get("feasible_full_budget", mode != "vide")),
+        },
         "reasons": {s: reasons.get(s, "") for s in universe},
         "table": table,
         "violations": viol,
@@ -3576,3 +3641,271 @@ def target_portfolio(
     }
     weights.attrs.update({"mode": mode, "weighting": weighting, "invested": invested})
     return weights, diagnostics
+
+
+# ---------------------------------------------------------------------------
+# 8. Additif v1.1 (§8.4) : « indice discipliné » (D8) et cœur-satellite (D9)
+# ---------------------------------------------------------------------------
+
+#: Paramètres FIGÉS du mode « indice discipliné » (additif v1.1, D8), aucun paramètre libre.
+DISCIPLINED_INDEX_V11: dict[str, Any] = {
+    "n_names": 20,  # 20 plus grosses capitalisations éligibles (toutes s'il y en a moins)
+    "line_base": 0.10,  # plafond de ligne = max(10 % × m_pays ; min(30 % ; 1,25 × b_i))
+    "line_bench_cap": 0.30,
+    "bench_mult": 1.25,
+    "min_weight": 0.005,  # plancher de 0,5 %
+    "sector_floor": 0.15,  # plafond sectoriel = max(15 % ; 1,25 × b_s)
+    "sector_bench_mult": 1.25,
+}
+
+
+def disciplined_index_caps(
+    names: Sequence[str],
+    benchmark_weights: pd.Series,
+    countries: pd.Series,
+    *,
+    risk_flags: Any = None,
+    multipliers: Mapping[str, float] | None = None,
+    params: Mapping[str, Any] | None = None,
+    risk_flag_mult: float = 0.5,
+    risk_exclude_flags: int = 2,
+) -> pd.DataFrame:
+    """Plafonds de ligne de l'indice discipliné (D8) : ``max(10 % × m_pays ; min(30 % ; 1,25 × b_i))``.
+
+    ``b_i`` : poids du titre dans l'étalon (capitalisation point-in-time de **tous** les titres
+    cotés). Filtres R actifs (§5.6) : R4, R11 (un drapeau) ou R12 ⇒ × 0,5 ; R11 avec deux
+    drapeaux ou plus ⇒ 0. Renvoie un DataFrame (``line_cap``, ``bench_weight``, ``reason``).
+    """
+    q = {**DISCIPLINED_INDEX_V11, **dict(params or {})}
+    syms = _unique(names)
+    idx = pd.Index(syms, dtype=object)
+    mult = dict(SPEC_COUNTRY_MULTIPLIER if multipliers is None else multipliers)
+    m_min = min(mult.values()) if mult else 1.0
+    ctry = _labels_for(countries, syms, "country")
+    m_c = pd.Series([float(mult.get(c, m_min)) for c in ctry.to_numpy()], index=idx, dtype=float)
+    b = pd.Series(benchmark_weights, dtype=float)
+    b.index = b.index.astype(str)
+    b_i = b.reindex(idx).fillna(0.0)
+    base = float(q["line_base"]) * m_c
+    bench = np.minimum(float(q["line_bench_cap"]), float(q["bench_mult"]) * b_i)
+    raw = pd.Series(np.maximum(base.to_numpy(), bench.to_numpy()), index=idx, dtype=float)
+    red, exc, rdesc = _risk_components(risk_flags, syms, int(risk_exclude_flags))
+    cap = raw * np.where(red, float(risk_flag_mult), 1.0)
+    cap = pd.Series(np.where(exc, 0.0, cap), index=idx, dtype=float)
+    reasons = []
+    for s_ in syms:
+        txt = (f"max({float(q['line_base']):.0%} × {m_c[s_]:g} ; min({float(q['line_bench_cap']):.0%} ; "
+               f"{float(q['bench_mult']):g} × b_i = {float(q['bench_mult']) * b_i[s_]:.2%})) = {raw[s_]:.2%}")
+        if exc[s_]:
+            txt = f"exclu : {rdesc[s_]} (R11, {risk_exclude_flags} drapeaux ou plus)"
+        elif red[s_]:
+            txt += f" × {risk_flag_mult:g} ({rdesc[s_] or 'drapeau R'}) = {cap[s_]:.2%}"
+        reasons.append(txt)
+    return pd.DataFrame({"country": ctry, "bench_weight": b_i, "raw_cap": raw, "line_cap": cap,
+                         "reason": pd.Series(reasons, index=idx, dtype=object)})
+
+
+def disciplined_index_constraints(
+    names: Iterable[str],
+    capitalisation: pd.Series | Mapping[str, float],
+    eligible: Iterable[str],
+    context: Mapping[str, Any] | None = None,
+    params: Mapping[str, Any] | None = None,
+    index_params: Mapping[str, Any] | None = None,
+) -> tuple[pd.Series, list[GroupCap], dict[str, Any]]:
+    """Plafonds de l'indice discipliné (D8) pour ``names`` : ``(upper, groupes, détail)``.
+
+    ``upper`` = plafond de ligne D8 (:func:`disciplined_index_caps`) ∧ liquidité de A ;
+    achat bloqué (``no_buy``) : au plus le poids détenu (0 si non détenu). Groupes : secteur
+    ``max(15 % ; 1,25 × b_s)`` (``b_s`` dans l'étalon), pays et bloc AES de A (``u_c`` sur
+    ``eligible``, ``b_c`` = ``seat`` / ``exposure`` du contexte), multiplicateurs et plafonds
+    des règles pays. Sert à l'indice discipliné et à la projection de la variante I (D9).
+    """
+    p = portfolio_params(params)
+    q = {**DISCIPLINED_INDEX_V11, **dict(index_params or {})}
+    ctx = dict(context or {})
+    msgs: list[str] = []
+    sel = _unique(names)
+    cap_all = pd.Series(capitalisation, dtype=float)
+    cap_all.index = cap_all.index.astype(str)
+    cap_all = cap_all[np.isfinite(cap_all) & (cap_all > 0)]
+    bench = cap_all / float(cap_all.sum()) if len(cap_all) else cap_all
+    elig = _unique(eligible)
+    universe = _unique(list(cap_all.index) + sel + elig)
+    countries = _labels_for(ctx.get("countries"), universe, "country")
+    sectors = _labels_for(ctx.get("sectors"), universe, "sector")
+    held = _held_series(ctx.get("held"))
+    no_buy = set(_symbols(ctx.get("no_buy")))
+    budget = float(p["gross_equity"])
+    lc = disciplined_index_caps(sel, bench, countries.reindex(sel), risk_flags=ctx.get("risk_flags"),
+                                multipliers=p["country_multiplier"], params=q,
+                                risk_flag_mult=float(p["risk_flag_mult"]),
+                                risk_exclude_flags=int(p["risk_exclude_flags"]))
+    line = lc["line_cap"]
+    capital = float(ctx.get("capital", p["capital"]))
+    if ctx.get("mdv63") is not None:
+        mdv = pd.Series(ctx["mdv63"], dtype=float)
+        mdv.index = mdv.index.astype(str)
+        liq = liquidity_caps(mdv.reindex(sel).fillna(0.0), capital, max_adv_participation=float(p["max_participation"]),
+                             max_days_to_liquidate=float(p["days_to_liquidate"])).reindex(sel).fillna(0.0)
+    else:
+        liq = pd.Series(np.inf, index=pd.Index(sel, dtype=object))
+        msgs.append("indice discipliné : MDV63 absente, plafond de liquidité non appliqué")
+    upper = pd.Series(np.minimum(line.to_numpy(), liq.to_numpy()), index=pd.Index(sel, dtype=object), dtype=float)
+    for s_ in sel:
+        if s_ in no_buy:  # achat bloqué : conservation sans renforcement
+            hv = float(held[s_]) if s_ in held.index and np.isfinite(held[s_]) else 0.0
+            upper[s_] = min(float(upper[s_]), hv)
+    b_s = bench.groupby(sectors.reindex(bench.index).fillna(_NA_GROUP)).sum()
+    sec_sel = sectors.reindex(sel).fillna(_NA_GROUP)
+    s_caps = pd.Series({g: max(float(q["sector_floor"]), float(q["sector_bench_mult"]) * float(b_s.get(g, 0.0)))
+                        for g in sorted(set(sec_sel))}, dtype=float, name="sector_cap")
+    seat = ctx.get("seat")
+    expo = ctx.get("exposure")
+    c_elig = countries.reindex(elig) if elig else countries.reindex(sel)
+    c_caps = country_caps(c_elig, seat, cap=p["country_cap_max"], floor=p["country_cap_floor"],
+                          mult=p["country_cap_mult"], uncapped=p["uncapped_countries"])
+    for c, m in dict(ctx.get("country_cap_mult") or {}).items():
+        if str(c) in c_caps.index:
+            c_caps[str(c)] = c_caps[str(c)] * float(m)
+        else:
+            c_caps[str(c)] = budget * float(m)
+    for c, cap in dict(ctx.get("country_cap_overrides") or {}).items():
+        c_caps[str(c)] = min(float(c_caps.get(str(c), np.inf)), float(cap))
+    aes = aes_caps(c_elig, seat_reference=seat, lambda_reference=expo, multiple=float(p["aes_cap_multiple"]),
+                   aes_countries=p["aes_countries"]) if seat is not None else []
+    if seat is None:
+        msgs.append("indice discipliné : références b_c absentes, plafond AES non appliqué")
+    groups = build_group_caps(sel, sec_sel, countries.reindex(sel), s_caps, c_caps, aes)
+    detail = {"line": line, "line_detail": lc["reason"], "liquidity": liq, "upper": upper, "sector": s_caps,
+              "country": c_caps, "aes": {g.label: g.cap for g in aes}, "groups": groups,
+              "bench_weight": bench, "messages": msgs, "index_params": q}
+    return upper, groups, detail
+
+
+def disciplined_index_portfolio(
+    capitalisation: pd.Series | Mapping[str, float],
+    eligible: Iterable[str],
+    context: Mapping[str, Any] | None = None,
+    params: Mapping[str, Any] | None = None,
+    index_params: Mapping[str, Any] | None = None,
+) -> tuple[pd.Series, dict[str, Any]]:
+    """Mode « indice discipliné » de l'additif v1.1 (D8) : repli du §8.3 **et** étalon investissable.
+
+    1. **Sélection** : les 20 plus grosses capitalisations parmi ``eligible`` (toutes s'il y en
+       a moins ; un titre à achat bloqué et non détenu est écarté), capitalisation
+       point-in-time (cours × nombre de titres).
+    2. **Poids** proportionnels à la capitalisation, 98 % investis (remplissage progressif
+       pondéré par la capitalisation : l'excédent d'un titre plafonné est redistribué au
+       prorata des capitalisations).
+    3. **Plafonds** (:func:`disciplined_index_constraints`) : ligne ``max(10 % × m_pays ;
+       min(30 % ; 1,25 × b_i))`` (× 0,5 si R4, R11 ou R12 ; 0 si R11 ≥ 2), liquidité de A
+       (``0,10 × MDV63 × 20 / K``), secteur ``max(15 % ; 1,25 × b_s)``, pays et bloc AES de A
+       (§4.2), règles pays ; achat bloqué : conservation sans renforcement.
+    4. **Plancher** de 0,5 % : une ligne en dessous est supprimée et l'allocation refaite.
+
+    ``capitalisation`` couvre **tous** les titres cotés (étalon : ``b_i = cap_i / Σ cap``).
+    ``context`` (connu en t) : ``countries``, ``sectors``, ``mdv63``, ``capital``,
+    ``risk_flags`` (R4, R11, R12), ``no_buy``, ``held``, ``seat`` / ``exposure`` (b_c
+    point-in-time, :func:`reference_weights_pit`), ``country_cap_mult``,
+    ``country_cap_overrides``. ``params`` : paramètres de construction de A
+    (:func:`portfolio_params`) ; ``index_params`` : surcharges de :data:`DISCIPLINED_INDEX_V11`
+    (section ``portfolio.disciplined_index`` du YAML). Le rebalancement annuel et les sorties
+    forcées sont gérés par l'appelant (``strategy.BrvmAlpha``). Aucune promesse d'alpha.
+
+    Returns
+    -------
+    (pandas.Series, dict)
+        Poids (titres retenus) et diagnostics : ``selected``, ``capitalisation``,
+        ``bench_weight``, ``caps`` (``line``, ``liquidity``, ``upper``, ``sector``, ``country``,
+        ``aes``, ``groups``), ``invested``, ``cash``, ``removed``, ``messages``.
+    """
+    p = portfolio_params(params)
+    q = {**DISCIPLINED_INDEX_V11, **dict(index_params or {})}
+    ctx = dict(context or {})
+    msgs: list[str] = []
+    cap_all = pd.Series(capitalisation, dtype=float)
+    cap_all.index = cap_all.index.astype(str)
+    cap_all = cap_all[np.isfinite(cap_all) & (cap_all > 0)]
+    elig = [s_ for s_ in _unique(eligible) if s_ in cap_all.index]
+    held = _held_series(ctx.get("held"))
+    no_buy = set(_symbols(ctx.get("no_buy")))
+    cand = [s_ for s_ in elig if not (s_ in no_buy and s_ not in held.index)]
+    cap_c = cap_all.reindex(cand).sort_values(ascending=False, kind="mergesort")
+    sel = list(cap_c.index[: int(q["n_names"])])
+    budget = float(p["gross_equity"])
+    if not sel:
+        msgs.append("indice discipliné : aucun titre éligible avec une capitalisation connue (100 % liquidités)")
+        return pd.Series(dtype=float, name="weight"), {"selected": [], "messages": msgs, "invested": 0.0,
+                                                      "cash": 1.0, "caps": {}}
+    upper, groups, det = disciplined_index_constraints(sel, cap_all, elig, ctx, p, q)
+    msgs.extend(det["messages"])
+    w = equal_weight_with_caps(sel, upper, groups, budget, rates=cap_all.reindex(sel),
+                               min_weight=float(q["min_weight"]))
+    w = w.reindex(sel).fillna(0.0).rename("weight")
+    invested = float(w.sum())
+    msgs.append(f"indice discipliné (additif v1.1, D8) : {len(sel)} plus grosses capitalisations éligibles, poids "
+                f"proportionnels à la capitalisation sous plafonds, {invested:.2%} investis (aucune promesse d'alpha)")
+    msgs.extend(w.attrs.get("messages", []))
+    caps = {k: det[k] for k in ("line", "line_detail", "liquidity", "upper", "sector", "country", "aes", "groups")}
+    diag = {
+        "selected": sel,
+        "capitalisation": cap_all.reindex(sel),
+        "bench_weight": det["bench_weight"].reindex(sel),
+        "caps": caps,
+        "invested": invested,
+        "cash": 1.0 - invested,
+        "removed": dict(w.attrs.get("removed", {})),
+        "active_constraints": list(w.attrs.get("active_constraints", [])),
+        "messages": _unique(msgs),
+    }
+    return w[w > 0], diag
+
+
+def core_satellite_weights(
+    core: pd.Series | Mapping[str, float],
+    satellite: pd.Series | Mapping[str, float],
+    upper: pd.Series | Mapping[str, float],
+    groups: Sequence[GroupCap],
+    *,
+    core_share: float = 0.5,
+    budget: float = 0.98,
+    blocked: Mapping[str, float] | None = None,
+) -> tuple[pd.Series, dict[str, Any]]:
+    """Variante I (additif v1.1, D9) : ``w = 0,5 × w_cœur + 0,5 × w_A`` puis projection.
+
+    Les chevauchements s'additionnent. La somme est ensuite **projetée sur les plafonds de
+    groupe** de l'indice discipliné (secteur D8, pays et AES de A) par remplissage progressif
+    au rythme ``w`` : si aucun plafond ne lie, le résultat est exactement la somme ; sinon
+    les membres d'un groupe saturé sont gelés et l'excédent est redistribué aux autres au
+    prorata. Plafonds de ligne : ``upper`` (D8 et liquidité), jamais en dessous du poids
+    combiné (aucune vente forcée par la seule dérive d'une ligne). ``blocked`` : titres à
+    achat bloqué → poids maximal autorisé (détenu, ou 0). Aucun paramètre libre (50/50).
+    """
+    c = pd.Series(core, dtype=float).fillna(0.0)
+    a = pd.Series(satellite, dtype=float).fillna(0.0)
+    c.index, a.index = c.index.astype(str), a.index.astype(str)
+    names = sorted(set(c[c > 0].index) | set(a[a > 0].index))
+    raw = (float(core_share) * c.reindex(names).fillna(0.0)
+           + (1.0 - float(core_share)) * a.reindex(names).fillna(0.0))
+    if not names:
+        # Univers vide (début d'échantillon sans historique, BOC manquants : D1) : même diagnostic
+        # que dans le cas général, pour que l'appelant (variante I) n'ait aucun cas particulier.
+        empty = pd.Series(dtype=float, name="weight")
+        return empty, {"raw": raw, "invested": 0.0, "projected": False, "solver": None, "active_constraints": [],
+                       "core_share": float(core_share), "upper": pd.Series(dtype=float),
+                       "violations": audit_weights(empty, None, groups, float(budget))}
+    up = _upper_series(upper, names, np.inf)
+    up = pd.Series(np.maximum(up.to_numpy(), raw.to_numpy()), index=up.index)
+    for s_, cap in dict(blocked or {}).items():
+        if s_ in up.index:
+            up[s_] = min(float(up[s_]), max(float(cap), 0.0))
+    total = min(float(budget), float(raw.sum()))
+    w, info = _allocate(names, raw, up, groups, total)
+    w = w.reindex(names).fillna(0.0).rename("weight")
+    projected = bool((w - raw).abs().max() > 1e-9)
+    diag = {"raw": raw, "invested": float(w.sum()), "projected": projected, "solver": info.get("solver"),
+            "active_constraints": _active_constraints(w[w > 0], up, groups, total),
+            "core_share": float(core_share), "upper": up,
+            "violations": audit_weights(w[w > 0], up.reindex(w[w > 0].index).fillna(0.0), groups, float(budget))}
+    return w, diag

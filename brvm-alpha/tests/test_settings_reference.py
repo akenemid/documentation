@@ -61,10 +61,36 @@ def _spec_yaml_block() -> dict:
 # ---------------------------------------------------------------------------
 
 
+#: Clés ajoutées par l'additif v1.1 (§8.4) au bloc YAML du §12.1 (chemins pointés).
+_V11_KEYS = (
+    "addendum", "data.window_basis", "data.window_bound_max_stale_sessions", "data.min_obs_prorata",
+    "data.cap_guard_blocking", "data.return_guard_blocking", "data.dividend_amount_signals",
+    "data.dividend_amount_cashflows", "portfolio.capacity_fill", "portfolio.disciplined_index",
+    "portfolio.core_satellite", "macro_overlay.country_events", "risk.relative_dd.start",
+    "risk.relative_dd.ew_basket_top_n", "risk.relative_dd.ew_basket_band_exempt", "events.notes_in_validation_s1",
+    "validation.reference_variant", "validation.evaluation_start", "validation.g7_ic_series",
+    "validation.single_run_lock", "validation.n_trials_start_v11",
+)
+
+
+def _without_v11(cfg: dict) -> dict:
+    out = copy.deepcopy(cfg)
+    for path in _V11_KEYS:
+        *head, last = path.split(".")
+        node = out
+        for k in head:
+            node = node[k]
+        del node[last]
+    out["version"] = "1.0"
+    out["validation"]["variants"] = [v for v in out["validation"]["variants"] if v != "I"]
+    return out
+
+
 def test_yaml_file_location_and_identical_to_spec(cfg: dict) -> None:
     assert DEFAULT_STRATEGY_PATH == ROOT / "configs" / "strategy_v1.yaml"
-    assert cfg == _spec_yaml_block()  # mêmes clés, mêmes valeurs que le §12.1
-    assert cfg["version"] == "1.0"
+    # §12.1 (v1.0) + clés de l'additif v1.1 : hors ajouts v1.1, mêmes clés et mêmes valeurs que le §12.1
+    assert _without_v11(cfg) == _spec_yaml_block()
+    assert cfg["version"] == "1.1" and cfg["validation"]["variants"][-1] == "I"
     assert cfg["capital_fcfa_reference"] == 10_000_000
     assert cfg["capacity_variants_fcfa"] == [100_000_000, 1_000_000_000]
     header = DEFAULT_STRATEGY_PATH.read_text(encoding="utf-8").splitlines()[:4]

@@ -789,11 +789,12 @@ def test_capacity_completion_stays_in_top_half_unless_asked():
     assert all("50 % supérieurs" in d["reasons"][s] for s in _names(20)[12:])
     # rangs 13 à 20 : achat bloqué ; la réserve des 50 % supérieurs est vide → 12 × 5 % = 60 %
     ctx2 = dict(ctx, no_buy=_names(20)[12:])
-    w2, d2 = target_portfolio(sc, names, None, ctx2)
+    # lecture v1.0 (complément limité aux 50 % supérieurs) : explicite depuis l'additif v1.1
+    w2, d2 = target_portfolio(sc, names, None, ctx2, {"capacity_beyond_exit": False})
     _assert_invariants(w2, d2)
     assert w2.sum() == pytest.approx(0.60) and not d2["feasible_full_budget"]
     assert any("non atteignable" in m for m in d2["messages"])
-    w3, d3 = target_portfolio(sc, names, None, ctx2, {"capacity_beyond_exit": True})
+    w3, d3 = target_portfolio(sc, names, None, ctx2)  # additif v1.1, D4 (défaut) : au-delà des 50 %
     _assert_invariants(w3, d3)
     assert w3.sum() == pytest.approx(0.98) and d3["n_holdings"] == 20
     assert set(w3[w3 > 0].index) == set(_names(12)) | {f"T{i:02d}" for i in range(20, 28)}

@@ -33,11 +33,18 @@ Validation de la stratégie v1 (spécification §8)
   45 découpages, 9 chemins ; purge et embargo de 21 séances) ;
 * :class:`TrialRegistry` — registre persistant des essais
   (``reports/trials.parquet``) : 55 essais S0 « déclarés » et 8 variantes
-  S1 « pré-enregistrées » au départ (``N = 63``), puis chaque essai exécuté
-  avec ses rendements hebdomadaires nets ;
-* :func:`evaluate_status` — statut REJETÉ / CANDIDAT / PROMU selon les
-  critères exacts du §8.3 et les filtres G1-G9, avec le détail critère par
-  critère.
+  S1 « pré-enregistrées » au départ (``N = 63``) ; l'additif v1.1 (§8.4) y
+  ajoute la variante I (``S1-I``), la référence « indice discipliné »
+  (``REF-ID``, hors famille de la PBO) et les essais de diagnostic S0 déjà
+  exécutés pendant la mise au point (essais de fumée de A, décision du
+  20/11/2026), soit ``N ≥ 65 + diagnostics`` ; puis chaque essai exécuté avec
+  ses rendements hebdomadaires nets (une relance motivée crée de **nouveaux**
+  essais, D12) ;
+* :func:`evaluate_status` — statut REJETÉ / CANDIDAT / INDÉTERMINÉ / PROMU
+  selon les critères exacts du §8.3 et les filtres G1-G9, avec le détail
+  critère par critère ; règle D7 de l'additif v1.1 pour le suivi réel S2 ;
+* :func:`variant_promotion` — règle de promotion du §3.4 (N = 9 depuis
+  l'additif v1.1).
 
 L'échantillon S1 (2017-01-02 → 2022-11-16) est réservé à **un seul** test
 pré-enregistré : aucun de ces outils ne l'exécute de lui-même.
@@ -73,7 +80,12 @@ import pandas as pd
 __all__ = [
     "CPCVResult",
     "DEFAULT_REGISTRY_PATH",
+    "FAMILY_V11",
     "N_TRIALS_START",
+    "N_TRIALS_START_V11",
+    "REFERENCE_TRIAL_ID",
+    "REFERENCE_VARIANT",
+    "RULES_VERSIONS",
     "PromotionReport",
     "PurgedSplit",
     "REGISTRY_COLUMNS",
@@ -92,9 +104,11 @@ __all__ = [
     "WalkForwardResult",
     "WalkForwardWindow",
     "cpcv",
+    "declared_s0_diagnostic_trials",
     "declared_s0_trials",
     "evaluate_status",
     "param_grid",
+    "preregistered_addendum_v11",
     "preregistered_s1_variants",
     "purged_kfold",
     "run_param_grid",
@@ -702,6 +716,14 @@ STATUT_EXECUTE = "exécuté"  # rendements hebdomadaires nets journalisés
 #: Nombre d'essais de départ (spéc. §8.2 et §11 : 55 essais S0 + 8 variantes S1).
 N_TRIALS_START = 63
 S1_VARIANTS = ("A", "B", "C", "D", "E", "F", "G", "H")
+#: Famille de la PBO et du DSR depuis l'additif v1.1 (D9 : variante I « cœur-satellite »).
+FAMILY_V11 = ("A", "B", "C", "D", "E", "F", "G", "H", "I")
+#: Référence « indice discipliné » (D8) : essai ``REF-ID``, hors famille de la PBO.
+REFERENCE_VARIANT = "REF"
+REFERENCE_TRIAL_ID = "REF-ID"
+#: N de départ de l'additif v1.1 (§8.2) : 55 (S0) + 9 variantes + 1 référence, **avant** les
+#: essais de diagnostic S0 réellement exécutés (ajoutés au registre, ils comptent aussi dans N).
+N_TRIALS_START_V11 = 65
 
 _A_WEIGHTS = {"ep": 0.15, "dy": 0.20, "mom6_1": 0.35, "lowvol": 0.20, "quality_proxy": 0.10}
 
@@ -820,6 +842,85 @@ def preregistered_s1_variants() -> list[dict[str, Any]]:
     return out
 
 
+def preregistered_addendum_v11() -> list[dict[str, Any]]:
+    """Essais ajoutés par l'additif v1.1 (§8.4, D8-D9) **avant** toute exécution sur S1.
+
+    * ``S1-I`` : variante I « cœur-satellite » ``w_I = 0,5·w_D8 + 0,5·w_A`` (famille N = 9) ;
+    * ``REF-ID`` : référence « indice discipliné » D8, évaluée sur S1 comme étalon
+      investissable, **hors famille** de la PBO (mais comptée dans ``N``).
+    """
+    core = {
+        "n_titres": 20,
+        "ponderation": "capitalisation point-in-time",
+        "investi": 0.98,
+        "plafond_ligne": "max(10 % × multiplicateur pays ; min(30 % ; 1,25 × b_i))",
+        "plancher_ligne": 0.005,
+        "plafond_secteur": "max(15 % ; 1,25 × b_s)",
+        "plafonds": "pays, AES et liquidité de A",
+        "filtres": "R et règles pays actifs",
+        "rebalancement": "annuel (première décision de janvier) + sorties forcées",
+    }
+    return [
+        {
+            "id": "S1-I",
+            "variante": "I",
+            "famille": "S1 variantes pré-enregistrées",
+            "parametres": {"coeur": core, "poids_coeur": 0.5, "poids_A": 0.5,
+                           "rebalancement": {"A": "mensuel", "coeur": "annuel"},
+                           "projection": "plafonds de groupe de D8", "chevauchements": "additionnés"},
+            "echantillon": "S1",
+            "statut": STATUT_PREENREGISTRE,
+            "source": "SPECIFICATION_STRATEGIE.md §8.4 (D9)",
+            "note": "cœur-satellite 50/50 fixé a priori (aucun paramètre libre)",
+        },
+        {
+            "id": REFERENCE_TRIAL_ID,
+            "variante": REFERENCE_VARIANT,
+            "famille": "S1 référence indice discipliné (hors PBO)",
+            "parametres": core,
+            "echantillon": "S1",
+            "statut": STATUT_PREENREGISTRE,
+            "source": "SPECIFICATION_STRATEGIE.md §8.4 (D8)",
+            "note": "référence investissable et repli du §8.3 ; hors famille de la PBO, compté dans N",
+        },
+    ]
+
+
+def declared_s0_diagnostic_trials() -> list[dict[str, Any]]:
+    """Essais de diagnostic S0 **déjà exécutés** pendant la mise au point (additif v1.1, §8.4).
+
+    Ils ont été vus (informations contaminées déclarées par l'additif) mais leurs rendements
+    n'ont pas été journalisés : statut « déclaré », comptés dans ``N`` (DSR, haircut BHY),
+    hors PBO.
+
+    * ``S0-DIAG-A-01`` : essai de fumée de A sur S0 (10 M FCFA, coûts centraux) : ≈ 28 %/an
+      contre 34,6 %/an pour le TR, drawdown relatif −15 % au 30/09/2024 puis −20 % au
+      29/11/2024 (arrêt, « indice discipliné ») ;
+    * ``S0-DIAG-A-02`` : essai de fumée court de A (02/01/2024 → 28/06/2024, test
+      ``test_smoke_backtest_s0_short``), exécuté à chaque passage de la suite de tests ;
+    * ``S0-DIAG-DEC-20261120`` : décision du 20/11/2026 (remplissage de capacité, CIEC rang 19
+      à 8,58 % contre BOAC rang 1 à 5,98 %), motif des décisions D4.
+    """
+    base = {"variante_moteur": "A", "capital": 10_000_000, "couts": "central"}
+    rows = [
+        {"id": "S0-DIAG-A-01", "variante": "A", "famille": "S0 diagnostic (mise au point)",
+         "parametres": {**base, "periode": ["2022-11-17", "2026-11-20"], "mesure": "fumée"},
+         "source": "SPECIFICATION_STRATEGIE.md §8.4 (« Ce qui a été vu »)",
+         "note": "≈ 28 %/an contre 34,6 %/an pour le TR ; DD relatif −15 % (30/09/2024), −20 % (29/11/2024)"},
+        {"id": "S0-DIAG-A-02", "variante": "A", "famille": "S0 diagnostic (mise au point)",
+         "parametres": {**base, "periode": ["2024-01-02", "2024-06-28"], "mesure": "fumée courte (tests)"},
+         "source": "tests/test_strategy_alpha.py::test_smoke_backtest_s0_short",
+         "note": "contrôle de forme (NAV finie, coûts et rotation plausibles)"},
+        {"id": "S0-DIAG-DEC-20261120", "variante": "A", "famille": "S0 diagnostic (mise au point)",
+         "parametres": {**base, "date": "2026-11-20", "mesure": "décision (poids)"},
+         "source": "SPECIFICATION_STRATEGIE.md §8.4 (« Décision du 20/11/2026 »)",
+         "note": "CIEC (rang 19) 8,58 % contre BOAC (rang 1) 5,98 % : motif de D4"},
+    ]
+    for row in rows:
+        row.update({"echantillon": "S0", "statut": STATUT_DECLARE})
+    return rows
+
+
 def _json_default(x: Any) -> Any:
     if isinstance(x, (np.integer,)):
         return int(x)
@@ -907,8 +1008,13 @@ class TrialRegistry:
         *,
         save: bool = True,
         overwrite: bool = False,
+        addendum_v11: bool = False,
     ) -> TrialRegistry:
         """Registre amorcé avec les 55 essais S0 « déclarés » et les 8 variantes S1 « pré-enregistrées ».
+
+        ``addendum_v11=True`` ajoute les essais de l'additif v1.1 (§8.4) : ``S1-I``,
+        ``REF-ID`` (:func:`preregistered_addendum_v11`) et les essais de diagnostic S0 déjà
+        exécutés (:func:`declared_s0_diagnostic_trials`), soit ``N = 68`` au départ.
 
         Idempotent : un registre existant est relu et seuls les essais
         d'amorçage absents (par ``id``) sont ajoutés ; ``overwrite=True``
@@ -925,7 +1031,10 @@ class TrialRegistry:
         except Exception:  # pragma: no cover - fichier de paramètres absent ou invalide
             fingerprint = None
         rows = []
-        for row in declared_s0_trials() + preregistered_s1_variants():
+        seed_rows = declared_s0_trials() + preregistered_s1_variants()
+        if addendum_v11:
+            seed_rows += preregistered_addendum_v11() + declared_s0_diagnostic_trials()
+        for row in seed_rows:
             if row["id"] in have:
                 continue
             rows.append(
@@ -987,6 +1096,26 @@ class TrialRegistry:
             f = f[f["statut"] == STATUT_EXECUTE]
         return int(len(f))
 
+    def executed(self, sample: str | None = None) -> pd.DataFrame:
+        """Essais au statut « exécuté » (restreints à ``sample`` si fourni)."""
+        f = self._frame[self._frame["statut"] == STATUT_EXECUTE]
+        if sample is not None:
+            f = f[f["echantillon"] == sample]
+        return f.copy()
+
+    def set_metrics(self, trial_id: str, metrics: Mapping[str, Any], *, save: bool = False) -> None:
+        """Remplace les métriques (JSON) d'un essai exécuté (statut §8.3 calculé après coup)."""
+        hit = np.flatnonzero((self._frame["id"] == trial_id).to_numpy())
+        if not hit.size:
+            raise KeyError(trial_id)
+        i = int(hit[0])
+        if self._frame.at[i, "statut"] != STATUT_EXECUTE:
+            raise ValueError(f"essai {trial_id} non exécuté : aucune métrique à enregistrer")
+        self._frame = self._frame.astype(object)
+        self._frame.at[i, "metriques"] = _dumps(dict(metrics))
+        if save:
+            self.save()
+
     def _append(self, rows: list[dict[str, Any]]) -> None:
         new = pd.DataFrame(rows, columns=list(REGISTRY_COLUMNS))
         base = self._frame
@@ -1010,21 +1139,38 @@ class TrialRegistry:
         source: str = "",
         note: str = "",
         save: bool = False,
+        rerun_reason: str | None = None,
     ) -> str:
         """Journalise un essai exécuté (rendements hebdomadaires **nets**) et renvoie son ``id``.
 
         Une variante pré-enregistrée sur ``sample`` est complétée sur place
         (paramètres identiques exigés) ; sinon une nouvelle ligne est créée
         (``N`` augmente d'une unité).
+
+        S1 est un test unique : une variante déjà exécutée sur S1 est refusée, **sauf**
+        relance motivée par un bogue démontré (``rerun_reason``, additif v1.1 D12) : un
+        **nouvel** essai est alors créé (``S1-<variante>-R<k>``, ``N`` augmente), l'ancien
+        résultat reste au registre et les paramètres figés sont toujours exigés.
         """
         if weekly_returns is None or len(pd.Series(weekly_returns).dropna()) == 0:
             raise ValueError("rendements hebdomadaires nets obligatoires pour un essai exécuté")
         f = self._frame
         same = (f["variante"] == variant) & (f["echantillon"] == sample)
+        rerun = False
         if sample == "S1" and bool((same & (f["statut"] == STATUT_EXECUTE)).any()):
-            raise RuntimeError(
-                f"la variante {variant} a déjà été exécutée sur S1 : l'échantillon vierge ne sert qu'à UN test"
-            )
+            if not (rerun_reason and str(rerun_reason).strip()):
+                raise RuntimeError(
+                    f"la variante {variant} a déjà été exécutée sur S1 : l'échantillon vierge ne sert qu'à UN test "
+                    "(relance seulement pour un bogue démontré, avec rerun_reason)"
+                )
+            rerun = True
+            frozen_rows = f[same & f["parametres"].notna()]
+            frozen_params = json.loads(str(frozen_rows["parametres"].iloc[0])) if len(frozen_rows) else None
+            if frozen_params is not None and json.loads(_dumps(dict(params))) != frozen_params:
+                raise ValueError(
+                    f"paramètres de la variante {variant} modifiés : ils sont FIGÉS ; une relance motivée "
+                    "rejoue les mêmes paramètres"
+                )
         stamp = pd.Timestamp.now(tz="UTC") if run_date is None else pd.Timestamp(run_date)
         if stamp.tzinfo is None:
             stamp = stamp.tz_localize("UTC")
@@ -1037,7 +1183,30 @@ class TrialRegistry:
             "empreinte_config": config_fingerprint,
         }
         pre = same & (f["statut"] == STATUT_PREENREGISTRE)
-        if bool(pre.any()):
+        if rerun:
+            k = 1
+            existing = set(f["id"])
+            base_id = str(f.loc[same, "id"].iloc[0]) if bool(same.any()) else f"{sample}-{variant}"
+            while f"{base_id}-R{k}" in existing:
+                k += 1
+            tid = trial_id or f"{base_id}-R{k}"
+            if tid in existing:
+                raise ValueError(f"identifiant d'essai déjà utilisé : {tid}")
+            reason = f"relance motivée (D12) : {str(rerun_reason).strip()}"
+            self._append(
+                [
+                    {
+                        "id": tid,
+                        "variante": variant,
+                        "famille": family or str(f.loc[same, "famille"].iloc[0]),
+                        "echantillon": sample,
+                        "source": source or str(f.loc[same, "source"].iloc[0]),
+                        "note": (note + " ; " if note else "") + reason,
+                        **payload,
+                    }
+                ]
+            )
+        elif bool(pre.any()):
             i = int(np.flatnonzero(pre.to_numpy())[0])
             frozen = json.loads(str(f.at[i, "parametres"]))
             if json.loads(payload["parametres"]) != frozen:
@@ -1140,6 +1309,9 @@ STATUT_CANDIDAT = "CANDIDAT"
 STATUT_PROMU = "PROMU"
 #: Cas non prévu par le §8.3 (ni rejeté, ni candidat) : aucun suivi réel autorisé.
 STATUT_INDETERMINE = "INDÉTERMINÉ"
+#: Versions des règles de :func:`evaluate_status` : ``"v1.1"`` (défaut, additif §8.4, D7) ou
+#: ``"v1.0"`` (lecture prudente antérieure, conservée pour la traçabilité).
+RULES_VERSIONS = ("v1.1", "v1.0")
 
 #: Seuils du §8.3 (et du §12.1 ``validation``), FIGÉS avant toute exécution sur S1.
 STATUS_THRESHOLDS: dict[str, float] = {
@@ -1165,10 +1337,10 @@ STATUS_THRESHOLDS: dict[str, float] = {
     "ic_min_months": 36,
     "lo_naive_ratio_min": 0.6,
     "s2_min_weeks": 52,
-    # G7 sur S2 : IC mensuels PROPRES au suivi réel. Lecture prudente du §8.3 (« sur S1 ET sur S2,
-    # G1-G9 verts », G7 = « au moins 36 mois ») : 36 mois d'IC de S2, donc PROMU impossible avant
-    # 36 mois de suivi réel, alors que le §8.3 parle de 12 mois. Incompatibilité à trancher par
-    # addendum (abaisser cette valeur la tranche explicitement).
+    # G7 sur S2, règles v1.0 seulement (``rules="v1.0"``) : IC mensuels PROPRES au suivi réel,
+    # lecture prudente (36 mois d'IC de S2). Depuis l'additif v1.1 (D7, défaut ``rules="v1.1"``),
+    # G7 s'évalue sur la série d'IC S1 puis S2 mise bout à bout (``ic_min_months`` = 36 mois) et les
+    # autres filtres de S2 sur S2 seul (``s2_min_weeks`` = 52 semaines, soit 12 mois).
     "s2_ic_min_months": 36,
     # Longueur minimale d'un échantillon évalué (critères C1-C7 et G1-G9) : 52 semaines par sous-période.
     "min_weeks_per_subperiod": 52,
@@ -1452,6 +1624,8 @@ def evaluate_status(
     exposure: pd.Series | None = None,
     expected_period: tuple[Any, Any] | None = None,
     exclude_windows: Sequence[tuple[Any, Any]] | None = None,
+    rules: str = "v1.1",
+    expected_weeks: Sequence[Any] | pd.DatetimeIndex | None = None,
 ) -> StatusReport:
     """Statut REJETÉ / CANDIDAT / PROMU selon les critères **exacts** du §8.3.
 
@@ -1465,15 +1639,19 @@ def evaluate_status(
     * ``turnover`` : rotation moyenne **mensuelle aller** (fraction) ; à défaut,
       calculée depuis ``result`` (``metrics.monthly_one_way_turnover``). Attention :
       ``BacktestResult.turnover`` est **annualisé** ; une valeur > 1 est signalée ;
-    * ``pbo`` : PBO de la famille des 8 variantes (:func:`metrics.family_pbo`),
+    * ``pbo`` : PBO de la famille des variantes (9 depuis l'additif v1.1 ; :func:`metrics.family_pbo`),
       ``pbo_slope`` sa pente de dégradation ;
     * ``cvar_ratio`` : CVaR 95 % à 5 séances stratégie / TR
       (:func:`metrics.cvar_ratio`) ;
     * ``s2_active_weekly_returns``, ``s2_ic_monthly``, ``s2_pbo``, ``s2_pbo_slope`` :
-      entrées PROPRES au suivi réel S2 (jamais celles de S1). Sans IC de S2, le G7 de S2
-      n'est pas évaluable et le statut PROMU est impossible. G7 sur S2 exige
-      ``s2_ic_min_months`` mois d'IC (36 par défaut, lecture prudente ; le §8.3 ne
-      demande que 12 mois de S2 : incompatibilité à trancher par addendum) ;
+      entrées PROPRES au suivi réel S2 (jamais celles de S1 seules). **Règle D7** de
+      l'additif v1.1 (``rules="v1.1"``, défaut) : le G7 de S2 s'évalue sur la série d'IC
+      **S1 puis S2 mise bout à bout** (``ic_monthly`` suivi de ``s2_ic_monthly``, au moins
+      ``ic_min_months`` = 36 mois) ; les autres filtres de S2 (G2-G6, G8, G9, et G4 avec
+      ``s2_pbo``) s'évaluent sur S2 seul, avec au moins 12 mois (52 semaines). Sans IC de
+      S2, le G7 de S2 n'est pas évaluable et le statut PROMU est impossible. ``rules="v1.0"``
+      : lecture prudente antérieure (G7 de S2 sur ``s2_ic_monthly`` seul, au moins
+      ``s2_ic_min_months`` mois) ;
     * ``start`` : début COMMUN de la fenêtre d'évaluation (stratégie ET indice) ;
       ``"first_investment"`` : première séance investie de ``result`` / ``exposure``
       (:func:`metrics.first_investment_date`). Sans ``start``, une période de démarrage
@@ -1482,14 +1660,19 @@ def evaluate_status(
       de l'option (fenêtre commune, ou détention du TR pendant le démarrage) doit être
       pré-enregistré avant le test S1 ;
     * ``expected_period`` : période attendue (S1 en validation) ; si la couverture des
-      semaines est inférieure à ``min_coverage`` (95 %), les critères C et G valent
-      ``None`` (statut au mieux INDÉTERMINÉ) ;
+      semaines est inférieure à ``min_coverage`` (95 %), l'échantillon est **incomplet** ;
+    * ``expected_weeks`` : semaines attendues explicites (prioritaires sur ``expected_period``
+      pour la couverture), p. ex. celles de l'étalon calculé avec les mêmes règles : les
+      semaines **légitimement** retirées (fenêtre exclue, observation couvrant plus de 6
+      séances après un trou de BOC, §3.1.3) ne comptent alors pas comme des manques ;
     * ``exclude_windows`` : semaines exclues des statistiques (défaut :
       ``metrics.EXCLUDE_STATS_WINDOWS``, §8.1) retirées de toutes les entrées.
 
     Longueur minimale : une sous-période de moins de ``min_weeks_per_subperiod`` semaines
-    (52) rend les critères C1-C7 et G1-G9 non évaluables (``None``) : 4 semaines ne
-    suffisent jamais à un statut CANDIDAT.
+    (52), ou une couverture insuffisante, rend **tous** les critères non évaluables
+    (``None``, valeurs mesurées publiées) et le statut vaut ``INDÉTERMINÉ`` (additif v1.1,
+    D7 : « données insuffisantes », aucun suivi réel autorisé) : 4 semaines ne suffisent ni à
+    un statut CANDIDAT, ni à un rejet.
 
     Définitions : rendement actif net annualisé = ``CAGR(r) − CAGR(b)`` ; IR
     = ``√52 · moyenne(a) / écart-type(a)`` ; drawdown relatif = drawdown de
@@ -1517,6 +1700,8 @@ def evaluate_status(
     """
     from brvm_alpha.backtest import metrics as mt
 
+    if rules not in RULES_VERSIONS:
+        raise ValueError(f"rules doit valoir l'un de {RULES_VERSIONS}")
     th = status_thresholds(params)
     avert: list[str] = []
     windows = mt.EXCLUDE_STATS_WINDOWS if exclude_windows is None else exclude_windows
@@ -1556,19 +1741,24 @@ def evaluate_status(
     too_short = (not subperiods and a_c.size < min_w) or any(n < min_w for n in sub_n)
     if too_short:
         avert.append(f"échantillon trop court ({sub_n or [a_c.size]} semaines ; minimum {min_w} par sous-période) : "
-                     "critères C1-C7 et G1-G9 non évaluables, aucun statut favorable possible")
-    if expected_period is not None:
-        lo, hi = (pd.Timestamp(x) for x in expected_period)
-        exp_weeks = pd.date_range(lo, hi, freq="W-FRI")
-        if windows:
+                     "critères R1-R5, C1-C7 et G1-G9 non évaluables (statut INDÉTERMINÉ, D7)")
+    if expected_period is not None or expected_weeks is not None:
+        if expected_weeks is not None:
+            exp_weeks = pd.DatetimeIndex(pd.to_datetime(list(expected_weeks)))
+            if start_ts is not None:
+                exp_weeks = exp_weeks[exp_weeks >= start_ts]
+        else:
+            lo, hi = (pd.Timestamp(x) for x in expected_period)  # type: ignore[union-attr]
+            exp_weeks = pd.date_range(lo, hi, freq="W-FRI")
+        if windows and len(exp_weeks):
             exp_weeks = exp_weeks[mt.weekly_observation_mask(exp_weeks, exp_weeks, exclude_windows=windows,
                                                              max_sessions=None)]
         cov = float(a_c.index.isin(exp_weeks).sum() / len(exp_weeks)) if len(exp_weeks) else math.nan
         mesures["couverture"] = cov
         if not (_finite(cov) and cov >= float(th["min_coverage"])):
             too_short = True
-            avert.append(f"couverture de la période attendue {cov:.1%} < {float(th['min_coverage']):.0%} : critères C "
-                         "et G non évaluables")
+            avert.append(f"couverture de la période attendue {cov:.1%} < {float(th['min_coverage']):.0%} : critères "
+                         "R, C et G non évaluables (statut INDÉTERMINÉ, D7)")
     if turnover is None and result is not None:
         turnover = mt.monthly_one_way_turnover(result)
         mesures["rotation_source"] = "metrics.monthly_one_way_turnover(result)"
@@ -1661,7 +1851,7 @@ def evaluate_status(
          "seuil": f"≤ {th['candidate_turnover_month_le']}",
          "verifie": _check(turnover, lambda v: v <= th["candidate_turnover_month_le"]),
          "note": "" if _finite(turnover) else "rotation non fournie"},
-        {"groupe": "candidat", "code": "C6", "libelle": "PBO de la famille des 8 variantes", "valeur": pbo,
+        {"groupe": "candidat", "code": "C6", "libelle": "PBO de la famille des variantes (N = 9, additif v1.1)", "valeur": pbo,
          "seuil": f"≤ {th['candidate_pbo_le']}", "verifie": _check(pbo, lambda v: v <= th["candidate_pbo_le"]),
          "note": "" if _finite(pbo) else "PBO non fournie"},
         {"groupe": "candidat", "code": "C7", "libelle": "CVaR 95 % à 5 séances / CVaR du TR", "valeur": cvar_ratio,
@@ -1699,27 +1889,43 @@ def evaluate_status(
         mesures["s2_semaines"] = int(a2.size)
         if a2.size >= th["s2_min_weeks"]:
             s2_ok = True
-            # Entrées PROPRES à S2 : jamais l'IC, la PBO ni la pente de S1 (§8.3 : G1-G9 verts « sur S1
-            # ET sur le suivi réel S2 »). Sans IC de S2, G7 vaut None : PROMU impossible.
+            # Entrées PROPRES à S2 : jamais la PBO ni la pente de S1 (§8.3 : G1-G9 verts « sur S1 ET sur
+            # le suivi réel S2 »). Sans IC de S2, G7 vaut None : PROMU impossible.
+            s2_ic = None if s2_ic_monthly is None else pd.Series(s2_ic_monthly, dtype=float).dropna()
+            if rules == "v1.1":
+                # Additif v1.1, D7 : G7 sur la série d'IC S1 puis S2 mise bout à bout (≥ 36 mois).
+                g7_ic = None
+                if s2_ic is not None:
+                    parts = [pd.Series(ic_monthly, dtype=float).dropna()] if ic_monthly is not None else []
+                    g7_ic = pd.concat(parts + [s2_ic]).sort_index()
+                    g7_ic = g7_ic[~g7_ic.index.duplicated(keep="last")]
+                    mesures["promotion_S2_ic_mois_s2_seul"] = int(s2_ic.size)
+                g7_min = th["ic_min_months"]
+            else:
+                g7_ic, g7_min = s2_ic, th["s2_ic_min_months"]
             rows += _g_filters("promotion_S2", a2, [(a2.index[0], a2.index[-1])], th,
                                pbo=s2_pbo if s2_pbo is not None else math.nan, pbo_slope=s2_pbo_slope,
-                               ic_monthly=s2_ic_monthly, ic_min_months=th["s2_ic_min_months"], **common)
-            if s2_ic_monthly is None:
+                               ic_monthly=g7_ic, ic_min_months=g7_min, **common)
+            if rules == "v1.1":
+                for r in rows:
+                    if r["groupe"] == "promotion_S2" and r["code"] == "G7":
+                        r["libelle"] = "t de Newey-West de l'IC mensuel, séries S1 puis S2 bout à bout (D7)"
+            if s2_ic is None:
                 avert.append("suivi réel S2 : IC mensuels propres à S2 non fournis (G7 non évaluable) : PROMU "
                              "impossible")
-            elif int(pd.Series(s2_ic_monthly, dtype=float).dropna().size) < th["s2_ic_min_months"]:
+            elif rules == "v1.0" and int(s2_ic.size) < th["s2_ic_min_months"]:
                 avert.append(f"suivi réel S2 : moins de {int(th['s2_ic_min_months'])} mois d'IC propres à S2 "
-                             "(G7, lecture prudente du §8.3 ; à trancher par addendum)")
+                             "(G7, lecture prudente v1.0 du §8.3)")
         else:
             avert.append(f"suivi réel S2 de {a2.size} semaines < {int(th['s2_min_weeks'])} : promotion impossible")
     else:
         avert.append("aucun suivi réel S2 : le statut PROMU est impossible (au moins 12 mois exigés)")
     if too_short:
-        # Échantillon trop court ou incomplet : aucun critère favorable n'est évaluable.
+        # Échantillon trop court ou incomplet (D7 : « données insuffisantes ») : aucun critère n'est
+        # évaluable, ni de rejet ni de candidature ; les valeurs mesurées restent publiées.
         for r in rows:
-            if r["groupe"] != "rejet":
-                r["verifie"] = None
-                r["note"] = (r["note"] + " ; " if r["note"] else "") + "échantillon trop court ou incomplet"
+            r["verifie"] = None
+            r["note"] = (r["note"] + " ; " if r["note"] else "") + "échantillon trop court ou incomplet"
 
     crit = pd.DataFrame(rows, columns=["groupe", "code", "libelle", "valeur", "seuil", "verifie", "note"])
     rejected = bool((crit.loc[crit["groupe"] == "rejet", "verifie"] == True).any())  # noqa: E712
@@ -1736,11 +1942,15 @@ def evaluate_status(
         statut = STATUT_CANDIDAT
     else:
         statut = STATUT_INDETERMINE
-        avert.append("ni rejeté ni candidat (cas non prévu par le §8.3) : aucun suivi réel autorisé")
+        if too_short:
+            avert.append("INDÉTERMINÉ : données insuffisantes (additif v1.1, D7) : aucun suivi réel autorisé")
+        else:
+            avert.append("ni rejeté ni candidat (cas non prévu par le §8.3) : aucun suivi réel autorisé")
     if _finite(ir) and ir > 1.0:
         avert.append("IR > 1 : à traiter d'abord comme une ERREUR (anticipation, prix périmés, coûts oubliés), §8.3")
     if mesures.get("sharpe_actif") and mesures["sharpe_actif"].get("divergence"):
         avert.append("écart entre Sharpe de Lo et Sharpe GLM > 25 % : prix périmés à examiner (§8.2)")
+    mesures["regles"] = rules
     avert.append("Performance passée ≠ garantie. Aucun gain n'est garanti.")
     return StatusReport(statut=statut, criteres=crit, mesures=mesures, avertissements=avert)
 
@@ -1768,7 +1978,7 @@ def variant_promotion(
     benchmark: pd.Series | None = None,
     pbo: float | None = None,
     baseline: str = "A",
-    n_trials: int = 8,
+    n_trials: int | None = None,
     sr_variance: float | None = None,
     params: Mapping[str, Any] | None = None,
     exclude_windows: Sequence[tuple[Any, Any]] | None = None,
@@ -1780,8 +1990,9 @@ def variant_promotion(
 
     1. X bat A en rendement actif net annualisé (``CAGR(a + b) − CAGR(b)`` si
        ``benchmark`` est fourni, sinon ``52 × moyenne(a)``) ;
-    2. DSR(X) ≥ 0,95 avec **N = 8** (famille des variantes du §3.4) ; la variance des
-       Sharpe hebdomadaires entre variantes est estimée sur la famille si
+    2. DSR(X) ≥ 0,95 avec **N = taille de la famille** (``n_trials`` ; défaut : nombre de
+       colonnes de ``weekly_active``, soit **9** pour la famille A-I de l'additif v1.1) ; la
+       variance des Sharpe hebdomadaires entre variantes est estimée sur la famille si
        ``sr_variance`` n'est pas fourni ;
     3. PBO de la famille ≤ 0,25 (:func:`metrics.family_pbo` si ``pbo`` n'est pas fourni).
 
@@ -1809,6 +2020,8 @@ def variant_promotion(
         avert.append(f"{n_all - len(frame)} semaine(s) sans rendement pour toutes les variantes retirée(s)")
     if len(frame) < 2:
         raise ValueError("au moins deux semaines communes à toutes les variantes sont nécessaires")
+    if n_trials is None:
+        n_trials = int(frame.shape[1])
     b = None
     if benchmark is not None:
         b = pd.Series(benchmark, dtype=float).reindex(frame.index)

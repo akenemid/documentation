@@ -24,7 +24,17 @@ Contenu
 * :func:`annualized_active_return`, :func:`information_ratio`,
   :func:`max_drawdown`, :func:`relative_drawdown` ; :func:`family_pbo`
   (PBO par CSCV, 10 blocs hebdomadaires, critère = Sharpe de Lo des
-  rendements actifs nets).
+  rendements actifs nets) ;
+* fenêtre d'évaluation de l'additif v1.1 (D2, spéc. §8.4) :
+  :func:`first_investment_date` (``t0`` = première séance où la variante A
+  détient des titres), :func:`evaluation_window` (rendements quotidiens de
+  ``[t0 ; fin]``), :func:`rebase_at` (niveaux rebasés à ``t0``) et
+  :func:`evaluation_subperiods` (sous-période 1 = ``[t0 ; 2019-12-31]``,
+  sous-période 2 = ``[2020-01-01 ; 2022-11-16]``) ; la fenêtre du 06/05 au
+  25/06/2021 est exclue **par défaut** de :func:`weekly_returns` (et de
+  ``walkforward.evaluate_status``) ;
+* :func:`monthly_ic` : IC mensuel de Spearman d'un score (horizon de 21
+  séances, délai d'une séance, au moins 15 titres), entrée du filtre G7.
 
 Ces mesures **estiment** des grandeurs incertaines à partir d'un historique
 court : elles ne garantissent aucun gain futur.
@@ -48,7 +58,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -65,7 +75,9 @@ __all__ = [
     "S0",
     "S1",
     "S1_SUBPERIODS",
+    "S0_SUBPERIODS",
     "S2_FROM",
+    "FAMILY_SIZE_V11",
     "WEEKLY_FREQ",
     "WEEKLY_MEAN_BLOCK",
     "WEEKS_PER_YEAR",
@@ -88,8 +100,12 @@ __all__ = [
     "psr",
     "relative_drawdown",
     "sharpe_triplet",
+    "evaluation_subperiods",
+    "evaluation_window",
     "first_investment_date",
+    "monthly_ic",
     "monthly_one_way_turnover",
+    "rebase_at",
     "weekly_observation_mask",
     "weekly_returns",
 ]
@@ -109,6 +125,11 @@ S0 = ("2022-11-17", "2026-11-20")  # sélection, contaminé : diagnostic seuleme
 S1 = ("2017-01-02", "2022-11-16")  # validation pré-enregistrée : un seul test, fait plus tard
 S1_SUBPERIODS: tuple[tuple[str, str], tuple[str, str]] = (("2017-01-02", "2019-12-31"), ("2020-01-01", "2022-11-16"))
 S2_FROM = "2026-12-01"  # suivi réel
+#: Sous-périodes de **diagnostic** de S0 (aucune valeur de preuve) : avant / après le premier
+#: niveau officiel du Composite TR (02/01/2025). Choix descriptif, pas un critère de la spécification.
+S0_SUBPERIODS: tuple[tuple[str, str], tuple[str, str]] = (("2022-11-17", "2024-12-31"), ("2025-01-01", "2026-11-20"))
+#: Taille de la famille de la PBO et du DSR depuis l'additif v1.1 (D9 : variantes A à I).
+FAMILY_SIZE_V11 = 9
 
 
 def overlaps_s1(start: Any, end: Any) -> bool:
@@ -711,7 +732,7 @@ def family_pbo(
 ) -> dict[str, Any]:
     """PBO (CSCV) de la famille des variantes, critère = Sharpe de Lo des rendements actifs nets.
 
-    ``weekly_active`` : matrice semaines × variantes (8 variantes du §3.4).
+    ``weekly_active`` : matrice semaines × variantes (9 variantes A-I depuis l'additif v1.1, §3.4).
     ``n_splits = 10`` blocs en hebdomadaire (C(10, 5) = 252 combinaisons).
     Renvoie le dictionnaire de ``stats.pbo_cscv`` (``pbo``,
     ``degradation_slope``…).
@@ -763,3 +784,125 @@ def first_investment_date(result: Any, min_exposure: float = 0.0) -> pd.Timestam
     expo = expo.astype(float)
     hit = expo[expo > float(min_exposure)]
     return pd.Timestamp(hit.index[0]) if len(hit) else None
+
+
+# ---------------------------------------------------------------------------
+# Fenêtre d'évaluation commune (additif v1.1, D2)
+# ---------------------------------------------------------------------------
+
+
+def evaluation_window(daily: pd.Series | pd.DataFrame, t0: Any, end: Any = None) -> pd.Series | pd.DataFrame:
+    """Rendements quotidiens de la fenêtre d'évaluation ``[t0 ; end]`` (bornes incluses).
+
+    Additif v1.1, D2 : ``t0`` est la première séance où la variante A détient des titres
+    (:func:`first_investment_date`), **commune** à toutes les variantes et à tous les étalons.
+    Le rendement de la séance ``t0`` (celle des premiers achats, qui porte les frais d'achat
+    initiaux) est **compté** : choix prudent, les niveaux sont donc rebasés à la clôture de la
+    veille de ``t0`` (:func:`rebase_at`).
+    """
+    obj = daily.copy()
+    if not isinstance(obj.index, pd.DatetimeIndex):
+        obj.index = pd.DatetimeIndex(pd.to_datetime(obj.index))
+    obj = obj.sort_index()
+    keep = obj.index >= pd.Timestamp(t0)
+    if end is not None:
+        keep &= obj.index <= pd.Timestamp(end)
+    return obj.loc[keep]
+
+
+def rebase_at(level: pd.Series | pd.DataFrame, t0: Any, base: float = 100.0) -> pd.Series | pd.DataFrame:
+    """Niveaux rebasés à ``base`` à la clôture de la **veille** de ``t0`` (NaN avant).
+
+    Cohérent avec :func:`evaluation_window` : ``rebase_at(L, t0)`` composé des rendements
+    quotidiens de ``[t0 ; fin]`` redonne le niveau. Sans séance antérieure à ``t0``, la base
+    est la clôture de ``t0``. Une série sans valeur finie à la date de base est rebasée sur sa
+    première valeur finie ultérieure.
+    """
+    obj = level.copy()
+    if not isinstance(obj.index, pd.DatetimeIndex):
+        obj.index = pd.DatetimeIndex(pd.to_datetime(obj.index))
+    obj = obj.sort_index().astype(float)
+    t0 = pd.Timestamp(t0)
+    before = obj.index[obj.index < t0]
+    anchor = before[-1] if len(before) else (obj.index[obj.index >= t0][0] if (obj.index >= t0).any() else None)
+    if anchor is None:
+        return obj * np.nan
+    sub = obj.loc[obj.index >= anchor]
+    first = sub.ffill().bfill().iloc[0] if isinstance(sub, pd.Series) else sub.bfill().iloc[0]
+    out = obj * np.nan
+    out.loc[obj.index >= anchor] = (sub / first * float(base))
+    return out
+
+
+def evaluation_subperiods(
+    t0: Any,
+    subperiods: Sequence[tuple[Any, Any]] = S1_SUBPERIODS,
+    end: Any = None,
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Sous-périodes de la fenêtre d'évaluation (additif v1.1, D2).
+
+    La première commence à ``max(t0, début)`` (S1 : ``[t0 ; 2019-12-31]``), la seconde reste
+    ``[2020-01-01 ; 2022-11-16]``. ``end`` (étiquette de la dernière semaine W-FRI, p. ex. le
+    vendredi 18/11/2022 qui porte les séances des 14-16/11/2022) prolonge la dernière borne
+    pour que la dernière semaine partielle soit comptée dans la sous-période 2.
+    """
+    t0 = pd.Timestamp(t0)
+    out: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    periods = [(pd.Timestamp(a), pd.Timestamp(b)) for a, b in subperiods]
+    for i, (a, b) in enumerate(periods):
+        if i == len(periods) - 1 and end is not None:
+            b = max(b, pd.Timestamp(end))
+        a = max(a, t0)
+        if a <= b:
+            out.append((a, b))
+    return out
+
+
+def monthly_ic(
+    scores: Mapping[Any, pd.Series] | pd.DataFrame,
+    tr_index: pd.DataFrame,
+    *,
+    horizon: int = 21,
+    lag: int = 1,
+    min_names: int = 15,
+    end: Any = None,
+    eligible: Mapping[Any, pd.Series] | pd.DataFrame | None = None,
+) -> pd.Series:
+    """IC mensuel de Spearman d'un score (spéc. §3.5, entrée du filtre G7 du §8.3).
+
+    Pour chaque date de décision ``t`` : rendement total à terme de ``t + lag`` à
+    ``t + lag + horizon`` séances (lignes de ``tr_index``), corrélation de rang avec le score
+    connu en ``t`` sur les titres où les deux sont finis (et éligibles si ``eligible`` est
+    fourni) ; NaN sous ``min_names`` titres. Une date dont la fenêtre à terme dépasse ``end``
+    (fin de l'échantillon) ou la dernière séance est **omise** : aucun rendement hors de
+    l'échantillon évalué n'est lu. Index = dates de décision.
+    """
+    frame = pd.DataFrame(scores).T if isinstance(scores, Mapping) else pd.DataFrame(scores)
+    out: dict[pd.Timestamp, float] = {}
+    if frame.empty or tr_index is None or not len(tr_index):
+        return pd.Series(out, dtype=float, name="ic")
+    tr = tr_index.sort_index().astype(float)
+    tr.index = pd.DatetimeIndex(pd.to_datetime(tr.index))
+    frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index))
+    el = None
+    if eligible is not None:
+        el = pd.DataFrame(eligible).T if isinstance(eligible, Mapping) else pd.DataFrame(eligible)
+        el.index = pd.DatetimeIndex(pd.to_datetime(el.index))
+    last = pd.Timestamp(end) if end is not None else tr.index[-1]
+    for t, row in frame.sort_index().iterrows():
+        pos = int(tr.index.searchsorted(t, side="right")) - 1
+        a, b = pos + int(lag), pos + int(lag) + int(horizon)
+        if pos < 0 or b >= len(tr.index) or tr.index[b] > last:
+            continue
+        fwd = tr.iloc[b] / tr.iloc[a] - 1.0
+        sc = pd.to_numeric(row, errors="coerce").astype(float)
+        df = pd.concat({"s": sc, "f": fwd}, axis=1, join="inner")
+        if el is not None and t in el.index:
+            m = el.loc[t].reindex(df.index).astype("boolean").fillna(False).astype(bool)
+            df = df[m.to_numpy()]
+        df = df.replace([np.inf, -np.inf], np.nan).dropna()
+        if len(df) < int(min_names) or df["s"].nunique() < 2 or df["f"].nunique() < 2:
+            out[pd.Timestamp(t)] = math.nan
+            continue
+        out[pd.Timestamp(t)] = float(df["s"].rank().corr(df["f"].rank()))
+    return pd.Series(out, dtype=float, name="ic").sort_index()

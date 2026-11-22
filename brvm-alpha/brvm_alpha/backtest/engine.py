@@ -68,7 +68,12 @@ reproduire les frictions qui, sur un marché étroit, séparent une performance
   convertis en unités ajustées par ``adj_factor`` (``D · f``) ; retenue à
   la source par pays si les montants fournis sont bruts (``TaxModel``).
   Depuis le panel long, la date de détachement vient de
-  ``store.detect_dividends`` (:func:`panels_from_equities`) ;
+  ``store.detect_dividends`` (:func:`panels_from_equities`). **Montant crédité
+  (additif v1.1, D6)** : le montant **corrigé** (meilleure estimation du
+  versement réel, ``dividend_net``) ; le montant de la ligne « (d) » du BOC
+  (``dividend_net_boc``, celui que voient les signaux) sert à publier l'écart
+  total (``BacktestResult.dividends_boc``, ``dividend_events``,
+  ``meta["dividend_gap_vs_boc"]``) ;
 * **suspension** : position bloquée (aucun ordre exécuté) ; sa valeur est
   suivie à part (``suspended_value``) pour une décote de risque de 10 % ;
 * **choc pays sévère** (option ``country_shocks``, spéc. §4.3 et §7.1.8) :
@@ -115,8 +120,10 @@ Mesures produites (:class:`BacktestResult`)
 * ``fill_rate`` = part (en valeur au cours de décision) des ordres exécutés ;
 * ``cash`` réglé, ``receivables`` (ventes non réglées, dividendes à
   recevoir), ``payables`` (frais dus), ``dividends`` (reconnus au jour ex)
-  et ``dividends_paid`` (versés), ``orders`` / ``events`` (annulations et
-  ressaisies), ``suspended_value``.
+  et ``dividends_paid`` (versés), ``dividends_boc`` (les mêmes dividendes
+  valorisés au montant de la ligne « (d) », D6) et ``dividend_events`` (un
+  détachement par ligne : crédité, ligne (d), écart), ``orders`` / ``events``
+  (annulations et ressaisies), ``suspended_value``.
 
 Toutes ces grandeurs sont des **simulations** sous hypothèses (coûts,
 exécution au VWAP, file d'attente aux bornes) : elles ne garantissent aucun
@@ -979,6 +986,10 @@ def _benchmark_returns(
     return out
 
 
+#: Colonnes de :attr:`BacktestResult.dividend_events` (additif v1.1, D6).
+DIVIDEND_EVENT_COLUMNS = ("date", "symbol", "qty", "per_share", "per_share_boc", "credited", "boc", "gap")
+
+
 @dataclass
 class BacktestResult:
     """Résultat d'un backtest (toutes les séries sont indexées par séance).
@@ -1049,6 +1060,18 @@ class BacktestResult:
     payables
         Frais fixes dus et non encore payés faute de cash réglé (déduits de
         la NAV) : ``equity = cash − payables + receivables + Σ q·P``.
+    dividends_boc
+        Les dividendes reconnus de ``dividends``, valorisés au montant de la
+        ligne « (d) » du BOC (``dividend_net_boc`` ; à défaut, égal au montant
+        crédité). Additif v1.1, D6 : le moteur crédite le montant **corrigé**
+        (meilleure estimation du versement réel) ; l'écart total
+        ``Σ dividends − Σ dividends_boc`` est publié dans
+        ``meta["dividend_gap_vs_boc"]`` et dans :meth:`summary`.
+    dividend_events
+        Un détachement crédité par ligne : ``date, symbol, qty`` (titres
+        ajustés détenus à l'ouverture), ``per_share`` et ``per_share_boc``
+        (montants nets par titre ajusté), ``credited``, ``boc`` et ``gap``
+        (FCFA).
     """
 
     equity: pd.Series
@@ -1077,6 +1100,10 @@ class BacktestResult:
     )
     suspended_value: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="suspended_value"))
     payables: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="payables"))
+    dividends_boc: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="dividends_boc"))
+    dividend_events: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=list(DIVIDEND_EVENT_COLUMNS))
+    )
 
     @property
     def total_costs(self) -> float:
@@ -1147,6 +1174,9 @@ class BacktestResult:
             fill_rate=self.fill_rate,
             n_trades=len(self.trades),
             dividends=float(self.dividends.sum()),
+            dividends_boc=float(self.dividends_boc.sum()) if len(self.dividends_boc) else float(self.dividends.sum()),
+            dividend_gap_vs_boc=(float(self.dividends.sum()) - float(self.dividends_boc.sum()))
+            if len(self.dividends_boc) else 0.0,
             taxes=float(self.taxes.sum()),
         )
         return out
@@ -1189,6 +1219,7 @@ _ENGINE_PANELS = (
     "ref_price",
     "change_pct",
     "dividend_net",
+    "dividend_net_boc",
     "open",
     "adj_factor",
     "bid",
@@ -1791,13 +1822,20 @@ class Backtester:
         div = np.zeros_like(c) if div is None else np.clip(div, 0.0, None)
         self._ex_day = div > 0
         div_adj = div * af
+        # Additif v1.1, D6 : montant de la ligne « (d) » du BOC, pour publier l'écart avec le
+        # montant corrigé effectivement crédité ; à défaut, identique (écart nul).
+        div_boc = self._dividend_array("dividend_net_boc")
+        self.has_dividend_boc = div_boc is not None
+        div_boc_adj = (np.clip(div_boc, 0.0, None) * af) if div_boc is not None else div_adj
         if not self.taxes.dividends_reported_net:
             rates = self._withholding_rates()
             self._div = div_adj * (1.0 - rates)[None, :]
             self._div_tax = div_adj * rates[None, :]
+            self._div_boc = div_boc_adj * (1.0 - rates)[None, :]
         else:
             self._div = div_adj
             self._div_tax = np.zeros_like(div_adj)
+            self._div_boc = div_boc_adj
         self._div_pay_pos = self._payment_positions(self._ex_day)
 
         chg = self._wide("change_pct")
@@ -2170,16 +2208,18 @@ class Backtester:
             floor = np.where(np.isfinite(raw_px) & (raw_px > 0), tick_size(raw_px) / (2.0 * raw_px), 0.0)
         return mult * np.maximum(b, np.nan_to_num(floor))
 
-    def _dividend_array(self) -> np.ndarray | None:
-        """``dividend_net`` aligné sur (séances, symboles), dates hors calendrier reportées."""
-        self.n_dividend_dates_off_calendar = 0
-        raw = self._panels.get("dividend_net")
+    def _dividend_array(self, key: str = "dividend_net") -> np.ndarray | None:
+        """``dividend_net`` (ou ``key``) aligné sur (séances, symboles), dates hors calendrier reportées."""
+        if key == "dividend_net":
+            self.n_dividend_dates_off_calendar = 0
+        raw = self._panels.get(key)
         if raw is None:
             return None
-        df = _as_wide(raw, "dividend_net")
+        df = _as_wide(raw, key)
         n_off = int((~pd.DatetimeIndex(df.index).isin(self.dates)).sum())
         df = _snap_to_calendar(df, self.dates).reindex(columns=self.symbols)
-        self.n_dividend_dates_off_calendar = n_off
+        if key == "dividend_net":
+            self.n_dividend_dates_off_calendar = n_off
         arr = df.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
         return np.where(np.isfinite(arr), arr, 0.0)
 
@@ -2363,6 +2403,8 @@ class Backtester:
         costs_daily = np.zeros(n_sim)
         breakdown = np.zeros((n_sim, 5))  # commission, spread, impact, garde, tenue de compte
         div_daily = np.zeros(n_sim)
+        div_boc_daily = np.zeros(n_sim)
+        div_events: list[tuple[Any, ...]] = []
         paid_daily = np.zeros(n_sim)
         tax_daily = np.zeros(n_sim)
         traded_value = np.zeros(n_sim)
@@ -2428,8 +2470,13 @@ class Backtester:
                 d = float(q @ d_row)
                 if d > 0:
                     div_daily[k] = d
+                    b_row = self._div_boc[t]
+                    div_boc_daily[k] = float(q @ b_row)
                     for jd in np.flatnonzero((q != 0) & (d_row > 0)):
                         amt = float(q[jd] * d_row[jd])
+                        amt_boc = float(q[jd] * b_row[jd])
+                        div_events.append((day, self.symbols[jd], float(q[jd]), float(d_row[jd]), float(b_row[jd]),
+                                           amt, amt_boc, amt - amt_boc))
                         p = int(self._div_pay_pos[t, jd])
                         if p <= t:
                             cash += amt
@@ -2740,6 +2787,8 @@ class Backtester:
             events=events,
             suspended=susp_hist,
             payables=pay_hist,
+            dividends_boc=div_boc_daily,
+            dividend_events=div_events,
         )
 
     @staticmethod
@@ -2898,6 +2947,8 @@ class Backtester:
         events: list[tuple[Any, ...]] | None = None,
         suspended: np.ndarray | None = None,
         payables: np.ndarray | None = None,
+        dividends_boc: np.ndarray | None = None,
+        dividend_events: list[tuple[Any, ...]] | None = None,
     ) -> BacktestResult:
         idx = pd.DatetimeIndex(sim_dates, name="date")
         n = len(idx)
@@ -3010,6 +3061,9 @@ class Backtester:
             bd, index=idx, columns=["commission", "spread", "impact", "custody", "account_fees"]
         )
         ev = pd.DataFrame(events or [], columns=["date", "symbol", "event", "oid", "new_oid", "qty"])
+        div_boc = np.asarray(div_daily, dtype=float) if dividends_boc is None else np.asarray(dividends_boc, dtype=float)
+        div_ev = pd.DataFrame(dividend_events or [], columns=list(DIVIDEND_EVENT_COLUMNS))
+        gap_total = float(np.sum(div_daily) - np.sum(div_boc))
         return BacktestResult(
             equity=eq,
             returns=rets,
@@ -3051,6 +3105,10 @@ class Backtester:
                 "nav_non_positive_from": nav_meta["nav_non_positive_from"],
                 "n_returns_excluded": nav_meta["n_returns_excluded"],
                 "quantity_units": "qty et positions en titres ajustés ; raw_qty en titres réels du jour (entiers)",
+                "dividend_amount_credited": "montant corrigé (meilleure estimation du versement réel, additif v1.1 D6)",
+                "dividend_boc_line_available": bool(getattr(self, "has_dividend_boc", False)),
+                "dividend_gap_vs_boc": gap_total,
+                "n_dividend_events_gap": int((div_ev["gap"].abs() > 1e-9).sum()) if len(div_ev) else 0,
                 "avertissement": "Performance simulée (hypothèses de coûts et d'exécution) : aucun gain n'est garanti.",
             },
             dividends_paid=pd.Series(np.zeros(n) if paid is None else paid, index=idx, name="dividends_paid"),
@@ -3061,6 +3119,8 @@ class Backtester:
                 np.zeros(n) if suspended is None else suspended, index=idx, name="suspended_value"
             ),
             payables=pd.Series(np.zeros(n) if payables is None else payables, index=idx, name="payables"),
+            dividends_boc=pd.Series(div_boc, index=idx, name="dividends_boc"),
+            dividend_events=div_ev,
         )
 
 
@@ -3387,6 +3447,12 @@ def panels_from_equities(
         panels["dividend_net"] = dividend_net.sort_index()
     elif div_table is not None and (dividends is not None or (infer_dividends and dividend_method == "detect")):
         panels["dividend_net"] = _dividend_panel(div_table, dates, symbols)
+        if "amount_first" in div_table.columns:
+            # Additif v1.1, D6 : flux = montant corrigé (``amount``) ; ligne « (d) » du BOC
+            # (``amount_first``, montant connu des signaux) gardée pour publier l'écart.
+            first = pd.to_numeric(div_table["amount_first"], errors="coerce")
+            boc_table = div_table.assign(amount=first.fillna(pd.to_numeric(div_table["amount"], errors="coerce")))
+            panels["dividend_net_boc"] = _dividend_panel(boc_table, dates, symbols)
     elif infer_dividends and has_last_div and dividend_method == "last_div":
         warnings.warn(
             "dividend_method='last_div' : dividendes crédités à la date de mise à jour de la colonne "

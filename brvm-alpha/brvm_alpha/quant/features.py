@@ -127,7 +127,7 @@ Références
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
@@ -196,7 +196,14 @@ __all__ = [
     "turnover",
     "turnover_proxy",
     "WINDOW_BASES",
+    "DEFAULT_WINDOW_BASIS_V11",
+    "FILTER_MIN_OBS_FLOOR",
+    "MAX_BOUND_STALE_SESSIONS",
+    "SIGNAL_MIN_OBS_FLOOR",
+    "min_obs_thresholds",
+    "missing_sessions_in_window",
     "on_session_grid",
+    "prorata_min_obs",
     "session_numbers",
     "valid_return_mask",
     "vol_scaling",
@@ -1662,6 +1669,61 @@ def _check_basis(window_basis: str) -> str:
     return b
 
 
+#: Additif v1.1 (§8.4, D1) : base de comptage par défaut des fenêtres (séances, numéros de BOC).
+DEFAULT_WINDOW_BASIS_V11: str = "sessions"
+
+#: D1 : plancher absolu des seuils minimaux d'observations **au prorata** des BOC disponibles,
+#: pour les signaux (MOM, LOWVOL et son repli, dosage du momentum, filtre de crash…) …
+SIGNAL_MIN_OBS_FLOOR: int = 40
+#: … et pour les filtres d'univers (U2, U3, MDV63 et tout seuil « m observations sur L séances »).
+FILTER_MIN_OBS_FLOOR: int = 20
+#: D1 : une borne de fenêtre de rendement prend le dernier cours disponible à la séance de
+#: borne ou avant, à **5 séances au plus** ; au-delà, NaN.
+MAX_BOUND_STALE_SESSIONS: int = 5
+
+
+def missing_sessions_in_window(sess: np.ndarray | Sequence[int], window: int) -> np.ndarray:
+    """Séances **sans BOC** parmi les ``window`` dernières séances de chaque ligne (D1).
+
+    ``sess`` : numéro de séance de chaque ligne (strictement croissant, :func:`session_numbers`).
+    Seules les séances postérieures ou égales à la première séance du panel comptent : une
+    fenêtre qui déborde avant le début des données n'est pas « amputée de BOC manquants »,
+    elle est simplement incomplète (le seuil reste ``m``).
+    """
+    s = np.asarray(sess, dtype=np.int64)
+    if not len(s):
+        return np.zeros(0, dtype=np.int64)
+    lo = np.maximum(s - int(window) + 1, s[0])
+    span = s - lo + 1
+    start = np.searchsorted(s, lo, side="left")
+    rows = np.arange(len(s)) - start + 1
+    return np.maximum(span - rows, 0).astype(np.int64)
+
+
+def prorata_min_obs(min_obs: int, window: int, n_missing: np.ndarray | int, floor: int) -> np.ndarray:
+    """Seuil effectif ``m_eff = max(⌈m × n_dispo / L⌉ ; min(m, plancher))`` (additif v1.1, D1).
+
+    ``n_dispo = L − n_manquants`` : BOC disponibles dans la fenêtre de ``L`` séances. Le
+    plancher (40 pour un signal, 20 pour un filtre d'univers) ne relève jamais le seuil
+    au-dessus de ``m`` (un seuil déjà inférieur au plancher est gardé tel quel). Sans BOC
+    manquant, ``m_eff = m``. Arithmétique entière (aucun arrondi flottant).
+    """
+    m, L = int(min_obs), int(window)
+    miss = np.asarray(n_missing, dtype=np.int64)
+    n_avail = np.clip(L - miss, 0, L)
+    m_eff = -((-m * n_avail) // L)
+    return np.maximum(m_eff, min(m, int(floor))).astype(np.int64)
+
+
+def min_obs_thresholds(sess: np.ndarray | None, window: int, min_obs: int, floor: int,
+                       index: pd.Index | None = None) -> pd.Series | int:
+    """Seuil minimal d'observations par ligne (D1) : constant (``m``) sans numéros de séance."""
+    if sess is None:
+        return int(min_obs)
+    thr = prorata_min_obs(min_obs, window, missing_sessions_in_window(sess, window), floor)
+    return pd.Series(thr, index=index) if index is not None else thr  # type: ignore[return-value]
+
+
 def session_numbers(panels: Panels, like: pd.DataFrame | None = None) -> np.ndarray | None:
     """Numéro global de séance de chaque ligne (calendrier des BOC, séances manquantes comprises).
 
@@ -1705,13 +1767,14 @@ def on_session_grid(
     sess: np.ndarray | None,
     fn: Callable[[pd.DataFrame], pd.DataFrame],
     *,
-    ffill: bool = False,
+    ffill: bool | int = False,
 ) -> pd.DataFrame:
     """Applique ``fn`` (fenêtre glissante, décalage) sur le calendrier **contigu** des séances.
 
     Les séances sans BOC deviennent des lignes NaN (``ffill=True`` : dernier niveau
-    connu reporté, pour un niveau comme le TR) ; le résultat est ramené aux lignes de
-    ``df``. ``sess=None`` : ``fn(df)`` sur les lignes (base ``"boc"``). Exemple :
+    connu reporté, pour un niveau comme le TR ; ``ffill=k`` entier : report limité à
+    ``k`` séances, règle des bornes de l'additif v1.1, D1) ; le résultat est ramené aux
+    lignes de ``df``. ``sess=None`` : ``fn(df)`` sur les lignes (base ``"boc"``). Exemple :
     ``on_session_grid(valid, sess, lambda x: x.rolling(63, min_periods=1).sum())``
     compte les rendements valides des 63 dernières **séances**.
     """
@@ -1724,8 +1787,10 @@ def on_session_grid(
         return fn(df)
     work = df.astype(float) if any(dt == bool or dt == object for dt in df.dtypes) else df
     full = work.set_axis(pd.Index(s), axis=0).reindex(pd.RangeIndex(int(s.min()), int(s.max()) + 1))
-    if ffill:
+    if ffill is True:
         full = full.ffill()
+    elif ffill is not False and ffill is not None and int(ffill) > 0:
+        full = full.ffill(limit=int(ffill))
     out = fn(full)
     return out.reindex(pd.Index(s)).set_axis(df.index, axis=0)
 
@@ -1740,6 +1805,9 @@ def mom_sessions(
     exclude_windows: Iterable[tuple[str, str]] = EXCLUDED_STAT_WINDOWS,
     params: Mapping[str, Any] | None = None,
     window_basis: str = "boc",
+    prorata: bool | None = None,
+    obs_floor: int = SIGNAL_MIN_OBS_FLOOR,
+    max_stale_sessions: int | None = MAX_BOUND_STALE_SESSIONS,
 ) -> pd.DataFrame:
     """Momentum en **séances** : ``TR(t - skip) / TR(t - lookback) - 1`` (§3.2).
 
@@ -1752,10 +1820,17 @@ def mom_sessions(
     pour LOWVOL (250, au moins 200).
 
     ``window_basis`` (:data:`WINDOW_BASES`) : ``"boc"`` compte les lignes du panel (BOC
-    disponibles) ; ``"sessions"`` compte les séances du calendrier des numéros de BOC
-    (:func:`session_numbers`) : le décalage de 21 / 126 séances prend le dernier TR
-    connu à cette séance, et les BOC manquants réduisent le nombre de rendements
-    valides de la fenêtre (signal NaN sous ``min_obs``).
+    disponibles) ; ``"sessions"`` (défaut de l'additif v1.1, D1) compte les séances du
+    calendrier des numéros de BOC (:func:`session_numbers`). En base ``"sessions"`` :
+
+    * **bornes** : le niveau aux séances ``t - skip`` et ``t - lookback`` est le dernier
+      TR disponible à cette séance ou avant, à ``max_stale_sessions`` (5) séances au
+      plus ; sinon NaN (``None`` : report illimité, comportement antérieur) ;
+    * **seuil au prorata** (``prorata=None`` ⇒ actif) : ``m_eff = max(⌈m × n_dispo / L⌉ ;
+      min(m, 40))`` avec ``n_dispo`` les BOC disponibles dans la fenêtre de ``L`` séances
+      (:func:`prorata_min_obs`) ; sous le seuil, NaN (bloc manquant, z = 0).
+
+    En base ``"boc"``, aucune séance ne manque dans la fenêtre : ``m_eff = m``.
     """
     a = _merge(params, lookback_sessions=lookback_sessions, skip_sessions=skip_sessions, min_obs=min_obs)
     lb, sk, mo = int(a["lookback_sessions"]), int(a["skip_sessions"]), int(a["min_obs"])
@@ -1765,10 +1840,14 @@ def mom_sessions(
     basis = _check_basis(window_basis)
     p = _price(panels, price)
     sess = session_numbers(panels, like=p) if basis == "sessions" else None
-    mom = on_session_grid(p, sess, lambda x: x.shift(sk) / x.shift(lb) - 1.0, ffill=True)
+    ff: bool | int = True if max_stale_sessions is None else int(max_stale_sessions)
+    mom = on_session_grid(p, sess, lambda x: x.shift(sk) / x.shift(lb) - 1.0, ffill=ff)
     valid = valid_return_mask(panels, like=p, price=price, gap_days=gap_days, exclude_windows=exclude_windows)
     cnt = on_session_grid(valid.astype(float), sess, lambda x: x.rolling(lb, min_periods=1).sum())
-    return mom.where((cnt >= mo) & p.notna())
+    use_prorata = (basis == "sessions") if prorata is None else bool(prorata)
+    thr = min_obs_thresholds(sess if use_prorata else None, lb, mo, obs_floor, index=p.index)
+    ok = cnt.ge(thr, axis=0) if isinstance(thr, pd.Series) else cnt >= thr
+    return mom.where(ok & p.notna())
 
 
 def _mom_preset(name: str) -> Callable[..., pd.DataFrame]:
@@ -1805,6 +1884,8 @@ def lowvol(
     exclude_windows: Iterable[tuple[str, str]] = EXCLUDED_STAT_WINDOWS,
     params: Mapping[str, Any] | None = None,
     window_basis: str = "boc",
+    prorata: bool | None = None,
+    obs_floor: int = SIGNAL_MIN_OBS_FLOOR,
 ) -> pd.DataFrame:
     """Faible volatilité : ``lv = -σ`` (§3.2, Blitz, Pang & van Vliet 2013).
 
@@ -1815,7 +1896,10 @@ def lowvol(
     un titre très peu échangé paraît donc peu volatil (le filtre U3 de l'univers
     limite ce biais). ``annualize=True`` multiplie par ``sqrt(252)`` (rangs inchangés).
     ``window_basis`` : fenêtres comptées en BOC disponibles (``"boc"``) ou en séances du
-    calendrier des numéros de BOC (``"sessions"``, voir :data:`WINDOW_BASES`).
+    calendrier des numéros de BOC (``"sessions"``, voir :data:`WINDOW_BASES`). En base
+    ``"sessions"`` (additif v1.1, D1), les seuils 200/250 et 100/126 sont ramenés au prorata
+    des BOC disponibles dans chaque fenêtre, avec un plancher de 40 observations
+    (:func:`prorata_min_obs`) ; ``prorata=False`` garde les seuils bruts.
     """
     a = _merge(params, window_sessions=window_sessions, min_obs=min_obs, fallback_window=fallback_window,
                fallback_min_obs=fallback_min_obs, sign=sign)
@@ -1826,10 +1910,17 @@ def lowvol(
     sess = session_numbers(panels, like=p) if basis == "sessions" else None
     r = (p / p.shift(1) - 1.0).where(
         valid_return_mask(panels, like=p, price=price, gap_days=gap_days, exclude_windows=exclude_windows))
-    s_long = on_session_grid(
-        r, sess, lambda x: x.rolling(int(a["window_sessions"]), min_periods=int(a["min_obs"])).std(ddof=1))
-    s_short = on_session_grid(
-        r, sess, lambda x: x.rolling(int(a["fallback_window"]), min_periods=int(a["fallback_min_obs"])).std(ddof=1))
+    use_prorata = (basis == "sessions") if prorata is None else bool(prorata)
+
+    def sigma_on(window: int, m: int) -> pd.DataFrame:
+        sd = on_session_grid(r, sess, lambda x: x.rolling(window, min_periods=min(2, m)).std(ddof=1))
+        n = on_session_grid(r, sess, lambda x: x.rolling(window, min_periods=1).count())
+        thr = min_obs_thresholds(sess if use_prorata else None, window, m, obs_floor, index=r.index)
+        ok = n.ge(thr, axis=0) if isinstance(thr, pd.Series) else n >= thr
+        return sd.where(ok)
+
+    s_long = sigma_on(int(a["window_sessions"]), int(a["min_obs"]))
+    s_short = sigma_on(int(a["fallback_window"]), int(a["fallback_min_obs"]))
     sigma = _annualize(s_long.where(s_long.notna(), s_short), annualize)
     return (float(a["sign"]) * sigma).where(p.notna())
 
@@ -2322,6 +2413,24 @@ def momentum_spread_returns(
     return (ret_top - ret_all).rename("spread_mom")
 
 
+def _session_array(sess: np.ndarray | pd.Series | None, index: pd.Index) -> np.ndarray | None:
+    """Numéros de séance alignés sur ``index`` (``None`` si absents, incomplets ou non croissants)."""
+    if sess is None:
+        return None
+    if isinstance(sess, pd.Series):
+        v = pd.to_numeric(sess[~sess.index.duplicated(keep="last")], errors="coerce").reindex(index)
+        if v.isna().any():
+            return None
+        arr = v.to_numpy(dtype=float)
+    else:
+        arr = np.asarray(sess, dtype=float)
+        if len(arr) != len(index):
+            return None
+    if not len(arr) or not np.isfinite(arr).all() or (len(arr) > 1 and np.any(np.diff(arr) <= 0)):
+        return None
+    return arr.astype(np.int64)
+
+
 def vol_scaling(
     spread: pd.Series,
     window_sessions: int = 126,
@@ -2331,6 +2440,8 @@ def vol_scaling(
     cap: float = 1.0,
     history_start: Any = None,
     params: Mapping[str, Any] | None = None,
+    sess: np.ndarray | pd.Series | None = None,
+    obs_floor: int = SIGNAL_MIN_OBS_FLOOR,
 ) -> pd.Series:
     """Dosage du momentum par sa volatilité (Barroso & Santa-Clara 2015, adapté ; §3.2).
 
@@ -2346,6 +2457,10 @@ def vol_scaling(
     n'utiliser que l'échantillon autorisé). Clés de ``params`` : ``window_sessions``,
     ``min_obs``, ``min_history_months``, ``floor``, ``cap`` (``target`` ignorée : la
     seule cible prévue est la médiane expansive).
+
+    ``sess`` (additif v1.1, D1) : numéros de séance des dates de ``spread`` (tableau aligné ou
+    ``Series`` indexée par date). La fenêtre de 126 est alors comptée en **séances** et le
+    seuil ``min_obs`` ramené au prorata des BOC disponibles, plancher ``obs_floor`` (40).
     """
     a = _merge(params, window_sessions=window_sessions, min_obs=min_obs,
                min_history_months=min_history_months, floor=floor, cap=cap)
@@ -2357,7 +2472,16 @@ def vol_scaling(
     if history_start is not None:
         s = s.where(s.index >= pd.Timestamp(history_start))
     _check_window(int(a["window_sessions"]), int(a["min_obs"]))
-    sig = s.rolling(int(a["window_sessions"]), min_periods=int(a["min_obs"])).std(ddof=1)
+    L, m = int(a["window_sessions"]), int(a["min_obs"])
+    grid = _session_array(sess, s.index)
+    if grid is None:
+        sig = s.rolling(L, min_periods=m).std(ddof=1)
+    else:
+        frame = s.to_frame("x")
+        sd = on_session_grid(frame, grid, lambda x: x.rolling(L, min_periods=min(2, m)).std(ddof=1))["x"]
+        n = on_session_grid(frame, grid, lambda x: x.rolling(L, min_periods=1).count())["x"]
+        thr = pd.Series(prorata_min_obs(m, L, missing_sessions_in_window(grid, L), obs_floor), index=s.index)
+        sig = sd.where(n >= thr)
     target = sig.expanding(min_periods=1).median()
     first = sig.first_valid_index()
     out = pd.Series(1.0, index=s.index, name="vol_scaling")
@@ -2383,6 +2507,8 @@ def crash_filter(
     exclude_windows: Iterable[tuple[str, str]] = EXCLUDED_STAT_WINDOWS,
     history_start: Any = None,
     params: Mapping[str, Any] | None = None,
+    sess: np.ndarray | pd.Series | None = None,
+    obs_floor: int = SIGNAL_MIN_OBS_FLOOR,
 ) -> pd.Series:
     """Filtre de crash du momentum (inspiré de Daniel & Moskowitz 2016 ; §3.2).
 
@@ -2397,6 +2523,11 @@ def crash_filter(
     ``multiplier`` (0,5) pour les dates ``d`` telles que ``t <= d < t + 3 mois`` (un
     nouveau déclenchement prolonge la durée), 1 sinon. Choix du projet, non validé
     (niveau B) ; aucune mesure de performance ici.
+
+    ``sess`` (additif v1.1, D1) : numéros de séance des dates de ``market_tr`` (``Series``
+    indexée par date ou tableau aligné) : la fenêtre de 63 est comptée en séances et le
+    seuil de 50 ramené au prorata des BOC disponibles, plancher ``obs_floor`` (40). Sans
+    numéro pour une date, la fenêtre reste comptée en lignes (signalé par l'appelant).
     """
     a = _merge(params, bear_lookback_months=bear_lookback_months, vol_window_sessions=vol_window_sessions,
                vol_min_obs=vol_min_obs, vol_percentile=vol_percentile, multiplier=multiplier,
@@ -2423,7 +2554,16 @@ def crash_filter(
     r[np.r_[False, np.diff(days) > gap_days]] = np.nan
     for lo, hi in exclude_windows:
         r[(r.index >= pd.Timestamp(lo)) & (r.index <= pd.Timestamp(hi))] = np.nan
-    vol = r.rolling(int(a["vol_window_sessions"]), min_periods=int(a["vol_min_obs"])).std(ddof=1)
+    Lv, mv = int(a["vol_window_sessions"]), int(a["vol_min_obs"])
+    grid = _session_array(sess, obs.index)
+    if grid is None:
+        vol = r.rolling(Lv, min_periods=mv).std(ddof=1)
+    else:
+        frame = r.to_frame("x")
+        sd = on_session_grid(frame, grid, lambda x: x.rolling(Lv, min_periods=min(2, mv)).std(ddof=1))["x"]
+        n = on_session_grid(frame, grid, lambda x: x.rolling(Lv, min_periods=1).count())["x"]
+        thr = pd.Series(prorata_min_obs(mv, Lv, missing_sessions_in_window(grid, Lv), obs_floor), index=r.index)
+        vol = sd.where(n >= thr)
     thr = vol.expanding(min_periods=int(a["min_history_sessions"])).quantile(float(a["vol_percentile"]) / 100.0)
     high = (vol > thr).reindex(idx, fill_value=False).to_numpy(dtype=bool)
     trig = bear & high

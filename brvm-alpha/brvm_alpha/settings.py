@@ -1,7 +1,8 @@
 """Paramètres de la stratégie v1 : lecture et validation de ``configs/strategy_v1.yaml``.
 
-Le fichier YAML reprend **à l'identique** le §12.1 de ``docs/SPECIFICATION_STRATEGIE.md``
-(v1.0 du 22/11/2026). La spécification le nomme ``brvm_alpha/config/strategy_v1.yaml`` ;
+Le fichier YAML reprend le §12.1 de ``docs/SPECIFICATION_STRATEGIE.md`` (v1.0 du 22/11/2026)
+et les clés de l'additif v1.1 (§8.4, D1-D12, ``version: "1.1"``), validées ici (valeurs
+numériques bornées, valeurs énumérées, version). La spécification le nomme ``brvm_alpha/config/strategy_v1.yaml`` ;
 un dossier ``brvm_alpha/config/`` masquerait le module ``brvm_alpha/config.py``, il est
 donc rangé dans ``configs/strategy_v1.yaml`` à la racine du dépôt.
 
@@ -52,7 +53,11 @@ __all__ = [
     "mdv_floor_params",
     "n_holdings_params",
     "one_way_cost_estimate",
+    "ENUM_KEYS",
     "OPEN_OVERRIDE_SECTIONS",
+    "SUPPORTED_VERSIONS",
+    "min_obs_prorata_params",
+    "window_basis_default",
     "sector_cap_params",
     "unknown_override_keys",
     "validate_strategy_config",
@@ -107,7 +112,26 @@ REQUIRED_KEYS: tuple[str, ...] = (
     "risk.relative_dd", "risk.cvar",
     "validation.samples", "validation.subperiods_S1", "validation.variants", "validation.n_trials_start",
     "validation.reject_if", "validation.candidate_if",
+    # additif v1.1 (§8.4, D1-D12)
+    "data.window_basis", "data.window_bound_max_stale_sessions", "data.min_obs_prorata",
+    "data.cap_guard_blocking", "data.return_guard_blocking",
+    "portfolio.capacity_fill", "portfolio.disciplined_index", "portfolio.core_satellite",
+    "risk.relative_dd.start", "risk.relative_dd.ew_basket_top_n",
+    "macro_overlay.country_events", "validation.reference_variant",
 )
+
+#: Versions du fichier de paramètres reconnues (v1.1 : additif du §8.4).
+SUPPORTED_VERSIONS: tuple[str, ...] = ("1.1",)
+
+#: Clés à valeurs énumérées (additif v1.1) : chemin -> valeurs admises.
+ENUM_KEYS: dict[str, tuple[Any, ...]] = {
+    "data.window_basis": ("sessions", "boc"),
+    "data.cap_guard_blocking": (False, True),
+    "data.return_guard_blocking": (False, True),
+    "risk.relative_dd.start": ("first_investment",),
+    "validation.reference_variant": ("REF",),
+    "portfolio.capacity_fill.beyond_exit": (False, True),
+}
 
 #: Valeurs numériques obligatoires et bornes admises (incluses).
 NUMERIC_KEYS: dict[str, tuple[float, float]] = {
@@ -175,6 +199,20 @@ NUMERIC_KEYS: dict[str, tuple[float, float]] = {
     "validation.dsr_min": (0.0, 1.0),
     "validation.n_trials_start": (1, 1e6),
     "validation.bootstrap.n_boot": (1, 1e7),
+    # additif v1.1 (§8.4)
+    "data.window_bound_max_stale_sessions": (0, 250),
+    "data.min_obs_prorata.signal_floor": (1, 2_000),
+    "data.min_obs_prorata.filter_floor": (1, 2_000),
+    "portfolio.capacity_fill.max_names": (1, 200),
+    "portfolio.disciplined_index.n_names": (1, 200),
+    "portfolio.disciplined_index.line_base": (0.0, 1.0),
+    "portfolio.disciplined_index.line_bench_cap": (0.0, 1.0),
+    "portfolio.disciplined_index.bench_mult": (0.0, 10.0),
+    "portfolio.disciplined_index.min_weight": (0.0, 1.0),
+    "portfolio.disciplined_index.sector_floor": (0.0, 1.0),
+    "portfolio.disciplined_index.sector_bench_mult": (0.0, 10.0),
+    "portfolio.core_satellite.core_share": (0.0, 1.0),
+    "risk.relative_dd.ew_basket_top_n": (1, 200),
 }
 
 #: Champs numériques obligatoires de chaque scénario de coûts (§7.2).
@@ -266,6 +304,19 @@ def mdv_floor_params(cfg: Mapping[str, Any]) -> tuple[float, float]:
     return _num(m.group(1)), _num(m.group(2))
 
 
+def window_basis_default(cfg: Mapping[str, Any]) -> str:
+    """Base de comptage des fenêtres (additif v1.1, D1) : ``data.window_basis`` (``"sessions"``)."""
+    return str(get_param(cfg, "data.window_basis", "sessions"))
+
+
+def min_obs_prorata_params(cfg: Mapping[str, Any]) -> dict[str, int]:
+    """Planchers des seuils au prorata (D1) et ancienneté maximale des bornes : ``{signal_floor,
+    filter_floor, max_stale}`` (défauts 40, 20, 5)."""
+    pr = get_param(cfg, "data.min_obs_prorata", {}) or {}
+    return {"signal_floor": int(pr.get("signal_floor", 40)), "filter_floor": int(pr.get("filter_floor", 20)),
+            "max_stale": int(get_param(cfg, "data.window_bound_max_stale_sessions", 5))}
+
+
 def n_holdings_params(cfg: Mapping[str, Any]) -> dict[str, int]:
     """``portfolio.n_holdings`` = ``"clip(round(N_elig/d), lo, hi)"`` -> ``{divisor, min, max}``."""
     raw = str(get_param(cfg, "portfolio.n_holdings"))
@@ -331,6 +382,16 @@ def validate_strategy_config(cfg: Mapping[str, Any]) -> dict:
     if not isinstance(cfg, Mapping):
         raise StrategyConfigError("la configuration doit être un dictionnaire")
     problems: list[str] = []
+    version = cfg.get("version")
+    if str(version) not in SUPPORTED_VERSIONS:
+        problems.append(f"version {version!r} non reconnue (attendu : {', '.join(SUPPORTED_VERSIONS)} ; additif v1.1)")
+    for key, allowed in ENUM_KEYS.items():
+        val = get_param(cfg, key, _MISSING)
+        if val is not _MISSING and val not in allowed:
+            problems.append(f"{key} = {val!r} (valeurs admises : {', '.join(map(repr, allowed))})")
+    vfam = get_param(cfg, "validation.variants", None)
+    if isinstance(vfam, list) and vfam and "REF" in [str(v) for v in vfam]:
+        problems.append("validation.variants : REF est la référence (validation.reference_variant), hors famille")
     for key in REQUIRED_KEYS:
         if get_param(cfg, key, None) is None:
             problems.append(f"clé obligatoire absente : {key}")
