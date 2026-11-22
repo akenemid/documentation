@@ -332,4 +332,3 @@ Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) d
 - Personne physique résidente ; aucun ordre au-delà de la cible ; la décision du jour est reconduite jusqu'à la revue mensuelle.
 
 > **Performance passée ≠ garantie. Aucun gain n'est garanti.**
-
