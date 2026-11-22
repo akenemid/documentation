@@ -62,7 +62,9 @@ d'installation : on lance les commandes depuis la racine `brvm-alpha/`.
   et 10 s au moins entre deux requêtes, soit **au moins 13 lancements de `update`** et plus de 7 heures
   de téléchargement au total (`update --simulation` affiche le décompte sans rien envoyer). Sans panel,
   les commandes s'arrêtent avec le message « panel introuvable : lancer python -m brvm_alpha update …
-  puis python -m brvm_alpha panel ».
+  puis python -m brvm_alpha panel ». Trois dossiers d'essai des contrôles du 22/11/2026 restent dans
+  `data/` (`notes_essai_20261122`, `notes_essai_20261122_apres`, `panel_verify`, environ 30 Mo) : aucune
+  commande ne s'en sert, ils peuvent être supprimés.
 
 ## Commandes (CLI)
 
@@ -128,6 +130,9 @@ l'instant exact est écrit en tête de chaque ordre) :
 [1 M FCFA](reports/ordre_de_bataille_2026-11-20_1M.md),
 [50 M FCFA](reports/ordre_de_bataille_2026-11-20_50M.md). Le rapport HTML
 `reports/rapport_2026-11-20.html` n'est pas suivi par git : on le régénère avec la commande `report`.
+Deux anciens fichiers HTML (un rapport de démonstration antérieur à la relance de S1 et un tableau de
+bord provisoire) ont été déplacés dans `reports/archive/` : ils sont **périmés** et ne sont plus
+proposés par l'interface.
 
 ## Interface locale
 
@@ -417,10 +422,11 @@ python -m pytest -q -p no:cacheprovider tests/test_report_html.py
 Les tests n'envoient **aucune requête réseau**. Ils utilisent des données synthétiques, des extraits de
 BOC et des pages de brvm.org enregistrées (`tests/fixtures/`), ou la période S0. **Aucun backtest,
 aucune performance et aucun IC n'est évalué sur S1** dans les tests. Le 22/11/2026, la suite complète
-compte 1 391 tests, tous verts : dont 36 pour le mode direct des notes (`tests/test_notes_direct.py`), 44
-pour la lecture du contenu des publications (`tests/test_notes_lecture.py`) et 11 pour leur assemblage
+compte 1 521 tests, tous verts : dont 36 pour le mode direct des notes (`tests/test_notes_direct.py`), 44
+pour la lecture du contenu des publications (`tests/test_notes_lecture.py`), 11 pour leur assemblage
 avec la ligne de commande, l'interface et l'ordre de bataille (`tests/test_notes_integration.py`,
-`tests/test_ui_notes_integration.py`).
+`tests/test_ui_notes_integration.py`) et 130 tests de régression de la recette finale, un par constat
+corrigé (`tests/test_recette_notes.py`, `tests/test_recette_ui.py`, `tests/test_recette_ordre_rapport.py`).
 
 ## Sources
 

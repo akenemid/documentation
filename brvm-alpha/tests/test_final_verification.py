@@ -24,10 +24,13 @@ def test_cli_universe_line_keeps_comma_and_formats_floor(monkeypatch, capsys):
     monkeypatch.setattr(strategy, "build_panels", lambda *a, **k: synth)
     t = synth["close"].index[400]
     assert cli.main(["universe", "--date", str(t.date()), "--capital", "100000000"]) == 0
-    first = capsys.readouterr().out.splitlines()[0]
-    assert f"Univers au {pd.Timestamp(t).date()} : " in first
-    assert " titres éligibles, mode " in first  # virgule conservée
+    out = capsys.readouterr().out
+    first = out.splitlines()[0]
+    # Recette du 22/11/2026 : date au format français, titres cotés puis éligibles, mode en français, bannière.
+    assert f"Univers au {pd.Timestamp(t):%d/%m/%Y} : " in first
+    assert " titres cotés, dont " in first and " éligibles ; mode sélection " in first  # ponctuation conservée
     assert "(plancher U5 5 000 000 FCFA)" in first  # max(0,5 M ; 0,05 × 100 M), séparateur de milliers
+    assert out.rstrip().endswith(cli.BANNER)
 
 
 def test_relative_drawdown_diagnostic_after_stop_reports_no_halving():

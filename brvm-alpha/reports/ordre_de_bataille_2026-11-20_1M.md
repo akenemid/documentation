@@ -14,7 +14,7 @@
 
 Décision à la clôture du BOC du 20/11/2026 ; exécution à partir du 23/11/2026. Capital 1 000 000 FCFA ; valeur du portefeuille avant ordres 1 000 000 FCFA, dont liquidités 1 000 000 FCFA.
 
-Notes connues au 22/11/2026 16:02 UTC, appliquées à la séance du 23/11/2026 : 114 en vigueur (dont 0 manuelles), 6 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
+Notes connues au 22/11/2026 18:44 UTC, appliquées à la séance du 23/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
 
 ## 1. Variante et statut de validation
 
@@ -118,7 +118,7 @@ Effet des notes sur les poids cibles (même décision recalculée sans aucune no
 
 - fenêtres comptées en séances (additif v1.1, D1) : 1 BOC manquants dans les 126 dernières séances ; seuils minimaux au prorata des BOC disponibles (planchers 40 / 20), bornes de rendement à 5 séances au plus
 - modulateur du momentum : séries de performance des modulateurs (spread du momentum, TR de marché) restreintes à S0 (≥ 17/11/2022) : échantillon vierge S1 protégé ; validation_s1=True est réservé au test pré-enregistré
-- notes de l'analyste prises en compte : 0 veto(s), 0 inclinaison(s), 6 titre(s) avec filtre R (mode direct : notes connues au 22/11/2026 16:02 UTC, appliquées à la séance du 23/11/2026)
+- notes de l'analyste prises en compte : 0 veto(s), 0 inclinaison(s), 8 titre(s) avec filtre R (mode direct : notes connues au 22/11/2026 18:44 UTC, appliquées à la séance du 23/11/2026)
 - indice discipliné (additif v1.1, D8) : 20 plus grosses capitalisations éligibles, poids proportionnels à la capitalisation sous plafonds, 98,00 % investis (aucune promesse d'alpha)
 
 ## 3. Exécution : échéancier par séance
@@ -157,7 +157,7 @@ Effet des notes sur les poids cibles (même décision recalculée sans aucune no
 | Titre | Titres | Date ex prévue | Paiement prévu | Dernier net/titre | IRVM | Brut | IRVM (FCFA) | Net | Statut |
 |---|---|---|---|---|---|---|---|---|---|
 | BOABF | 2 | 29/04/2027 | 03/05/2027 | 397,00 | 12,5 % | 907 FCFA | 113 FCFA | 794 FCFA | prévu (estimation : dernier dividende reconduit) ; IRVM 12,5 % [NON VÉRIFIÉ] |
-| BOAC | 2 | 10/05/2027 | 12/05/2027 | 594,53 | 12,0 % | 1 351 FCFA | 162 FCFA | 1 189 FCFA | prévu (estimation : dernier dividende reconduit) |
+| BOAC | 2 | 10/05/2027 | 12/05/2027 | 594,53 | 12,0 % | 1 351 FCFA | 162 FCFA | 1 189 FCFA | prévu (estimation : dernier dividende reconduit) ; BOC du 20/11/2026 : dernier dividende 597,53 FCFA ; montant retenu 594,53 FCFA, lu sur la ligne (d) du détachement du 05/05/2026 (règle du §3.1 de la spécification) |
 | SNTS | 62 | 17/05/2027 | 19/05/2027 | 174,00 | 10,0 % | 11 987 FCFA | 1 199 FCFA | 10 788 FCFA | prévu (estimation : dernier dividende reconduit) |
 | BOAB | 2 | 24/05/2027 | 26/05/2027 | 585,00 | 10,0 % | 1 300 FCFA | 130 FCFA | 1 170 FCFA | prévu (estimation : dernier dividende reconduit) ; IRVM selon l'émetteur (inférences) |
 | ECOC | 3 | 24/05/2027 | 26/05/2027 | 781,44 | 12,0 % | 2 664 FCFA | 320 FCFA | 2 344 FCFA | prévu (estimation : dernier dividende reconduit) |
@@ -181,7 +181,7 @@ Revenu net attendu 38 458 FCFA (brut 43 333 FCFA, IRVM 4 875 FCFA) ; rende
 
 Valorisation du marché « cher » (prime du BOC 0,58 < 1 %) : les stress sont affichés en premier (§4.5) ; l'exposition ne change pas.
 
-## 6. Scénarios de stress (§9.3)
+## 5. Scénarios de stress (§9.3)
 
 Source : brvm_alpha.portfolio.stress.stress_tests.
 
@@ -206,7 +206,7 @@ Source : brvm_alpha.portfolio.stress.stress_tests.
 | ST10 | rupture de parité ou sortie de l'UEMOA : règle « sévère » sur les titres AES et les filiales de SNTS — sévère 21 % | −48 650 FCFA | −4,9 % | exposition 23,17 % du capital (AES ; SNTS : ML, GN, SL, GW) ; perte de change NON chiffrée (aucune source) | [R05] §7 |
 | ST10 | rupture de parité ou sortie de l'UEMOA : règle « sévère » sur les titres AES et les filiales de SNTS — stress 26 % | −60 234 FCFA | −6,0 % | exposition 23,17 % du capital (AES ; SNTS : ML, GN, SL, GW) ; perte de change NON chiffrée (aucune source) | [R05] §7 |
 
-## 5. Distribution historique à 12 mois (pas une prévision)
+## 6. Distribution historique à 12 mois (pas une prévision)
 
 Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) des rendements hebdomadaires TR des lignes aux poids réalisés et du Composite TR, tirés ensemble ; fenêtre toute l'histoire 2017-2026 (le registre indique que le test unique S1 a été exécuté) (492 semaines, du 06/01/2017 au 20/11/2026). Nets des coûts du plan et des frais fixes de l'horizon (11,57 %). C'est une distribution historique, pas une prévision.
 
@@ -232,16 +232,22 @@ Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) d
 - Rebalancement annuel de l'indice discipliné (première décision de janvier) : 29/01/2027 ; entre deux, seules les sorties forcées s'appliquent
 - Début du suivi réel S2 (§8.1) : 01/12/2026
 - Filtres R actifs sur les lignes : NSBC (R10); BOAB (R11×1); BOABF (R11×1); TTLC (R12)
+- Légende des filtres : R10 : résultat net en baisse de 25 % ou plus sans alerte préalable (surveillance, qualité −0,5) ; R11 : drapeau des financières (§5.6 : payout brut > 1, coût du risque, créances douteuses, solvabilité… ; un drapeau : poids maximal × 0,5 ; deux ou plus : exclusion) ; R12 : drapeau des non financières (§5.6 : payout > 100 % deux ans de suite, bénéfice non récurrent ou rendement > 15 % ; poids maximal × 0,5) ; « ×N » : nombre de drapeaux levés
 - Drawdown relatif contre le TR : aucun historique de suivi réel (mesuré depuis le premier jour investi, D5) ; seuils à surveiller : −10 % alerte, −15 % exposition active ÷ 2, −20 % arrêt et indice discipliné
-- Notes de l'analyste : 0 veto(s), 0 inclinaison(s), 6 titre(s) avec filtre R issu des notes
-- Notes connues au 22/11/2026 16:02 UTC, appliquées à la séance du 23/11/2026 : 114 en vigueur (dont 0 manuelles), 6 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
-- Scores des notes : 42 note(s) en vigueur sur 114 portent un score directionnel non nul.
+- À revoir avant achat NSBC : −29,4 % contre le TR sur 63 séances (seuil de revue −25 %, §9.1) ; l'achat reste proposé, la revue est à faire par l'utilisateur avant de transmettre l'ordre
+- À revoir avant achat CIEC : −32,3 % contre le TR sur 63 séances (seuil de revue −25 %, §9.1) ; l'achat reste proposé, la revue est à faire par l'utilisateur avant de transmettre l'ordre
+- Notes de l'analyste : 0 veto(s), 0 inclinaison(s), 8 titre(s) avec filtre R issu des notes
+- Notes connues au 22/11/2026 18:44 UTC, appliquées à la séance du 23/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
+- Scores des notes : 41 note(s) en vigueur sur 114 portent un score directionnel non nul.
 - Filtre R2 sur ETIT (annulation ou report d'AG : −1 en gouvernance, aucun achat (60 séances)) depuis le 26/10/2026, jusqu'au 19/01/2027 — note 4a46238f820f du 23/10/2026 « ETI TG : Communiqué - Annulation de l'Assemblée Générale Ordinaire » ; achats bloqués ; titre hors du plan
+- Filtre R10 sur FTSC (ΔRN ≤ −25 % sans alerte sur résultats préalable (depuis le 01/10/2025)) depuis le 04/11/2026, jusqu'au 22/04/2027 — note 267c82b0e226 du 03/11/2026 « FILTISAC CI : Rapport d'activités - 1er semestre 2026 » ; titre hors du plan
+- Filtre R10 sur FTSC (ΔRN ≤ −25 % sans alerte sur résultats préalable (depuis le 01/10/2025)) depuis le 04/11/2026, jusqu'au 22/04/2027 — note db5a70ec3bd2 du 03/11/2026 « FILTISAC CI : Rapport d'activités - 3e trimestre 2026 - (Annule et remplace le précédent) » ; titre hors du plan
 - Filtre R10 sur NSBC (ΔRN ≤ −25 % sans alerte sur résultats préalable (depuis le 01/10/2025)) depuis le 03/11/2026, jusqu'au 21/04/2027 — note a7b94e0c53cd du 02/11/2026 « NSIA BANQUE CI : Rapport d'activités - 3e trimestre 2026 »
 - Filtre R10 sur PALC (ΔRN ≤ −25 % sans alerte sur résultats préalable (depuis le 01/10/2025)) depuis le 09/10/2026, jusqu'au 29/03/2027 — note 9b1cd08a8448 du 08/10/2026 « PALM CI : Rapport d'activités - 1er semestre 2026 » ; titre hors du plan
 - Filtre R1 sur SEMC (suspension : aucun achat, alerte sur les positions (jusqu'à la reprise + 5 séances)) depuis le 17/09/2026, jusqu'à la reprise de cotation + 5 séances — note e648d82ebd87 du 16/09/2026 « SEMC : cotation suspendue (mention SP depuis le BOC du 16/09/2026) » ; achats bloqués ; titre hors du plan
 - Filtre R1 sur SICC (suspension : aucun achat, alerte sur les positions (jusqu'à la reprise + 5 séances)) depuis le 17/09/2026, jusqu'à la reprise de cotation + 5 séances — note 6771f0ac46eb du 16/09/2026 « SICC : cotation suspendue (mention SP depuis le BOC du 16/09/2026) » ; achats bloqués ; titre hors du plan
 - Filtre R10 sur SOGC (ΔRN ≤ −25 % sans alerte sur résultats préalable (depuis le 01/10/2025)) depuis le 03/11/2026, jusqu'au 21/04/2027 — note 67f51ea73342 du 02/11/2026 « SOGB CI : Rapport d'activités - 3e trimestre 2026 » ; titre hors du plan
+- Filtre R10 sur STAC (ΔRN ≤ −25 % sans alerte sur résultats préalable (depuis le 01/10/2025)) depuis le 03/11/2026, jusqu'au 21/04/2027 — note 3f8539dbea39 du 02/11/2026 « SETAO CI : Rapport d'activités - 1er semestre 2026 » ; titre hors du plan
 - Règles pays actives : aucune ; aucun événement pays daté à venir dans reference.COUNTRY_EVENTS (horizon 12 mois)
 
 ### Événements à venir (12 mois)
@@ -381,20 +387,18 @@ Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) d
 
 | Indice | Position | Confiance | Score | Lecture |
 |---|---|---|---|---|
-| BRVM Composite | NEUTRE (sans les notes : SOUS-PONDÉRER) | 0,51 | −0,44 | Score composite −0,44 (tendance −0,42 × 0,30 ; valorisation −0,97 × 0,25 ; largeur −1,56 × 0,15 ; régime +1,00 × 0,15 ; notes +0,09 × 0,15) → NEUTRE (penche à la baisse) (seuils ±0,5) ; confiance 0,51 (accord des composantes avec la position 0,43, marge au seuil 0,06, couverture 1,00, qualité des données 1,00). Effet des notes : sans la composante notes, le score composite serait −0,53 (SOUS-PONDÉRER) ; avec elle, −0,44 (NEUTRE) : la position change à cause de cette composante (elle pèse 15 % du score dès qu'une note porte un score, même faible). |
-| BRVM Composite Total Return | NEUTRE (sans les notes : SOUS-PONDÉRER) | 0,45 | −0,44 | Score composite −0,44 (tendance −0,43 × 0,30 ; valorisation −0,97 × 0,25 ; largeur −1,56 × 0,15 ; régime +1,00 × 0,15 ; notes +0,09 × 0,15) → NEUTRE (penche à la baisse) (seuils ±0,5) ; confiance 0,45 (accord des composantes avec la position 0,42, marge au seuil 0,06, couverture 1,00, qualité des données 0,90). Effet des notes : sans la composante notes, le score composite serait −0,54 (SOUS-PONDÉRER) ; avec elle, −0,44 (NEUTRE) : la position change à cause de cette composante (elle pèse 15 % du score dès qu'une note porte un score, même faible). |
-| BRVM 30 | SOUS-PONDÉRER | 0,76 | −0,71 | Score composite −0,71 (tendance −0,20 × 0,30 ; valorisation −2,42 × 0,25 ; largeur −1,37 × 0,15 ; régime +1,00 × 0,15 ; notes +0,09 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,76 (accord des composantes avec la position 0,84, marge au seuil 0,21, couverture 1,00, qualité des données 1,00). |
-| BRVM Prestige | SOUS-PONDÉRER | 0,68 | −0,59 | Score composite −0,59 (tendance −0,37 × 0,30 ; valorisation −1,88 × 0,25 ; largeur −1,22 × 0,15 ; régime +1,00 × 0,15 ; notes +0,15 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,68 (accord des composantes avec la position 0,82, marge au seuil 0,09, couverture 1,00, qualité des données 1,00). |
-| BRVM Principal | SOUS-PONDÉRER | 0,95 | −1,03 | Score composite −1,03 (tendance −1,37 × 0,30 ; valorisation −2,07 × 0,25 ; largeur −1,67 × 0,15 ; régime +1,00 × 0,15 ; notes +0,02 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,95 (accord des composantes avec la position 0,89, marge au seuil 0,53, couverture 1,00, qualité des données 1,00). |
-| sectoriel Services financiers | SOUS-PONDÉRER | 0,73 | −0,77 | Score composite −0,77 (tendance −0,36 × 0,30 ; valorisation −2,28 × 0,25 ; largeur −1,66 × 0,15 ; régime +1,00 × 0,15 ; notes +0,05 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,73 (accord des composantes avec la position 0,86, marge au seuil 0,27, couverture 1,00, qualité des données 0,90). |
-| sectoriel Télécommunications | NEUTRE | 0,80 | −0,19 | Score composite −0,19 (tendance +1,07 × 0,30 ; valorisation −2,39 × 0,25 ; largeur −0,63 × 0,15 ; régime +1,00 × 0,15 ; notes +0,22 × 0,15) → NEUTRE (seuils ±0,5) ; confiance 0,80 (accord des composantes avec la position 0,84, marge au seuil 0,31, couverture 1,00, qualité des données 0,97). |
-| sectoriel Consommation de base | SOUS-PONDÉRER | 0,78 | −0,67 | Score composite −0,67 (tendance −1,62 × 0,30 ; valorisation −0,24 × 0,25 ; largeur −0,72 × 0,15 ; régime +0,00 × 0,15 ; notes −0,09 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,78 (accord des composantes avec la position 1,00, marge au seuil 0,17, couverture 1,00, qualité des données 0,97). |
-| sectoriel Consommation discrétionnaire | SOUS-PONDÉRER | 0,95 | −1,29 | Score composite −1,29 (tendance −2,31 × 0,30 ; valorisation −0,50 × 0,25 ; largeur −1,30 × 0,15 ; régime −2,00 × 0,15 ; notes +0,16 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,95 (accord des composantes avec la position 0,98, marge au seuil 0,79, couverture 1,00, qualité des données 0,97). |
-| sectoriel Énergie | SOUS-PONDÉRER | 0,68 | −0,62 | Score composite −0,62 (tendance −0,69 × 0,30 ; valorisation −2,25 × 0,25 ; largeur −0,13 × 0,15 ; régime +1,00 × 0,15 ; notes +0,14 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,68 (accord des composantes avec la position 0,82, marge au seuil 0,12, couverture 1,00, qualité des données 0,97). |
-| sectoriel Industriels | SOUS-PONDÉRER | 0,90 | −1,28 | Score composite −1,28 (tendance −0,31 × 0,30 ; valorisation −2,91 × 0,25 ; largeur −0,93 × 0,15 ; régime −2,00 × 0,15 ; notes −0,14 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,90 (accord des composantes avec la position 1,00, marge au seuil 0,78, couverture 1,00, qualité des données 0,90). |
-| sectoriel Services publics | SOUS-PONDÉRER | 0,71 | −1,19 | Score composite −1,19 (tendance −0,30 × 0,30 ; valorisation −2,82 × 0,25 ; largeur −0,85 × 0,15 ; régime −2,00 × 0,15 ; notes +0,22 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,71 (accord des composantes avec la position 0,97, marge au seuil 0,69, couverture 1,00, qualité des données 0,72). |
-
-Position fragile : BRVM Composite, BRVM Composite Total Return — la position ne change que par le poids donné à la composante « notes » dans le score (voir « Effet des notes » dans la lecture), pas par un signal fort des notes. À lire avec la position « sans les notes ».
+| BRVM Composite | SOUS-PONDÉRER | 0,63 | −0,52 | Score composite −0,52 (tendance −0,42 × 0,35 ; valorisation −0,97 × 0,29 ; largeur −1,56 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,06 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,63 (accord des composantes avec la position 0,79, marge au seuil 0,02, couverture 1,00, qualité des données 1,00). |
+| BRVM Composite Total Return | SOUS-PONDÉRER | 0,57 | −0,53 | Score composite −0,53 (tendance −0,43 × 0,35 ; valorisation −0,97 × 0,29 ; largeur −1,56 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,06 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,57 (accord des composantes avec la position 0,79, marge au seuil 0,03, couverture 1,00, qualité des données 0,90). |
+| BRVM 30 | SOUS-PONDÉRER | 0,84 | −0,84 | Score composite −0,84 (tendance −0,20 × 0,35 ; valorisation −2,42 × 0,29 ; largeur −1,37 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,06 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,84 (accord des composantes avec la position 0,85, marge au seuil 0,34, couverture 1,00, qualité des données 1,00). |
+| BRVM Prestige | SOUS-PONDÉRER | 0,75 | −0,71 | Score composite −0,71 (tendance −0,37 × 0,35 ; valorisation −1,88 × 0,29 ; largeur −1,22 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,10 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,75 (accord des composantes avec la position 0,82, marge au seuil 0,21, couverture 1,00, qualité des données 1,00). |
+| BRVM Principal | SOUS-PONDÉRER | 0,95 | −1,21 | Score composite −1,21 (tendance −1,37 × 0,35 ; valorisation −2,07 × 0,29 ; largeur −1,67 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,01 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,95 (accord des composantes avec la position 0,89, marge au seuil 0,71, couverture 1,00, qualité des données 1,00). |
+| sectoriel Services financiers | SOUS-PONDÉRER | 0,80 | −0,92 | Score composite −0,92 (tendance −0,36 × 0,35 ; valorisation −2,28 × 0,29 ; largeur −1,66 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,01 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,80 (accord des composantes avec la position 0,86, marge au seuil 0,42, couverture 1,00, qualité des données 0,90). |
+| sectoriel Télécommunications | NEUTRE | 0,77 | −0,23 | Score composite −0,23 (tendance +1,07 × 0,35 ; valorisation −2,39 × 0,29 ; largeur −0,63 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,17 × 0,15) → NEUTRE (seuils ±0,5) ; confiance 0,77 (accord des composantes avec la position 0,84, marge au seuil 0,27, couverture 1,00, qualité des données 0,97). |
+| sectoriel Consommation de base | SOUS-PONDÉRER | 0,84 | −0,78 | Score composite −0,78 (tendance −1,62 × 0,35 ; valorisation −0,24 × 0,29 ; largeur −0,72 × 0,18 ; régime +0,00 × 0,18 ; plus notes −0,06 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,84 (accord des composantes avec la position 1,00, marge au seuil 0,28, couverture 1,00, qualité des données 0,97). |
+| sectoriel Consommation discrétionnaire | SOUS-PONDÉRER | 0,95 | −1,53 | Score composite −1,53 (tendance −2,31 × 0,35 ; valorisation −0,50 × 0,29 ; largeur −1,30 × 0,18 ; régime −2,00 × 0,18 ; plus notes +0,15 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,95 (accord des composantes avec la position 0,98, marge au seuil 1,03, couverture 1,00, qualité des données 0,97). |
+| sectoriel Énergie | SOUS-PONDÉRER | 0,75 | −0,73 | Score composite −0,73 (tendance −0,69 × 0,35 ; valorisation −2,25 × 0,29 ; largeur −0,13 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,11 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,75 (accord des composantes avec la position 0,83, marge au seuil 0,23, couverture 1,00, qualité des données 0,97). |
+| sectoriel Industriels | SOUS-PONDÉRER | 0,90 | −1,50 | Score composite −1,50 (tendance −0,31 × 0,35 ; valorisation −2,91 × 0,29 ; largeur −0,93 × 0,18 ; régime −2,00 × 0,18 ; plus notes −0,12 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,90 (accord des composantes avec la position 1,00, marge au seuil 1,00, couverture 1,00, qualité des données 0,90). |
+| sectoriel Services publics | SOUS-PONDÉRER | 0,71 | −1,41 | Score composite −1,41 (tendance −0,30 × 0,35 ; valorisation −2,82 × 0,29 ; largeur −0,85 × 0,18 ; régime −2,00 × 0,18 ; plus notes +0,18 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,71 (accord des composantes avec la position 0,98, marge au seuil 0,91, couverture 1,00, qualité des données 0,72). |
 
 ## 8. Explications (titres retenus et 5 premiers écartés)
 
@@ -426,7 +430,7 @@ Position fragile : BRVM Composite, BRVM Composite Total Return — la position n
 | SDSC | écarté | 24 | 0,00 % | capitalisation n° 24 parmi les éligibles : hors des 20 plus grosses (D8) |
 | SMBC | écarté | 25 | 0,00 % | capitalisation n° 25 parmi les éligibles : hors des 20 plus grosses (D8) |
 
-## 10. Faits, estimations, hypothèses
+## 9. Faits, estimations, hypothèses
 
 ### Faits (publiés ou réglementaires)
 
