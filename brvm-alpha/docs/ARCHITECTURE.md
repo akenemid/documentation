@@ -17,8 +17,10 @@ brvm-alpha/
   brvm_alpha/
     __init__.py            # version du paquet
     __main__.py            # python -m brvm_alpha
-    cli.py                 # update, panel, live, notes, indices, universe, explain, backtest,
+    cli.py                 # update, panel, live, etat, notes, indices, universe, explain, backtest,
                            # validate, recommend, report, serve (S1 refusé pour tout signal)
+    paths.py               # dossiers des données et des rapports écrits (BRVM_ALPHA_DONNEES, BRVM_ALPHA_RAPPORTS)
+    etat.py                # état de l'installation : commande etat et adresse /etat.json (lecture seule)
     config.py              # paramètres (frais, taxes, contraintes) — dataclasses
     settings.py            # lecture et contrôle de configs/strategy_v1.yaml, empreinte de configuration
     reference.py           # métadonnées des titres : pays, secteur, fiscalité, événements pays (D10)
@@ -60,11 +62,16 @@ brvm-alpha/
   tests/                   # pytest, hors ligne : données synthétiques ou S0, fixtures BOC et pages brvm.org
     conftest.py
     fixtures/              # extraits de BOC (.txt.gz), pages HTML de brvm.org (.html.gz) pour les tests hors ligne
-    test_*.py              # 35 modules (parseur, panel, signaux, construction, moteur, validation, notes,
-                           # ordre de bataille, stress, rapport, CLI, interface, non-régressions des revues)
+    test_*.py              # 45 modules (parseur, panel, signaux, construction, moteur, validation, notes,
+                           # ordre de bataille, stress, rapport, CLI, interface, non-régressions des revues,
+                           # déploiement : test_deploiement_ui.py, test_deploiement_cli.py, test_deploiement_scripts.py)
+    ui_reference_pages.py  # pages de référence à données fixes (empreintes sans préfixe, liens sous préfixe)
+  deploiement/             # service.sh, collecte-initiale.sh, quotidien.sh, commun.sh (shell POSIX),
+                           # requirements-moteur.txt, Dockerfile.moteur (non construit ici)
   docs/
     SPECIFICATION_STRATEGIE.md  # spécification v1 ; §8.4 additif v1.1 (D1-D12, fait foi) ; §8.5 errata (E1-E11)
     ARCHITECTURE.md        # ce document
+    DEPLOIEMENT.md         # installation à côté d'Odoo : service, collecte, relais (contrat), sécurité, charge
     annexes-spec/          # calculs reproductibles de la spécification (univ_breadth.py, tr_reconstruction.py)
     research/              # revues vérifiées 01 à 08 et annexes du document 07 (données, scripts)
   reports/
@@ -481,7 +488,8 @@ Codes de sortie : 0 succès, 1 échec (données absentes, collecte arrêtée), 2
   [--variante] [--format md|json|html] [--date] [--couts] [--tirages] [--graine] [--racine] [--notes-au] [--sortie]` (CSV
   « symbole,titres », `parse_holdings` ; `--racine` : même journal des notes que `serve` et `report`) ;
   `report --capital K [--couts] [--tirages] [--graine] [--racine] [--notes-au] [--sortie]` (`report.build_report`,
-  défaut `reports/rapport_AAAA-MM-JJ.html`) ; `serve [--port 8765] [--hote]`.
+  défaut `reports/rapport_AAAA-MM-JJ.html`) ; `serve [--port 8765] [--hote] [--prefixe] [--origine-relais]
+  [--cadre-meme-origine]` (les trois dernières : relais authentifié, voir la section « Déploiement »).
 - **Deux instants** (`notes_instant(date, notes_au, panel_dir, last=, now=)`) : la date des cours est `--date`
   (défaut : dernière séance du panel). L'instant de connaissance des notes vaut `--notes-au
   AAAA-MM-JJ[THH:MM]` s'il est donné (UTC ; date seule = fin de journée, `parse_instant`) ; sinon l'heure
@@ -500,6 +508,36 @@ Codes de sortie : 0 succès, 1 échec (données absentes, collecte arrêtée), 2
   « 1,5Md »), `parse_holdings`, `is_loopback`, `last_session(panel_dir)`, `notes_instant`, `notes_status`,
   `run_enrich`.
 
+### Déploiement : `paths.py`, `etat.py`, `deploiement/` (voir `docs/DEPLOIEMENT.md`)
+Le moteur peut tourner comme service local derrière un relais authentifié (contrôleur Odoo). Le mode
+d'emploi complet et le **contrat du relais** sont dans [DEPLOIEMENT.md](DEPLOIEMENT.md). Contrats du code :
+- `paths.py` : `DATA_DIR`, `REPORTS_DIR`, `PANEL_DIR`, `BOC_DIR`, `NOTES_DIR` (fixés **au démarrage** d'après
+  `BRVM_ALPHA_DONNEES` et `BRVM_ALPHA_RAPPORTS`, sinon `<dépôt>/data` et `<dépôt>/reports`), `VALIDATION_DIR` et
+  `DIAGNOSTIC_DIR` (toujours dans le dépôt), `resolve_dirs(environ)`, `repo_path(chemin)` (`data/…` suit le
+  dossier de données, le reste demeure au dépôt). Tous les dossiers par défaut en dérivent : `cli`,
+  `notes.research`, `notes.store` (`NoteStore()`), `notes.model.default_panel_dir`, `strategy.alpha`,
+  `portfolio.recommend`, `report.html`, `ui.server.Services`. Les options de la ligne de commande l'emportent.
+- `etat.py` : `collect_state(*, panel_dir, boc_dir, notes_root, reports_dir, data_dir, now, store, notes_status)
+  -> dict` (clés `bandeau`, `pret`, `version`, `releve_le`, `panel`, `bulletins`, `site`, `notes`, `rapport`,
+  `donnees`), `format_text(etat)`, `code_version()` (commit court lu dans `.git` **sans lancer de commande**,
+  sinon `BRVM_ALPHA_VERSION`, sinon « inconnue »), `dir_size`. Lecture seule, aucune requête, jamais d'exception.
+  Les jours restant à télécharger viennent de `cli.update_window(boc_dir, start=None, end=None, today=None)`,
+  la fonction dont se servent aussi `update` et `update --simulation`.
+- `cli` : commande `etat [--format texte|json] [--panel-dir] [--boc-dir] [--racine]` (code 0 toujours) ;
+  `serve [--prefixe /chemin] [--origine-relais URL]… [--cadre-meme-origine]` (variables `BRVM_ALPHA_PREFIXE`
+  et `BRVM_ALPHA_ORIGINES_RELAIS`, l'option l'emporte) ; saisies `parse_prefix`, `parse_origin`, `split_origins`.
+- `ui.server.make_server(host, port, *, allow_remote=False, services=None, prefix="", relay_origins=(),
+  frame_same_origin=False)` : avec `prefix`, seuls les chemins sous le préfixe sont servis (404 ailleurs), le
+  préfixe est retiré avant l'aiguillage et ajouté aux en-têtes `Location` ; `relay_origins` ajoute des origines
+  acceptées par `_check_origin` (contrôles de `Host`, de `Sec-Fetch-Site` et du jeton inchangés) ;
+  `frame_same_origin` remplace `X-Frame-Options: DENY` / `frame-ancestors 'none'` par `SAMEORIGIN` / `'self'`.
+  `GET /etat.json` : `Services.state()` (gardé `STATE_TTL_S = 10` s).
+- `ui.pages` : `PageContext.prefix` ; `layout` ajoute le préfixe à tous les liens, actions, adresses de
+  fichiers (`with_prefix`) et à l'appel JavaScript (`body_script`). **Sans préfixe, les pages sortent à l'octet
+  près comme avant** (empreintes de `tests/test_deploiement_ui.py`).
+- `deploiement/` : `commun.sh` (variables, journal horodaté, verrou, priorité basse), `service.sh`,
+  `collecte-initiale.sh [--simulation]`, `quotidien.sh`.
+
 ### `data/boc_download.py`
 `download_range(start, end, out_dir, pause=10.0, *, fetcher=None, today=None, progress=None) -> int`,
 `fetch_one(fetcher, day, out_dir, pause=None, *, mark_missing=True)`, `pending_days(start, end, out_dir)`,
@@ -509,10 +547,11 @@ délai ≥ `MIN_DELAY_S = 10` s ou `Crawl-delay`, redirections non suivies, arr�
 jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
 
 ### `ui/` (interface web locale, `python -m brvm_alpha serve`)
-- `server.make_server(host="127.0.0.1", port=8765, *, allow_remote=False, services=None) -> UIServer`
+- `server.make_server(host="127.0.0.1", port=8765, *, allow_remote=False, services=None, prefix="",
+  relay_origins=(), frame_same_origin=False) -> UIServer`
   (`ThreadingHTTPServer` ; `port=0` : port libre ; adresse non locale refusée sans `allow_remote`) ;
   `Services(notes_root, panel_dir, reports_dir, validation_dir, diagnostic_dir, boc_dir, research_kwargs,
-  clock=None)` : seuls accès aux données (remplaçables dans les tests) ; `clock` : horloge UTC injectable
+  clock=None, data_dir=None)` : seuls accès aux données (remplaçables dans les tests) ; `clock` : horloge UTC injectable
   (défaut `cli.now_utc`) ; `Services.notes_instant(asof)` : maintenant (mode direct) si `asof` est vide ou
   n'est pas antérieure à la dernière séance du panel, `None` (mode historique) sinon, transmis à
   `evaluate_indices`, `index_dossier`, `explain`, `recommend` et `build_report` ; `Services.notes_status(asof)` :
@@ -552,7 +591,8 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   (notes qui influencent l'indice), `/portefeuille` (capital, portefeuille « symbole,titres », liquidités,
   variante → ordre de bataille complet avec la ligne datée et les achats bloqués, exports Markdown / JSON),
   `/expliquer?symbole=`, `/validation`
-  (résultats S1 lus, diagnostic S0 replié et marqué contaminé), `/rapport/voir?nom=`, `/api/travail?id=`.
+  (résultats S1 lus, diagnostic S0 replié et marqué contaminé), `/rapport/voir?nom=`, `/api/travail?id=`,
+  `/etat.json` (état de l'installation, lecture seule). Avec `prefix`, toutes ces adresses vivent sous le préfixe.
   Actions (POST) : `/notes/ajouter`, `/notes/archiver`, `/recherche/lancer`, `/rapport/regenerer`,
   `/portefeuille/calculer`. Dates de S1 refusées comme dans la CLI.
 - Rendu : aucune ressource externe, thème clair/sombre (variables CSS sur `:root`, préférence du système ou

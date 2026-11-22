@@ -19,6 +19,21 @@ Sécurité (aucune authentification : l'interface est réservée à la machine l
   servis (rapports) sont choisis dans la liste ``reports/*.html`` dressée par le serveur, les
   rapports régénérés sont écrits sous un nom construit à partir de la date du panel.
 
+Derrière un **relais authentifié** (par exemple un contrôleur Odoo qui relaie ``/rz_brvm_alpha/ui/…``
+vers ``http://127.0.0.1:PORT/rz_brvm_alpha/ui/…``), trois réglages **explicites**, tous inactifs par
+défaut (``docs/DEPLOIEMENT.md`` décrit le contrat du relais) :
+
+- ``prefix`` (``serve --prefixe /chemin``) : seuls les chemins sous ce préfixe sont servis (404
+  ailleurs, sans exception) ; le préfixe est retiré avant l'aiguillage et ajouté à tous les liens,
+  actions, adresses de fichiers, appels JavaScript et en-têtes ``Location`` ;
+- ``relay_origins`` (``serve --origine-relais URL``) : origines de navigateur acceptées **en plus**
+  pour les formulaires (``Origin: https://erp.exemple.com``) ; le contrôle de l'en-tête ``Host``, de
+  ``Sec-Fetch-Site`` et du jeton anti-CSRF ne changent pas ;
+- ``frame_same_origin`` (``serve --cadre-meme-origine``) : les pages peuvent s'afficher dans un cadre
+  de **même origine** (``X-Frame-Options: SAMEORIGIN``, ``frame-ancestors 'self'``) au lieu d'aucun.
+
+``GET /etat.json`` (sous le préfixe s'il y en a un) rend l'état de l'installation, en lecture seule.
+
 Les opérations longues (recherche, rapport, ordre de bataille) tournent dans **un** fil de travail
 (:class:`JobManager`) avec suivi d'état (statut, progression, journal) ; une seule à la fois.
 
@@ -234,10 +249,13 @@ class Services:
                  reports_dir: str | Path | None = None, validation_dir: str | Path | None = None,
                  diagnostic_dir: str | Path | None = None, boc_dir: str | Path | None = None,
                  research_kwargs: Mapping[str, Any] | None = None,
-                 clock: Callable[[], pd.Timestamp] | None = None) -> None:
+                 clock: Callable[[], pd.Timestamp] | None = None, data_dir: str | Path | None = None) -> None:
         #: horloge UTC de l'interface (instant de connaissance des notes en mode direct) ; injectable
         self.clock: Callable[[], pd.Timestamp] = clock or (lambda: cli.now_utc())
         self._status_cache: OrderedDict[Any, Any] = OrderedDict()
+        #: dossier de données dont ``/etat.json`` donne la taille (défaut : celui de l'installation)
+        self.data_dir = Path(data_dir) if data_dir else None
+        self._state_cache: tuple[float, dict[str, Any]] | None = None
         self.notes_root = Path(notes_root) if notes_root else None
         self.panel_dir = Path(panel_dir) if panel_dir else cli.DEFAULT_PANEL_DIR
         self.reports_dir = Path(reports_dir) if reports_dir else cli.DEFAULT_REPORTS_DIR
@@ -548,6 +566,30 @@ class Services:
         except Exception:
             return None
 
+    def state(self) -> dict[str, Any]:
+        """État de l'installation (``etat.collect_state``) pour ``/etat.json`` : lecture seule, aucune requête.
+
+        Gardé :data:`STATE_TTL_S` secondes (la taille du dossier et les notes en vigueur demandent un
+        parcours du disque) : des appels répétés ne chargent pas la machine."""
+        import time
+
+        from brvm_alpha import etat
+
+        with self._lock:
+            cached = self._state_cache
+        if cached is not None and time.monotonic() - cached[0] < STATE_TTL_S:
+            return cached[1]
+        try:  # état daté des notes déjà en cache pour les pages (sinon ``collect_state`` le calcule)
+            status = self.notes_status()
+        except Exception:
+            status = None
+        out = etat.collect_state(panel_dir=self.panel_dir, boc_dir=self.boc_dir, reports_dir=self.reports_dir,
+                                 data_dir=self.data_dir, store=self.notes_store(), now=self.clock(),
+                                 notes_status=status)
+        with self._lock:
+            self._state_cache = (time.monotonic(), out)
+        return out
+
     def report_path(self, name: str | None) -> Path | None:
         """Rapport choisi **dans la liste** du serveur (le nom saisi n'est jamais un chemin)."""
         reps = self.list_reports()
@@ -571,6 +613,8 @@ class Services:
 REQUEST_TIMEOUT_S = 20.0
 #: Connexions traitées simultanément au plus (au-delà : refus immédiat, connexion fermée).
 MAX_CONNECTIONS = 32
+#: Durée (s) pendant laquelle l'état de ``/etat.json`` est gardé en mémoire.
+STATE_TTL_S = 10.0
 
 
 class UIServer(ThreadingHTTPServer):
@@ -585,11 +629,20 @@ class UIServer(ThreadingHTTPServer):
     allow_reuse_address = True
     max_connections = MAX_CONNECTIONS
 
-    def __init__(self, address: tuple[str, int], *, services: Services | None = None, allow_remote: bool = False):
+    def __init__(self, address: tuple[str, int], *, services: Services | None = None, allow_remote: bool = False,
+                 prefix: str = "", relay_origins: Any = (), frame_same_origin: bool = False):
         host = address[0]
         if not cli.is_loopback(host) and not allow_remote:
             raise ValueError(f"adresse d'écoute refusée : {host} (127.0.0.1 uniquement ; option --hote explicite "
                              "pour une autre adresse)")
+        # Réglages du relais, contrôlés avant l'ouverture du port (``ValueError`` : rien n'est lancé).
+        #: préfixe d'adresse (``/chemin`` ou vide) : seuls les chemins sous ce préfixe sont servis
+        self.prefix = cli.parse_prefix(prefix)
+        #: origines de navigateur acceptées en plus pour les formulaires (celles du relais), normalisées
+        self.relay_origins = frozenset(cli.parse_origin(o) for o in ([relay_origins] if isinstance(relay_origins, str)
+                                                                     else relay_origins or ()))
+        #: pages affichables dans un cadre de même origine (défaut : aucun cadre)
+        self.frame_same_origin = bool(frame_same_origin)
         if ":" in host:
             self.address_family = socket.AF_INET6
         super().__init__(address, Handler)
@@ -627,14 +680,21 @@ class UIServer(ThreadingHTTPServer):
 
 
 def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, allow_remote: bool = False,
-                services: Services | None = None) -> UIServer:
-    """Crée le serveur (``port=0`` : port libre) ; ``ValueError`` pour une adresse non locale sans ``allow_remote``."""
-    return UIServer((host, int(port)), services=services, allow_remote=allow_remote)
+                services: Services | None = None, prefix: str = "", relay_origins: Any = (),
+                frame_same_origin: bool = False) -> UIServer:
+    """Crée le serveur (``port=0`` : port libre) ; ``ValueError`` pour une adresse non locale sans ``allow_remote``.
+
+    ``prefix``, ``relay_origins`` et ``frame_same_origin`` : réglages explicites pour un relais
+    authentifié placé devant l'interface (voir le module) ; ``ValueError`` s'ils sont mal formés."""
+    return UIServer((host, int(port)), services=services, allow_remote=allow_remote, prefix=prefix,
+                    relay_origins=relay_origins, frame_same_origin=frame_same_origin)
 
 
 def serve(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, allow_remote: bool = False,
-          services: Services | None = None) -> None:  # pragma: no cover - boucle bloquante
-    srv = make_server(host, port, allow_remote=allow_remote, services=services)
+          services: Services | None = None, prefix: str = "", relay_origins: Any = (),
+          frame_same_origin: bool = False) -> None:  # pragma: no cover - boucle bloquante
+    srv = make_server(host, port, allow_remote=allow_remote, services=services, prefix=prefix,
+                      relay_origins=relay_origins, frame_same_origin=frame_same_origin)
     try:
         srv.serve_forever()
     finally:
@@ -677,10 +737,14 @@ class Handler(BaseHTTPRequestHandler):
                    "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox")
             frame = "SAMEORIGIN"
         else:
+            # Par défaut aucun cadre ; ``--cadre-meme-origine`` : cadre de la même origine seulement (celle
+            # sous laquelle le navigateur voit la page, donc celle du relais), jamais d'un autre site.
+            same = self.server.frame_same_origin
+            ancestors = "'self'" if same else "'none'"
             csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
                    "img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-src 'self'; "
-                   "frame-ancestors 'none'; base-uri 'none'")
-            frame = "DENY"
+                   f"frame-ancestors {ancestors}; base-uri 'none'")
+            frame = "SAMEORIGIN" if same else "DENY"
         return {"Content-Security-Policy": csp, "X-Frame-Options": frame, "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": REFERRER_POLICY, "Cache-Control": "no-store",
                 "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Resource-Policy": "same-origin",
@@ -707,7 +771,8 @@ class Handler(BaseHTTPRequestHandler):
             warn = self.server.services.panel_warning()
         except Exception:  # une doublure de service sans cette méthode : pas d'avertissement
             warn = None
-        return P.PageContext(token=self.server.csrf_token, nonce=secrets.token_urlsafe(16), panel_warning=warn)
+        return P.PageContext(token=self.server.csrf_token, nonce=secrets.token_urlsafe(16), panel_warning=warn,
+                             prefix=self.server.prefix)
 
     def _page(self, status: int, render: Callable[[P.PageContext], str]) -> None:
         ctx = self._ctx()
@@ -717,9 +782,11 @@ class Handler(BaseHTTPRequestHandler):
         self._page(status, lambda ctx: P.error_page(ctx, status, title, message))
 
     def _redirect(self, location: str) -> None:
-        # ``location`` est toujours un chemin interne construit par le serveur.
+        # ``location`` est toujours un chemin interne construit par le serveur ; il porte le préfixe
+        # d'adresse (jamais une adresse complète : aucune redirection vers un autre site n'est possible).
         if not location.startswith("/") or location.startswith("//"):
             location = "/"
+        location = self.server.prefix + location
         self.send_response(303)
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
@@ -746,6 +813,11 @@ class Handler(BaseHTTPRequestHandler):
         ``same-origin`` ou ``none`` quand il est présent. ``Origin`` doit désigner le serveur ;
         ``Origin: null`` (origine masquée par une politique de référent) n'est accepté que si le
         navigateur atteste ``Sec-Fetch-Site: same-origin``. Le jeton anti-CSRF reste exigé ensuite.
+
+        Derrière un relais authentifié, le navigateur parle à l'adresse du relais : son ``Origin`` est
+        accepté s'il figure, à l'identique, dans la liste explicite ``relay_origins`` (``serve
+        --origine-relais``), vide par défaut. Rien d'autre ne change : ``Sec-Fetch-Site`` et le jeton
+        restent exigés de la même façon.
         """
         site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
         if site and site not in ("same-origin", "none"):
@@ -757,10 +829,27 @@ class Handler(BaseHTTPRequestHandler):
             return site == "same-origin"
         try:
             u = urlsplit(origin)
+            port = u.port
         except ValueError:
             return False
         host = (u.hostname or "").lower()
-        return u.scheme == "http" and host in self.server.allowed_names and (u.port or 80) == self.server.port
+        if u.scheme == "http" and host in self.server.allowed_names and (port or 80) == self.server.port:
+            return True
+        if not self.server.relay_origins:
+            return False
+        try:
+            return cli.parse_origin(origin) in self.server.relay_origins
+        except ValueError:
+            return False
+
+    def _inner_path(self, path: str) -> str | None:
+        """Chemin d'aiguillage : ``path`` sans le préfixe d'adresse ; ``None`` s'il est hors du préfixe."""
+        prefix = self.server.prefix
+        if not prefix:
+            return path
+        if path == prefix:
+            return "/"
+        return path[len(prefix):] if path.startswith(prefix + "/") else None
 
     def _query(self) -> tuple[str, dict[str, list[str]]]:
         parts = urlsplit(self.path)
@@ -813,7 +902,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             path, qs = self._query()
-            route = GET_ROUTES.get(path)
+            inner = self._inner_path(path)
+            route = GET_ROUTES.get(inner) if inner is not None else None
             if route is None:
                 raise HTTPError(404, "Page introuvable", f"aucune page à l'adresse {path}")
             route(self, qs)
@@ -830,12 +920,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._check_origin():
                 raise HTTPError(403, "Requête refusée", "requête venue d'un autre site (Origin / Sec-Fetch-Site)")
             path, _qs = self._query()
-            route = POST_ROUTES.get(path)
+            inner = self._inner_path(path)
+            route = POST_ROUTES.get(inner) if inner is not None else None
             if route is None:
                 raise HTTPError(404, "Page introuvable", f"aucune action à l'adresse {path}")
             form = self._read_form()
             if not self._check_csrf(form):
-                retry = STALE_TOKEN_FORMS.get(path)
+                retry = STALE_TOKEN_FORMS.get(inner)
                 if retry is not None:
                     # Jeton périmé (serveur redémarré, page restée ouverte) : rien n'est enregistré, mais la
                     # saisie n'est pas perdue — le formulaire revient avec les valeurs reçues et un jeton neuf.
@@ -1125,8 +1216,15 @@ def get_job(h: Handler, qs: Mapping[str, list[str]]) -> None:
     h._send(200, json.dumps(job.snapshot(), ensure_ascii=False), "application/json; charset=utf-8")
 
 
+def get_state(h: Handler, qs: Mapping[str, list[str]]) -> None:
+    """État de l'installation en JSON (même contenu que ``python -m brvm_alpha etat --format json``)."""
+    h._send(200, json.dumps(h.server.services.state(), ensure_ascii=False, indent=1),
+            "application/json; charset=utf-8")
+
+
 GET_ROUTES: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
     "/": get_dashboard,
+    "/etat.json": get_state,
     "/rapport/voir": get_report,
     "/notes": get_notes,
     "/notes/fiche": get_note,

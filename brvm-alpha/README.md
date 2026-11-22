@@ -77,6 +77,7 @@ Code de sortie : 0 succès, 1 échec, 2 refus ou saisie invalide. **Toute date d
 | `update` | télécharge les BOC manquants sur www.brvm.org (robots.txt, 10 s au moins entre deux requêtes, arrêt au premier 403 ou 429), puis reconstruit le panel |
 | `panel` | reconstruit `data/panel` depuis les BOC locaux (cache incrémental) |
 | `live` | cours du jour (page publique de brvm.org, un instantané ; le BOC du soir fait foi) |
+| `etat` | état de l'installation, en texte ou en JSON : panel, bulletins, jours restant à télécharger, notes, dernier rapport, taille des données, version ; aucune requête, code de sortie toujours 0 |
 | `notes` | journal des notes : `add`, `list`, `show`, `archive`, `export`, `research` (collecte, puis lecture des documents : `--pdf N`), `lire` (lecture seule des documents), `analyze` |
 | `indices` | évaluation des indices (position, confiance, raisons) ; `indices dossier CODE` |
 | `universe` | univers éligible U1-U10 à une date (comptage, permis sur toute la période) |
@@ -85,7 +86,7 @@ Code de sortie : 0 succès, 1 échec, 2 refus ou saisie invalide. **Toute date d
 | `validate` | test unique S1 (verrouillé) ou diagnostic S0 (contaminé) |
 | `recommend` | ordre de bataille complet pour un capital (Markdown, JSON ou HTML) |
 | `report` | rapport HTML autonome (marché, S1, ordre de bataille, revenus, distribution, indices, notes, risques, univers, méthode) |
-| `serve` | interface web locale |
+| `serve` | interface web locale (`--prefixe`, `--origine-relais`, `--cadre-meme-origine` pour la placer derrière un relais authentifié) |
 
 Exemples :
 
@@ -162,6 +163,30 @@ l'en-tête `Host`, jeton anti-CSRF sur chaque envoi, refus des envois venus d'un
 de 20 s, 32 connexions au plus, une seule opération longue à la fois. Thème clair ou sombre ; sur
 téléphone, les tableaux défilent horizontalement et aucun nombre n'est coupé (vérifié à 390 px avec
 un vrai navigateur le 22/11/2026).
+
+## Déploiement à côté d'Odoo
+
+Le moteur peut tourner comme un service local, derrière un relais authentifié (un contrôleur Odoo
+réservé à un groupe), sans toucher à l'environnement Python d'Odoo. Tout est décrit dans
+[docs/DEPLOIEMENT.md](docs/DEPLOIEMENT.md) : installation avec un interpréteur isolé, variables,
+service, première collecte (environ 11 heures), tâche quotidienne, contrat du relais, sécurité, charge
+machine, mise à jour, désinstallation. En résumé :
+
+- `serve --prefixe /rz_brvm_alpha/ui --origine-relais https://erp.exemple.com` : l'interface vit sous
+  un préfixe d'adresse (404 ailleurs) et accepte les formulaires venus de l'origine du relais ;
+  `--cadre-meme-origine` autorise l'affichage dans un cadre de la même origine. **Sans ces options,
+  rien ne change** : pas de préfixe, origine locale seule, aucun cadre, 127.0.0.1 seulement.
+- `python -m brvm_alpha etat [--format json]` et l'adresse `/etat.json` de l'interface disent où en
+  est l'installation, sans aucune requête.
+- `BRVM_ALPHA_DONNEES=/chemin` et `BRVM_ALPHA_RAPPORTS=/chemin` placent les données (bulletins, panel,
+  journal des notes et son cache) et les rapports écrits hors de l'arbre du code. Les options
+  (`--panel-dir`, `--boc-dir`, `--racine`, `--sortie`) l'emportent. Les fichiers de la validation S1
+  restent lus dans le dépôt.
+- `deploiement/` : `service.sh`, `collecte-initiale.sh`, `quotidien.sh` (shell POSIX, sans secret),
+  `requirements-moteur.txt` (versions exactes) et `Dockerfile.moteur` (image `python:3.12-slim`, **non
+  construite ici**, faute de Docker).
+
+Performance passée ≠ garantie. Aucun gain n'est garanti.
 
 ## Notes de l'analyste
 
@@ -391,6 +416,8 @@ est dans [reports/ordre_de_bataille_2026-11-20.md](reports/ordre_de_bataille_202
 ```
 brvm_alpha/
   cli.py, __main__.py        ligne de commande
+  paths.py                   dossiers des données et des rapports (BRVM_ALPHA_DONNEES, BRVM_ALPHA_RAPPORTS)
+  etat.py                    état de l'installation (commande etat, adresse /etat.json)
   config.py, settings.py     paramètres (frais, taxes) et lecture de configs/strategy_v1.yaml
   reference.py               métadonnées des titres, pays, fiscalité, événements pays
   data/                      téléchargement poli et lecture des BOC, panel parquet, cours du jour
@@ -403,7 +430,8 @@ brvm_alpha/
   report/html.py             rapport HTML autonome
   ui/                        interface web locale
 configs/strategy_v1.yaml     paramètres figés
-docs/                        spécification, architecture, annexes, revues de recherche 01 à 08
+deploiement/                 scripts du service et des tâches, paquets du moteur, image Docker
+docs/                        spécification, architecture, déploiement, annexes, revues de recherche 01 à 08
 reports/                     validation S1, diagnostic S0, registre des essais, ordres de bataille
 tests/                       tests pytest hors ligne
 ```
@@ -422,12 +450,14 @@ python -m pytest -q -p no:cacheprovider tests/test_report_html.py
 Les tests n'envoient **aucune requête réseau**. Ils utilisent des données synthétiques, des extraits de
 BOC et des pages de brvm.org enregistrées (`tests/fixtures/`), ou la période S0. **Aucun backtest,
 aucune performance et aucun IC n'est évalué sur S1** dans les tests. Le 22/11/2026, la suite complète
-compte 1 525 tests, tous verts : dont 36 pour le mode direct des notes (`tests/test_notes_direct.py`), 44
+compte 1 661 tests, tous verts : dont 36 pour le mode direct des notes (`tests/test_notes_direct.py`), 44
 pour la lecture du contenu des publications (`tests/test_notes_lecture.py`), 11 pour leur assemblage
 avec la ligne de commande, l'interface et l'ordre de bataille (`tests/test_notes_integration.py`,
-`tests/test_ui_notes_integration.py`) et 134 tests de régression de la recette finale, au moins un par
+`tests/test_ui_notes_integration.py`), 134 tests de régression de la recette finale, au moins un par
 constat corrigé (`tests/test_recette_notes.py`, `tests/test_recette_ui.py`,
-`tests/test_recette_ordre_rapport.py`).
+`tests/test_recette_ordre_rapport.py`) et 136 pour le déploiement derrière un relais (préfixe, origine du
+relais, cadre, `/etat.json`, commande `etat`, données déplaçables, scripts : `tests/test_deploiement_ui.py`,
+`tests/test_deploiement_cli.py`, `tests/test_deploiement_scripts.py`).
 
 ## Sources
 

@@ -241,10 +241,12 @@ def site_state(notes_root: Path) -> dict[str, Any]:
 
 def notes_state(store: Any, panel_dir: Path, last: Any, now: pd.Timestamp, status: Any = None) -> dict[str, Any]:
     """Notes au journal et notes en vigueur à la séance d'application (mode direct, comme les pages)."""
-    out: dict[str, Any] = {"dossier": str(getattr(store, "root", "")), "au_journal": 0, "en_vigueur": 0}
+    out: dict[str, Any] = {"dossier": str(getattr(store, "root", "")), "journal_present": False, "au_journal": 0,
+                           "en_vigueur": 0}
     try:
         if store is None or not Path(store.path).exists():
             return out
+        out["journal_present"] = True
         out["au_journal"] = len(store)
         if status is None and last is not None and out["au_journal"]:
             cal = pd.read_parquet(panel_dir / "sessions.parquet") if (panel_dir / "sessions.parquet").exists() else None
@@ -344,7 +346,8 @@ def format_text(state: dict[str, Any]) -> str:
                  "requête ne lui est envoyée tant que le blocage n'est pas levé." if s["bloque"] else
                  "Site www.brvm.org : aucun refus enregistré.")
     lines.append(f"Notes : {cli.fr_num(n['au_journal'], 0)} au journal, {cli.fr_num(n['en_vigueur'], 0)} en vigueur. "
-                 f"Dossier : {n['dossier']}.")
+                 f"Dossier : {n['dossier']}." if n.get("journal_present") else
+                 f"Notes : aucun journal pour l'instant. Dossier : {n['dossier']}.")
     lines.append(f"Dernier rapport écrit : {r['nom']}, le {_fr_instant(r['date'])}. Dossier : {r['dossier']}." if r["nom"]
                  else f"Dernier rapport écrit : aucun. Dossier : {r['dossier']}.")
     lines.append(f"Données : {d['taille']}. Dossier : {d['dossier']}.")

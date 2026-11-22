@@ -4,7 +4,12 @@ Données
   ``update [--from AAAA-MM-JJ]`` : télécharge **poliment** les BOC manquants depuis www.brvm.org
   (robots.txt respecté, au moins 10 s entre deux requêtes, arrêt définitif au premier HTTP 403/429)
   puis reconstruit le panel ; ``panel`` : reconstruit ``data/panel`` depuis les BOC locaux ;
-  ``live`` : cours du jour (page publique, instantané sans historique).
+  ``live`` : cours du jour (page publique, instantané sans historique) ; ``etat`` : état de
+  l'installation (panel, bulletins, jours restant à télécharger, notes, dernier rapport, taille des
+  données, version), sans aucune requête, code de sortie toujours 0.
+  Les données et les rapports écrits peuvent être placés hors de l'arbre du code : variables
+  d'environnement ``BRVM_ALPHA_DONNEES`` et ``BRVM_ALPHA_RAPPORTS`` (:mod:`brvm_alpha.paths`) ; les
+  options ``--panel-dir``, ``--boc-dir``, ``--racine`` et ``--sortie`` l'emportent.
 
 Notes de l'analyste (journal ``data/notes/notes.jsonl``)
   ``notes add|list|show|archive|export|research|lire|analyze`` : saisie manuelle analysée, liste
@@ -25,7 +30,9 @@ Analyse et décision
   ``indices [--date]`` et ``indices dossier CODE`` : évaluation des indices (position, confiance,
   raisons) ; ``universe`` : univers éligible U1-U10 ; ``explain SYMBOLE`` : décomposition du score ;
   ``recommend --capital K`` : ordre de bataille complet (Markdown, JSON ou HTML) ; ``report --capital
-  K`` : rapport HTML autonome ; ``serve`` : interface web locale (127.0.0.1 uniquement par défaut).
+  K`` : rapport HTML autonome ; ``serve`` : interface web locale (127.0.0.1 uniquement par défaut ;
+  ``--prefixe``, ``--origine-relais`` et ``--cadre-meme-origine`` pour la placer derrière un relais
+  authentifié, voir ``docs/DEPLOIEMENT.md``).
 
 Validation
   ``backtest`` (toute période qui recoupe l'échantillon vierge S1, 2017-01-02 → 2022-11-16, est
@@ -73,6 +80,11 @@ DEFAULT_CAPITAL = 10_000_000.0
 #: Hôtes de bouclage acceptés par ``serve`` sans option explicite.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 DEFAULT_PORT = 8765
+#: Premier jour de l'historique des BOC (début de la collecte quand aucun bulletin n'est en cache).
+HISTORY_START = dt.date(2017, 1, 2)
+#: Variables d'environnement de ``serve`` (l'option de la ligne de commande l'emporte).
+ENV_PREFIX = "BRVM_ALPHA_PREFIXE"
+ENV_RELAY_ORIGINS = "BRVM_ALPHA_ORIGINES_RELAIS"
 
 RULES_POLITENESS = (
     "Règles de politesse : seul www.brvm.org est interrogé (Sika Finance, Richbourse et la presse sont "
@@ -341,6 +353,59 @@ def is_loopback(host: str) -> bool:
         return ipaddress.ip_address(h).is_loopback
     except ValueError:
         return False
+
+
+_PREFIX_RE = re.compile(r"(?:/[A-Za-z0-9._~\-]+)+")
+
+
+def parse_prefix(value: Any) -> str:
+    """Préfixe d'adresse de l'interface (``/rz_brvm_alpha/ui``) ; chaîne vide : aucun préfixe.
+
+    Règles : commence par ``/``, ne finit pas par ``/``, pas de ``//``, pas de ``..``, pas de ``?`` ni
+    de ``#``, lettres non accentuées, chiffres, ``-``, ``_``, ``.`` et ``~`` seulement, 200 caractères
+    au plus. Lève ``ValueError`` (message en français) sinon.
+    """
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    bad = (len(s) > 200 or not _PREFIX_RE.fullmatch(s) or ".." in s
+           or any(seg == "." for seg in s.split("/")))
+    if bad:
+        raise ValueError(f"préfixe d'adresse invalide : {s[:60]!r} (attendu un chemin comme /rz_brvm_alpha/ui : il "
+                         "commence par /, ne finit pas par /, sans //, sans .., sans ? ni # ; lettres non accentuées, "
+                         "chiffres, - _ . ~ seulement ; pour aucun préfixe, laisser vide)")
+    return s
+
+
+def parse_origin(value: Any) -> str:
+    """Origine de navigateur ``schéma://hôte[:port]`` normalisée (minuscules, port par défaut retiré).
+
+    ``https://ERP.Exemple.com:443/`` devient ``https://erp.exemple.com``. Seuls ``http`` et ``https``
+    sont admis, sans chemin, sans paramètres, sans identifiants, sans joker. Lève ``ValueError`` sinon.
+    """
+    from urllib.parse import urlsplit
+
+    s = str(value or "").strip()
+    err = ValueError(f"origine invalide : {s[:80]!r} (attendu schéma://hôte[:port], par exemple "
+                     "https://erp.exemple.com ; http ou https, sans chemin ni joker)")
+    try:
+        u = urlsplit(s)
+        port = u.port
+    except ValueError:
+        raise err from None
+    host = (u.hostname or "").lower()
+    if (u.scheme not in ("http", "https") or not host or u.username is not None or u.password is not None
+            or u.path not in ("", "/") or u.query or u.fragment or "?" in s or "#" in s
+            or not re.fullmatch(r"[a-z0-9.\-]+|[0-9a-f:.]+", host) or (port is not None and not 0 < port < 65536)):
+        raise err
+    shown = f"[{host}]" if ":" in host else host
+    default = 443 if u.scheme == "https" else 80
+    return f"{u.scheme}://{shown}" + (f":{port}" if port is not None and port != default else "")
+
+
+def split_origins(value: Any) -> list[str]:
+    """Liste d'origines séparées par des virgules ou des espaces (variable ``BRVM_ALPHA_ORIGINES_RELAIS``)."""
+    return [x for x in re.split(r"[,\s]+", str(value or "").strip()) if x]
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +678,18 @@ def build_parser() -> argparse.ArgumentParser:
     li.add_argument("--symbole", action="append", default=None, metavar="SYMBOLE", help="filtre (répétable)")
     li.add_argument("--hors-ligne", action="store_true", help="relit la dernière page en cache, sans requête")
 
+    et = sub.add_parser("etat", help="état de l'installation (panel, bulletins, notes, rapport), sans aucune requête",
+                        description="État de l'installation, en lecture seule et sans aucune requête réseau : "
+                                    "dernière séance du panel, séances présentes et manquantes, retard éventuel, "
+                                    "bulletins en cache, jours restant à télécharger (même calcul que « update "
+                                    "--simulation »), notes au journal et en vigueur, dernier rapport écrit, taille du "
+                                    "dossier de données, version du code. Le champ « pret » est vrai si le panel "
+                                    "existe et n'est pas vide. Code de sortie 0 même si rien n'est prêt.")
+    et.add_argument("--format", choices=("texte", "json"), default="texte", help="format de sortie (défaut : texte)")
+    et.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
+    et.add_argument("--boc-dir", default=None, metavar="DOSSIER", help="BOC texte (défaut : data/boc_text)")
+    _add_notes_root(et)
+
     # -- notes -------------------------------------------------------------------
     no = sub.add_parser("notes", help="notes de l'analyste : saisie, liste, fiche, archivage, export, recherche, analyse",
                         description="Journal des notes de l'analyste (append-only, data/notes/notes.jsonl). "
@@ -859,6 +936,17 @@ def build_parser() -> argparse.ArgumentParser:
                     help="adresse d'écoute autre que 127.0.0.1 (déconseillé : aucune authentification)")
     _add_notes_root(sv)
     sv.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
+    sv.add_argument("--prefixe", default=None, metavar="/CHEMIN",
+                    help="sert l'interface sous ce préfixe d'adresse (par exemple /rz_brvm_alpha/ui), pour un relais "
+                         f"placé devant elle ; tout autre chemin répond 404 ; défaut : variable {ENV_PREFIX}, sinon "
+                         "aucun préfixe")
+    sv.add_argument("--origine-relais", dest="origine_relais", action="append", default=None, metavar="URL",
+                    help="origine de navigateur acceptée en plus pour les formulaires, celle du relais authentifié "
+                         "(par exemple https://erp.exemple.com) ; répétable ; défaut : variable "
+                         f"{ENV_RELAY_ORIGINS} (origines séparées par des virgules), sinon aucune")
+    sv.add_argument("--cadre-meme-origine", dest="cadre_meme_origine", action="store_true",
+                    help="autorise l'affichage des pages dans un cadre (iframe) de la même origine, celle du relais ; "
+                         "par défaut tout cadre est interdit")
     _add_banner_epilog(parser, top=True)
     return parser
 
@@ -891,22 +979,34 @@ def _build_panel(boc_dir: Path, panel_dir: Path, force: bool = False, workers: i
     return 0
 
 
+def update_window(boc_dir: str | Path, start: dt.date | None = None, end: dt.date | None = None,
+                  today: dt.date | None = None) -> tuple[dt.date, dt.date, list[dt.date]]:
+    """``(premier jour, dernier jour, jours ouvrés à chercher)`` de ``update`` ; lecture du disque seule.
+
+    Défauts de ``update`` : du lendemain du dernier BOC local (ou du 02/01/2017 s'il n'y en a aucun)
+    à aujourd'hui. Même calcul pour ``update``, ``update --simulation`` et ``etat`` : aucune requête.
+    """
+    from brvm_alpha.data import boc_download
+
+    boc_dir = Path(boc_dir)
+    today = today or dt.date.today()
+    if start is None:
+        last = last_local_boc(boc_dir)
+        start = (last + dt.timedelta(days=1)) if last else HISTORY_START
+    end = today if end is None or end > today else end
+    days = boc_download.pending_days(start, end, boc_dir) if start <= end else []
+    return start, end, days
+
+
 def _cmd_update(args: argparse.Namespace) -> int:
     from brvm_alpha.data import boc_download
 
     boc_dir = Path(args.boc_dir) if args.boc_dir else DEFAULT_BOC_DIR
     panel_dir = Path(args.panel_dir) if args.panel_dir else DEFAULT_PANEL_DIR
     today = dt.date.today()
-    if args.start is not None:
-        start = args.start.date()
-    else:
-        last = last_local_boc(boc_dir)
-        start = (last + dt.timedelta(days=1)) if last else dt.date(2017, 1, 2)
-    end = args.end.date() if args.end is not None else today
-    if end > today:
-        end = today
+    start, end, days = update_window(boc_dir, args.start.date() if args.start is not None else None,
+                                     args.end.date() if args.end is not None else None, today)
     delay = max(float(args.delai), boc_download.MIN_DELAY_S)
-    days = boc_download.pending_days(start, end, boc_dir) if start <= end else []
     print(f"BOC manquants du {start:%d/%m/%Y} au {end:%d/%m/%Y} : {len(days)} jour(s) ouvré(s) à chercher "
           f"(dossier {boc_dir}).")
     print(f"Politesse : robots.txt respecté, {delay:.0f} s au moins entre deux requêtes, arrêt au premier HTTP "
@@ -985,6 +1085,18 @@ def _cmd_live(args: argparse.Namespace) -> int:
     if rows:
         print(_table(rows, ["Titre", "Nom", "Clôture", "Var.", "Volume"]))
     print(BANNER)
+    return 0
+
+
+def _cmd_etat(args: argparse.Namespace) -> int:
+    """État de l'installation : lecture seule, aucune requête, code de sortie toujours 0."""
+    from brvm_alpha import etat
+
+    state = etat.collect_state(panel_dir=args.panel_dir, boc_dir=args.boc_dir, notes_root=args.racine)
+    if args.format == "json":
+        print(json.dumps(state, ensure_ascii=False, indent=1))
+    else:
+        print(etat.format_text(state))
     return 0
 
 
@@ -1884,16 +1996,37 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         allow_remote = True
         _say(f"AVERTISSEMENT : écoute sur {args.hote} : l'interface n'a pas d'authentification ; toute machine qui "
              "atteint cette adresse peut lire et écrire les notes. À réserver à un réseau de confiance.")
+    # Relais authentifié placé devant l'interface : options explicites, l'option l'emporte sur la variable.
+    extra: dict[str, Any] = {}
+    try:
+        prefix = parse_prefix(args.prefixe if args.prefixe is not None else os.environ.get(ENV_PREFIX, ""))
+        raw_origins = args.origine_relais if args.origine_relais else split_origins(os.environ.get(ENV_RELAY_ORIGINS, ""))
+        origins = tuple(dict.fromkeys(parse_origin(o) for o in raw_origins if str(o).strip()))
+    except ValueError as exc:
+        _say(f"refusé : {exc}")
+        return 2
+    if prefix:
+        extra["prefix"] = prefix
+    if origins:
+        extra["relay_origins"] = origins
+    if getattr(args, "cadre_meme_origine", False):
+        extra["frame_same_origin"] = True
     try:
         srv = server.make_server(host, args.port, allow_remote=allow_remote,
                                  services=server.Services(notes_root=notes_root_arg(args.racine),
-                                                          panel_dir=args.panel_dir))
+                                                          panel_dir=args.panel_dir), **extra)
     except (ValueError, OSError) as exc:
         _say(f"refusé : {exc}")
         return 2
     h, p = srv.server_address[:2]
     shown = f"[{h}]" if ":" in str(h) else h
-    print(f"Interface BRVM Alpha : http://{shown}:{p}/  (Ctrl+C pour arrêter). {BANNER}", flush=True)
+    print(f"Interface BRVM Alpha : http://{shown}:{p}{prefix}/  (Ctrl+C pour arrêter). {BANNER}", flush=True)
+    if prefix:
+        print(f"Préfixe d'adresse : {prefix} (tout autre chemin répond 404).", flush=True)
+    if origins:
+        print("Origines du relais acceptées pour les formulaires : " + ", ".join(origins) + ".", flush=True)
+    if extra.get("frame_same_origin"):
+        print("Affichage dans un cadre de même origine : autorisé (--cadre-meme-origine).", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -1912,6 +2045,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "update": _cmd_update,
     "panel": _cmd_panel,
     "live": _cmd_live,
+    "etat": _cmd_etat,
     "notes": _cmd_notes,
     "indices": _cmd_indices,
     "universe": _cmd_universe,

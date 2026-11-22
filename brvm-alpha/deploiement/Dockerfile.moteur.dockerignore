@@ -1,0 +1,11 @@
+# Contexte de construction de Dockerfile.moteur : tout est écarté sauf ce que l'image copie.
+# Les données (data/), les rapports écrits et les caches ne partent jamais dans l'image.
+*
+!brvm_alpha
+!configs
+!deploiement
+!reports/validation_S1
+!reports/diagnostic_S0
+!reports/trials.parquet
+**/__pycache__
+**/*.pyc

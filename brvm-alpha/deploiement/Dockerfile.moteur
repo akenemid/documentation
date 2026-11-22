@@ -1,0 +1,68 @@
+# Image autonome du moteur BRVM Alpha (interface web locale et tâches de collecte).
+#
+# ATTENTION : CETTE IMAGE N'A PAS ÉTÉ CONSTRUITE NI ESSAYÉE sur la machine de développement.
+# Le démon Docker n'y tournait pas et aucun téléchargement n'y était permis (image de base,
+# paquets). Le fichier a été relu, pas exécuté : faire une première construction d'essai.
+#
+# Construction, depuis le dossier brvm-alpha/ (le fichier Dockerfile.moteur.dockerignore, à côté
+# de celui-ci, écarte data/ et les caches du contexte) :
+#   docker build -f deploiement/Dockerfile.moteur \
+#       --build-arg BRVM_ALPHA_VERSION="$(git rev-parse --short HEAD)" -t brvm-alpha-moteur .
+#
+# Ce que fait l'image :
+#   - Python 3.12 à elle seule : l'environnement Python d'Odoo n'est pas touché ;
+#   - utilisateur non privilégié « brvm » (10001) ; le code est en lecture seule pour lui ;
+#   - toutes les données dans le volume /donnees (bulletins, panel, notes, rapports, journaux) ;
+#   - le moteur écoute sur 127.0.0.1 seulement, port 8765. Il n'a pas d'authentification :
+#     ne JAMAIS publier ce port (pas de « ports: » dans le fichier Compose). EXPOSE ne publie
+#     rien : il documente le port pour le réseau interne.
+#   - pour que le relais Odoo l'atteigne en http://127.0.0.1:8765, donner au conteneur le réseau
+#     du conteneur Odoo : « network_mode: "service:odoo" » (voir docs/DEPLOIEMENT.md).
+#
+# Aucun secret dans l'image. Performance passée ≠ garantie. Aucun gain n'est garanti.
+FROM python:3.12-slim
+
+ARG BRVM_ALPHA_VERSION=inconnue
+ENV BRVM_ALPHA_VERSION=${BRVM_ALPHA_VERSION} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    BRVM_PYTHON=python \
+    BRVM_CODE=/opt/brvm-alpha \
+    BRVM_ALPHA_DONNEES=/donnees \
+    BRVM_ALPHA_RAPPORTS=/donnees/rapports \
+    BRVM_JOURNAL=/donnees/journaux \
+    BRVM_PORT=8765
+
+# pdftotext (poppler-utils) : conversion rapide des bulletins PDF en texte.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --system --gid 10001 brvm \
+    && useradd --system --uid 10001 --gid brvm --home-dir /donnees --shell /usr/sbin/nologin brvm \
+    && mkdir -p /donnees \
+    && chown brvm:brvm /donnees
+
+WORKDIR /opt/brvm-alpha
+
+# Dépendances d'abord : cette couche ne change que si la liste change.
+COPY deploiement/requirements-moteur.txt deploiement/requirements-moteur.txt
+RUN python -m pip install --no-cache-dir -r deploiement/requirements-moteur.txt
+
+# Code, paramètres figés et résultats de la validation (lus à leur place dans le code).
+COPY brvm_alpha brvm_alpha
+COPY configs configs
+COPY reports/validation_S1 reports/validation_S1
+COPY reports/diagnostic_S0 reports/diagnostic_S0
+COPY reports/trials.parquet reports/trials.parquet
+COPY deploiement deploiement
+
+VOLUME ["/donnees"]
+USER brvm
+EXPOSE 8765
+
+# État du service toutes les cinq minutes (lecture seule, aucune requête vers l'extérieur).
+HEALTHCHECK --interval=5m --timeout=20s --start-period=1m --retries=3 \
+    CMD python -c "import os, urllib.request as u; u.urlopen('http://127.0.0.1:%s%s/etat.json' % (os.environ.get('BRVM_PORT', '8765'), os.environ.get('BRVM_ALPHA_PREFIXE', '')), timeout=15)"
+
+CMD ["sh", "deploiement/service.sh"]
