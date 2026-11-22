@@ -65,6 +65,13 @@ class FakeServices(S.Services):
     def last_session(self):
         return pd.Timestamp("2026-11-20")
 
+    #: Contrôle « panel en retard » : coupé par défaut (il dépend de l'heure réelle) ; les tests de la
+    #: recette l'activent avec une horloge fixe (``services.clock``).
+    panel_late_check = False
+
+    def panel_warning(self):
+        return super().panel_warning() if self.panel_late_check else None
+
     def symbol_names(self):
         return {"SNTS": "SONATEL"}
 

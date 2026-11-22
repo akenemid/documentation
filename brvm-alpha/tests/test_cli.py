@@ -187,6 +187,10 @@ def test_notes_add_rejects_bad_input(tmp_path, capsys):
     assert "titre ou un texte" in capsys.readouterr().err
     assert cli.main(["notes", "add", "--racine", root, "--titre", "x", "--publie-le", "2099-01-01"]) == 2
     assert "futur" in capsys.readouterr().err
+    # Un dossier de journal inexistant est refusé pour une lecture (recette du 22/11/2026 : faute de frappe).
+    assert cli.main(["notes", "show", "--racine", root, "zzzz"]) == 2
+    assert "journal des notes introuvable" in capsys.readouterr().err
+    (tmp_path / "notes").mkdir()
     assert cli.main(["notes", "show", "--racine", root, "zzzz"]) == 2
     assert "identifiant invalide" in capsys.readouterr().err
 

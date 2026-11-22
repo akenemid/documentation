@@ -169,7 +169,7 @@ TERMS: tuple[Term, ...] = (
          r"(?:endettement(?:\s+net)?|dette\s+(?:nette|financiere))\s+en\s+(?:baisse|recul|repli|diminution)",
          1, "pos", source="ext v0.3"),
     Term("baisse des charges",
-         r"(?:baisse|reduction|diminution|recul|repli|maitrise)\s+des\s+(?:charges|frais\s+generaux|couts)"
+         r"(?:baisse|reduction|diminution|recul|repli)\s+des\s+(?:charges|frais\s+generaux|couts)"
          r"(?:\s+(?:d'exploitation|generales?|operationnelles?|de\s+structure|de\s+personnel))?|"
          r"charges(?:\s+(?:d'exploitation|generales?|operationnelles?))?\s+en\s+(?:baisse|recul|repli|diminution)",
          1, "pos", source="ext v0.3"),

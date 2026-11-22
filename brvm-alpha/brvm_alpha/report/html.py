@@ -585,12 +585,22 @@ def bar_chart(cid: str, labels: Sequence[str], values: Sequence[float], *, tips:
                 xl.append(f'<span class="xt{" odd" if j % 2 else ""}" style="left:{p:.2f}%">'
                           f'{esc(fmt_pct(x, 0))}</span>')
         mlab = []
-        for k, (pos, lab, cls) in enumerate(markers):
-            if _ok(pos) and e0 <= pos <= e1:
-                p = EX(pos) / 10
-                side = "r" if p > 70 else ""
-                mlab.append(f'<span class="ml {esc(cls)} {side}" style="left:{p:.2f}%;top:{4 + 18 * (k % 3)}px">'
-                            f'{esc(lab)}</span>')
+        # Étiquettes des repères : chacune sur la première ligne où elle ne touche aucune autre (largeur
+        # estimée pour un graphique étroit, téléphone de 390 px). Avant, la ligne dépendait du rang du repère
+        # (k % 3) : « P10 » et « TR médian » partageaient une ligne et se recouvraient.
+        rows: list[list[tuple[float, float]]] = []
+        shown = sorted(((EX(pos) / 10, lab, cls) for pos, lab, cls in markers if _ok(pos) and e0 <= pos <= e1
+                        and cls != "zero"), key=lambda x: x[0])
+        for p, lab, cls in shown:
+            side = "r" if p > 70 else ""
+            width = 2.4 * len(str(lab)) + 4.0  # % de la largeur du tracé, estimation prudente
+            a, b = (p - width, p) if side else (p, p + width)
+            row = next((i for i, used in enumerate(rows) if all(b <= u0 or a >= u1 for u0, u1 in used)), len(rows))
+            if row == len(rows):
+                rows.append([])
+            rows[row].append((a, b))
+            mlab.append(f'<span class="ml {esc(cls)} {side}" style="left:{p:.2f}%;top:{4 + 18 * row}px">'
+                        f'{esc(lab)}</span>')
         mk_html = '<div class="mlab" aria-hidden="true">' + "".join(mlab) + "</div>"
     else:
         step = max(1, math.ceil(n / 12))
@@ -901,6 +911,7 @@ class _Ctx:
                                       costs=self.costs, notes_store=st if st is not None else False,
                                       validation_dir=self.validation_dir, n_boot=self.n_boot, seed=self.seed,
                                       registry_path=self.registry_path, index_evaluation=False,
+                                      index_note="Évaluation des indices : voir la section « Indices » de ce rapport.",
                                       panel_dir=self.panel_dir if self.panel_dir is not None and self.panel_dir.exists()
                                       else None,
                                       # Contrôle de fraîcheur du panel (retard de BOC) à la date du rapport.
@@ -1129,6 +1140,18 @@ def _sec_bandeau(ctx: _Ctx) -> H:
     warns = list(val.get("avertissements") or [])
     toc = "".join(f'<a href="#{esc(sid)}">{esc(lab)}</a>' for sid, lab in SECTIONS[1:])
     gaps = _gaps_summary(ctx)
+    late = None
+    try:  # même règle que l'ordre de bataille : la séance du jour compte après 15h00 UTC
+        from brvm_alpha.portfolio.recommend import stale_panel_message
+
+        if t is not None and t >= pd.Timestamp(ctx.asof_req).normalize():
+            late = stale_panel_message(t, ctx.now, orders=True)
+    except Exception:
+        late = None
+    if late:
+        warns_late = [str(late).replace("`", "")]
+    else:
+        warns_late = []
     limits = H('<p class="sub limits" role="note"><strong>Limites à lire d\'abord.</strong> '
                + esc((f"Données : {gaps} ; " if gaps else "Données : pas de BOC avant 2017, trous en 2021 ; ")
                      + "le test S1 a été relancé une fois pour un défaut de mesure (D12) ; points ouverts : indice TR des "
@@ -1137,7 +1160,8 @@ def _sec_bandeau(ctx: _Ctx) -> H:
                + '<a href="#methode">Méthode et limites</a>.</p>')
     return H(f'<header class="top"><div class="hrow"><h1>{esc(title)}</h1>'
              f'<button type="button" class="toggle" id="theme-toggle" aria-label="Changer de thème">Thème : auto</button>'
-             f'</div><p class="sub">{esc(sub)}</p></header>{banner}{limits}{tiles}'
+             f'</div><p class="sub">{esc(sub)}</p></header>{banner}'
+             + "".join(_box("warn", "Données en retard", w) for w in warns_late) + f'{limits}{tiles}'
              + "".join(_box("warn", "Avertissement", w) for w in warns)
              + f'<nav class="toc" aria-label="Sommaire">{toc}</nav>')
 
@@ -1507,11 +1531,13 @@ def _rerun_box(m: Mapping[str, Any]) -> H | None:
         body += "Les statuts des variantes et de la référence sont les mêmes aux deux passages. "
     elif r["statuts_inchanges"] is False:
         body += "Des statuts diffèrent entre les deux passages : voir tentatives.md. "
-    body += ("Les chiffres de cette section sont ceux de la relance ; le premier résultat est conservé dans "
-             f"{_rel(r['dossier']) if r['dossier'] else 'reports/validation_S1/precedent_…'}"
-             + (f" (t0 précédent {fmt_date(r['t0_prev'])})" if r["t0_prev"] else "")
-             + ", et les deux passages sont décrits dans reports/validation_S1/tentatives.md.")
-    return _box("warn", "Test unique, relancé une fois pour un défaut de mesure prouvé (D12).", body)
+    where = _rel(r["dossier"]) if r["dossier"] else "reports/validation_S1/precedent_…"
+    tail = ((f" (t0 précédent {fmt_date(r['t0_prev'])})" if r["t0_prev"] else "")
+            + ", et les deux passages sont décrits dans reports/validation_S1/tentatives.md.")
+    # Chemin relatif dans <code> : il se replie au lieu de déborder de l'encadré.
+    html_body = H(esc(body + "Les chiffres de cette section sont ceux de la relance ; le premier résultat est "
+                      "conservé dans ") + f"<code>{esc(where)}</code>" + esc(tail))
+    return _box("warn", "Test unique, relancé une fois pour un défaut de mesure prouvé (D12).", html_body)
 
 
 def _fingerprint_note(ex: Mapping[str, Any]) -> str:
@@ -2355,7 +2381,9 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
     if len(pos) or len(neg):
         parts.append(_p("Classement des deux tableaux suivants : effet actuel de la note, soit score × décroissance "
                         "(à score égal, une note récente passe avant une note ancienne).", "muted small"))
-        parts.append(H('<div class="grid2">'
+        # Deux cartes l'une sous l'autre, en pleine largeur : côte à côte, les colonnes Décroissance, Source
+        # et Filtre sortaient de l'écran à 1 280 px alors que le classement porte sur score × décroissance.
+        parts.append(H('<div class="stack">'
                        + _card(H(f"<h3>Les {len(pos)} notes les plus positives</h3>"),
                                _table(_NOTES_HEAD, _notes_rows(pos), left=_NOTES_LEFT) if len(pos) else
                                _box("empty", "Aucune note de score positif."))
@@ -2558,8 +2586,10 @@ def _sec_risques(ctx: _Ctx) -> H:
         facts.append(f"Revue obligatoire de {x.get('symbole')} : {fmt_pct(x.get('relatif_63'), 1, True)} contre le TR sur "
                      "63 séances (§9.1).")
     for x in _get(trig, "drawdown", "revues_avant_achat", default=[]) or []:
-        facts.append(f"À revoir avant achat : {x.get('symbole')}, {fmt_pct(x.get('relatif_63'), 1, True)} contre le TR "
-                     "sur 63 séances (seuil de revue −25 %, §9.1) ; l'achat reste proposé dans l'ordre.")
+        rel_txt = (f"{fmt_pct(x.get('relatif_63'), 1, True)} contre le TR sur 63 séances" if _ok(x.get("relatif_63"))
+                   else "sous-performance contre le TR sur 63 séances")
+        facts.append(f"À revoir avant achat : {x.get('symbole')}, {rel_txt} (seuil de revue −25 %, §9.1) ; l'achat "
+                     "reste proposé dans l'ordre.")
     if facts:
         parts.append(_card(H("<h3>Drawdown et revues</h3>"), _ul(facts)))
     # Événements à venir.
@@ -2891,6 +2921,8 @@ a { color: var(--pos); }
 .note .ntext { white-space: pre-wrap; font-size: 13.5px; }
 .note .nm { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--text-secondary); }
 .frag { overflow-x: auto; font-size: 13.5px; }
+.frag td.t { white-space: normal; min-width: 200px; max-width: 460px; text-align: left; }
+.frag td.t.long { min-width: 300px; max-width: 560px; }
 .frag h1 { font-size: 17px; } .frag h2 { font-size: 15px; margin: 18px 0 6px; }
 .frag table { display: block; overflow-x: auto; }
 .chart { position: relative; margin: 8px 0 0; overflow: hidden; }
@@ -2922,7 +2954,7 @@ a { color: var(--pos); }
 .mk.med { stroke: var(--text-primary); stroke-width: 2; }
 .mlab { position: absolute; inset: 0; pointer-events: none; }
 .mlab .ml { position: absolute; transform: translateX(4px); font-size: 11.5px; white-space: nowrap; color: var(--text-secondary);
-  background: var(--surface-1); padding: 0 3px; border-radius: 3px; }
+  background: color-mix(in srgb, var(--surface-1) 80%, transparent); padding: 0 3px; border-radius: 3px; }
 .mlab .ml.r { transform: translateX(calc(-100% - 4px)); }
 .mlab .ml.zero { display: none; }
 .xh { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--text-muted); display: none; pointer-events: none; }

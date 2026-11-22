@@ -1143,10 +1143,11 @@ def test_regression_dividend_basis_reconciled_with_boc_operations(tmp_path: Path
     assert prsc["div_net"] == pytest.approx(183.92) and prsc["div_gross"] == 209.0
     assert agl["div_basis"] == "net (BOC)" and prsc["div_basis"] == "brut (BOC)"
     assert "dividende_brut_presume" not in divs["PRSC"].tags  # présomption confirmée par le BOC
-    # Sans BOC, la présomption reste signalée.
+    # Sans BOC ni panel (``panel_dir=None`` : le détachement n'est pas rapproché du panel réel, recette du
+    # 22/11/2026), la présomption reste signalée.
     sess2, _, _ = make_session(tmp_path / "b")
     res2 = r.run_research(MemoryStore(tmp_path / "b" / "notes"), session=sess2, lists=["dividendes"],
-                          issuer_reports=False, boc=False, now=NOW, analyze=True)
+                          issuer_reports=False, boc=False, now=NOW, analyze=True, panel_dir=None)
     ttlc = next(n for n in res2 if n.targets == ["TTLC"])
     assert "dividende_brut_presume" in ttlc.tags and ttlc.analysis["extracted"]["div_basis"] == "brut présumé"
 

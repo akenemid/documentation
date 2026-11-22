@@ -805,6 +805,33 @@ def _next_occurrence(t: pd.Timestamp, month: int, day: int, calendar: pd.Datetim
     raise AssertionError("date introuvable")  # pragma: no cover
 
 
+def _boc_dividend_remark(panels: Mapping[str, Any], sym: str, t: pd.Timestamp, amount: float, retained: float,
+                         factor: float, ex_last: pd.Timestamp) -> str:
+    """Remarque d'affichage quand le montant retenu diffère de la colonne « dernier dividende » du BOC.
+
+    Le montant retenu est celui de la ligne (d) du détachement (règle du §3.1 de la spécification) ; la
+    colonne du BOC peut porter un autre chiffre (BOAC : 594,53 retenu, 597,53 imprimé depuis le
+    05/05/2026). Le montant n'est pas changé : le lecteur qui compare au BOC voit d'où vient l'écart.
+    Rien n'est dit après une division (montants non comparables) ni pour un dividende exceptionnel retraité.
+    """
+    try:
+        if abs(float(factor) - 1.0) > 1e-9 or abs(float(amount) - float(retained)) > 1e-9:
+            return ""
+        col = _get(panels, "last_div_net")
+        if not isinstance(col, pd.DataFrame) or sym not in col.columns:
+            return ""
+        ser = col[sym].loc[:t].dropna()
+        if not len(ser):
+            return ""
+        boc, boc_day = float(ser.iloc[-1]), pd.Timestamp(ser.index[-1])
+        if not np.isfinite(boc) or abs(boc - float(retained)) < 0.005 or boc_day < ex_last:
+            return ""
+        return (f" ; BOC du {_d(boc_day)} : dernier dividende {_num(boc)} FCFA ; montant retenu {_num(retained)} FCFA, "
+                f"lu sur la ligne (d) du détachement du {_d(ex_last)} (règle du §3.1 de la spécification)")
+    except Exception:  # remarque d'affichage : jamais bloquante
+        return ""
+
+
 def dividend_schedule(quantities: Mapping[str, int], asof: Any, panels: Mapping[str, Any], *,
                       taxes: TaxModel | None = None, horizon_months: int = 12,
                       calendar: Any = None) -> pd.DataFrame:
@@ -882,7 +909,8 @@ def dividend_schedule(quantities: Mapping[str, int], asof: Any, panels: Mapping[
                      "dividende_brut_par_titre": gross_ps, "dividende_net_prevu_par_titre": net_ps,
                      "statut": "prévu (estimation : dernier dividende reconduit)" + (
                          " ; dernier détachement il y a plus d'un an : dividende de l'exercice en retard ou absent, "
-                         "à vérifier" if late else ""),
+                         "à vérifier" if late else "")
+                     + _boc_dividend_remark(panels, sym, t, float(last["amount"]), net_raw, factor, ex_last),
                      "montant_brut": gross_amt, "irvm": gross_amt - net_amt, "montant_net": net_amt,
                      "irvm_note": IRVM_UNVERIFIED.get(reference.country_of(sym), "")})
     cols = ["symbole", "titres", "pays", "statut", "dernier_detachement", "dernier_paiement",
@@ -1400,8 +1428,12 @@ class OrdreDeBataille:
             f"({_pct(k['investi_pct'])}) pour une cible atteignable de {_pct(k['cible_pct'])} (cible de la "
             f"spécification : {_pct(k.get('cible_specification', 0.98))}"
             + (f", reliquat non investissable sous les plafonds {_pct(k.get('reliquat_plafonds'))}, D4"
-               if (k.get("reliquat_plafonds") or 0) > 0.0005 else "") + ") ; reliquat de l'arrondi vers le bas "
-            f"{_fcfa(k['reliquat_arrondi'])} (reste en liquidités, §6) ; liquidités restantes estimées "
+               if (k.get("reliquat_plafonds") or 0) > 0.0005 else "") + ") ; "
+            + (f"reliquat de l'arrondi vers le bas {_fcfa(k['reliquat_arrondi'])} (reste en liquidités, §6)"
+               if (k.get("reliquat_arrondi") or 0) >= 0 else
+               f"dépassement de la cible de {_fcfa(-k['reliquat_arrondi'])} (ligne détenue au-dessus de son poids "
+               "cible : bande de non-transaction ou ligne sans ordre possible)")
+            + " ; liquidités restantes estimées "
             f"{_fcfa(k['liquidites_apres'])} (pire cas {_fcfa(self.execution.get('liquidites_finales_pire_cas'))})",
             f"Scénario de coûts : {k['scenario']} (courtage {_pct(k['taux_courtage'])} × (1 + TVA "
             f"{_pct(k['taux_tva'], 0)}), BRVM {_pct(k['taux_brvm'])}, DC/BR {_pct(k['taux_dcbr'])}, impact "
@@ -1485,7 +1517,7 @@ class OrdreDeBataille:
         B.append(("h3", "Hypothèses (supposées, non vérifiées)"))
         B.append(("ul", self.hypotheses))
         B.append(("banner", self.bandeau))
-        return B
+        return _renumber_sections(B)
 
     def _notes_blocks(self) -> list[tuple[str, Any]]:
         """Achats bloqués par une note (règle, note, fin du blocage, levée) et effet sur les poids."""
@@ -1580,16 +1612,27 @@ class OrdreDeBataille:
         fr = T.get("filtres_r") or []
         items.append("Filtres R actifs sur les lignes : " + ("; ".join(f"{x['symbole']} ({x['filtres']})" for x in fr)
                                                              if fr else "aucun"))
+        legend = _filter_legend(fr)
+        if legend:
+            items.append("Légende des filtres : " + legend)
         dd = T.get("drawdown", {})
         items.append(dd.get("texte", ""))
         for x in dd.get("revues_lignes", []):
             items.append(f"Revue obligatoire {x['symbole']} : {_pct(x['relatif_63'], 1, True)} contre le TR sur 63 séances")
         for x in dd.get("revues_avant_achat", []) or []:
-            items.append(f"À revoir avant achat {x['symbole']} : {_pct(x['relatif_63'], 1, True)} contre le TR sur 63 "
-                         f"séances (seuil de revue {_pct(REVIEW_REL_UNDERPERF_63, 0, True)}, §9.1) ; l'achat reste "
-                         "proposé, la revue est à faire par l'utilisateur avant de transmettre l'ordre")
+            rel_txt = (f"{_pct(x['relatif_63'], 1, True)} contre le TR sur 63 séances" if x.get("relatif_63") is not None
+                       else "sous-performance contre le TR sur 63 séances")
+            items.append(f"À revoir avant achat {x['symbole']} : {rel_txt} (seuil de revue "
+                         f"{_pct(REVIEW_REL_UNDERPERF_63, 0, True)}, §9.1) ; l'achat reste proposé, la revue est à faire "
+                         "par l'utilisateur avant de transmettre l'ordre")
         nt = T.get("notes", {})
         items.append(nt.get("texte", ""))
+        for x in nt.get("notes_inclinaisons") or []:
+            who = ", ".join(x.get("cibles") or []) or "cible n.d."
+            avis = (f"avis {x['avis']}" + (f", conviction {x['conviction']}/5" if x.get("conviction") else "")
+                    if x.get("avis") else "avis n.d.")
+            items.append(f"Inclinaison portée par la note {str(x.get('note_id', ''))[:12]} du {_d(x.get('date'))} "
+                         f"« {x.get('titre', '')} » ({who} ; {avis})")
         if nt.get("ligne"):
             items.append(nt["ligne"])
         if nt.get("message_scores"):
@@ -1646,8 +1689,40 @@ class OrdreDeBataille:
         return B
 
 
+_SECTION_NO_RX = re.compile(r"^\d+\.\s+")
+
+
+def _renumber_sections(blocks: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
+    """Numérote les sections (``h2``) dans l'ordre d'affichage : 1, 2, 3… sans trou ni inversion.
+
+    Les stress passent avant la distribution quand le marché est « cher » (§4.5) et la comparaison est
+    facultative : des numéros écrits en dur donnaient « 4, 6, 5, 7, 8, 10 » (recette du 22/11/2026)."""
+    out: list[tuple[str, Any]] = []
+    n = 0
+    for kind, val in blocks:
+        if kind == "h2":
+            n += 1
+            val = f"{n}. " + _SECTION_NO_RX.sub("", str(val))
+        out.append((kind, val))
+    return out
+
+
+_MD_TAG_RX = re.compile(r"<(?=[A-Za-z/!?])")
+_MD_BREAK_RX = re.compile(r"[ \t]*[\r\n\u2028\u2029\x0b\x0c]+[ \t]*")
+
+
+def _md_text(x: Any) -> str:
+    """Texte d'une ligne de Markdown : une seule ligne (sauts de ligne et blancs répétés ramenés à une
+    espace) et balises HTML neutralisées (« <img … » devient « &lt;img … » ; « < 1 % » reste tel quel).
+
+    Sans cela, un titre de note sur plusieurs lignes cassait la liste ou l'avertissement qui le cite et
+    faisait apparaître un faux titre ou une fausse citation en tête du document (recette du 22/11/2026)."""
+    # Seuls les sauts de ligne sont ramenés à une espace : les espaces insécables des nombres restent.
+    return _MD_TAG_RX.sub("&lt;", _MD_BREAK_RX.sub(" ", str(x)))
+
+
 def _md_cell(x: Any) -> str:
-    return str(x).replace("|", "\\|").replace("\n", " ")
+    return _md_text(x).replace("|", "\\|")
 
 
 def _inline_html(text: str) -> str:
@@ -1656,26 +1731,37 @@ def _inline_html(text: str) -> str:
     return "".join(f"<strong>{html.escape(p)}</strong>" if i % 2 else html.escape(p) for i, p in enumerate(parts))
 
 
+def _cell_class(content: Any) -> str:
+    """Classe d'une cellule du fragment HTML : ``c`` (court : nombre, date, code — jamais coupé), ``t``
+    (texte : largeur minimale, retour à la ligne entre les mots) ou ``t long``. Les feuilles de style de
+    l'interface et du rapport s'en servent : sans elles, un montant était coupé chiffre par chiffre sur
+    téléphone et une colonne de texte s'étirait sur plusieurs milliers de pixels dans le rapport."""
+    txt = str(content if content is not None else "").strip()
+    if len(txt) <= 24 and txt.count(" ") <= 4:
+        return "c"
+    return "t long" if len(txt) > 90 else "t"
+
+
 def _render(blocks: list[tuple[str, Any]], fmt: str) -> str:
     out: list[str] = []
     if fmt == "md":
         for kind, val in blocks:
             if kind == "h1":
-                out.append(f"# {val}\n")
+                out.append(f"# {_md_text(val)}\n")
             elif kind == "h2":
-                out.append(f"## {val}\n")
+                out.append(f"## {_md_text(val)}\n")
             elif kind == "h3":
-                out.append(f"### {val}\n")
+                out.append(f"### {_md_text(val)}\n")
             elif kind == "banner":
-                out.append(f"> **{val}**\n")
+                out.append(f"> **{_md_text(val)}**\n")
             elif kind == "strong":
-                out.append(f"**{val}**\n")
+                out.append(f"**{_md_text(val)}**\n")
             elif kind == "warn":
-                out.append(f"> ⚠ {val}\n")
+                out.append(f"> ⚠ {_md_text(val)}\n")
             elif kind == "p":
-                out.append(f"{val}\n")
+                out.append(f"{_md_text(val)}\n")
             elif kind == "ul":
-                out.append("\n".join(f"- {x}" for x in val if x) + "\n")
+                out.append("\n".join(f"- {_md_text(x)}" for x in val if x) + "\n")
             elif kind == "table":
                 head, rows = val
                 if not rows:
@@ -1707,7 +1793,8 @@ def _render(blocks: list[tuple[str, Any]], fmt: str) -> str:
                 continue
             out.append("<table><thead><tr>" + "".join(f"<th scope=\"col\">{html.escape(str(h))}</th>" for h in head)
                        + "</tr></thead><tbody>"
-                       + "".join("<tr>" + "".join(f"<td>{_inline_html(c)}</td>" for c in r) + "</tr>" for r in rows)
+                       + "".join("<tr>" + "".join(f'<td class="{_cell_class(c)}">{_inline_html(c)}</td>' for c in r)
+                                 + "</tr>" for r in rows)
                        + "</tbody></table>")
     out.append("</section>")
     return "\n".join(out) + "\n"
@@ -1792,6 +1879,8 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
     band = float(cfg.get("portfolio", {}).get("no_trade_band", 0.02))
     lines: list[dict[str, Any]] = []
     msgs: list[str] = []
+    #: lignes détenues sans ordre possible (suspendues, hors BOC) : part de la valeur au-delà de leur poids cible
+    frozen: dict[str, float] = {}
     for s in syms:
         c = float(close.get(s, np.nan))
         if not np.isfinite(c) or c <= 0:
@@ -1814,9 +1903,13 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
                 f"bloquée, hors BOC (dernier cours {_num(b['dernier_cours'], 0)} FCFA le {_d(b['date_dernier_cours'])}, "
                 "valorisé −10 %, §7.1.7) : aucun ordre possible")
             tgt = cur
+            if cur > 0:
+                frozen[s] = max(0.0, w_cur - wt)
         elif suspended and tgt != cur:
             note = (note + " ; " if note else "") + "titre suspendu (R1) : aucun ordre possible"
             tgt = cur
+            if cur > 0:
+                frozen[s] = max(0.0, w_cur - wt)
         mdv = float(uni["mdv63"].get(s, np.nan)) if "mdv63" in uni.columns else float("nan")
         lines.append({"symbole": s, "pays": reference.country_of(s), "secteur": reference.sector_of(s),
                       "detenus": cur, "cibles": tgt, "poids_actuel": w_cur, "poids_cible": wt,
@@ -1824,6 +1917,29 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
                       "borne_haute": lp["high"], "limite_achat": lp["buy"], "limite_vente": lp["sell"],
                       "mdv63": mdv, "demi_spread_pct": float(hs_all.get(s, costs.half_spread_default)),
                       "note": note})
+    # Lignes bloquées (suspendues ou hors BOC, conservées faute de pouvoir les vendre) : leur valeur est
+    # déduite du budget investissable, sinon les cibles (98 %) s'ajoutaient à la ligne bloquée, la réserve
+    # de liquidités tombait à environ 0,5 % et le « reliquat de l'arrondi » devenait négatif (recette du
+    # 22/11/2026). Les autres cibles sont réduites au prorata, dans cet ordre de bataille seulement : la
+    # décision du modèle (poids cibles) n'est pas modifiée.
+    frozen_extra = float(sum(frozen.values()))
+    if frozen_extra > 1e-9:
+        free = [r for r in lines if r["symbole"] not in frozen and r["poids_cible"] > 0]
+        t_free = float(sum(r["poids_cible"] for r in free))
+        if t_free > 0:
+            f_scale = max(0.0, t_free - frozen_extra) / t_free
+            for r in free:
+                if r["detenus"] > 0 and (r["cibles"] == r["detenus"]
+                                         or abs(r["poids_cible"] * f_scale - r["poids_actuel"]) < band):
+                    r["cibles"] = r["detenus"]  # bande de non-transaction : la ligne ne bouge pas
+                    continue
+                r["cibles"] = int(math.floor(r["poids_cible"] * f_scale * nav / r["cours_reference"] + 1e-9))
+            msgs.append(
+                f"Ligne(s) bloquée(s) {', '.join(sorted(frozen))} ({_pct(frozen_extra)} de la valeur du portefeuille, "
+                "aucun ordre possible) : déduite(s) du budget investissable ; les autres cibles sont réduites au "
+                f"prorata (× {_num(f_scale, 3)}) pour que les titres après ordres ne dépassent pas la cible et que "
+                "la réserve de liquidités reste entière.")
+
     L = pd.DataFrame(lines)
 
     def tranches_for(r: Mapping[str, Any], q: int) -> list[int]:
@@ -1990,7 +2106,10 @@ def _capital_warnings(L: pd.DataFrame, k: Mapping[str, Any], nav: float, costs: 
                f"({_pct(fixed / max(float(k.get('investi_apres') or 0), 1.0), 0)} de l'investi)")
     k_lines = max((float(r.cours_reference) / float(r.poids_cible) for r in tgt.itertuples(index=False)
                    if r.poids_cible > 0), default=0.0)
-    k_fees = n_target * float(costs.account_fee_per_line_fcfa) / 0.01 if costs.account_fee_per_line_fcfa else 0.0
+    # Le seuil de frais fixes compte toutes les lignes tenues après ordres (lignes bloquées comprises), comme
+    # la tenue de compte elle-même : 21 lignes facturées ne se ramènent pas à 1 %/an avec le capital de 20.
+    n_fee = max(n_target, n_lines)
+    k_fees = n_fee * float(costs.account_fee_per_line_fcfa) / 0.01 if costs.account_fee_per_line_fcfa else 0.0
     out = []
     if repl:
         out.append(f"Capital insuffisant pour répliquer {variant} : " + " ; ".join(repl)
@@ -2157,13 +2276,31 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
         m = m[m.index <= t]
         if len(m) > 63:
             m_ret = float(m.iloc[-1] / m.iloc[-64])
-            for s in list(held) + to_buy:
+            for s in held:
                 if s in tr.columns:
                     col = tr[s].dropna()
                     if len(col) > 63:
                         rel = float(col.iloc[-1] / col.iloc[-64]) / m_ret - 1.0
                         if rel <= REVIEW_REL_UNDERPERF_63:
-                            (reviews if s in held else reviews_buy).append({"symbole": s, "relatif_63": rel})
+                            reviews.append({"symbole": s, "relatif_63": rel})
+    # Lignes à acheter : la revue est celle du modèle (colonne ``review`` de la décision, même mesure que la
+    # section Risques du rapport), pour qu'un même titre ne porte pas deux chiffres dans un même document.
+    if to_buy and isinstance(risk, pd.DataFrame) and "review" in risk.columns:
+        for s in to_buy:
+            if s in risk.index and bool(risk.loc[s, "review"]):
+                det = risk.loc[s, "detail_panel"] if "detail_panel" in risk.columns else []
+                det = det if isinstance(det, (list, tuple)) else ([det] if isinstance(det, str) else [])
+                txt = next((str(x) for x in det if str(x).startswith("revue obligatoire")), "")
+                if not txt:
+                    continue  # ``review`` vient d'un autre motif (R4, R9, R11) : déjà dit par les filtres R
+                m_rel = re.search(r"([+\-−]?\s?\d+(?:[.,]\d+)?)\s?%", txt)
+                rel_v = None
+                if m_rel:
+                    try:
+                        rel_v = float(m_rel.group(1).replace("−", "-").replace(" ", "").replace(",", ".")) / 100.0
+                    except ValueError:
+                        rel_v = None
+                reviews_buy.append({"symbole": s, "relatif_63": rel_v})
     rdd = dec.diagnostics.get("relative_drawdown") or {}
     if rdd.get("dd") is not None and np.isfinite(rdd.get("dd")):
         dd_txt = f"Drawdown relatif du suivi contre le TR : {_pct(rdd['dd'], 1, True)} (seuils −10 % alerte, −15 % actif ÷ 2, −20 % arrêt)"
@@ -2184,6 +2321,9 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
                                                   + ")" if len(tilt) else ""),
                  f"{len(flags)} titre(s) avec filtre R issu des notes"]
         n_txt = "Notes de l'analyste : " + ", ".join(parts)
+        if len(tilt) and getattr(getattr(plan.model, "spec", None), "kind", "") == "reference":
+            n_txt += (" ; en indice discipliné (REF), une inclinaison ne change aucun poids : la sélection et les "
+                      "poids suivent la capitalisation")
     # Pays : règles actives et événements datés à venir.
     cs = dec.diagnostics.get("country_rules") or {}
     p_txt = ("Règles pays actives : " + "; ".join(f"{c} ({st.get('label', st.get('rule'))})" for c, st in cs.items())
@@ -2243,6 +2383,7 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
         "drapeaux": {k: [str(x.get("code", x)) if isinstance(x, Mapping) else str(x) for x in v]
                      for k, v in flags.items()}}
     notes_out.update(_notes_trigger(notes_state, notes_effect, L, dec))
+    notes_out["notes_inclinaisons"] = _tilt_notes(notes_state)
     return {"filtres_r": fr, "drawdown": {"texte": dd_txt, "revues_lignes": reviews, "revues_avant_achat": reviews_buy,
                                           "etat_modele": rdd},
             "notes": notes_out,
@@ -2317,8 +2458,11 @@ def _notes_effect(plan: _Plan, variant: str, t: pd.Timestamp, panels: Mapping[st
         why = []
         if s in reasons:
             why.append("filtre " + ", ".join(sorted(set(reasons[s]))))
-        if not by_cap and s in tilt.index and float(tilt[s]) != 0:
-            why.append(f"inclinaison {_num(float(tilt[s]), 2, True)} σ")
+        # L'inclinaison n'est donnée pour motif que si l'écart va dans son sens : une inclinaison haussière
+        # n'explique pas une baisse de poids (elle vient alors de la redistribution d'un titre bloqué).
+        if not by_cap and s in tilt.index and float(tilt[s]) != 0 and (b - a) * float(tilt[s]) > 0:
+            why.append(f"inclinaison {_num(float(tilt[s]), 2, True)} σ"
+                       + (" (et redistribution d'un titre bloqué)" if reasons and s not in reasons else ""))
         rows.append({"symbole": s, "poids_sans_notes": a, "poids_avec_notes": b, "ecart": b - a,
                      "motif": " ; ".join(why)})
     rows.sort(key=lambda r: (r["ecart"], r["symbole"]))
@@ -2341,6 +2485,55 @@ def _notes_effect(plan: _Plan, variant: str, t: pd.Timestamp, panels: Mapping[st
                + (" (indice discipliné : l'inclinaison n'entre pas dans la sélection par capitalisation)."
                   if by_cap else "."))
     return {"texte": txt, "lignes": rows, "total_sans_notes": tot0, "total_avec_notes": tot1}
+
+
+#: Libellés courts des filtres de risque de la spécification (§5.6), pour la légende de l'ordre de bataille.
+FILTER_LEGEND = {
+    "R1": "suspension de cotation (aucun achat)", "R2": "annulation ou report d'assemblée générale (aucun achat, 60 séances)",
+    "R3": "procédure collective, capitaux propres insuffisants ou réserves des commissaires (exclusion)",
+    "R4": "dégradation de la notation (poids maximal × 0,5)", "R5": "augmentation de capital en numéraire (aucun achat)",
+    "R6": "offre publique ou retrait de la cote", "R7": "retard de publication des comptes",
+    "R8": "fractionnement ou regroupement (contrôle des cours)", "R9": "alerte sur résultats (aucun achat, 60 séances)",
+    "R10": "résultat net en baisse de 25 % ou plus sans alerte préalable (surveillance, qualité −0,5)",
+    "R11": "drapeau des financières (§5.6 : payout brut > 1, coût du risque, créances douteuses, solvabilité… ; un "
+           "drapeau : poids maximal × 0,5 ; deux ou plus : exclusion)",
+    "R12": "drapeau des non financières (§5.6 : payout > 100 % deux ans de suite, bénéfice non récurrent ou rendement "
+           "> 15 % ; poids maximal × 0,5)",
+}
+
+
+def _filter_legend(rows: Sequence[Mapping[str, Any]]) -> str:
+    """Légende des codes de filtre présents dans ``rows`` (« R11×1 » : un drapeau R11 levé)."""
+    codes: list[str] = []
+    for x in rows or []:
+        for c in re.findall(r"R\d+", str(x.get("filtres") or "")):
+            if c not in codes:
+                codes.append(c)
+    codes.sort(key=lambda c: int(c[1:]))
+    txt = " ; ".join(f"{c} : {FILTER_LEGEND[c]}" for c in codes if c in FILTER_LEGEND)
+    if txt and any("×" in str(x.get("filtres") or "") for x in rows or []):
+        txt += " ; « ×N » : nombre de drapeaux levés"
+    return txt
+
+
+def _tilt_notes(state: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Notes de l'analyste qui portent les inclinaisons : identifiant, date de saisie, titre, cibles, avis,
+    conviction. L'ordre de bataille les cite sous la ligne des inclinaisons (une note sur un indice ou
+    sur le marché incline tous ses constituants : sans la citation, 48 inclinaisons restaient sans source)."""
+    if not state or state.get("erreur"):
+        return []
+    ids = [str(x) for x in (state.get("overlays") or {}).get("tilt_notes") or []]
+    tab = state.get("table")
+    if not ids or not isinstance(tab, pd.DataFrame) or not len(tab):
+        return []
+    out = []
+    for r in tab[tab["note_id"].astype(str).isin(ids)].to_dict(orient="records"):
+        conv = r.get("conviction")
+        out.append({"note_id": str(r.get("note_id")), "date": r.get("known_at") if r.get("manual") else r.get("published_at"),
+                    "titre": str(r.get("title") or "(sans titre)"), "cibles": [str(x) for x in (r.get("targets") or [])][:6],
+                    "avis": r.get("stance") if isinstance(r.get("stance"), str) else None,
+                    "conviction": None if conv is None or conv != conv else int(conv)})
+    return out
 
 
 def _notes_trigger(state: Mapping[str, Any] | None, effect: Mapping[str, Any] | None, L: pd.DataFrame,
@@ -2574,6 +2767,7 @@ def recommend(
     index_evaluation: bool = True,
     today: Any = None,
     notes_known_at: Any = None,
+    index_note: str | None = None,
 ) -> OrdreDeBataille:
     """Ordre de bataille à la date ``asof`` pour un capital ``capital`` (FCFA).
 
@@ -2624,6 +2818,9 @@ def recommend(
         porte sur le dernier BOC) : les notes connues à cet instant sont appliquées à la séance
         qui suit le dernier BOC (ou la suivante si sa coupure de 09h00 UTC est passée) ; veto,
         inclinaisons et filtres R entrent dans la décision, sans changer aucune règle.
+    index_note
+        Phrase écrite à la place de l'évaluation des indices quand ``index_evaluation=False`` (le
+        rapport, qui a sa propre section Indices, y renvoie au lieu d'écrire « non demandée »).
     """
     t0 = time.time()
     if capital is None or float(capital) <= 0:
@@ -2803,7 +3000,7 @@ def recommend(
     if index_evaluation:
         idx_rows, idx_msg = _index_evaluation(t, pdir, panels_given, store_for_events, notes_known_at)
     else:
-        idx_rows, idx_msg = [], "Évaluation des indices non demandée."
+        idx_rows, idx_msg = [], (index_note or "Évaluation des indices non demandée.")
     pub_known = max(t, t_req)
     if notes_known_at is not None and notes_state and not notes_state.get("erreur") \
             and notes_state["moment"].known_at is not None:

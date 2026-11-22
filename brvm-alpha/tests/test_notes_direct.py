@@ -589,8 +589,11 @@ def test_cli_passes_the_knowledge_instant_to_every_command(tmp_path, capsys, mon
     assert cli.main(["indices", "dossier", "IDX:BRVM-C"] + root) == 0 and seen["dossier"] == cli_clock
     assert cli.main(["indices", "dossier", "IDX:BRVM-C", "--date", "2026-11-13"] + root) == 0 and seen["dossier"] is None
     assert cli.main(["indices", "dossier", "IDX:BRVM-C", "--sans-notes"]) == 0 and seen["dossier"] is None
+    assert cli.main(["recommend", "--capital", "10M", "--date", "2026-11-13", "--notes-au", "2026-11-21"] + root) == 0
+    assert seen["recommend"] == pd.Timestamp("2026-11-21 23:59:59.999999", tz="UTC")
+    # Date seule d'aujourd'hui : la fin de la journée n'est pas encore arrivée, l'instant vaut « maintenant ».
     assert cli.main(["recommend", "--capital", "10M", "--date", "2026-11-13", "--notes-au", "2026-11-22"] + root) == 0
-    assert seen["recommend"] == pd.Timestamp("2026-11-22 23:59:59.999999", tz="UTC")
+    assert seen["recommend"] == cli_clock
     assert cli.main(["report", "--capital", "10M", "--notes-au", "2026-11-21T10:15", "--sortie",
                      str(tmp_path / "r.html")] + root) == 0 and seen["report"] == fixed
     assert cli.main(["explain", "SNTS", "--notes-au", "2026-11-21T10:15"] + root) == 0 and seen["explain"] == fixed
@@ -624,6 +627,10 @@ def test_cli_indices_end_to_end_direct_historical_and_fixed_instant(tmp_path, ca
     # --notes-au avant la saisie : aucune note ; après la coupure du lundi : séance du mardi.
     assert cli.main(base + ["--notes-au", "2026-11-22T19:00", "--format", "json"]) == 0
     assert json.loads(capsys.readouterr().out)["notes"]["n_en_vigueur"] == 0
+    # Un instant futur est refusé (recette du 22/11/2026) : il est 20:30 le dimanche.
+    assert cli.main(base + ["--notes-au", "2026-11-23T09:30"]) == 2
+    assert "dans le futur" in capsys.readouterr().err
+    monkeypatch.setattr(cli, "now_utc", lambda: pd.Timestamp("2026-11-23 10:00", tz="UTC"))
     assert cli.main(base + ["--notes-au", "2026-11-23T09:30"]) == 0
     out = capsys.readouterr().out
     assert line_fields(out)[:2] == ("23/11/2026 09:30", "24/11/2026")

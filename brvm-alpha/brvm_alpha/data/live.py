@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, FeatureNotFound
 
 LIVE_URL = "https://www.brvm.org/fr/cours-actions/0"
 USER_AGENT = "brvm-alpha/0.1 (outil d'analyse personnel)"
@@ -50,7 +50,10 @@ class LiveSnapshot:
 
 def parse_live_html(html: str, fetched_at: dt.datetime | None = None) -> LiveSnapshot:
     """Extrait le tableau des cours et les indicateurs de la page brvm.org."""
-    soup = BeautifulSoup(html, "lxml")
+    try:
+        soup = BeautifulSoup(html, "lxml")
+    except FeatureNotFound:  # paquet lxml absent : analyseur de la bibliothèque standard
+        soup = BeautifulSoup(html, "html.parser")
     rows = []
     indices: dict[str, dict[str, float | None]] = {}
     activity: dict[str, float | None] = {}

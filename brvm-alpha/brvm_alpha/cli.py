@@ -711,6 +711,9 @@ def build_parser() -> argparse.ArgumentParser:
     nd.add_argument("--simulation", action="store_true",
                     help="lit les documents (téléchargement compris, sauf --hors-ligne) sans rien écrire au journal "
                          "(dry run)")
+    nd.add_argument("--relire", action="store_true",
+                    help="relit aussi, depuis le cache seulement (aucune requête), les documents déjà lus, après une "
+                         "correction de la lecture ; une nouvelle version n'est écrite que si le résultat change")
 
     nz = nsub.add_parser("analyze", help="analyse un texte sans l'enregistrer",
                          description="Analyse un texte (type d'événement, ton, chiffres, cibles, matérialité, "
@@ -852,7 +855,18 @@ def build_parser() -> argparse.ArgumentParser:
                     help="adresse d'écoute autre que 127.0.0.1 (déconseillé : aucune authentification)")
     _add_notes_root(sv)
     sv.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
+    _add_banner_epilog(parser, top=True)
     return parser
+
+
+def _add_banner_epilog(p: argparse.ArgumentParser, top: bool = False) -> None:
+    """Avertissement obligatoire en pied de l'aide de chaque sous-commande (l'aide générale le porte déjà)."""
+    if not top and not p.epilog:
+        p.epilog = BANNER
+    for a in p._actions:
+        if isinstance(a, argparse._SubParsersAction):
+            for sp in set(a.choices.values()):
+                _add_banner_epilog(sp)
 
 
 # ---------------------------------------------------------------------------
@@ -1425,8 +1439,12 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         print(f"Lecture du contenu d'au plus {args.max_docs} document(s)"
               f"{' (hors ligne : cache seulement)' if args.hors_ligne else ' de www.brvm.org'}"
               f"{' — simulation, rien ne sera écrit au journal' if args.simulation else ''}…", flush=True)
+        extra = {"reread": True} if getattr(args, "relire", False) else {}
+        if extra:
+            print("Relecture des documents déjà lus (cache seulement) : une version n'est écrite que si le résultat "
+                  "change.", flush=True)
         rep, lines = run_enrich(store, max_docs=args.max_docs, targets=targets, offline=bool(args.hors_ligne),
-                                dry_run=bool(args.simulation))
+                                dry_run=bool(args.simulation), **extra)
         print("\n".join(lines))
         print(BANNER)
         if rep is None:

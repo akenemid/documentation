@@ -1330,9 +1330,29 @@ def _country_of(symbol: str | None) -> str | None:
 
 
 def _soup(html: str | bytes):
-    from bs4 import BeautifulSoup
+    return make_soup(html)
 
-    return BeautifulSoup(html, "lxml")
+
+#: Analyseurs HTML essayés dans l'ordre : ``lxml`` (rapide) puis celui de la bibliothèque standard.
+HTML_PARSERS = ("lxml", "html.parser")
+
+
+def make_soup(html: str | bytes, parsers: Iterable[str] = HTML_PARSERS) -> Any:
+    """``BeautifulSoup`` avec le premier analyseur disponible.
+
+    Sans le paquet ``lxml`` (installation à la lettre d'une ancienne ligne du README), ``notes research``
+    et ``live`` échouaient avec un message en anglais (« Couldn't find a tree builder… ») : l'analyseur
+    de la bibliothèque standard prend alors le relais, sans rien installer.
+    """
+    from bs4 import BeautifulSoup, FeatureNotFound
+
+    last: Exception | None = None
+    for name in parsers:
+        try:
+            return BeautifulSoup(html, name)
+        except FeatureNotFound as exc:
+            last = exc
+    raise ResearchError("aucun analyseur HTML disponible : installer lxml (python -m pip install lxml)") from last
 
 
 def parse_views_table(html: str | bytes, page_url: str = BASE_URL) -> tuple[list[dict[str, dict[str, Any]]], int | None]:
@@ -1676,6 +1696,28 @@ def parse_issuers_index(html: str | bytes, page_url: str = BASE_URL + ISSUERS_IN
     return {"issuers": issuers, "last_page": last_page}
 
 
+def filename_issuer_symbol(doc_url: str | None, resolver: "IssuerResolver | None" = None) -> str | None:
+    """Symbole désigné par le dernier segment d'un nom de fichier brvm.org, ou ``None``.
+
+    ``…/20231130_-_rapport_dactivites_-_3eme_trimestre_2023_-_ecobank_ci.pdf`` → ``ECOC`` ; un suffixe de
+    doublon (``…_solibra_ci_1.pdf``) est ignoré. Seule une correspondance exacte avec un libellé connu
+    d'émetteur est retenue (aucune recherche libre : pas de faux rattachement).
+    """
+    if not doc_url:
+        return None
+    name = urlparse(str(doc_url)).path.rsplit("/", 1)[-1]
+    name = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", name)
+    if "_-_" not in name:
+        return None
+    seg = re.sub(r"_\d{1,2}$", "", name.rsplit("_-_", 1)[-1]).replace("_", " ").replace("-", " ").strip()
+    if len(seg) < 2:
+        return None
+    try:
+        return (resolver or default_resolver()).exact(seg)
+    except Exception:
+        return None
+
+
 def parse_issuer_reports(html: str | bytes, page_url: str, symbol: str | None = None,
                          resolver: IssuerResolver | None = None) -> dict[str, Any]:
     """Page « rapports-societe-cotes/<slug> » -> ``{"items", "last_page", "issuer"}``.
@@ -1705,6 +1747,13 @@ def parse_issuer_reports(html: str | bytes, page_url: str, symbol: str | None = 
             sym = title_sym
         elif title_sym and not page_symbol:
             sym = title_sym
+        # Le dernier segment du nom de fichier nomme souvent l'émetteur (« …_-_ecobank_ci.pdf ») : s'il
+        # désigne sans ambiguïté un autre symbole que celui retenu, la note est étiquetée « émetteur à
+        # vérifier » (le rattachement n'est pas changé : la page et le titre priment).
+        file_sym = filename_issuer_symbol(doc_url, resolver)
+        if file_sym and sym and file_sym != sym and "symbol_conflict" not in extra:
+            extra["symbol_conflict"] = [sym, file_sym]
+            extra["symbol_conflict_source"] = "nom du fichier"
         file_date = date_from_filename(doc_url)
         if file_date is None:
             extra["date_inconnue"] = True
@@ -2756,7 +2805,8 @@ def _effective_published(item: Mapping[str, Any], seen_at: dt.datetime, calendar
 
 def _merge_publication(kept: dict[str, Any], dup: Mapping[str, Any], seen_at: dt.datetime,
                        calendar: Any = None, strict_seen: bool = False) -> None:
-    """Deux sources pour le même document : on garde la publication la plus tôt.
+    """Deux sources pour le même document : on garde la publication la plus tôt, sans jamais remonter
+    avant la date du document retenu lui-même (version corrigée d'un document antérieur).
 
     Chaque source donne une borne supérieure prudente de l'instant de publication (fin
     du jour de mise en ligne, BOC du soir, avis horodaté) : la plus petite des deux reste
@@ -2771,6 +2821,15 @@ def _merge_publication(kept: dict[str, Any], dup: Mapping[str, Any], seen_at: dt
     except PostdatedItem:
         return  # reconstitution : une source postérieure à l'instant de collecte ne compte pas
     if b < a:
+        # Un document ne peut pas être publié avant sa propre date : la version corrigée d'un document
+        # (« Annule et remplace », « Erratum », rapprochée de l'original par sa signature de contenu) garde
+        # la date de SON fichier. Sinon la note portait l'adresse et les chiffres du document corrigé avec
+        # la date de l'original, soit une anticipation de 1 à 4 jours (recette du 22/11/2026 : 7 notes).
+        own = date_from_filename(str(kept.get("doc_url") or kept.get("url") or "")) or _as_date(kept.get("doc_date"))
+        if own is not None and b.date() < own:
+            kept.setdefault("extra", {})["earlier_twin"] = {"published": b.isoformat(), "from": dup.get("list_type"),
+                                                             "url": dup.get("doc_url") or dup.get("page_url")}
+            return
         ts, prec, _ = item_published_at(dup, b_seen, calendar, strict_seen=strict_seen)
         kept.setdefault("extra", {})["published_override"] = {"ts": ts.isoformat(), "precision": prec,
                                                                "from": dup.get("list_type")}
@@ -3068,6 +3127,23 @@ class _DateIndex:
         return sum(len(v) for v in self._d.values())
 
 
+def _journal_doc_date(r: Mapping[str, Any]) -> dt.date | None:
+    """Date du DOCUMENT d'une note du journal, pour la comparer à celle d'un nouvel élément.
+
+    Un élément collecté porte la date de son document (``doc_date`` : date du nom de fichier) ; une note
+    du journal porte ``published_at`` (date du fichier + 1 séance). Comparer l'une à l'autre décalait
+    la fenêtre de rapprochement : un document écarté comme doublon pendant la collecte (28 jours d'écart
+    entre deux documents) était accepté à la relance (32 jours entre le document et la publication de la
+    note), d'où une note de plus à la première relance hors ligne (recette du 22/11/2026). La même date
+    est donc comparée des deux côtés : celle du nom de fichier, à défaut la date de publication.
+    """
+    try:
+        url = r.get("url")
+    except Exception:
+        url = None
+    return date_from_filename(str(url) if isinstance(url, str) else None) or _as_date(r.get("published_at"))
+
+
 def _signature_index(frame: pd.DataFrame) -> _DateIndex:
     out = _DateIndex()
     if frame.empty or "title" not in frame.columns:
@@ -3078,8 +3154,7 @@ def _signature_index(frame: pd.DataFrame) -> _DateIndex:
                             and not isinstance(tg, str) else str(tg or "").split(",")) if t and ":" not in str(t)
                 and str(t).strip() != "MARCHE"]  # avis de marché : élément sans symbole
         sym = str(syms[0]).strip() if syms else ""
-        d = _as_date(r.get("published_at"))
-        out.add((sym, content_signature(r.get("title"), sym or None)), d)
+        out.add((sym, content_signature(r.get("title"), sym or None)), _journal_doc_date(r))
     return out
 
 
@@ -3178,11 +3253,63 @@ def _event_index(frame: pd.DataFrame) -> _DateIndex:
         if not syms:
             continue
         fake = {"symbol": syms[0], "title": r.get("title"), "event_hint": r.get("event_type"),
-                "doc_date": _as_date(r.get("published_at"))}
+                "doc_date": _journal_doc_date(r)}
         et = dedup_event_type(fake)
         if et:
             out.add((syms[0], et), fake["doc_date"])
     return out
+
+
+def _dividends_for(panel_dir: str | Path | None) -> pd.DataFrame | None:
+    """Table des détachements du panel (``dividends.parquet`` : ``symbol``, ``ex_date``, ``amount`` net)."""
+    if panel_dir is None:
+        return None
+    try:
+        path = Path(panel_dir) / "dividends.parquet"
+        return pd.read_parquet(path) if path.exists() else None
+    except Exception:  # panel illisible : la présomption reste
+        return None
+
+
+def reconcile_dividends_with_panel(items: Iterable[dict[str, Any]], dividends: pd.DataFrame | None) -> int:
+    """Lève la présomption « brut » d'un avis de dividende avec le montant **net** détaché au BOC.
+
+    La liste « paiement de dividendes » de brvm.org affiche un montant sans dire s'il est brut ou net :
+    il est présumé brut et l'IRVM en est déduit (``div_basis = "brut présumé"``). Quand le BOC du jour
+    du détachement est dans le panel (``dividends`` : ``symbol``, ``ex_date``, ``amount`` net), ce montant
+    tranche : égal au montant affiché, celui-ci était **net** (AGL CI 2026 : 92 FCFA affichés et 92 FCFA
+    nets au BOC, alors que l'estimation donnait 80,96, soit 12 % de moins) ; différent, le net du BOC
+    remplace l'estimation (Société Générale CI : 2 298,75 au lieu de 2 293,28). Renvoie le nombre d'avis
+    rapprochés. Seuls les éléments dont le détachement est déjà publié sont touchés (aucune anticipation).
+    """
+    if dividends is None or not len(dividends) or not {"symbol", "ex_date", "amount"} <= set(dividends.columns):
+        return 0
+    ex_dates = pd.to_datetime(dividends["ex_date"], errors="coerce").dt.date
+    n = 0
+    for it in items:
+        ex = it.get("extra") or {}
+        if ex.get("div_basis") != "brut présumé" or not it.get("symbol"):
+            continue
+        exd = _as_date(ex.get("ex_date"))
+        listed = ex.get("div_listed")
+        if exd is None or listed is None:
+            continue
+        g = dividends[(dividends["symbol"].astype(str) == str(it["symbol"])) & (ex_dates == exd)]
+        if not len(g):
+            continue
+        net = float(g["amount"].iloc[-1])
+        if net != net or net in (float("inf"), float("-inf")) or net <= 0:
+            continue
+        if abs(net - float(listed)) <= 0.01:
+            ex.update({"div_net": net, "div_basis": "net (BOC)"})
+            ex.pop("div_gross", None)
+            ex.pop("irvm_rate", None)
+        else:
+            ex.update({"div_net": net, "div_basis": "brut (net lu au BOC)"})
+            if float(listed) > 0 and net < float(listed):
+                ex["irvm_rate"] = round(1.0 - net / float(listed), 4)
+        n += 1
+    return n
 
 
 def _reconcile_dividend_basis(dup: Mapping[str, Any], selected: list[dict[str, Any]]) -> None:
@@ -3442,6 +3569,10 @@ def run_research(store: Any, targets: Iterable[str] | None = None, since: Any = 
         if sym and et:
             events.add((sym, et), _event_date(it))
         selected.append(it)
+
+    # Dividendes « brut présumé » : rapprochés du montant net détaché au BOC quand le détachement est déjà
+    # dans le panel (aucune requête ; l'instant de collecte, borne de connaissance de la note, lui est postérieur).
+    reconcile_dividends_with_panel(selected, _dividends_for(panel_dir))
 
     if download_pdfs:
         # Hors ligne, seuls les PDF déjà en cache sont relus : une relecture hors ligne
@@ -3744,6 +3875,41 @@ def _doc_content_sha256(doc: Mapping[str, Any], docs_dir: Path, url: str) -> str
         return str(doc.get("text_sha256") or doc.get("sha256") or url_hash(url))
 
 
+#: Champs de l'analyse dont le changement justifie une nouvelle version à la relecture d'un document.
+_READING_KEYS = ("score", "tone", "s_num", "materiality", "confidence", "risk_flags", "event_type", "targets",
+                 "primary_target", "reading", "contradiction")
+
+
+def _reading_changed(note: Any, old_an: Mapping[str, Any], changes: Mapping[str, Any]) -> bool:
+    """La relecture d'un document change-t-elle le résultat (score, chiffres, filtres, lecture, étiquettes) ?
+
+    Les champs techniques de l'analyse (version du lexique, détail des composantes) ne comptent pas : une
+    relecture après une correction n'écrit une nouvelle version que pour les notes dont le résultat change.
+    """
+    def same(a: Any, b: Any) -> bool:
+        if isinstance(a, float) or isinstance(b, float):
+            try:
+                return abs(float(a) - float(b)) <= 1e-9
+            except (TypeError, ValueError):
+                return a == b
+        return a == b
+
+    new_an = changes.get("analysis") or {}
+    if any(not same(old_an.get(k), new_an.get(k)) for k in _READING_KEYS):
+        return True
+    old_ex, new_ex = dict(old_an.get("extracted") or {}), dict(new_an.get("extracted") or {})
+    for k in set(old_ex) | set(new_ex):
+        if json.dumps(old_ex.get(k), sort_keys=True, default=str) != json.dumps(new_ex.get(k), sort_keys=True, default=str):
+            return True
+    if sorted(_note_get(note, "tags") or []) != sorted(changes.get("tags") or []):
+        return True
+    if "text" in changes and (changes["text"] or "") != (_note_get(note, "text") or ""):
+        return True
+    if "event_type" in changes and changes["event_type"] != _note_get(note, "event_type"):
+        return True
+    return False
+
+
 def enrich_documents(store: Any, *, max_docs: int = 20, targets: Iterable[str] | None = None, offline: bool = False,
                      session: PoliteSession | None = None, delay_s: float = 10.0, max_requests: int | None = None,
                      panel_dir: str | Path | None = DEFAULT_PANEL_DIR, dry_run: bool = False,
@@ -3934,12 +4100,16 @@ def enrich_documents(store: Any, *, max_docs: int = 20, targets: Iterable[str] |
                     dict.fromkeys(str(r.get("reason")) for r in reading["rejected"]))[:400]
             if not dry_run:
                 before = int(_note_get(note, "version") or 1)
-                try:
-                    new = store.update(cand["note_id"], now=now_utc if explicit_now else None, **changes)
-                except TypeError:
-                    new = store.update(cand["note_id"], **changes)
-                detail["version"] = int(_note_get(new, "version") or before)
-                detail["written"] = detail["version"] != before
+                if cand.get("already_read") and not _reading_changed(note, old_an, changes):
+                    # Relecture sans effet (même score, mêmes chiffres, même lecture) : aucune version écrite.
+                    detail["version"], detail["written"] = before, False
+                else:
+                    try:
+                        new = store.update(cand["note_id"], now=now_utc if explicit_now else None, **changes)
+                    except TypeError:
+                        new = store.update(cand["note_id"], **changes)
+                    detail["version"] = int(_note_get(new, "version") or before)
+                    detail["written"] = detail["version"] != before
                 out["n_written"] += int(detail["written"])
             out["details"].append(detail)
             if status in ("enrichie", "sans_chiffre"):

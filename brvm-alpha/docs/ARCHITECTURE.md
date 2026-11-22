@@ -63,7 +63,7 @@ brvm-alpha/
     test_*.py              # 35 modules (parseur, panel, signaux, construction, moteur, validation, notes,
                            # ordre de bataille, stress, rapport, CLI, interface, non-régressions des revues)
   docs/
-    SPECIFICATION_STRATEGIE.md  # spécification v1 ; §8.4 additif v1.1 (D1-D12, fait foi) ; §8.5 errata (E1-E9)
+    SPECIFICATION_STRATEGIE.md  # spécification v1 ; §8.4 additif v1.1 (D1-D12, fait foi) ; §8.5 errata (E1-E11)
     ARCHITECTURE.md        # ce document
     annexes-spec/          # calculs reproductibles de la spécification (univ_breadth.py, tr_reconstruction.py)
     research/              # revues vérifiées 01 à 08 et annexes du document 07 (données, scripts)
@@ -530,9 +530,12 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
 - Sécurité : en-tête `Host` ∈ {localhost, 127.0.0.1, [::1]} avec le port du serveur (sinon 400) ; jeton
   anti-CSRF propre au lancement (`_jeton`) sur chaque POST, `Origin` / `Sec-Fetch-Site` d'un autre site →
   403 ; corps ≤ 256 Ko (413), `Content-Length` obligatoire (411), formulaire urlencodé seulement (415), champs
-  bornés ; CSP `default-src 'none'` avec nonce de script, `X-Frame-Options`, `nosniff`, `no-referrer`,
-  `no-store` ; échappement systématique (`pages.esc`, Markdown sûr `md_to_html`) ; aucune commande système ;
-  fichiers servis choisis dans la liste `reports/*.html` (jamais un chemin saisi), rapport régénéré écrit sous
+  bornés ; CSP `default-src 'none'` avec nonce de script, `X-Frame-Options`, `nosniff`,
+  `Referrer-Policy: same-origin` (en-tête et balise `meta` ; avec `no-referrer`, un navigateur envoie
+  `Origin: null` sur un POST de même origine et tous les formulaires étaient refusés ; `Origin: null`
+  n'est accepté qu'avec `Sec-Fetch-Site: same-origin`), `no-store` ; échappement systématique (`pages.esc`, Markdown sûr `md_to_html`) ; aucune commande système ;
+  fichiers servis choisis dans la liste `reports/rapport_AAAA-MM-JJ.html` (jamais un chemin saisi ; un rapport
+  plus ancien que `validation_S1/metrics.json` est marqué « périmé »), rapport régénéré écrit sous
   `reports/rapport_<date du panel>.html` et servi dans un `iframe` *sandbox* avec sa propre CSP.
 - Pages (GET) : `/` tableau de bord (état S1, variante, **ligne datée des notes** et filtres actifs, dernier
   rapport, « régénérer »), `/notes` (saisie manuelle avec aide aux codes SYMBOLE / IDX:… / PAYS:… / SECT:… /
@@ -544,9 +547,8 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   `/notes/fiche?id=` (analyse, lecture, versions, archivage), `/recherche` (confirmation, hors ligne / en
   ligne, quota ≤ 150, case « lire le contenu des documents récents » et nombre maximal ≤ 60, journal et
   progression, bilan de la lecture, règles de politesse), `/indices` (ligne datée, colonne « Notes (z) » :
-  valeur, « score nul » ou « aucune note », jamais « n.d. » seul ; encadré « Position fragile » et mention
-  « sans notes : … » quand la position ne change que par le poids de la composante « notes »,
-  `pages.stance_flip`) et `/indices/dossier?code=`
+  valeur, « score nul » ou « aucune note », jamais « n.d. » seul ; encadré « Position changée par les notes »
+  et mention « sans notes : … » quand la position diffère avec et sans les notes, `pages.stance_flip`) et `/indices/dossier?code=`
   (notes qui influencent l'indice), `/portefeuille` (capital, portefeuille « symbole,titres », liquidités,
   variante → ordre de bataille complet avec la ligne datée et les achats bloqués, exports Markdown / JSON),
   `/expliquer?symbole=`, `/validation`
@@ -781,9 +783,15 @@ sécurité, eurobond…) ; `MARCHE`.
   régime, valorisation (PER et rendement du marché/des constituants vs
   percentile historique), largeur (part des titres au-dessus de leur moyenne
   50/200 séances, hausses/baisses), saison des dividendes, score des notes,
-  score composite, `stance`, `confidence`, `reasons` (liste de phrases). La composante
-  « notes » n'est retenue que si au moins une note en vigueur a une contribution non nulle
-  (des notes de score nul ne diluent pas les autres composantes).
+  score composite, `stance`, `confidence`, `reasons` (liste de phrases). Score composite =
+  moyenne pondérée des composantes de marché (tendance 0,30, valorisation 0,25, largeur 0,15, régime
+  0,15, poids renormalisés sur les composantes disponibles) **plus** `0,15 × z notes`
+  (`combine_with_notes` : surcouche additive et monotone — une note négative ne relève jamais un
+  score, une note presque nulle ne le déplace presque pas ; correction de la recette du 22/11/2026,
+  avant laquelle les notes entraient dans la moyenne renormalisée et diluaient les autres composantes).
+  `z notes` = score des notes / 0,5, borné à ±3 ; une note **automatique** pèse par la confiance de son
+  analyse, une note de l'analyste en entier. La composante n'existe que si au moins une note en vigueur
+  a une contribution non nulle.
 - `index_dossier(index, panels, store=None, asof=None) -> dict` (détail :
   constituants, contributions, notes récentes, calendrier, « ce qui ferait
   changer d'avis »).
@@ -791,7 +799,83 @@ sécurité, eurobond…) ; `MARCHE`.
   (défaut) = notes en règle stricte à `asof` ; un instant = mode direct (notes connues à cet instant,
   appliquées à la séance qui suit le dernier BOC ; cours inchangés). Ajouts : `attrs["notes_moment"]` et
   `attrs["notes_line"]`, colonnes `notes_detail` (notes qui portent la composante : `note_id`, `title`,
-  `targets`, `note_score`, `decay`, `part`), `composite_ex_notes` et `stance_ex_notes` (score et position
-  sans la composante notes) ; raisons « Notes (connues au …) », « Notes qui portent la composante »,
+  `targets`, `source_targets` — cibles saisies dans la note —, `relation`, `propagation`, `published_at`,
+  `created_at`, `note_score`, `decay`, `part` ; texte : `note_detail_text`), `composite_ex_notes` et
+  `stance_ex_notes` (score et position sans la composante notes) ; raisons « Notes (connues au …) », « Notes qui portent la composante »,
   « Effet des notes » ; quand la composante est absente, le motif est écrit (« notes n.d. : aucune note en
   vigueur » ou « … toutes de score nul »), jamais « n.d. » seul.
+
+## Corrections de la recette finale (22/11/2026)
+
+Contrats modifiés ou ajoutés par la recette finale ; chaque point a son test de régression dans
+`tests/test_recette_notes.py`, `tests/test_recette_ui.py` ou `tests/test_recette_ordre_rapport.py`. Aucun de ces
+changements ne touche `backtest/`, `validation/`, `strategy/`, `configs/` ni les résultats de S1.
+
+### Notes (`notes/`)
+- `model.jsonable` : une date manquante (`pd.NaT`, `pd.NA`) rend `None` (plus de récursion sans fin dans
+  « indices dossier --format json »).
+- `lexicon.scan` : le passage du titre au texte et un saut de ligne suivi d'une majuscule, d'une puce ou d'un
+  nombre terminent la proposition (`_hard_breaks`) : une négation ne traverse plus la ligne. Lexique « ext
+  v0.3 » : réduction de la perte, désendettement, baisse ou hausse des charges, levée des sanctions, passage du
+  bénéfice à la perte, hausse de l'endettement, dégradation du coefficient d'exploitation, dividende supprimé ;
+  une perte introduite par « après » (situation antérieure) est sans portée.
+- `analyze` : tournures « passe de X à Y », « porté de X à Y », « se réduit de X à Y » (Y = montant courant,
+  dividende compris) ; montant précédent d'une perte = perte ; `TONE_OPPOSITE_CAP = 0,75` : quand la variation
+  du résultat net est lue, un ton de signe contraire retire au plus les trois quarts de la part chiffrée
+  (`components["tone_contradicts_numbers"]`, avertissement, confiance × 0,85) ; pour une banque, les revenus
+  décrits en mots sont remplacés par le PNB chiffré ; le poids des chiffres vaut `0,7 × part des indicateurs
+  chiffrés` quand un autre indicateur pondéré n'est décrit qu'en mots (pondération par couverture) ;
+  `rn_degradation(cur, prev)` : filtre R10 évalué sur les **montants** quand la variation n'est pas notée
+  (bénéfice → perte, perte aggravée d'au moins 25 %), `extracted["rn_degradation"]` ; perte réduite lue dans
+  les chiffres : fait neutre ; `extracted["rai_label"]` (« résultat des activités ordinaires », jamais renommé
+  « résultat avant impôt ») ; variation écrite en dollars écartée pour un document à deux monnaies
+  (`FOREIGN_CURRENCY`, motif dans `doc_rejected`).
+- `store.NoteStore.find_duplicate(note, max_age_days=30)` : note de l'analyste active et récente de même
+  contenu (cibles, titre et texte normalisés, avis, conviction, adresse) ; la ligne de commande refuse le
+  doublon (code 2, `--forcer`), l'interface répond 409 (case « Enregistrer quand même »).
+- `research` : `_journal_doc_date` (la même date — celle du document — est comparée des deux côtés du
+  rapprochement : une relance hors ligne n'ajoute plus de note) ; `_merge_publication` ne date jamais un
+  document avant son propre fichier (« Annule et remplace ») ; `reconcile_dividends_with_panel` (dividende
+  « brut présumé » rapproché du net détaché au BOC) ; `filename_issuer_symbol` (étiquette
+  `emetteur_a_verifier` quand le nom du fichier désigne un autre émetteur) ; `make_soup` (repli sur
+  `html.parser` sans `lxml`) ; `enrich_documents(reread=True)` n'écrit une version que si le résultat change
+  (`_reading_changed`).
+- `signals.note_contributions` : colonnes `published_at` et `created_at`.
+
+### Ordre de bataille (`portfolio/recommend.py`)
+- `SESSION_CLOSE_UTC = 15:00`, `panel_staleness(last_session, now)`, `stale_panel_message(...)` : la séance du
+  jour compte comme séance attendue dès sa clôture ; `recommend(today=<instant>)` ne date plus aucun ordre sur
+  une séance close ; en mode direct, la première séance d'exécution n'est jamais antérieure à la séance
+  d'application des notes. `recommend(index_note=…)` : phrase écrite à la place de l'évaluation des indices.
+- Lignes détenues sans ordre possible (suspendues, hors BOC) : déduites du budget investissable dans
+  `_build_plan` (les autres cibles sont réduites au prorata ; la décision du modèle n'est pas modifiée).
+- Sections numérotées dans l'ordre d'affichage (`_renumber_sections`) ; Markdown neutralisé hors tableau
+  (`_md_text` : une ligne, balises HTML échappées) ; cellules du fragment HTML classées `c` / `t` / `t long`
+  (`_cell_class`) ; `declencheurs["drawdown"]["revues_avant_achat"]` (lignes à acheter sous le seuil de revue
+  de −25 %, d'après la colonne `review` du modèle) ; `declencheurs["notes"]["notes_inclinaisons"]` ; légende
+  des filtres R (`FILTER_LEGEND`) ; remarque quand le dividende retenu diffère de la colonne du BOC
+  (`_boc_dividend_remark`, affichage seulement) ; motif « inclinaison » seulement si l'écart de poids va dans
+  son sens.
+
+### Rapport (`report/html.py`)
+- Section S1 : encadré de tête « Test unique, relancé une fois (D12) » (`_rerun_box`, motif lu dans
+  `metrics.json`), « Relance motivée » au lieu de « Exécution unique », empreinte décrite sans la dire
+  pré-enregistrée (`_fingerprint_note`), fin de sous-période bornée à la fin de la fenêtre (`_sub_end`).
+- Bandeau : ligne « Limites à lire d'abord » (trous de BOC, relance, points ouverts) et avertissement « panel en
+  retard » ; « Méthode et limites » : bloc « Points ouverts ».
+- Contraintes : charge du plafond « bloc AES (exposition λ) » = Σ poids × part de l'activité au Burkina Faso,
+  au Mali et au Niger (`_aes_lambda_load`) ; taux d'IRVM affiché une fois (`_irvm_cell`) ; colonne PER
+  qualifiée (`_per_cell`) ; « titres cotés à la date » ; coûts : barèmes (faits), courtage et taxe (hypothèses).
+
+### Ligne de commande et interface
+- `cli.notes_instant` refuse un instant futur ; `cli.notes_root_arg` refuse un `--racine` inexistant pour les
+  commandes qui lisent le journal ; `cli.panel_warning` (avertissement « panel en retard » de `indices`,
+  `explain`, `report`) ; `report` sans panel : code 1 ; `universe` : bannière ; `notes add --veto`,
+  `--forcer` ; `notes lire --relire` ; tube fermé (`| head`) : fin silencieuse ; bannière en pied de l'aide de
+  chaque sous-commande.
+- Interface : `PageContext.panel_warning` (encadré en tête de chaque page), `Services.panel_warning`,
+  `Services.list_reports` (rapports datés, `perime`), `STALE_TOKEN_FORMS` (jeton périmé : formulaire réaffiché
+  avec la saisie), page Portefeuille (message en haut, ancres `#travail` et `#resultat`), tableaux
+  (`pages.cell_class`, `td.c`, `td.t`), filtres repliables, libellés français (`CAP_LABELS`, `status_fr`,
+  `source_fr`, `op_fr`).
+

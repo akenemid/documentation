@@ -70,7 +70,10 @@ RESEARCH_MAX_DOCS = 60
 _ID_RE = re.compile(r"^[0-9a-f]{4,64}$")
 _JOB_RE = re.compile(r"^[0-9a-f]{16}$")
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,8}$")
-_REPORT_NAME_RE = re.compile(r"^[\w.\-]{1,120}\.html$")
+#: Seuls les rapports datés écrits par la plate-forme (``rapport_AAAA-MM-JJ.html``, voir
+#: ``Services.report_target``) sont proposés : un ancien essai laissé dans ``reports/`` (rapport de
+#: démonstration, tableau de bord provisoire) n'est plus servi comme s'il était à jour.
+_REPORT_NAME_RE = re.compile(r"^rapport_\d{4}-\d{2}-\d{2}\.html$")
 
 
 def _now_txt() -> str:
@@ -409,7 +412,8 @@ class Services:
             if known is not None else "notes : mode historique (règle stricte à la date demandée, sans anticipation)")
         return rec.recommend(asof, capital, holdings=holdings or None, cash=cash, variant=variant, n_boot=n_boot,
                              notes_store=self.notes_store() if self.notes_root else None,
-                             panel_dir=self.panel_dir, validation_dir=self.validation_dir, notes_known_at=known)
+                             panel_dir=self.panel_dir, validation_dir=self.validation_dir, notes_known_at=known,
+                             today=self.clock())
 
     def report_target(self, asof: Any) -> Path:
         """Chemin du rapport régénéré : construit à partir de la date (jamais d'une saisie)."""
@@ -513,9 +517,16 @@ class Services:
             return None
 
     def list_reports(self) -> list[dict[str, Any]]:
-        """Rapports HTML de ``reports/`` (du plus récent au plus ancien)."""
+        """Rapports ``rapport_AAAA-MM-JJ.html`` de ``reports/`` (du plus récent au plus ancien).
+
+        ``perime`` : le fichier est plus ancien que les résultats S1 en vigueur
+        (``validation_dir/metrics.json``) ; il peut porter les chiffres d'un passage précédent du test."""
         if not self.reports_dir.is_dir():
             return []
+        try:
+            ref = (self.validation_dir / "metrics.json").stat().st_mtime
+        except OSError:
+            ref = None
         items = []
         for p in self.reports_dir.glob("*.html"):
             if not p.is_file() or not _REPORT_NAME_RE.match(p.name):
@@ -523,8 +534,19 @@ class Services:
             st = p.stat()
             items.append({"nom": p.name, "chemin": p, "mtime": st.st_mtime,
                           "modifie": pd.Timestamp(st.st_mtime, unit="s", tz="UTC").strftime("%d/%m/%Y %H:%M UTC"),
-                          "taille": f"{st.st_size / 1024:.0f} Ko"})
+                          "taille": f"{st.st_size / 1024:.0f} Ko",
+                          "perime": bool(ref is not None and st.st_mtime < ref)})
         return sorted(items, key=lambda d: d["mtime"], reverse=True)
+
+    def panel_warning(self) -> str | None:
+        """« PANEL EN RETARD de N séance(s)… » à l'horloge du service, ou ``None`` (jamais d'exception)."""
+        try:
+            from brvm_alpha.portfolio import recommend as rec
+
+            last = self.last_session()
+            return None if last is None else rec.stale_panel_message(last, self.clock(), orders=False)
+        except Exception:
+            return None
 
     def report_path(self, name: str | None) -> Path | None:
         """Rapport choisi **dans la liste** du serveur (le nom saisi n'est jamais un chemin)."""
@@ -680,7 +702,12 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def _ctx(self) -> P.PageContext:
-        return P.PageContext(token=self.server.csrf_token, nonce=secrets.token_urlsafe(16))
+        warn = None
+        try:
+            warn = self.server.services.panel_warning()
+        except Exception:  # une doublure de service sans cette méthode : pas d'avertissement
+            warn = None
+        return P.PageContext(token=self.server.csrf_token, nonce=secrets.token_urlsafe(16), panel_warning=warn)
 
     def _page(self, status: int, render: Callable[[P.PageContext], str]) -> None:
         ctx = self._ctx()
@@ -808,6 +835,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise HTTPError(404, "Page introuvable", f"aucune action à l'adresse {path}")
             form = self._read_form()
             if not self._check_csrf(form):
+                retry = STALE_TOKEN_FORMS.get(path)
+                if retry is not None:
+                    # Jeton périmé (serveur redémarré, page restée ouverte) : rien n'est enregistré, mais la
+                    # saisie n'est pas perdue — le formulaire revient avec les valeurs reçues et un jeton neuf.
+                    retry(self, form)
+                    return
                 raise HTTPError(403, "Requête refusée", "jeton anti-CSRF absent ou invalide : recharger la page et "
                                                          "recommencer")
             route(self, form)
@@ -984,7 +1017,7 @@ def get_indices(h: Handler, qs: Mapping[str, list[str]]) -> None:
     try:
         asof = _asof_or_last(h, _qv(qs, "date"))
         if asof is None:
-            err = "panel introuvable : lancer « python -m brvm_alpha panel »"
+            err = "panel introuvable : " + cli.PANEL_HINT
         elif cli.in_s1(asof):
             err = cli.s1_refusal(asof, "l'évaluation des indices")
         else:
@@ -1113,12 +1146,14 @@ GET_ROUTES: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
 # ---------------------------------------------------------------------------
 
 
+NOTE_FORM_FIELDS = ("cibles", "titre", "texte", "avis", "conviction", "horizon", "type", "source", "url", "publie_le",
+                    "heure", "etiquettes", "veto", "forcer")
+
+
 def post_note_add(h: Handler, form: Mapping[str, list[str]]) -> None:
     from brvm_alpha.notes.store import NoteConflictError
 
-    fields = ("cibles", "titre", "texte", "avis", "conviction", "horizon", "type", "source", "url", "publie_le",
-              "heure", "etiquettes", "veto", "forcer")
-    v = {k: _first(form, k).strip() if k != "texte" else _first(form, k) for k in fields}
+    v = {k: _first(form, k).strip() if k != "texte" else _first(form, k) for k in NOTE_FORM_FIELDS}
     try:
         conviction = int(v["conviction"]) if v["conviction"] else None
         horizon = int(v["horizon"]) if v["horizon"] else None
@@ -1266,7 +1301,7 @@ def post_portfolio(h: Handler, form: Mapping[str, list[str]]) -> None:
             raise ValueError("tirages : 1000, 2000 ou 5000")
         asof = _asof_or_last(h, v["date"].strip())
         if asof is None:
-            raise ValueError("panel introuvable : lancer « python -m brvm_alpha panel »")
+            raise ValueError("panel introuvable : " + cli.PANEL_HINT)
         if cli.in_s1(asof):
             raise ValueError(cli.s1_refusal(asof, "l'ordre de bataille"))
     except ValueError as exc:
@@ -1280,8 +1315,30 @@ def post_portfolio(h: Handler, form: Mapping[str, list[str]]) -> None:
         _render_portfolio(h, 409, values=v, error=str(exc))
         return
     job.inputs = v  # type: ignore[attr-defined]
-    h._redirect(f"/portefeuille?travail={job.id}")
+    h._redirect(f"/portefeuille?travail={job.id}#travail")
 
+
+STALE_TOKEN_MSG = ("session renouvelée (jeton anti-CSRF absent ou périmé : serveur redémarré ou page restée "
+                   "ouverte) : rien n'a été enregistré ; vérifier la saisie ci-dessous puis renvoyer")
+
+
+def stale_note_form(h: Handler, form: Mapping[str, list[str]]) -> None:
+    """Jeton invalide sur la saisie d'une note : formulaire réaffiché avec la saisie (403, rien n'est écrit)."""
+    v = {k: (_first(form, k) if k == "texte" else _first(form, k).strip())[:20000] for k in NOTE_FORM_FIELDS}
+    _render_notes(h, 403, _note_filters({}), form_values=v, form_error=STALE_TOKEN_MSG)
+
+
+def stale_portfolio_form(h: Handler, form: Mapping[str, list[str]]) -> None:
+    """Jeton invalide sur le calcul de l'ordre de bataille : formulaire réaffiché avec la saisie (403)."""
+    v = {k: _first(form, k)[:20000] for k in ("capital", "cash", "variante", "date", "tirages", "portefeuille")}
+    _render_portfolio(h, 403, values=v, error=STALE_TOKEN_MSG)
+
+
+#: Formulaires dont la saisie est réaffichée quand le jeton anti-CSRF est périmé (au lieu d'une page d'erreur).
+STALE_TOKEN_FORMS: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
+    "/notes/ajouter": stale_note_form,
+    "/portefeuille/calculer": stale_portfolio_form,
+}
 
 POST_ROUTES: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
     "/notes/ajouter": post_note_add,

@@ -27,15 +27,17 @@ Python 3.13 (le code vise 3.11 ou plus). Aucune dépendance réseau n'est néces
 
 ```bash
 cd brvm-alpha
-python -m pip install "pandas>=3" numpy scipy statsmodels scikit-learn pyarrow PyYAML requests beautifulsoup4 pdfplumber
+python -m pip install "pandas>=3" numpy scipy statsmodels scikit-learn pyarrow PyYAML requests beautifulsoup4 lxml pdfplumber pytest
+# lxml : lecture des pages de brvm.org (sans lui, l'analyseur de la bibliothèque standard prend le relais) ;
+# pytest : seulement pour lancer les tests.
 # facultatif, plus rapide que pdfplumber pour convertir les PDF des BOC :
 sudo apt-get install poppler-utils   # fournit pdftotext
 python -m brvm_alpha --help
 ```
 
 Versions utilisées le 22/11/2026 : pandas 3.0.5, numpy 2.5.3, scipy 1.18.1, statsmodels 0.15.0,
-scikit-learn 1.9.1, pyarrow 26.0.1, PyYAML 6.0.3. Il n'y a pas de fichier d'installation : on lance
-les commandes depuis la racine `brvm-alpha/`.
+scikit-learn 1.9.1, pyarrow 26.0.1, PyYAML 6.0.3, lxml 6.1.3, pytest 9.1.1. Il n'y a pas de fichier
+d'installation : on lance les commandes depuis la racine `brvm-alpha/`.
 
 ## Données
 
@@ -54,8 +56,13 @@ les commandes depuis la racine `brvm-alpha/`.
   les mesures de validation (§8.1 de la spécification). Les fenêtres des signaux sont comptées en
   séances, avec des seuils au prorata des BOC disponibles (additif v1.1, D1) : un BOC manquant est une
   perte de **nos** données, pas une absence de cotation.
-- `data/` n'est **pas suivi** par git (BOC, panel, journal des notes : environ 85 Mo). On le
-  reconstruit avec `update` puis `panel`.
+- `data/` n'est **pas suivi** par git : environ 185 Mo utiles (BOC en texte 44 Mo, panel 12 Mo, journal
+  des notes et cache des pages et des documents 128 Mo). On le reconstruit avec `update` puis `panel`.
+  **Depuis zéro, c'est long** : environ 2 580 jours ouvrés à chercher, 200 requêtes au plus par lancement
+  et 10 s au moins entre deux requêtes, soit **au moins 13 lancements de `update`** et plus de 7 heures
+  de téléchargement au total (`update --simulation` affiche le décompte sans rien envoyer). Sans panel,
+  les commandes s'arrêtent avec le message « panel introuvable : lancer python -m brvm_alpha update …
+  puis python -m brvm_alpha panel ».
 
 ## Commandes (CLI)
 
@@ -102,12 +109,15 @@ python -m brvm_alpha universe --date 2026-11-20 --capital 10000000
 
 # Notes : les notes connues maintenant comptent (mode direct) ; --notes-au fixe l'instant (UTC)
 python -m brvm_alpha recommend --capital 10M                                 # notes connues maintenant
-python -m brvm_alpha recommend --capital 10M --notes-au 2026-11-22T21:00     # notes connues à cet instant
+python -m brvm_alpha recommend --capital 10M --notes-au 2026-11-22T12:00     # notes connues à cet instant (passé)
 python -m brvm_alpha indices --date 2026-11-13                               # date passée : règle stricte
 python -m brvm_alpha notes research --pdf 20     # collecte polie, puis lecture d'au plus 20 documents
 python -m brvm_alpha notes lire --max 10 --hors-ligne    # documents déjà en cache, aucune requête
+python -m brvm_alpha notes lire --hors-ligne --relire    # relit les documents déjà lus (cache seul)
 
-# Validation (le test S1 a déjà été exécuté : la commande refuse de se relancer)
+# Validation. « validate --sample S1 » refuse de se relancer : le test unique a été exécuté.
+# « validate --sample S0 » relance le diagnostic (environ 12 minutes), réécrit reports/diagnostic_S0
+# et AJOUTE 10 essais au registre (N passerait de 98 à 108) : à ne lancer qu'en connaissance de cause.
 python -m brvm_alpha validate --sample S0
 ```
 
@@ -134,10 +144,18 @@ des documents récents »), indices et dossiers d'indice, portefeuille (capital,
 liquidités, puis ordre de bataille avec exports Markdown et JSON), explication d'un titre, validation
 (S1 lu ; S0 replié et marqué contaminé), rapports. Quand la date est la dernière séance du panel,
 l'interface travaille en **mode direct** : les notes saisies ou collectées jusqu'à l'instant de la
-requête comptent, et chaque page affiche la ligne « Notes connues au …, appliquées à la séance du … ». Protections : contrôle de l'en-tête `Host`, jeton anti-CSRF sur chaque
-envoi, corps de requête borné, politique de sécurité de contenu stricte, délai d'expiration de 20 s,
-32 connexions au plus, une seule opération longue à la fois. Thème clair ou sombre, mise en page
-lisible sur téléphone.
+requête comptent, et chaque page affiche la ligne « Notes connues au …, appliquées à la séance du … ».
+Quand le panel est en retard (une séance close sans son BOC, par exemple le lundi après 15h00 UTC), un
+encadré « Données en retard » s'affiche en tête de chaque page, avec la commande `update`. Seuls les
+rapports datés `rapport_AAAA-MM-JJ.html` sont proposés ; un rapport plus ancien que les résultats S1 en
+vigueur est marqué « périmé ». Après « Calculer l'ordre de bataille », un message s'affiche en haut de
+la page et le résultat est atteint par une ancre. Si le serveur a été redémarré pendant une saisie
+(jeton périmé), le formulaire revient avec la saisie, sans rien enregistrer. Protections : contrôle de
+l'en-tête `Host`, jeton anti-CSRF sur chaque envoi, refus des envois venus d'un autre site (`Origin`,
+`Sec-Fetch-Site`), corps de requête borné, politique de sécurité de contenu stricte, délai d'expiration
+de 20 s, 32 connexions au plus, une seule opération longue à la fois. Thème clair ou sombre ; sur
+téléphone, les tableaux défilent horizontalement et aucun nombre n'est coupé (vérifié à 390 px avec
+un vrai navigateur le 22/11/2026).
 
 ## Notes de l'analyste
 
@@ -158,6 +176,16 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
 
   Une date de publication future est refusée et l'URL d'une source doit être en http ou https. À la
   lecture du journal, un enregistrement sans titre ni texte, ou sans date, est écarté et signalé.
+  - **Veto** : `notes add --cible ORAC --titre "Exclusion ORAC" --veto` (ou l'étiquette `veto`, ou la
+    case « Veto (exclure le titre) » de l'interface) exclut la cible des achats pendant l'horizon de la
+    note (20 séances par défaut, `--horizon`). La sortie l'annonce (« Veto posé sur ORAC … ») ; pour
+    le lever, archiver la note.
+  - **Doublon** : la même note de l'analyste saisie deux fois (mêmes cibles, titre, texte, avis et
+    conviction, dans les 30 jours) est refusée, car elle compterait double ; `--forcer` (ou la case
+    « Enregistrer quand même ») l'enregistre malgré tout.
+  - `--racine` doit désigner un dossier existant pour les commandes qui lisent le journal (`indices`,
+    `explain`, `recommend`, `report`, `serve`, `notes list`…) : un dossier introuvable est refusé, au lieu
+    de faire disparaître les notes sans alerte. Seules `notes add` et `notes research` créent un journal.
 - **Recherche automatique polie** : `notes research` lit les listes publiques de **www.brvm.org**
   (annonces, opérations sur titres, avis, dividendes, rapports des émetteurs) et les événements des
   BOC locaux. Règles : robots.txt lu et respecté, **au moins 10 s** entre deux requêtes (Crawl-delay),
@@ -172,8 +200,9 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
   [--cibles CODES]` fait la même lecture sans nouvelle collecte. Le bilan affiche les documents lus, les
   notes enrichies, les documents scannés (images sans texte, **à lire à la main**), les erreurs, les
   documents lus sans chiffre retenu, les documents absents du cache (hors ligne) et le nombre de nouvelles
-  versions écrites. Un document déjà lu n'est jamais relu : un deuxième appel n'écrit rien. `--simulation`
-  lit sans rien écrire au journal. Les règles de politesse sont les mêmes (une requête par document, 10 s
+  versions écrites. Un document déjà lu n'est jamais relu : un deuxième appel n'écrit rien. `--relire`
+  relit aussi les documents déjà lus, depuis le cache seulement (après une correction de la lecture), et
+  n'écrit une version que si le résultat change. `--simulation` lit sans rien écrire au journal. Les règles de politesse sont les mêmes (une requête par document, 10 s
   au moins, arrêt au premier 403 ou 429).
   - **Garde-fous de la lecture** : un chiffre n'est retenu que s'il est sûr. Une variation doit être écrite
     dans le document ou recalculée sur deux montants de même unité et de même périmètre ; une variation
@@ -182,16 +211,28 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
     doit être celle de la note ; en cas d'en-tête, d'unité ou d'appariement ambigus, **aucun chiffre** n'est
     retenu (le score repose alors sur le ton seul). Chaque chiffre retenu porte la ligne exacte du document
     dont il vient (`notes show ID`).
-  - **État du journal réel au 22/11/2026** (fait) : 70 documents lus sur www.brvm.org (70 requêtes, 10 s
-    au moins entre deux, aucun refus) ; 39 notes enrichies de chiffres, 1 sans chiffre, 30 documents
-    scannés à lire à la main ; 38 publications de résultats portent désormais un score non nul. La lecture
-    a fait naître le filtre R10 (résultat net en baisse de 25 % ou plus sans alerte préalable : surveillance,
-    sans blocage des achats) sur PALM CI, SOGB et NSIA Banque CI. 23 documents restent à lire, dont 6 déjà
-    en cache (`notes lire --hors-ligne`).
+  - **État du journal réel au 22/11/2026** (fait) : 70 documents téléchargés sur www.brvm.org (70 requêtes,
+    10 s au moins entre deux, aucun refus), puis deux lectures hors ligne depuis le cache (aucune requête).
+    Le journal compte 861 notes et 989 lignes (une ligne par version, en ajout seul). 76 documents ont été
+    lus : 38 notes enrichies de chiffres, 4 lues sans chiffre retenu, 34 documents scannés à lire à la main.
+    La lecture a fait naître le filtre R10 (résultat net en baisse de 25 % ou plus sans alerte préalable, ou
+    passage à la perte, ou perte aggravée : surveillance, sans blocage des achats) sur PALM CI, SOGB, NSIA
+    Banque CI, FILTISAC CI et SETAO CI. Après la recette, la relecture (`notes lire --hors-ligne --relire`) a
+    écrit 23 nouvelles versions : 6 documents du cache lus pour la première fois et 17 notes dont le
+    résultat change (scores devenus négatifs pour des résultats nets en baisse : Ecobank CI, NSIA Banque
+    CI, Société Générale CI ; variation en dollars d'ETI écartée ; filtres R10 de FILTISAC CI et de SETAO
+    CI ; perte réduite de SUCRIVOIRE lue comme un fait neutre ; libellé « résultat des activités
+    ordinaires »). 17 documents restent à lire : ils ne sont pas en cache et demandent 17 requêtes.
 - **Analyse** : chaque note reçoit un type d'événement (dividende, résultats, alerte sur résultats,
   macro…), un ton, les chiffres extraits (variation du résultat net, du dividende…), une matérialité,
   une confiance, des filtres de risque R1-R10 et une lecture en phrases courtes. Le score suit le
-  document 07 §3.4 : `clip(0,7 × s_num + 0,3 × ton, −1, 1)`.
+  document 07 §3.4 : `clip(0,7 × s_num + 0,3 × ton, −1, 1)`, avec trois précisions (§8.5, E11) : le poids
+  des chiffres est réduit quand un autre indicateur n'est décrit qu'en mots ; pour une banque, les
+  « revenus » en mots sont le PNB déjà chiffré ; **quand la variation du résultat net est lue, le ton ne
+  renverse jamais le signe des chiffres** (un ton contraire en retire au plus les trois quarts). Le filtre
+  R10 se lit aussi sur les montants : passage d'un bénéfice à une perte, perte aggravée d'au moins 25 %.
+  Les filtres R11 et R12 de l'ordre de bataille viennent du panel (drapeaux des financières et des non
+  financières, §5.6), pas des notes ; l'ordre de bataille en donne la légende.
 - **Deux instants : la date des cours et l'instant de connaissance des notes.** Les cours sont ceux du
   dernier BOC. Les notes, elles, peuvent être plus récentes : une note saisie le dimanche soir doit
   compter pour la séance du lundi.
@@ -205,7 +246,11 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
     programmatique sans `notes_known_at`) : règle stricte à la date demandée, **sans anticipation** ; une
     note saisie ou collectée après cette date n'agit pas.
   - `--notes-au AAAA-MM-JJ[THH:MM]` fixe l'instant de connaissance (UTC ; une date seule désigne la fin
-    de la journée).
+    de la journée, ou « maintenant » pour la date du jour). Un instant **futur est refusé** : la sortie
+    ne peut pas affirmer « Notes connues au … » pour une heure qui n'est pas arrivée.
+  - La première séance d'exécution de l'ordre n'est jamais antérieure à la séance où les notes
+    s'appliquent, ni une séance déjà close : le lundi après 15h00 UTC, un panel arrêté au vendredi est
+    signalé en retard (« PANEL EN RETARD »), les ordres sont marqués périmés et datés du mardi.
   - Chaque sortie écrit la ligne « Notes connues au JJ/MM/AAAA HH:MM UTC, appliquées à la séance du
     JJ/MM/AAAA : N en vigueur (dont M manuelles), F filtre(s) de risque actif(s) ». Quand une note
     **bloque un achat** (filtre R), l'ordre de bataille l'écrit en clair : titre, règle, note (date,
@@ -222,22 +267,24 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
     ne change aucun poids et n'est pas cité comme motif.
 - **Effet sur les indices** : les scores des notes, datés et point-in-time (une note agit à la première
   séance négociable après sa publication, coupure de 09h00, décroissance τ = 10 séances), forment la
-  composante « notes » de l'évaluation des indices (poids 0,15, à côté de la tendance 0,30, de la
-  valorisation 0,25, de la largeur 0,15 et du régime 0,15). Cette composante n'est retenue que si une
-  note en vigueur a une contribution non nulle ; dès qu'elle l'est, elle pèse 15 % du score, même si son
-  z est proche de zéro : chaque indice affiche donc son score **sans et avec** les notes (« Effet des
-  notes »), et les notes qui portent la composante. Quand elle est absente, la raison est écrite
-  (« aucune note en vigueur » ou « score nul »). La position (SURPONDÉRER, NEUTRE, SOUS-PONDÉRER) est
-  une **aide à la décision, pas un signal validé** : elle n'entre pas dans l'ordre de bataille.
-  - **Position fragile** (fait, journal du 22/11/2026) : le BRVM Composite et le Composite Total Return
-    sont SOUS-PONDÉRER sans les notes (score −0,53 et −0,54) et NEUTRE avec elles (−0,44), alors que le z
-    des notes n'est que de +0,09. La bascule ne vient d'aucune note en particulier (retirer une note,
-    n'importe laquelle, ne change aucune position) : elle vient du poids de 15 % donné à la composante dès
-    qu'une note porte un score. Vérifié : avec **une seule** des 42 notes chiffrées au journal, même une
-    note négative de confiance 0,56, ces deux indices passent à NEUTRE. Le rapport, l'ordre de bataille et
-    la page Indices signalent donc ces positions (« Position fragile », « sans les notes :
-    SOUS-PONDÉRER »). Aucune pondération n'a été modifiée : c'est une décision à prendre (seuil minimal de
-    |z|, ou poids proportionnel à la force du signal).
+  composante « notes » de l'évaluation des indices. Le score d'un indice est la moyenne pondérée de ses
+  composantes de marché (tendance 0,30, valorisation 0,25, largeur 0,15, régime 0,15, poids renormalisés
+  sur les composantes disponibles), **plus 0,15 × z notes**. Les notes sont donc une surcouche additive :
+  une note positive ne peut que relever le score, une note négative que l'abaisser, et une note presque
+  nulle ne le déplace presque pas. Une note automatique pèse par la confiance de son analyse ; une note
+  de l'analyste pèse en entier (sa conviction est déjà dans son score). Chaque indice affiche son score
+  **sans et avec** les notes (« Effet des notes ») et les notes qui portent la composante, avec leur cible
+  saisie et leur date. Quand la composante est absente, la raison est écrite (« aucune note en vigueur »
+  ou « score nul »). La position (SURPONDÉRER, NEUTRE, SOUS-PONDÉRER) est une **aide à la décision, pas
+  un signal validé** : elle n'entre pas dans l'ordre de bataille.
+  - **Règle corrigée par la recette du 22/11/2026** (fait) : auparavant, les notes entraient dans la
+    moyenne renormalisée ; dès qu'une seule note portait un score, même négatif et de confiance 0,56,
+    les autres composantes étaient diluées de 15 % et le BRVM Composite passait de SOUS-PONDÉRER (−0,53)
+    à NEUTRE (−0,44 ou −0,45), dans le sens contraire de la note. Avec la surcouche additive, le
+    Composite et le Composite Total Return sont SOUS-PONDÉRER (−0,52 et −0,53, z notes +0,06) sur le
+    journal du 22/11/2026. Le poids de 0,15 et l'échelle de z restent des **choix de conception non
+    validés**, à confirmer par l'utilisateur ; quand la position diffère avec et sans les notes, le
+    rapport, l'ordre de bataille et la page Indices le signalent (« Position changée par les notes »).
 - **Effet sur la position** : les notes ne pilotent jamais seules le portefeuille. Un **veto** manuel
   exclut un titre. Une **inclinaison** est bornée à ±0,5 écart-type et s'ajoute au score des variantes
   factorielles. Les **filtres R** issus des notes bloquent les achats ou réduisent les plafonds. En
@@ -248,8 +295,9 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
 ## Méthode
 
 - **Spécification** : [docs/SPECIFICATION_STRATEGIE.md](docs/SPECIFICATION_STRATEGIE.md). L'étalon
-  est le **BRVM Composite Total Return** (dividendes nets réinvestis), officiel depuis le 02/01/2025 et
-  reconstruit avant ; battre l'indice prix ne prouve rien. La variante principale A est un composite
+  est le **BRVM Composite Total Return** (dividendes nets réinvestis), base 100 au 02/01/2025, publié
+  au BOC depuis le 02/01/2026 (avis 308-2025) et reconstruit avant cette date ; battre l'indice prix ne
+  prouve rien. La variante principale A est un composite
   factoriel acheteur seul : valeur (E/P, D/P), momentum 6-1, faible volatilité, qualité, avec 12 à 20
   lignes équipondérées, un plafond de 10 % par ligne, un signal mensuel, une bande 30/50 et une
   participation de 10 % au plus de la valeur échangée. Les coûts complets sont simulés : courtage ×
@@ -259,7 +307,7 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
   il fait foi) : fenêtres comptées en séances (D1), fenêtre d'évaluation depuis la première séance
   investie t0 (D2), mode « indice discipliné » REF (20 plus grosses capitalisations éligibles, D8),
   variante I « cœur-satellite » (D9, famille N = 9), chronologie des événements pays (D10), aucune
-  note sur S1 (D11), exécution unique et verrou (D12). Le §8.5 (errata E1-E9, écrits après le premier
+  note sur S1 (D11), exécution unique et verrou (D12). Le §8.5 (errata E1-E11, écrits après le premier
   test) ne change aucune décision ni aucun seuil.
 - **Échantillons** : S1 = 02/01/2017 → 16/11/2022 (vierge, test unique) ; S0 = 17/11/2022 →
   20/11/2026 (contaminé, diagnostic seulement) ; S2 = suivi réel à partir du 01/12/2026 (seul test

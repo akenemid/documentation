@@ -29,7 +29,7 @@ from urllib.parse import quote
 
 import pandas as pd
 
-from brvm_alpha.cli import BANNER, RULES_POLITENESS, fr_date, fr_num, fr_pct
+from brvm_alpha.cli import BANNER, RULES_POLITENESS, fr_date, fr_num, fr_pct, op_fr, source_fr, status_fr
 
 #: Politique de référent (balise ``meta`` et en-tête HTTP). ``same-origin`` : l'adresse des pages
 #: n'est jamais transmise à un autre site, et le navigateur envoie la vraie origine sur les
@@ -86,12 +86,28 @@ def nw(text: Any) -> Safe:
     return Safe(f'<span class="nw">{_c(text)}</span>')
 
 
+_TAG_RX = re.compile(r"<[^>]+>")
+
+
+def cell_class(content: Any) -> str:
+    """Classe CSS d'une cellule d'après son texte : ``c`` (court : nombre, date, code — jamais coupé),
+    ``t`` (texte : largeur minimale, retour à la ligne entre les mots) ou ``t long`` (long texte).
+
+    Sans ces classes, une colonne de texte se réduisait à un mot par ligne sur téléphone et, avec
+    ``overflow-wrap:anywhere`` hérité de la page, un montant était coupé chiffre par chiffre."""
+    txt = _html.unescape(_TAG_RX.sub(" ", str(content if content is not None else ""))).strip()
+    n = len(txt)
+    if n <= 24 and txt.count(" ") <= 4:
+        return "c"
+    return "t long" if n > 90 else "t"
+
+
 def table(headers: Sequence[Any], rows: Iterable[Sequence[Any]], cls: str = "", empty: str = "Aucune ligne.") -> Safe:
     rows = list(rows)
     if not rows:
         return Safe(f'<p class="muted">{esc(empty)}</p>')
     head = "".join(f'<th scope="col">{_c(h)}</th>' for h in headers)
-    body = "".join("<tr>" + "".join(f"<td>{_c(c)}</td>" for c in r) + "</tr>" for r in rows)
+    body = "".join("<tr>" + "".join(f'<td class="{cell_class(_c(c))}">{_c(c)}</td>' for c in r) + "</tr>" for r in rows)
     c = f' class="{esc(cls)}"' if cls else ""
     return Safe(f'<div class="tablewrap"><table{c}><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
 
@@ -288,11 +304,15 @@ h1{font-size:22px;margin:4px 0 12px}h2{font-size:18px;margin:22px 0 8px}h3{font-
 h4,h5,h6{font-size:15px;margin:12px 0 4px}
 section.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:0 0 16px}
 .muted{color:var(--muted)}
-.tablewrap{overflow-x:auto;max-width:100%;margin:6px 0 10px}
+.tablewrap{overflow-x:auto;max-width:100%;margin:6px 0 10px;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;font-size:13.5px;min-width:100%}
-th,td{border-bottom:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top}
+th,td{border-bottom:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top;
+overflow-wrap:normal;word-break:normal}
 th{font-weight:600;white-space:nowrap}
 td.num,th.num{text-align:right;white-space:nowrap}
+td.c{white-space:nowrap}
+td.t{min-width:14em}
+td.t.long{min-width:22em}
 td:first-child{white-space:nowrap}
 .nw{white-space:nowrap}
 .box{border:1px solid var(--line);border-left-width:4px;border-radius:6px;padding:8px 12px;margin:8px 0;background:var(--surface)}
@@ -325,8 +345,14 @@ footer.foot{max-width:1180px;margin:0 auto;padding:16px;color:var(--muted);font-
 .legend span{margin-right:12px}
 .brvm-ordre-de-bataille .bandeau{border-left:4px solid var(--warn);padding:6px 10px}
 .brvm-ordre-de-bataille .avertissement{border-left:4px solid var(--warn);padding:4px 10px}
-.brvm-ordre-de-bataille table{display:block;overflow-x:auto;max-width:100%}
-@media (max-width:640px){body{font-size:14.5px}h1{font-size:20px}nav.main a{padding:6px 8px}th,td{padding:4px 5px}}
+.brvm-ordre-de-bataille table{display:block;overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}
+.brvm-ordre-de-bataille td.c{white-space:nowrap}
+.brvm-ordre-de-bataille td.t{min-width:14em;white-space:normal}
+.brvm-ordre-de-bataille td.t.long{min-width:22em}
+details.filters>summary{padding:4px 0}
+@media (max-width:640px){body{font-size:14.5px}h1{font-size:20px}nav.main a{padding:6px 8px}th,td{padding:4px 5px}
+td.t{min-width:12em}td.t.long{min-width:17em}.brvm-ordre-de-bataille td.t{min-width:12em}
+.brvm-ordre-de-bataille td.t.long{min-width:17em}}
 """
 
 HEAD_JS = """(function(){try{var t=localStorage.getItem('brvm-theme');if(t==='light'||t==='dark'){
@@ -357,7 +383,8 @@ var timer=setInterval(function(){fetch('/api/travail?id='+encodeURIComponent(id)
 var st=jp.querySelector('[data-job-status]');if(st){st.textContent=s.statut;}
 var pr=jp.querySelector('[data-job-progress]');if(pr){pr.textContent=s.progression||'';}
 var lg=jp.querySelector('[data-job-log]');if(lg){lg.textContent=(s.journal||[]).join('\n');lg.scrollTop=lg.scrollHeight;}
-if(s.termine){clearInterval(timer);window.location.reload();}}).catch(function(){});},2000);}}
+if(s.termine){clearInterval(timer);var a=jp.getAttribute('data-done-anchor');
+if(a){window.location.hash=a;}window.location.reload();}}).catch(function(){});},2000);}}
 })();"""
 
 NAV: tuple[tuple[str, str, str], ...] = (
@@ -377,10 +404,12 @@ LEGEND = Safe('<p class="legend muted"><span><strong>Fait</strong> : publié (BO
 
 @dataclass
 class PageContext:
-    """Contexte d'une page : jeton anti-CSRF (formulaires POST) et nonce CSP (scripts)."""
+    """Contexte d'une page : jeton anti-CSRF (formulaires POST), nonce CSP (scripts) et, s'il y a lieu,
+    l'avertissement « panel en retard » affiché en tête de chaque page (``panel_warning``)."""
 
     token: str
     nonce: str
+    panel_warning: str | None = None
 
 
 def layout(ctx: PageContext, title: str, body: Any, *, active: str = "", flash: Any = None) -> str:
@@ -398,6 +427,9 @@ def layout(ctx: PageContext, title: str, body: Any, *, active: str = "", flash: 
         kind, msg = flash if isinstance(flash, tuple) else ("ok", flash)
         fl = box(kind, msg)
     n = esc(ctx.nonce)
+    # Panel en retard : même avertissement que l'ordre de bataille, en tête de chaque page.
+    late = box("warn", str(getattr(ctx, "panel_warning", None)).replace("`", ""), "Données en retard :") \
+        if getattr(ctx, "panel_warning", None) else Safe("")
     return (
         "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
@@ -407,7 +439,7 @@ def layout(ctx: PageContext, title: str, body: Any, *, active: str = "", flash: 
         f"<header class=\"top\"><div class=\"in\"><a class=\"brand\" href=\"/\">BRVM Alpha</a>"
         f"<nav class=\"main\" aria-label=\"Navigation principale\">{nav}</nav>"
         "<button type=\"button\" id=\"theme\" class=\"secondary\">Thème : auto</button></div></header>\n"
-        f"<main>\n<p class=\"banner\" role=\"note\">{esc(BANNER)}</p>\n{fl}<h1>{esc(title)}</h1>\n{body}\n</main>\n"
+        f"<main>\n<p class=\"banner\" role=\"note\">{esc(BANNER)}</p>\n{late}{fl}<h1>{esc(title)}</h1>\n{body}\n</main>\n"
         f"<footer class=\"foot\">{LEGEND}<p>Interface locale de BRVM Alpha (127.0.0.1) : aide à l'analyse, pas un "
         "conseil en investissement personnalisé. Aucune ressource externe n'est chargée. "
         f"{esc(BANNER)}</p></footer>\n<script nonce=\"{n}\">{BODY_JS}</script>\n</body>\n</html>\n"
@@ -424,8 +456,11 @@ def error_page(ctx: PageContext, status: int, title: str, message: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def job_panel(job: Mapping[str, Any] | None, *, result_link: Any = None) -> Safe:
-    """État d'un travail (statut, progression, journal) ; actualisé par le script de la page."""
+def job_panel(job: Mapping[str, Any] | None, *, result_link: Any = None, done_anchor: str | None = None) -> Safe:
+    """État d'un travail (statut, progression, journal) ; actualisé par le script de la page.
+
+    ``done_anchor`` : ancre de la page à afficher quand le travail se termine (la page se recharge sur
+    le résultat au lieu de revenir en haut)."""
     if not job:
         return Safe("")
     state = str(job.get("statut") or "")
@@ -435,7 +470,8 @@ def job_panel(job: Mapping[str, Any] | None, *, result_link: Any = None) -> Safe
     noscript = Safe('<noscript><p class="muted">Sans JavaScript : recharger la page pour suivre la progression.'
                     "</p></noscript>")
     return Safe(
-        f'<section class="card" data-job-id="{esc(job.get("id"))}" data-job-state="{esc(state)}">'
+        f'<section class="card" data-job-id="{esc(job.get("id"))}" data-job-state="{esc(state)}"'
+        + (f' data-done-anchor="{esc(done_anchor)}"' if done_anchor else "") + ">"
         f'<h2>Travail : {esc(job.get("libelle"))}</h2>'
         + dl([("Statut", Safe(f'<span data-job-status>{esc(state)}</span>')),
               ("Progression", Safe(f'<span data-job-progress>{esc(job.get("progression") or "")}</span>')),
@@ -556,8 +592,11 @@ def notes_status_block(status: Mapping[str, Any] | None, *, detail: bool = False
     if status.get("scores_message"):
         parts.append(Safe(f'<p class="muted">{esc(status["scores_message"])}</p>'))
     if detail or status.get("filters"):
-        parts.append(Safe("<h3>Filtres de risque actifs issus des notes</h3>"))
-        parts.append(_filters_table(status))
+        nf = len(status.get("filters") or [])
+        # Bloc repliable : ouvert sur la page Notes (``detail``), fermé ailleurs, pour que le tableau des
+        # filtres (large) ne repousse pas le contenu de la page, surtout sur téléphone.
+        parts.append(join([Safe(f'<details class="filters"{" open" if detail else ""}><summary>Filtres de risque '
+                                f"actifs issus des notes ({nf})</summary>"), _filters_table(status), Safe("</details>")]))
     return join(parts)
 
 
@@ -678,6 +717,10 @@ def notes_z_text(r: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: Rapport plus ancien que les résultats S1 en vigueur (``reports/validation_S1/metrics.json``).
+STALE_REPORT = "périmé (antérieur aux résultats S1 en vigueur)"
+
+
 def page_dashboard(ctx: PageContext, *, last_session: Any, validation: Mapping[str, Any] | None,
                    choice: Mapping[str, Any] | None, reports: Sequence[Mapping[str, Any]],
                    job: Mapping[str, Any] | None, recent_notes: Sequence[Mapping[str, Any]],
@@ -694,14 +737,18 @@ def page_dashboard(ctx: PageContext, *, last_session: Any, validation: Mapping[s
     state = dl(facts)
     if reports:
         latest = reports[0]
-        others = [[link(f"/rapport/voir?nom={q(r['nom'])}", r["nom"]), r["modifie"], r["taille"]] for r in reports[:8]]
+        others = [[link(f"/rapport/voir?nom={q(r['nom'])}", r["nom"]), r["modifie"], r["taille"],
+                   Safe(f'<span class="badge down">{esc(STALE_REPORT)}</span>') if r.get("perime") else "à jour"]
+                  for r in reports[:8]]
+        stale_box = box("warn", f"Ce rapport est {STALE_REPORT} : le régénérer avant de le lire.") \
+            if latest.get("perime") else Safe("")
         rep = Safe(
-            f"<p>Dernier rapport : <strong>{esc(latest['nom'])}</strong> (modifié le {esc(latest['modifie'])}) — "
+            f"{stale_box}<p>Dernier rapport : <strong>{esc(latest['nom'])}</strong> (modifié le {esc(latest['modifie'])}) — "
             f"{link('/rapport/voir?nom=' + q(latest['nom']), 'ouvrir en plein écran')}</p>"
             f'<iframe class="report" title="Dernier rapport" sandbox="allow-scripts allow-popups '
             f'allow-popups-to-escape-sandbox" loading="lazy" src="/rapport/voir?nom={esc(q(latest["nom"]))}"></iframe>'
-            + "<details><summary>Rapports disponibles</summary>" + table(["Fichier", "Modifié le", "Taille"], others)
-            + "</details>")
+            + "<details><summary>Rapports disponibles</summary>"
+            + table(["Fichier", "Modifié le", "Taille", "État"], others) + "</details>")
     else:
         rep = box("info", "Aucun rapport généré pour l'instant : utiliser « Régénérer le rapport ».")
     busy = bool(job and job.get("statut") in ("en cours", "en attente"))
@@ -803,7 +850,7 @@ def _note_row(n: Mapping[str, Any]) -> list[Any]:
             ", ".join(n.get("all_targets") or []) or "—",
             stance_badge(n.get("stance")) if n.get("stance") else "—",
             fr_num(n.get("score"), 2, True), fr_num(n.get("materiality"), 2), fr_num(n.get("confidence"), 2),
-            n.get("source") or "", n.get("status") or ""]
+            source_fr(n.get("source")) if n.get("source") else "", status_fr(n.get("status")) if n.get("status") else ""]
 
 
 def page_notes(ctx: PageContext, *, notes: Sequence[Mapping[str, Any]], filters: Mapping[str, Any],
@@ -847,12 +894,12 @@ def page_note(ctx: PageContext, *, note: Mapping[str, Any], versions: Sequence[M
     an = n.get("analysis") or {}
     meta = [
         ("Identifiant", Safe(f"<code>{esc(n.get('note_id'))}</code>")),
-        ("Version", f"{n.get('version')} ({n.get('status')})"),
+        ("Version", f"{n.get('version')} ({status_fr(n.get('status'))})"),
         ("Publiée le", f"{fr_date(n.get('published_at'))}"
                        + (" (date seule : réputée connue en fin de journée)" if n.get("published_precision") == "date"
                           else f" à {pd.Timestamp(n['published_at']):%H:%M} UTC" if n.get("published_at") else "")),
         ("Négociable à partir du", fr_date(n.get("first_tradable_session"))),
-        ("Auteur", n.get("author")), ("Source", n.get("source")),
+        ("Auteur", n.get("author")), ("Source", source_fr(n.get("source"))),
         ("Adresse", ext_link(n.get("url")) if n.get("url") else "—"),
         ("Cibles saisies", ", ".join(n.get("targets") or []) or "—"),
     ]
@@ -900,7 +947,7 @@ def page_note(ctx: PageContext, *, note: Mapping[str, Any], versions: Sequence[M
             analysis.append(box("warn", "L'avis de l'analyste contredit le ton ou les chiffres du texte."))
     else:
         analysis.append(box("info", "Aucune analyse enregistrée pour cette version."))
-    vrows = [[v.get("version"), v.get("recorded_at") or "—", v.get("op") or "", v.get("status") or "",
+    vrows = [[v.get("version"), v.get("recorded_at") or "—", op_fr(v.get("op")), status_fr(v.get("status")),
               v.get("title") or "", fr_num(v.get("score"), 2, True)] for v in versions]
     archive = Safe("")
     if n.get("status") == "active":
@@ -1143,23 +1190,64 @@ def page_portfolio(ctx: PageContext, *, values: Mapping[str, Any] | None, job: M
     if fragment and job_id:
         links = Safe(f'<p>Exports : {link("/portefeuille/resultat?travail=" + q(job_id) + "&format=md", "Markdown")} · '
                      f'{link("/portefeuille/resultat?travail=" + q(job_id) + "&format=json", "JSON")}</p>')
+    # Retour visible en haut de page : calcul lancé, puis résultat prêt (avec un lien vers l'ancre).
+    flash: Any = None
+    state = str((job or {}).get("statut") or "")
+    if busy:
+        flash = ("info", Safe('Calcul de l\'ordre de bataille lancé : <a href="#travail">suivi ci-dessous</a> ; la page '
+                              "se met à jour seule et affiche le résultat à la fin."))
+    elif fragment:
+        flash = ("ok", Safe('Ordre de bataille prêt : <a href="#resultat">voir le résultat</a>.'))
+    elif state and state not in ("terminé", "en cours", "en attente") and not error:
+        flash = ("error", Safe('Le calcul n\'a pas abouti : <a href="#travail">voir le journal du travail</a>.'))
     body = join([
         Safe('<section class="card"><h2>Paramètres</h2>'), form, Safe("</section>"),
+        Safe('<div id="travail">'), job_panel(job, done_anchor="resultat"), Safe("</div>"),
+        Safe('<section class="card" id="resultat"><h2>Ordre de bataille</h2>') if fragment else Safe(""),
+        links, Safe(fragment) if fragment else Safe(""), Safe("</section>") if fragment else Safe(""),
         Safe('<section class="card"><h2>Notes prises en compte à la dernière séance (mode direct)</h2>'),
         notes_status_block(notes_status),
         Safe('<p class="muted">Un achat bloqué par une note est écrit en clair dans l\'ordre de bataille (règle, '
              "note, fin du blocage) ; pour le lever, archiver la note depuis sa fiche. "
              f'{link("/notes", "Notes en vigueur")}</p></section>'),
-        job_panel(job),
-        Safe('<section class="card"><h2>Ordre de bataille</h2>') if fragment else Safe(""),
-        links, Safe(fragment) if fragment else Safe(""), Safe("</section>") if fragment else Safe(""),
     ])
-    return layout(ctx, "Portefeuille — ordre de bataille", body, active="portefeuille")
+    return layout(ctx, "Portefeuille — ordre de bataille", body, active="portefeuille", flash=flash)
 
 
 # ---------------------------------------------------------------------------
 # Expliquer
 # ---------------------------------------------------------------------------
+
+
+#: Libellés français des plafonds de ``BrvmAlpha.explain`` (clé ``caps``).
+CAP_LABELS = {"line": "Plafond de ligne", "liquidity": "Plafond de liquidité", "upper": "Plafond retenu (le plus bas)",
+              "sector": "Plafond du secteur", "country": "Plafond du pays", "aes": "Bloc AES (Burkina Faso, Mali, Niger)",
+              "lower": "Plancher de ligne", "group": "Plafond de groupe"}
+
+
+def fr_message(msg: Any) -> str:
+    """Message du modèle au format français : « 98.00% investis » devient « 98,00 % investis »."""
+    return re.sub(r"(\d)\.(\d+)\s?%", r"\1,\2 %", str(msg))
+
+
+def caps_items(caps: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    """Plafonds d'une ligne : libellés français, pourcentages au format français (jamais un dictionnaire brut)."""
+    def pct(x: Any) -> str:
+        v = _val(x)
+        return fr_pct(v, 2, False) if isinstance(v, (int, float)) and not isinstance(v, bool) else str(x)
+
+    out: list[tuple[str, Any]] = []
+    for k, x in caps.items():
+        if k == "line_detail":
+            continue
+        lab = CAP_LABELS.get(str(k), str(k))
+        if isinstance(x, Mapping):
+            out.append((lab, " ; ".join(f"{str(kk)[:1].upper() + str(kk)[1:]} : {pct(v)}" for kk, v in x.items()) or "—"))
+        elif isinstance(x, (list, tuple)):
+            out.append((lab, ", ".join(pct(v) for v in x) or "—"))
+        else:
+            out.append((lab, pct(x)))
+    return out
 
 
 def page_explain(ctx: PageContext, *, values: Mapping[str, Any], explanation: Mapping[str, Any] | None,
@@ -1209,8 +1297,7 @@ def page_explain(ctx: PageContext, *, values: Mapping[str, Any], explanation: Ma
         caps = e.get("caps") or {}
         if caps:
             parts.append(Safe("<h3>Plafonds</h3>"))
-            parts.append(dl([(k, fr_pct(x, 2, False) if not isinstance(x, (dict, list)) else str(x))
-                             for k, x in caps.items() if k != "line_detail"]))
+            parts.append(dl(caps_items(caps)))
         nt = e.get("notes") or {}
         parts.append(Safe("<h3>Notes de l'analyste</h3>"))
         parts.append(dl([("Module", "disponible" if nt.get("available") else "indisponible"),
@@ -1224,7 +1311,7 @@ def page_explain(ctx: PageContext, *, values: Mapping[str, Any], explanation: Ma
                              for k, x in val.items()]))
             parts.append(Safe("</details>"))
         for msg in e.get("messages") or []:
-            parts.append(box("info", msg))
+            parts.append(box("info", fr_message(msg)))
         parts.append(Safe("</section>"))
     return layout(ctx, "Expliquer une ligne", join(parts), active="expliquer")
 

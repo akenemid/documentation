@@ -2491,15 +2491,25 @@ def _analyze(
             elif prev_v < 0 < cur_v:
                 fact = ("retour aux bénéfices", 2.0)
             elif cur_v < 0 and prev_v < 0:
-                # Perte réduite : amélioration, mais toujours une perte (+1, comme le terme « réduction de la
-                # perte » du lexique) ; perte égale ou aggravée : −2.
-                fact = ("perte nette réduite (toujours une perte)", 1.0) if cur_v > prev_v else \
+                # Perte réduite : amélioration, mais toujours une perte → fait NEUTRE (ni le −2 d'une perte qui
+                # dure, ni un terme positif pour une société encore déficitaire) ; perte égale ou aggravée : −2.
+                fact = ("perte nette réduite (toujours une perte)", 0.0) if cur_v > prev_v else \
                     ("résultat net toujours déficitaire", -2.0)
             elif cur_v > prev_v > 0:
                 fact = ("résultat net multiplié par plus de quatre", 2.0)
+        if fact and fact[1] == 0.0:
+            # Perte réduite : les mots négatifs sur le résultat (« perte nette », « déficitaire ») décrivent
+            # un niveau, pas une dégradation : sans portée. Le fait est listé, avec un poids nul.
+            for h in hits:
+                if h.indicator == "rn" and h.kind == "neg" and h.weight < 0:
+                    h.weight = 0.0
+                    h.modifiers.append("perte réduite d'après les montants lus : sans portée")
+            hits.append(TermHit(fact[0], "neutral", 0.0, 0.0, "rn", None, str(rn_fig.get("source") or fact[0])[:120],
+                                0, 0, 0, modifiers=["lu dans les chiffres : base non comparable"],
+                                source="chiffres du document"))
+            fact = None
         if fact:
-            # Le fait lu dans les montants prime sur les mots du même indicateur qui disent le contraire
-            # (« perte nette » −2 dans une phrase qui dit que la perte se réduit).
+            # Le fait lu dans les montants prime sur les mots du même indicateur qui disent le contraire.
             for h in hits:
                 if h.indicator == "rn" and h.kind in ("pos", "neg") and h.weight * fact[1] < 0:
                     h.weight = 0.0

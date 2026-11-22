@@ -381,3 +381,182 @@ def test_store_finds_a_recent_identical_manual_note(tmp_path):
     st.archive(first, now="2026-11-22T12:00:00Z")
     assert st.find_duplicate(again, now="2026-11-22T12:05:00Z") is None
     assert st.find_duplicate(auto_note("x", ["SNTS"], 0.1)) is None
+
+
+# ---------------------------------------------------------------------------
+# Constats de la collecte (research) : relance hors ligne, « Annule et remplace », dividende, émetteur
+# ---------------------------------------------------------------------------
+
+
+def test_journal_and_new_items_are_compared_on_the_same_document_date():
+    """Un document écarté pendant la collecte ne devient pas une note à la première relance hors ligne."""
+    from brvm_alpha.notes import research as r
+
+    url = "https://www.brvm.org/sites/default/files/20230428_-_etats_financiers_ifrs_exercice_2022_-_sodeci.pdf"
+    # Note au journal : publiée le 02/05/2023 (date du fichier, 28/04, plus une séance et un jour férié).
+    frame = pd.DataFrame([{"note_id": "a" * 40, "title": "SODECI : Etats financiers IFRS Exercice 2022",
+                           "targets": ["SDCC"], "event_type": "RES_ANNUAL", "url": url,
+                           "published_at": pd.Timestamp("2023-05-02", tz="UTC")}])
+    assert r._journal_doc_date(frame.iloc[0]) == pd.Timestamp("2023-04-28").date()
+    item = {"symbol": "SDCC", "title": "SODECI : Etats financiers exercice 2022", "event_hint": None,
+            "doc_date": pd.Timestamp("2023-03-31").date(), "list_type": "rapports_emetteur"}
+    # 28 jours entre les deux DOCUMENTS (fenêtre de 30 jours des publications de résultats) : doublon, comme
+    # pendant la collecte. Avant : 32 jours entre le document et la PUBLICATION de la note → note en plus.
+    assert r._is_event_duplicate(item, r._event_index(frame)) is True
+    # Sans adresse de fichier datée, la date de publication reste le repère.
+    no_url = frame.assign(url=None)
+    assert r._journal_doc_date(no_url.iloc[0]) == pd.Timestamp("2023-05-02").date()
+
+
+def test_corrected_document_is_not_dated_before_its_own_file():
+    """« Annule et remplace » : la note garde la date de SON fichier, pas celle de l'original."""
+    import datetime as dt
+
+    from brvm_alpha.notes import research as r
+
+    seen = dt.datetime(2026, 11, 22, 13, 0, tzinfo=dt.timezone.utc)
+    base = "https://www.brvm.org/sites/default/files/"
+    kept = {"title": "FILTISAC CI : Rapport d'activités - 3e trimestre 2026 (Annule et remplace le précédent)",
+            "symbol": "FTSC", "list_type": "rapports_emetteur", "source": "brvm_issuer", "extra": {},
+            "doc_url": base + "20261105_-_rapport_dactivites_-_3e_trimestre_2026_-_filtisac_ci.pdf",
+            "doc_date": dt.date(2026, 11, 5), "date_source": "fichier"}
+    original = {"title": "FILTISAC CI : Rapport d'activités - 3e trimestre 2026", "symbol": "FTSC",
+                "list_type": "rapports_emetteur", "source": "brvm_issuer", "extra": {},
+                "doc_url": base + "20261030_-_rapport_dactivites_-_3e_trimestre_2026_-_filtisac_ci.pdf",
+                "doc_date": dt.date(2026, 10, 30), "date_source": "fichier"}
+    assert r.content_signature(kept["title"], "FTSC") == r.content_signature(original["title"], "FTSC")
+    r._merge_publication(kept, original, seen)
+    assert "published_override" not in kept["extra"]  # avant : la date de l'original (antérieure au fichier)
+    assert kept["extra"]["earlier_twin"]["url"].endswith("20261030_-_rapport_dactivites_-_3e_trimestre_2026_-_filtisac_ci.pdf")
+    published, _prec, _est = r.item_published_at(kept, seen)
+    assert published.date() >= dt.date(2026, 11, 5)
+    # Même document vu par deux listes (même fichier) : la publication la plus tôt reste retenue.
+    twin = {**kept, "extra": {}, "list_type": "avis", "published_at": dt.datetime(2026, 11, 5, 16, 30, tzinfo=dt.timezone.utc)}
+    other = {**kept, "extra": {}}
+    r._merge_publication(other, twin, seen)
+    assert other["extra"]["published_override"]["from"] == "avis"
+
+
+def test_presumed_gross_dividend_is_reconciled_with_the_boc_net_amount():
+    from brvm_alpha.notes import research as r
+
+    divs = pd.DataFrame({"symbol": ["SDSC", "SGBC", "SPHC"], "ex_date": pd.to_datetime(["2026-10-26", "2026-08-21",
+                                                                                         "2026-08-27"]),
+                         "amount": [92.0, 2298.75, 430.32]})
+
+    def item(sym, listed, ex):
+        return {"symbol": sym, "extra": {"div_listed": listed, "div_gross": listed, "irvm_rate": 0.12,
+                                         "div_net": round(listed * 0.88, 4), "div_basis": "brut présumé", "ex_date": ex}}
+
+    sdsc, sgbc, sphc = item("SDSC", 92.0, "2026-10-26"), item("SGBC", 2606.0, "2026-08-21"), item("SPHC", 489.0, "2026-08-27")
+    future = item("ORAC", 700.0, "2027-05-10")  # détachement pas encore au panel : la présomption reste
+    assert r.reconcile_dividends_with_panel([sdsc, sgbc, sphc, future], divs) == 3
+    # AGL CI : 92 FCFA affichés = 92 FCFA nets au BOC (l'estimation donnait 80,96, soit 12 % de moins).
+    assert sdsc["extra"]["div_net"] == 92.0 and sdsc["extra"]["div_basis"] == "net (BOC)"
+    assert "div_gross" not in sdsc["extra"] and "irvm_rate" not in sdsc["extra"]
+    # Société Générale CI : net du BOC 2 298,75 (et non 2 293,28).
+    assert sgbc["extra"]["div_net"] == 2298.75 and sgbc["extra"]["div_basis"] == "brut (net lu au BOC)"
+    assert sphc["extra"]["div_net"] == 430.32  # estimation déjà juste : inchangée
+    assert future["extra"]["div_basis"] == "brut présumé" and future["extra"]["div_net"] == 616.0
+    assert r.reconcile_dividends_with_panel([item("SDSC", 92.0, "2026-10-26")], None) == 0
+
+
+def test_filename_issuer_conflict_is_flagged():
+    from brvm_alpha.notes import research as r
+
+    base = "https://www.brvm.org/sites/default/files/"
+    assert r.filename_issuer_symbol(base + "20231130_-_rapport_dactivites_-_3eme_trimestre_2023_-_ecobank_ci.pdf") == "ECOC"
+    assert r.filename_issuer_symbol(base + "20250509_-_erratum_-_avis_de_convocation_-_solibra_ci_1.pdf") == "SLBC"
+    assert r.filename_issuer_symbol(base + "20261023_-_communique_-_annulation_ago_-_eti_tg.pdf") == "ETIT"
+    assert r.filename_issuer_symbol(base + "20230331_-_etats_financiers_exercice_2022.pdf") is None
+    assert r.filename_issuer_symbol(base + "boc_20260916_2.pdf") is None and r.filename_issuer_symbol(None) is None
+    # Page de l'émetteur ETI dont un fichier nomme Ecobank CI : étiquette « émetteur à vérifier ».
+    page = ("<html><body><h1>ECOBANK TRANS. INCORP. TG</h1><div class='view-content'><table class='views-table'>"
+            "<thead><tr><th class='views-field views-field-nothing'>Titre</th><th class='views-field "
+            "views-field-field-fichier'>Fichier</th></tr></thead><tbody><tr>"
+            "<td class='views-field views-field-nothing'>Ecobank Transnational Incorporated : Rapport d'activités - "
+            "3ème trimestre 2023</td><td class='views-field views-field-field-fichier'><a href='/sites/default/files/"
+            "20231130_-_rapport_dactivites_-_3eme_trimestre_2023_-_ecobank_ci.pdf'>PDF</a></td></tr></tbody></table>"
+            "</div></body></html>")
+    out = r.parse_issuer_reports(page, "https://www.brvm.org/fr/rapports-societe-cotes/ecobank-tg", symbol="ETIT")
+    assert len(out["items"]) == 1
+    it = out["items"][0]
+    assert it["symbol"] == "ETIT" and it["extra"]["symbol_conflict"] == ["ETIT", "ECOC"]
+    note = r.item_to_note(it, now=pd.Timestamp("2026-11-22 13:00", tz="UTC").to_pydatetime(), analyze=False)
+    assert "emetteur_a_verifier" in note.tags and note.targets == ["ETIT"]
+
+
+def test_html_parsing_falls_back_to_the_standard_parser_without_lxml(monkeypatch):
+    import bs4
+
+    from brvm_alpha.notes import research as r
+
+    real = bs4.BeautifulSoup
+
+    def no_lxml(markup, features=None, *a, **k):
+        if features == "lxml":
+            raise bs4.FeatureNotFound("Couldn't find a tree builder with the features you requested: lxml.")
+        return real(markup, features, *a, **k)
+
+    monkeypatch.setattr(bs4, "BeautifulSoup", no_lxml)
+    soup = r.make_soup("<html><body><h1>SONATEL</h1><table><tr><td>x</td></tr></table></body></html>")
+    assert soup.find("h1").get_text() == "SONATEL"
+    from brvm_alpha.data import live
+
+    monkeypatch.setattr(live, "BeautifulSoup", no_lxml)
+    snap = live.parse_live_html("<html><body><p>aucun tableau</p></body></html>")
+    assert snap is not None
+
+
+def test_reread_writes_a_new_version_only_when_the_result_changes():
+    from brvm_alpha.notes import research as r
+
+    note = {"tags": ["auto", "doc_lu"], "text": "extrait", "event_type": "RES_S1"}
+    old = {"score": 0.25, "tone": 0.5, "s_num": 0.1, "materiality": 0.8, "confidence": 0.835, "risk_flags": [],
+           "event_type": "RES_S1", "targets": ["NSBC"], "primary_target": "NSBC", "reading": "lecture", "contradiction": False,
+           "extracted": {"rn_growth": -0.11}, "components": {"weights": {"w_num": 0.53}}, "version": "v0"}
+    same = {**old, "components": {"weights": {"w_num": 0.53}, "tone_contradicts_numbers": False}, "version": "v1"}
+    base = {"tags": ["auto", "doc_lu"], "text": "extrait"}
+    assert r._reading_changed(note, old, {**base, "analysis": same}) is False  # seuls des champs techniques changent
+    assert r._reading_changed(note, old, {**base, "analysis": {**same, "score": -0.03}}) is True
+    assert r._reading_changed(note, old, {**base, "analysis": {**same, "risk_flags": ["R10"]}}) is True
+    assert r._reading_changed(note, old, {**base, "analysis": {**same, "extracted": {"rn_growth": -0.11, "rai_label": "x"}}}) is True
+    assert r._reading_changed(note, old, {"tags": ["auto", "doc_sans_chiffre"], "text": "extrait", "analysis": same}) is True
+    assert r._reading_changed(note, old, {"tags": base["tags"], "text": "autre extrait", "analysis": same}) is True
+
+
+def test_narrowed_loss_read_in_figures_is_neutral_and_deeper_loss_stays_negative():
+    # SUCRIVOIRE S1 2026 (journal réel) : perte de 4,8 Md contre 6,7 Md → ni −2 (« toujours déficitaire ») ni positif.
+    a = an.analyze_text("Le résultat net ressort à -4 788 millions de FCFA au 30 juin 2026 contre -6 707 millions de "
+                        "FCFA au 30 juin 2025.", title="SUCRIVOIRE CI : Rapport d'activités - 1er semestre 2026",
+                        manual_targets=["SCRC"])
+    fact = next(t for t in a.matched_terms if t["label"] == "perte nette réduite (toujours une perte)")
+    assert fact["weight"] == 0.0 and a.tone == 0.0 and abs(a.score) < 0.05
+    assert a.extracted.get("r10_candidate") is None
+    b = an.analyze_text("Le résultat net ressort à -1 821 millions de FCFA au 30 juin 2026 contre -557 millions de "
+                        "FCFA au 30 juin 2025.", title="SETAO CI : Rapport d'activités - 1er semestre 2026",
+                        manual_targets=["STAC"])
+    assert any(t["label"] == "résultat net toujours déficitaire" and t["weight"] == -2.0 for t in b.matched_terms)
+    assert b.score < -0.5
+
+
+def test_notes_lire_has_a_reread_option(tmp_path, capsys, monkeypatch):
+    from brvm_alpha import cli
+
+    seen = {}
+
+    def fake_enrich(store, **kw):
+        seen.update(kw)
+        return {"n_candidates": 1, "n_read": 1, "n_enriched": 1, "n_scanned": 0, "n_failed": 0, "n_requests": 0,
+                "n_written": 0, "details": []}
+
+    monkeypatch.setattr(cli, "load_enrich_documents", lambda: fake_enrich)
+    root = tmp_path / "notes"
+    root.mkdir()
+    assert cli.main(["notes", "lire", "--hors-ligne", "--relire", "--racine", str(root)]) == 0
+    assert seen.get("reread") is True and seen.get("offline") is True
+    assert "Relecture des documents déjà lus" in capsys.readouterr().out
+    seen.clear()
+    assert cli.main(["notes", "lire", "--hors-ligne", "--racine", str(root)]) == 0
+    assert "reread" not in seen
+    capsys.readouterr()
