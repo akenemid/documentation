@@ -5,6 +5,7 @@ Tous les tests sont déterministes (générateurs numpy à graine fixe).
 
 from __future__ import annotations
 
+import itertools
 import warnings
 from dataclasses import replace
 from pathlib import Path
@@ -612,6 +613,275 @@ def test_build_portfolio_is_deterministic():
     perm = np.random.default_rng(0).permutation(len(alpha))
     w2 = build_portfolio(alpha.iloc[perm], cov, Constraints(), liq, prev, sectors, countries)
     np.testing.assert_allclose(w1.to_numpy(), w2.reindex(w1.index).to_numpy(), atol=1e-7)
+
+
+# ---------------------------------------------------------------------------
+# construct.py — sélection sous contrainte de capacité (non-régression)
+# ---------------------------------------------------------------------------
+#
+# Anomalie corrigée : la sélection gloutonne retenait tout titre augmentant la
+# capacité, même de très peu ; elle atteignait max_names avec des titres peu
+# liquides avant d'atteindre le budget, laissant le portefeuille en liquidités
+# (et feasible_full_budget=False) alors qu'une sélection d'au plus max_names
+# titres permettait d'investir B = 1 − cash_buffer.
+
+
+def _ref_max_investable(
+    upper: np.ndarray,
+    floor: float,
+    groups: list[tuple[np.ndarray, float]],
+    budget: float,
+    k: int,
+    n_min: int = 0,
+) -> float:
+    """Référence indépendante : ``max 1ᵀw`` avec au plus ``k`` lignes, chacune
+    dans ``{0} ∪ [floor, u_i]``, au moins ``n_min`` lignes (abandonné si
+    irréalisable), plafonds de groupe et ``1ᵀw ≤ budget`` (PLNE big-M)."""
+    n = len(upper)
+
+    def solve(nmin: int) -> float | None:
+        a = [np.hstack([np.eye(n), -np.diag(upper)]), np.hstack([-np.eye(n), floor * np.eye(n)])]
+        lo = [np.full(2 * n, -np.inf)]
+        hi = [np.zeros(2 * n)]
+        a.append(np.r_[np.zeros(n), np.ones(n)][None, :])
+        lo.append([nmin])
+        hi.append([k])
+        for member, cap in groups:
+            a.append(np.r_[member, np.zeros(n)][None, :])
+            lo.append([-np.inf])
+            hi.append([cap])
+        a.append(np.r_[np.ones(n), np.zeros(n)][None, :])
+        lo.append([-np.inf])
+        hi.append([budget])
+        res = optimize.milp(
+            np.r_[-np.ones(n), np.zeros(n)],
+            constraints=optimize.LinearConstraint(np.vstack(a), np.concatenate(lo), np.concatenate(hi)),
+            integrality=np.r_[np.zeros(n), np.ones(n)],
+            bounds=optimize.Bounds(np.zeros(2 * n), np.r_[upper, np.ones(n)]),
+            options={"mip_rel_gap": 1e-10},
+        )
+        return float(-res.fun) if res.status == 0 else None
+
+    nm = min(n_min, k, n)
+    val = solve(nm)
+    if val is None and nm > 0:
+        val = solve(0)
+    assert val is not None
+    return val
+
+
+def _label_groups(names: pd.Index, labels: pd.Series | None, cap: float) -> list[tuple[np.ndarray, float]]:
+    if labels is None:
+        return []
+    lab = labels.reindex(names).astype(str).to_numpy()
+    return [((lab == g).astype(float), cap) for g in sorted(set(lab))]
+
+
+def _illiquid_top_problem():
+    """15 titres à fort alpha mais peu liquides (plafond 3 %) et 5 liquides (15 %)."""
+    names = [f"I{i:02d}" for i in range(15)] + [f"L{i}" for i in range(5)]
+    alpha = pd.Series(np.r_[np.linspace(0.30, 0.20, 15), np.linspace(0.19, 0.15, 5)], index=names)
+    cov = pd.DataFrame(np.eye(20) * 0.04, index=names, columns=names)
+    liq = pd.Series(np.r_[np.full(15, 0.03), np.full(5, 0.15)], index=names)
+    return alpha, cov, liq
+
+
+@pytest.mark.parametrize("method", ["mv_alpha", "hrp_tilt", "equal"])
+def test_selection_reaches_full_budget_with_liquid_names(method):
+    """Ancien comportement : 15 illiquides retenus, 45 % investis,
+    feasible_full_budget=False. Or 10 illiquides + 5 liquides (15 lignes)
+    permettent d'investir 98 %."""
+    alpha, cov, liq = _illiquid_top_problem()
+    cons = Constraints()
+    w = build_portfolio(alpha, cov, cons, liq, None, method=method)
+    _assert_feasible(w, cons, liq)
+    assert w.sum() == pytest.approx(0.98, abs=1e-8)
+    assert w.attrs["feasible_full_budget"]
+    assert w.attrs["max_investable"] == pytest.approx(0.98, abs=1e-7)
+    assert w.attrs["selection"] == "milp"
+    # sélection lexicographique par score : on garde les 10 meilleurs illiquides
+    # (au-delà, les 5 places restantes ne suffisent plus) et les 5 liquides
+    expected = set(alpha.index[:10]) | set(alpha.index[15:])
+    assert set(w[w > 0].index) == expected
+    assert w.attrs["n_names"] == 15
+    np.testing.assert_allclose(w.iloc[:10].to_numpy(), 0.03, atol=1e-8)
+
+
+def test_mv_alpha_selection_beats_hand_built_feasible_portfolio():
+    """L'objectif moyenne-variance obtenu domine un portefeuille réalisable
+    construit à la main (5 liquides à 15 % + 8 meilleurs illiquides)."""
+    alpha, cov, liq = _illiquid_top_problem()
+    lam = 5.0
+    w = build_portfolio(alpha, cov, Constraints(), liq, None, risk_aversion=lam, tcost=0.0)
+    alt = pd.Series(0.0, index=alpha.index)
+    alt.iloc[15:] = 0.15
+    alt.iloc[:8] = 0.23 / 8  # Σ = 0,98, ≤ 3 %
+    assert constraint_violations(alt, Constraints(), liq)["liquidity"] == 0.0
+    s = cov.to_numpy()
+
+    def obj(x: pd.Series) -> float:
+        v = x.reindex(alpha.index).to_numpy()
+        return float(alpha.to_numpy() @ v - 0.5 * lam * v @ s @ v)
+
+    assert obj(w) >= obj(alt) - 1e-10
+    assert float(alpha @ w) > 0.19
+
+
+def _brute_force_capacity(u: np.ndarray, sectors: np.ndarray, cons: Constraints) -> float:
+    """Capacité exacte par énumération des ensembles de lignes (un seul niveau de
+    groupes) : pour S fixé, l'ensemble réalisable est un polytope et
+    ``max Σ_{S∩g} w = min(cap, Σ_{S∩g} u)`` dès que ``|S∩g|·m ≤ cap``."""
+    m, b, k = cons.min_weight, 1.0 - cons.cash_buffer, cons.max_names
+    best: dict[bool, float] = {}
+    for r in range(1, k + 1):
+        for subset in itertools.combinations(range(len(u)), r):
+            s = list(subset)
+            if r * m > b + 1e-12:
+                continue
+            tot, ok = 0.0, True
+            for lab in set(sectors[s]):
+                mem = [i for i in s if sectors[i] == lab]
+                if len(mem) * m > cons.max_sector_weight + 1e-12:
+                    ok = False
+                    break
+                tot += min(cons.max_sector_weight, float(u[mem].sum()))
+            if ok:
+                key = r >= cons.min_names
+                best[key] = max(best.get(key, 0.0), min(b, tot))
+    return best[True] if True in best else best[False]
+
+
+def _anti_liquid_problem(seed: int, scale: float):
+    """Les meilleurs alphas sont les titres les moins liquides (cas BRVM typique)."""
+    rng = np.random.default_rng(seed)
+    n = 12
+    names = [f"N{i:02d}" for i in range(n)]
+    liq = pd.Series(np.sort(rng.uniform(0.02, scale, n)), index=names)
+    alpha = pd.Series(np.sort(rng.normal(0.1, 0.05, n))[::-1], index=names)
+    sectors = pd.Series(rng.choice(["FIN", "IND", "TEL", "CB"], n), index=names)
+    return alpha, liq, sectors
+
+
+@pytest.mark.parametrize(("scale", "seed"), [(0.25, s) for s in range(6)] + [(0.45, s) for s in range(3)])
+def test_selection_capacity_matches_brute_force(scale, seed):
+    """Investissement = capacité exacte (énumération) ; feasible_full_budget et
+    max_investable reflètent cette capacité, pas la sélection retenue."""
+    alpha, liq, sectors = _anti_liquid_problem(seed, scale)
+    cons = replace(Constraints(), max_weight=0.3, max_names=5, min_names=2, max_sector_weight=0.4)
+    u = np.minimum(liq.to_numpy(), cons.max_weight)
+    ref = _brute_force_capacity(u, sectors.to_numpy(), cons)
+    b = 1.0 - cons.cash_buffer
+    for method in ("equal", "hrp_tilt", "mv_alpha"):
+        cov = pd.DataFrame(np.eye(12) * 0.04, index=alpha.index, columns=alpha.index)
+        w = build_portfolio(alpha, cov, cons, liq, None, sectors=sectors, method=method)
+        _assert_feasible(w, cons, liq, sectors)
+        assert w.attrs["selection"] == "milp"
+        assert w.sum() == pytest.approx(ref, abs=1e-7)
+        assert w.attrs["max_investable"] == pytest.approx(ref, abs=1e-7)
+        assert w.attrs["feasible_full_budget"] == (ref >= b - 1e-9)
+        assert cons.min_names <= w.attrs["n_names"] <= cons.max_names
+
+
+@pytest.mark.parametrize("seed", [0, 2])
+def test_select_is_lexicographically_best_among_max_capacity_sets(seed):
+    """_select renvoie, parmi les ensembles de max_names titres dont la capacité
+    atteint C*, le meilleur pour l'ordre lexicographique des scores."""
+    from brvm_alpha.portfolio.construct import _group_matrix, _select
+
+    alpha, liq, sectors = _anti_liquid_problem(seed, 0.25)
+    cons = replace(Constraints(), max_weight=0.3, max_names=5, min_names=2, max_sector_weight=0.4)
+    names = alpha.index
+    u = np.minimum(liq.to_numpy(), cons.max_weight)
+    b = 1.0 - cons.cash_buffer
+    g, c, _ = _group_matrix(names, sectors, cons.max_sector_weight, b)
+    order = np.lexsort((np.asarray(names.astype(str)), -alpha.to_numpy()))
+    res = _select(order, cons.max_names, u, g, c, b, floor=cons.min_weight, n_min=cons.min_names)
+    c_star = _brute_force_capacity(u, sectors.to_numpy(), cons)
+    assert res.capacity == pytest.approx(c_star, abs=1e-7)
+    assert set(res.support) <= set(res.idx) and len(res.idx) == cons.max_names
+    rank = {int(v): r for r, v in enumerate(order)}
+    best = None
+    for subset in itertools.combinations(range(len(names)), cons.max_names):
+        cap = _brute_force_capacity(u[list(subset)], sectors.to_numpy()[list(subset)], cons)
+        if cap >= c_star - 1e-9:
+            key = tuple(sorted(rank[i] for i in subset))
+            best = key if best is None or key < best else best
+    assert tuple(sorted(rank[int(i)] for i in res.idx)) == best
+
+
+@pytest.mark.parametrize(("capital", "seed"), [(5e8, 23), (5e8, 50), (5e8, 58), (2e9, 16), (2e9, 48)])
+def test_selection_realistic_brvm_liquidity(capital, seed):
+    """Univers BRVM réaliste (45 titres, ADV log-normale, secteurs et pays) :
+    cas où l'ancien glouton laissait de 2 à 12 % en liquidités en trop."""
+    rng = np.random.default_rng(seed)
+    n = 45
+    names = pd.Index([f"S{i:02d}" for i in range(n)])
+    adv = pd.Series(np.exp(rng.normal(np.log(5e6), 1.5, n)), index=names)
+    liq = liquidity_caps(adv, capital)
+    alpha = pd.Series(rng.normal(0.05, 0.1, n), index=names)
+    sectors = pd.Series(
+        rng.choice(["FIN", "TEL", "CB", "IND", "SPU", "DIS", "AGR"], n, p=[0.35, 0.05, 0.15, 0.1, 0.1, 0.15, 0.1]),
+        index=names,
+    )
+    countries = pd.Series(
+        rng.choice(["CI", "SN", "BF", "TG", "BJ", "ML"], n, p=[0.6, 0.1, 0.1, 0.1, 0.05, 0.05]),
+        index=names,
+    )
+    cov = pd.DataFrame(np.eye(n) * 0.06 + 0.02, index=names, columns=names)
+    cons = Constraints()
+    b = 1.0 - cons.cash_buffer
+    u = np.minimum(liq.to_numpy(), cons.max_weight)
+    u = np.where(u >= cons.min_weight, u, 0.0)
+    groups = _label_groups(names, sectors, cons.max_sector_weight)
+    groups += _label_groups(names, countries, cons.max_country_weight)
+    ref = _ref_max_investable(u, cons.min_weight, groups, b, cons.max_names, cons.min_names)
+    for method in ("mv_alpha", "equal"):
+        w = build_portfolio(alpha, cov, cons, liq, None, sectors, countries, method=method)
+        _assert_feasible(w, cons, liq, sectors, countries)
+        assert w.sum() == pytest.approx(ref, abs=1e-7)
+        assert w.attrs["max_investable"] == pytest.approx(ref, abs=1e-7)
+        assert w.attrs["feasible_full_budget"] == (ref >= b - 1e-9)
+
+
+def test_pruning_keeps_capacity_with_overlapping_groups():
+    """Plafonds secteur × pays croisés : l'élagage heuristique (planchers sur
+    min_names lignes) perdait de la capacité (0,54 investis) ; on repart du
+    témoin PLNE, qui respecte aussi min_names : 6 lignes, 0,58 investis."""
+    names = [f"S{i:02d}" for i in range(8)]
+    alpha = pd.Series([0.2958, 0.2569, 0.2029, 0.1853, 0.0873, -0.0861, -0.0313, 0.0971], index=names)
+    liq = pd.Series([0.4564, 0.0920, 0.1833, 0.7450, 0.3669, 0.2967, 0.5340, 0.1198], index=names)
+    sectors = pd.Series(["G1", "G1", "G0", "G0", "G1", "G0", "G1", "G1"], index=names)
+    countries = pd.Series(["C1", "C0", "C1", "C1", "C1", "C1", "C0", "C1"], index=names)
+    cov = pd.DataFrame(np.eye(8) * 0.04, index=names, columns=names)
+    cons = replace(
+        Constraints(),
+        max_weight=0.3,
+        min_weight=0.02,
+        max_names=18,
+        min_names=6,
+        max_sector_weight=0.3,
+        max_country_weight=0.3,
+        cash_buffer=0.0,
+    )
+    u = np.minimum(liq.to_numpy(), cons.max_weight)
+    groups = _label_groups(alpha.index, sectors, 0.3) + _label_groups(alpha.index, countries, 0.3)
+    ref = _ref_max_investable(u, cons.min_weight, groups, 1.0, cons.max_names, cons.min_names)
+    assert ref == pytest.approx(0.58, abs=1e-7)
+    for method in ("equal", "hrp_tilt", "mv_alpha"):
+        w = build_portfolio(alpha, cov, cons, liq, None, sectors, countries, method=method, tcost=0.0)
+        _assert_feasible(w, cons, liq, sectors, countries)
+        assert w.sum() == pytest.approx(ref, abs=1e-7)
+        assert w.attrs["n_names"] >= cons.min_names
+        assert not w.attrs["feasible_full_budget"]
+        assert w.attrs["max_investable"] == pytest.approx(ref, abs=1e-7)
+
+
+def test_selection_fast_path_unchanged_when_top_names_suffice():
+    """Si les max_names meilleurs scores suffisent, aucun PLNE : sélection « top »."""
+    alpha, cov, liq, prev, sectors, countries = _problem(3)
+    w = build_portfolio(alpha, cov, Constraints(), liq, prev, sectors, countries)
+    assert w.attrs["selection"] == "top"
+    assert w.attrs["max_investable"] == pytest.approx(0.98)
 
 
 # ---------------------------------------------------------------------------

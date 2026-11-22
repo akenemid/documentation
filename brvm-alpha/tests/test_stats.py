@@ -139,9 +139,14 @@ def test_perf_summary_nan_handling_and_degenerate_inputs() -> None:
     with_nan.iloc[[3, 50, 51, 200]] = np.nan
     a = st.perf_summary(with_nan)
     b = st.perf_summary(with_nan.dropna())
-    assert a["n_obs"] == 296
-    for key in ("cagr", "vol", "sharpe", "sortino", "max_drawdown", "var_95", "psr"):
+    assert a["n_obs"] == 296 and a["n_periods"] == 300
+    # Statistiques distributionnelles : NaN ignorés.
+    for key in ("vol", "sharpe", "sortino", "max_drawdown", "var_95", "psr"):
         assert a[key] == pytest.approx(b[key])
+    # Mesures de capital : calendrier (NaN intérieur = séance à rendement nul).
+    filled = st.perf_summary(with_nan.fillna(0.0))
+    for key in ("total_return", "cagr", "max_drawdown", "calmar"):
+        assert a[key] == pytest.approx(filled[key])
 
     empty = st.perf_summary(pd.Series([], dtype=float))
     assert empty["n_obs"] == 0 and math.isnan(empty["sharpe"]) and empty["start"] is None
@@ -159,6 +164,54 @@ def test_perf_summary_nan_handling_and_degenerate_inputs() -> None:
     with pytest.raises(ValueError):
         st.perf_summary(pd.Series([0.01, np.inf]))
     assert "var_99" in st.perf_summary(r, var_level=0.99)
+
+
+def test_perf_summary_wealth_measures_use_session_calendar() -> None:
+    """Non-régression : les NaN intérieurs (titre non échangé ou suspendu,
+    date absente du panel) sont des séances écoulées. Le CAGR est annualisé
+    sur les séances entre la première et la dernière observation valide, et
+    non sur le seul nombre d'observations (ce qui le gonflait ≈ 2,3 fois
+    pour un titre échangé une séance sur deux)."""
+    idx = _dates(510)
+    values = np.full(510, np.nan)
+    values[3:508:2] = 0.002  # 253 observations, séances 3 à 507 (505 séances)
+    r = pd.Series(values, index=idx)
+    s = st.perf_summary(r)
+    wealth = 1.002**253
+    assert s["n_obs"] == 253 and s["n_periods"] == 505
+    assert s["start"] == idx[3] and s["end"] == idx[507]
+    assert s["total_return"] == pytest.approx(wealth - 1.0)
+    assert s["cagr"] == pytest.approx(wealth ** (252 / 505) - 1.0)
+    assert s["cagr"] < 0.30  # ≈ 0,287 (l'ancien calcul donnait ≈ 0,656)
+    # Même résultat que la série calendaire explicite (NaN -> 0) restreinte
+    # à la période observée ; ``ann_return`` reste par observation.
+    explicit = st.perf_summary(r.iloc[3:508].fillna(0.0))
+    assert s["cagr"] == pytest.approx(explicit["cagr"])
+    assert s["ann_return"] == pytest.approx(0.002 * 252)
+
+    # Durées de drawdown en séances, cohérentes avec drawdown_episodes.
+    idx9 = _dates(9)
+    gappy = pd.Series([0.01, -0.10, np.nan, np.nan, np.nan, 0.05, np.nan, 0.07, 0.01], index=idx9)
+    g = st.perf_summary(gappy)
+    episodes = st.drawdown_episodes(gappy)
+    assert g["max_drawdown_duration"] == 6 == int(episodes.iloc[0]["length"])
+    assert g["max_drawdown_peak"] == idx9[0] and g["max_drawdown_recovery"] == idx9[7]
+    assert g["max_drawdown"] == pytest.approx(-0.10)
+    w9 = 1.01 * 0.90 * 1.05 * 1.07 * 1.01
+    assert g["cagr"] == pytest.approx(w9 ** (252 / 9) - 1.0)
+    assert g["calmar"] == pytest.approx(g["cagr"] / 0.10)
+
+    # excess_cagr : stratégie et indice comparés sur la même durée écoulée ;
+    # les mouvements de l'indice les jours où la stratégie n'a pas
+    # d'observation ne sont plus perdus.
+    rng = np.random.default_rng(31)
+    bench = pd.Series(rng.normal(0.0004, 0.01, 510), index=idx)
+    sb = st.perf_summary(r, benchmark=bench)
+    b_span = bench.iloc[3:508].to_numpy()
+    expected_b = np.prod(1.0 + b_span) ** (252 / 505) - 1.0
+    assert sb["benchmark_cagr"] == pytest.approx(expected_b)
+    assert sb["excess_cagr"] == pytest.approx(s["cagr"] - expected_b)
+    assert sb["n_obs_common"] == 253
 
 
 def test_perf_summary_benchmark_alignment_on_index() -> None:
@@ -453,6 +506,76 @@ def test_pbo_true_signal_is_low() -> None:
     assert res["selected"].index[0] == "cfg0"
     assert res["selected"].iloc[0] > 0.95
     assert res["prob_oos_loss"] < 0.05
+
+
+def test_pbo_cash_configuration_is_not_ranked_worst() -> None:
+    """Non-régression : une configuration restée en cash (rendements nuls,
+    Sharpe indéfini par 0/0) était classée sous toutes les autres
+    (score -inf), ce qui faisait remonter n* et effondrait la PBO vers 0.
+    Le cash a un Sharpe nul : il bat une configuration perdante."""
+    # A gagne sur le bloc 0 et perd sur le bloc 1 (moyennes ±0,002).
+    a = np.concatenate([np.tile([0.012, -0.008], 50), np.tile([0.008, -0.012], 50)])
+    m = pd.DataFrame({"A": a, "cash": np.zeros(200)})
+    res = st.pbo_cscv(m, n_splits=2)
+    # IS = bloc 0 : n* = A, qui perd OOS sous le cash -> ω = 1/3.
+    # IS = bloc 1 : n* = cash (0 > Sharpe de A), battu OOS par A -> ω = 1/3.
+    np.testing.assert_allclose(res["oos_rank"], [1 / 3, 1 / 3])
+    np.testing.assert_allclose(res["logits"], [-math.log(2.0)] * 2)
+    assert res["pbo"] == 1.0  # l'ancien calcul donnait 0
+    assert res["is_perf"][1] == 0.0 and res["oos_perf"][1] == 0.0
+    assert res["prob_oos_loss"] == pytest.approx(0.5)
+    assert res["n_valid_combinations"] == 2
+
+    # Cash sur une seule moitié d'une colonne qui investit ensuite : Sharpe
+    # exactement nul sur cette moitié malgré le centrage des sommes.
+    late = np.concatenate([np.zeros(100), np.tile([0.011, -0.009], 50)])
+    loser = np.tile([0.007, -0.013], 100)  # moyenne -0,003 sur chaque bloc
+    res2 = st.pbo_cscv(pd.DataFrame({"late": late, "loser": loser}), n_splits=2)
+    assert res2["is_perf"][0] == 0.0 and res2["oos_perf"][1] == 0.0
+    assert res2["selected"]["late"] == 1.0 and res2["pbo"] == 0.0
+
+
+def test_pbo_undefined_configurations_are_excluded_not_worst() -> None:
+    """Non-régression : configurations à performance indéfinie (colonne tout
+    NaN, rendement constant non nul) exclues de la comparaison, et grille
+    « bruit + configurations en cash » donnant PBO ≈ 0,5 comme la métrique
+    'mean' (et non ≈ 0)."""
+    rng = np.random.default_rng(32)
+    base = pd.DataFrame(rng.normal(0, 0.01, (320, 4)))
+    ref = st.pbo_cscv(base, n_splits=8)
+    with_nan = base.copy()
+    with_nan[4] = np.nan  # configuration jamais échangée
+    got = st.pbo_cscv(with_nan, n_splits=8)
+    np.testing.assert_array_equal(got["logits"], ref["logits"])
+    assert got["pbo"] == ref["pbo"]
+
+    # Cash rémunéré (rendement constant non nul + bruit d'arrondi) : Sharpe
+    # brut indéfini -> exclu ; en rendements excédentaires, c'est du cash.
+    rf_p = 1.03 ** (1 / 252) - 1.0
+    cash = rf_p + rng.normal(0.0, 1e-17, 320)
+    paid = base.copy()
+    paid["cash"] = cash
+    excluded = st.pbo_cscv(paid, n_splits=8)
+    np.testing.assert_array_equal(excluded["logits"], ref["logits"])
+    excess = st.pbo_cscv(paid - rf_p, n_splits=8)
+    assert excess["n_valid_combinations"] == excess["n_combinations"]
+    with_cash = base - rf_p
+    with_cash["cash"] = 0.0
+    np.testing.assert_allclose(excess["logits"], st.pbo_cscv(with_cash, n_splits=8)["logits"])
+
+    # Une seule configuration définie : aucune comparaison possible.
+    lonely = pd.DataFrame({"x": rng.normal(0, 0.01, 320), "y": np.nan})
+    solo = st.pbo_cscv(lonely, n_splits=8)
+    assert solo["n_valid_combinations"] == 0 and math.isnan(solo["pbo"])
+
+    sharpe_vals, mean_vals = [], []
+    for seed in range(40):
+        g = pd.DataFrame(np.zeros((800, 10)))
+        g[0] = np.random.default_rng(seed).normal(0, 0.01, 800)  # bruit pur
+        sharpe_vals.append(st.pbo_cscv(g, n_splits=8)["pbo"])
+        mean_vals.append(st.pbo_cscv(g, n_splits=8, metric="mean")["pbo"])
+    assert 0.35 <= float(np.mean(sharpe_vals)) <= 0.65  # l'ancien calcul : 0,000
+    assert abs(float(np.mean(sharpe_vals)) - float(np.mean(mean_vals))) < 0.05
 
 
 def test_pbo_nan_and_validation() -> None:

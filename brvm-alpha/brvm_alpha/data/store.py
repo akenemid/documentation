@@ -579,14 +579,27 @@ CORPORATE_ACTION_COLUMNS = [
 #: (ex. 3 actions pour 2 = 1,5 ; 8 pour 5 = 1,6, divisions des filiales BOA en 2024).
 PUBLISHED_RATIOS: tuple[float, ...] = (1.2, 1.25, 1.5, 1.6, 2.0, 2.5, 3.0, 4.0, 5.0, 10.0, 20.0, 25.0, 50.0, 100.0)
 #: Kinds utilisés pour ajuster les cours.
-ADJUSTING_KINDS = ("split", "reverse_split", "capital_adjustment")
+ADJUSTING_KINDS = ("split", "reverse_split", "capital_adjustment", "price_reset")
 
 
-def _nearest_ratio(x: float, ratios: Iterable[float] = SIMPLE_RATIOS) -> tuple[float, float]:
-    """Ratio le plus proche (division k:1 ou regroupement 1:k) et écart absolu en log."""
+def _nearest_ratio(x: float, ratios: Iterable[float] = SIMPLE_RATIOS, integers: bool = False) -> tuple[float, float]:
+    """Ratio le plus proche (division k:1 ou regroupement 1:k) et écart absolu en log.
+
+    ``integers=True`` accepte aussi tout entier k >= 2 (et 1/k) : la BRVM publie des
+    divisions « exotiques » (1:40 SICABLE 2017, 1:64 TRACTAFRIC 2019).
+    """
     cands = [*ratios, *(1.0 / k for k in ratios)]
+    if integers and x > 0:
+        cands += [float(round(x))] if x >= 1.5 else [1.0 / round(1.0 / x)]
+    cands = [c for c in cands if c > 0]
     best = min(cands, key=lambda k: abs(math.log(x / k)))
     return best, abs(math.log(x / best))
+
+
+#: Marqueurs du BOC signalant une opération sur titres la veille ou le jour même.
+_OPERATION_FLAGS = ("VAL-T", "(#)", "EX-D", "EX-C")
+#: Au-delà de ce nombre de séances manquantes, une rupture n'est plus interprétable.
+MAX_MISSING_SESSIONS = 5
 
 
 def detect_corporate_actions(equities: pd.DataFrame, dividends: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -594,27 +607,32 @@ def detect_corporate_actions(equities: pd.DataFrame, dividends: pd.DataFrame | N
 
     Pour deux séances consécutives d'un titre (``t-1``, ``t``), on calcule :
 
-    * ``pub  = close[t-1] / prev_close[t]`` : la BRVM a-t-elle ajusté le cours précédent publié ?
     * ``jump = close[t-1] / close[t]`` : rupture du cours ;
+    * ``pub  = close[t-1] / prev_close[t]`` : la BRVM a-t-elle ajusté le cours précédent publié ?
     * ``ref  = close[t-1] / ref_price[t-1]`` : référence de la veille déjà ajustée (« Val-T »).
 
-    Un événement est candidat si ``pub`` ou ``jump`` sort de la bande ±7,5 % (+ marge
-    de 2,5 points), bande élargie quand des séances manquent entre ``t-1`` et ``t``
-    (``(1+bande)^(n_manquantes+1)``). Une rupture expliquée par un dividende détaché
-    autour de ``t`` (``(close[t] + D) / close[t-1]`` dans la bande, ou ajustement
-    publié ≈ ``close[t-1] - D``) est ignorée. Une référence aberrante isolée (sans
-    rupture du cours ni ajustement publié) n'est pas un événement.
+    Un événement est candidat si ``jump`` sort de la bande ±7,5 % (+ marge de 2,5
+    points), bande élargie quand des séances manquent entre ``t-1`` et ``t``
+    (``(1+bande)^(n_manquantes+1)``). Un cours précédent publié aberrant sans rupture du
+    cours n'est pas un événement. Une rupture expliquée par un dividende détaché autour
+    de ``t`` (``(close[t] + D) / close[t-1]`` dans la bande, ou ajustement publié ≈
+    ``close[t-1] - D``) est ignorée.
 
-    Classement (``kind``) :
+    Le rapport retenu est l'ajustement publié (``pub`` ou ``ref``, le plus proche d'un
+    ratio simple), à défaut la rupture ``jump``. Classement (``kind``) :
 
-    * ``split`` / ``reverse_split`` : rapport arrondi au ratio simple le plus proche
-      (2, 3, 4, 5, 10, 20, 25, 50, 100, 1,5 et leurs inverses ; + 1,2, 1,25, 1,6, 2,5
-      quand l'ajustement est publié par la BRVM) ;
-    * ``capital_adjustment`` : ajustement publié par la BRVM mais non réductible à un
-      ratio simple (ex. augmentation de capital avec droits, « Ex-d ») ; ``ratio`` =
-      rapport exact publié ;
+    * ``split`` / ``reverse_split`` : ratio simple (2, 3, 4, 5, 10, 20, 25, 50, 100 ;
+      + 1,2, 1,25, 1,5, 1,6, 2,5 et tout entier quand l'ajustement est publié). Une
+      simple rupture de cours n'est retenue que pour une division (k >= 2) ;
+    * ``capital_adjustment`` : ajustement publié non réductible à un ratio simple mais
+      accompagné d'un marqueur d'opération (``Ex-d``, ``Val-T``, ``(#)``) : augmentation
+      de capital avec droits, etc. ; ``ratio`` = rapport exact publié ;
+    * ``price_reset`` : aller-retour de la référence publiée (deux ajustements inverses
+      en moins de 10 séances) ; les deux sont appliqués, ce qui laisse les rendements
+      continus ;
     * ``data_error`` : pic isolé qui revient le lendemain ;
-    * ``unexplained_jump`` : rupture non expliquée (non utilisée pour l'ajustement).
+    * ``unexplained_jump`` : rupture non expliquée (dont trou de plus de
+      ``MAX_MISSING_SESSIONS`` séances dans les données) ; non utilisée pour l'ajustement.
     """
     if equities is None or not len(equities):
         return pd.DataFrame(columns=CORPORATE_ACTION_COLUMNS)
@@ -631,21 +649,21 @@ def detect_corporate_actions(equities: pd.DataFrame, dividends: pd.DataFrame | N
         close = g["close"].to_numpy(float)
         prev = g["prev_close"].to_numpy(float)
         ref = g["ref_price"].to_numpy(float)
-        flags = g["flags"].fillna("").astype(str).to_numpy()
+        flags = g["flags"].fillna("").astype(str).str.upper().to_numpy() if "flags" in g else np.array([""] * len(g))
         sym_divs = div_by_sym.get(sym, [])
+        sym_events: list[dict[str, Any]] = []
         for t in range(1, len(g)):
             c0, c1, p1, r0 = close[t - 1], close[t], prev[t], ref[t - 1]
             if not (c0 > 0 and c1 > 0):
                 continue
             n_missing = max(0, int(np.busday_count(dates[t - 1] + np.timedelta64(1, "D"), dates[t])))
-            band = log_band * (min(n_missing, 5) + 1)
+            widen = min(n_missing, MAX_MISSING_SESSIONS)
+            band = log_band * (widen + 1)
+            jump = c0 / c1
+            if abs(math.log(jump)) <= band:
+                continue
             pub = c0 / p1 if p1 > 0 else np.nan
             refadj = c0 / r0 if r0 > 0 else np.nan
-            jump = c0 / c1
-            pub_out = np.isfinite(pub) and abs(math.log(pub)) > log_band * (1 if n_missing == 0 else min(n_missing, 5) + 1)
-            jump_out = abs(math.log(jump)) > band
-            if not (pub_out or jump_out):
-                continue
             # Détachement de dividende autour de t ?
             day = pd.Timestamp(dates[t])
             near = [a for ex, fs, a in sym_divs
@@ -658,39 +676,62 @@ def detect_corporate_actions(equities: pd.DataFrame, dividends: pd.DataFrame | N
                     explained = True
             if explained:
                 continue
-            if pub_out:
-                est, evidence, tol, ratios = pub, "prev_close_adjusted", math.log(1.03), PUBLISHED_RATIOS
-            elif np.isfinite(refadj) and abs(math.log(refadj)) > log_band and abs(math.log(refadj / jump)) < log_band:
-                est, evidence, tol, ratios = refadj, "ref_adjusted", math.log(1.03), PUBLISHED_RATIOS
+            flagged = any(f in flags[t - 1] or f in flags[t] for f in _OPERATION_FLAGS)
+            # Ajustements publiés (hors bande) : le plus proche d'un ratio simple l'emporte.
+            # Séances manquantes : l'écart toléré s'élargit, mais seulement si un marqueur
+            # d'opération confirme l'événement (sinon une simple remise à niveau de la
+            # référence d'un titre suspendu passerait pour une division).
+            tol_pub = math.log(1.03) + (log_band * widen if flagged else 0.0)
+            published = []
+            for est, name in ((pub, "prev_close_adjusted"), (refadj, "ref_adjusted")):
+                if np.isfinite(est) and abs(math.log(est)) > log_band:
+                    k, err = _nearest_ratio(est, PUBLISHED_RATIOS, integers=True)
+                    published.append((err, est, name, k))
+            if published:
+                err, est, evidence, k = min(published)
+                tol = tol_pub
             else:
-                est, evidence, tol, ratios = jump, "price_jump", math.log(1 + PRICE_BAND + 0.05), SIMPLE_RATIOS
-            if "VAL-T" in flags[t - 1].upper() or "VAL-T" in flags[t].upper():
+                est, evidence = jump, "price_jump"
+                k, err = _nearest_ratio(est, SIMPLE_RATIOS)
+                tol = math.log(1 + PRICE_BAND + 0.05)
+            if "VAL-T" in flags[t - 1] or "VAL-T" in flags[t]:
                 evidence += "+val_t"
-            k, err = _nearest_ratio(est, ratios)
-            # Pic isolé qui revient le lendemain : erreur de donnée, pas une opération.
+            elif "(#)" in flags[t - 1] or "(#)" in flags[t]:
+                evidence += "+split_flag"
+            # Pic isolé qui revient le lendemain (ou second temps d'un tel pic).
             reverts = t + 1 < len(g) and close[t + 1] > 0 and abs(math.log(c0 / close[t + 1])) <= band
-            # ... ou second temps d'un tel pic (retour au niveau de l'avant-veille).
-            returns = bool(out) and out[-1]["symbol"] == sym and out[-1]["kind"] == "data_error" \
-                and out[-1]["date"] == g.at[t - 1, "date"] and t >= 2 and close[t - 2] > 0 \
+            returns = bool(sym_events) and sym_events[-1]["kind"] == "data_error" \
+                and sym_events[-1]["date"] == g.at[t - 1, "date"] and t >= 2 and close[t - 2] > 0 \
                 and abs(math.log(close[t - 2] / c1)) <= band
-            if evidence == "price_jump" and (reverts or returns):
+            if evidence.startswith("price_jump") and (reverts or returns):
                 kind, ratio, conf = "data_error", np.nan, "low"
-            elif err <= tol:
+            elif n_missing > MAX_MISSING_SESSIONS:
+                kind, ratio, conf = "unexplained_jump", np.nan, "low"
+                evidence += "+long_gap"
+            elif err <= tol and (not evidence.startswith("price_jump") or k >= 2):
                 kind, ratio = ("split" if k > 1 else "reverse_split"), k
-                conf = "high" if evidence != "price_jump" else "medium"
-            elif evidence != "price_jump":
+                conf = "high" if not evidence.startswith("price_jump") else "medium"
+            elif published and flagged:
                 kind, ratio, conf = "capital_adjustment", est, "medium"
             else:
                 kind, ratio, conf = "unexplained_jump", np.nan, "low"
-            out.append({
+            sym_events.append({
                 "symbol": sym, "date": g.at[t, "date"], "prev_date": g.at[t - 1, "date"],
                 "kind": kind, "ratio": ratio, "raw_ratio": est, "evidence": evidence,
                 "confidence": conf, "close_before": c0, "close_after": c1,
                 "prev_close_published": p1, "ref_before": r0,
                 "gap_days": int((g.at[t, "date"] - g.at[t - 1, "date"]).days),
-                "missing_sessions": n_missing,
+                "missing_sessions": n_missing, "_t": t,
             })
-    return pd.DataFrame(out, columns=CORPORATE_ACTION_COLUMNS)
+        # Allers-retours de la référence publiée : deux ajustements inverses rapprochés.
+        for a, b in zip(sym_events, sym_events[1:]):
+            if a["kind"] in ADJUSTING_KINDS and b["kind"] in ADJUSTING_KINDS and b["_t"] - a["_t"] <= 10 \
+                    and abs(math.log(a["ratio"] * b["ratio"])) < math.log(1.05):
+                for ev in (a, b):
+                    ev["kind"], ev["ratio"], ev["confidence"] = "price_reset", ev["raw_ratio"], "low"
+        out.extend(sym_events)
+    df = pd.DataFrame(out, columns=CORPORATE_ACTION_COLUMNS)
+    return df
 
 
 # ---------------------------------------------------------------------------

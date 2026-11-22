@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -202,6 +203,7 @@ def test_view_is_truncated_at_asof() -> None:
     assert list(res.rebalance_dates) == seen
 
 
+@pytest.mark.filterwarnings("ignore:.*variation\\(s\\) de clôture invraisemblable")
 def test_future_data_cannot_change_the_past() -> None:
     """Perturber toutes les données après T ne modifie rien jusqu'à T."""
     panels = random_market(n=150, seed=11)
@@ -265,6 +267,118 @@ def test_truncate_asof_unsorted_and_static_objects() -> None:
     m2["SNTS"] = "CI"
     assert meta["SNTS"] == "SN"
     assert truncate_asof(42, pd.Timestamp("2024-01-01")) == 42
+
+
+def _leaky_formats(n: int = 30) -> dict[str, object]:
+    """Panels dans tous les formats datés rencontrés (schémas ARCHITECTURE.md, CSV, MultiIndex…)."""
+    dates = _dates(n)
+    close = pd.DataFrame({"SNTS": np.linspace(1000.0, 1300.0, n)}, index=dates)
+    vol_str = pd.DataFrame({"SNTS": 1e6}, index=dates.strftime("%Y-%m-%d"))  # CSV sans parse_dates
+    indices_long = pd.DataFrame({"date": dates, "index": "BRVMC", "level": np.linspace(200.0, 260.0, n)})
+    ca_long = pd.DataFrame(  # corporate_actions.parquet, dates en chaînes et non triées
+        {"date": dates[::-1].strftime("%Y-%m-%d"), "symbol": "SNTS", "kind": "split", "ratio": 2.0}
+    )
+    mi = pd.DataFrame(
+        {"close": np.repeat(close["SNTS"].to_numpy(), 2)},
+        index=pd.MultiIndex.from_product([dates, ["SNTS", "ORAC"]], names=["date", "symbol"]),
+    )
+    mi_str = mi.set_axis(
+        pd.MultiIndex.from_arrays(
+            [mi.index.get_level_values(0).strftime("%Y-%m-%d"), mi.index.get_level_values(1)],
+            names=["date", "symbol"],
+        )
+    ).iloc[::-1]
+    monthly = pd.Series([1.0, 2.0, 3.0], index=pd.period_range("2020-12", periods=3, freq="M"))
+    return {
+        "close": close,
+        "volume": vol_str,
+        "value": close * 1e6,
+        "indices": indices_long,
+        "ca": ca_long,
+        "eq_long": mi,
+        "eq_str": mi_str,
+        "monthly": monthly,
+        "nested": {"a": close, "b": [indices_long, "x"]},
+        "universe": ["SNTS"],
+    }
+
+
+def test_view_truncates_every_dated_format_and_hides_source() -> None:
+    """Non-régression : table longue, index en chaînes, MultiIndex, PeriodIndex, objets imbriqués."""
+    panels = _leaky_formats()
+    seen: list[pd.Timestamp] = []
+
+    def snoop(asof: pd.Timestamp, view: PanelView) -> pd.Series:
+        seen.append(asof)
+        assert not hasattr(view, "_source")  # panels complets inaccessibles
+        assert view["indices"]["date"].max() == asof
+        assert view["ca"]["date"].max() == asof
+        assert view["volume"].index.max() == asof
+        assert view["eq_long"].index.get_level_values("date").max() == asof
+        assert view["eq_str"].index.get_level_values("date").max() == asof
+        assert float(view["eq_long"]["close"].iloc[-1]) == float(view["close"].iloc[-1, 0])
+        months = view["monthly"].index
+        assert (months.end_time.normalize() <= asof).all()
+        assert len(months) == (2 if asof >= pd.Timestamp("2021-01-31") else 1)  # janvier visible au 31/01
+        assert view["nested"]["a"].index.max() == asof
+        assert view["nested"]["b"][0]["date"].max() == asof and view["nested"]["b"][1] == "x"
+        assert view["universe"] == ["SNTS"]
+        return pd.Series({"SNTS": 0.5})
+
+    Backtester(panels, capital=1e6).run(snoop, rebalance="D")
+    assert len(seen) == 29
+
+
+def test_future_rows_of_long_tables_cannot_change_the_past() -> None:
+    """Une stratégie lisant une table longue est insensible aux lignes postérieures à T."""
+    panels = _leaky_formats(n=60)
+    dates = panels["close"].index  # type: ignore[union-attr]
+    cut = dates[35]
+    altered = dict(panels)
+    idx = panels["indices"].copy()  # type: ignore[union-attr]
+    idx.loc[idx["date"] > cut, "level"] *= 3.0
+    altered["indices"] = idx
+    mi = panels["eq_long"].copy()  # type: ignore[union-attr]
+    mi.loc[mi.index.get_level_values("date") > cut, "close"] = 1.0
+    altered["eq_long"] = mi
+
+    def strat(asof: pd.Timestamp, view: PanelView) -> pd.Series:
+        lvl = view["indices"]["level"]
+        px = view["eq_long"].xs("SNTS", level="symbol")["close"]
+        up = lvl.iloc[-1] >= lvl.iloc[max(0, len(lvl) - 5)] and px.iloc[-1] >= px.iloc[0]
+        return pd.Series({"SNTS": 0.8 if up else 0.2})
+
+    a = Backtester(panels, NO_IMPACT, capital=1e6).run(strat, rebalance="D")
+    b = Backtester(altered, NO_IMPACT, capital=1e6).run(strat, rebalance="D")
+    pd.testing.assert_series_equal(a.equity.loc[:cut], b.equity.loc[:cut])
+    pd.testing.assert_frame_equal(a.positions.loc[:cut], b.positions.loc[:cut])
+
+
+def test_untruncatable_dated_objects_are_rejected() -> None:
+    dates = _dates(5)
+    close = pd.DataFrame({"SNTS": 1000.0}, index=dates)
+    vol = pd.DataFrame({"SNTS": 1e6}, index=dates)
+    bad = {
+        "numpy": np.arange(5.0),
+        "date_scalar": pd.Timestamp("2030-01-01"),
+        "dated_values": pd.Series(pd.to_datetime(["2030-01-01"]), index=["SNTS"]),
+        "events_without_date": pd.DataFrame({"ex_date": dates, "amount": 1.0}),
+        "transposed": close.T,
+        "ambiguous_strings": pd.Series([1.0, 2.0], index=["01/12/2021", "02/12/2021"]),
+    }
+    for name, obj in bad.items():
+        with pytest.raises(TypeError):
+            truncate_asof(obj, dates[0])
+        with pytest.raises(TypeError, match=name):
+            Backtester({"close": close, "volume": vol, name: obj}, capital=1e6)
+    # objets statiques et index de codes BRVM : acceptés
+    ok = truncate_asof({"symbols": ("SNTS", "ORAC"), "n": 3, "meta": pd.Series({"S0C": "CI"})}, dates[0])
+    assert ok["symbols"] == ("SNTS", "ORAC") and ok["meta"]["S0C"] == "CI"
+    # dates en chaînes non ambiguës (jour > 12) et ISO
+    s = pd.Series([1.0, 2.0, 3.0], index=["13/01/2021", "14/01/2021", "15/01/2021"])
+    assert truncate_asof(s, "2021-01-14").tolist() == [1.0, 2.0]
+    s_iso = pd.Series([3.0, 1.0], index=["2021-01-06", "2021-01-04"])
+    assert truncate_asof(s_iso, "2021-01-05").tolist() == [1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +791,31 @@ def test_summary_uses_stats_and_fallback(monkeypatch: pytest.MonkeyPatch) -> Non
     assert mini["benchmark_cagr"] == pytest.approx(full["benchmark_cagr"], rel=1e-9)
 
 
+def test_summary_benchmark_level_normalised_to_one_is_detected() -> None:
+    """Non-régression : un indice total return base 1 n'est pas pris pour des rendements."""
+    rng = np.random.default_rng(0)
+    dates = _dates(252)
+    close = pd.DataFrame({"SNTS": 1000.0 * np.cumprod(1.0 + rng.normal(0.0004, 0.01, 252))}, index=dates)
+    res = Backtester(make_panels(close), capital=1e7).run(const_strategy({"SNTS": 0.9}), rebalance=None)
+    level = close["SNTS"] / close["SNTS"].iloc[0]  # niveaux ≈ 0,9-1,3 (médiane < 1,5)
+    auto = res.summary(level)
+    explicit = res.summary(level, benchmark_is_level=True)
+    rets = res.summary(level.pct_change())  # la même référence donnée en rendements
+    expected_cagr = (level.iloc[-1] / level.iloc[0]) ** (252 / 251) - 1.0
+    for key in ("benchmark_cagr", "excess_cagr", "information_ratio", "beta", "tracking_error"):
+        assert auto[key] == pytest.approx(explicit[key], rel=1e-12), key
+        assert rets[key] == pytest.approx(explicit[key], rel=1e-9), key
+    assert abs(auto["benchmark_cagr"] - expected_cagr) < 0.02
+    assert 0.5 < auto["beta"] < 1.5
+    b = eng._benchmark_returns(level, pd.DatetimeIndex(res.returns.index), None)
+    assert abs(float(b.mean())) < 0.01
+    # rendements en % (ambigus) : erreur explicite plutôt que des métriques fausses
+    with pytest.raises(ValueError, match="benchmark_is_level"):
+        res.summary(level.pct_change() * 100.0)
+    with pytest.warns(UserWarning, match="invraisemblable"):
+        res.summary(level.pct_change() * 100.0, benchmark_is_level=False)
+
+
 def test_lot_size_and_adj_factor() -> None:
     dates = _dates(6)
     close = pd.DataFrame({"SNTS": 100.0}, index=dates)  # cours ajusté (division par 10)
@@ -729,6 +868,180 @@ def test_panels_from_equities_and_dividend_inference() -> None:
     assert float(res.dividends.sum()) > 0
 
 
+def _split_long(n: int = 60, k: float = 10.0, split_i: int = 40) -> pd.DataFrame:
+    """Titre fictif : division 1:k à la séance ``split_i`` sans variation économique.
+
+    Comme au BOC, le « cours précédent » publié le jour de la division est
+    ajusté (``P_{t-1} / k``).
+    """
+    dates = _dates(n)
+    raw_close = np.where(np.arange(n) < split_i, 20000.0, 20000.0 / k)
+    raw_vol = np.where(np.arange(n) < split_i, 1000.0, 1000.0 * k)
+    prev = np.r_[raw_close[0], raw_close[:-1]]
+    prev[split_i] = raw_close[split_i - 1] / k
+    return pd.DataFrame(
+        {
+            "date": dates,
+            "symbol": "SNTS",
+            "close": raw_close,
+            "volume": raw_vol,
+            "value": raw_close * raw_vol,
+            "prev_close": prev,
+            "change_pct": 0.0,
+            "status": "traded",
+        }
+    )
+
+
+def test_panels_from_equities_split_builds_adj_factor() -> None:
+    """Non-régression : close ajusté ⇒ adj_factor (dividende, VWAP et plafond en unités ajustées)."""
+    k = 10.0
+    eq = _split_long(k=k)
+    dates = pd.DatetimeIndex(eq["date"])
+    raw = eq.set_index("date")[["close"]].rename(columns={"close": "SNTS"})
+    adj = pd.DataFrame({"SNTS": np.where(np.arange(60) < 40, raw["SNTS"] / k, raw["SNTS"])}, index=dates)
+    div_raw = pd.DataFrame(0.0, index=dates, columns=["SNTS"])
+    div_raw.iloc[20, 0] = 1000.0  # dividende brut par titre AVANT division (5 % de 20 000)
+    panels = panels_from_equities(eq, close=adj, dividend_net=div_raw)
+    assert "adj_factor" in panels
+    af = panels["adj_factor"]["SNTS"]  # type: ignore[index]
+    assert np.allclose(af.iloc[:40], 1.0 / k) and np.allclose(af.iloc[40:], 1.0)
+
+    bt = Backtester(panels, NO_IMPACT, capital=1e7)
+    res = bt.run(const_strategy({"SNTS": 0.5}), rebalance=None)
+    q = int(res.positions.iloc[19, 0])  # titres « ajustés »
+    assert float(res.dividends.sum()) == pytest.approx(q / k * 1000.0)  # et non q × 1000
+    assert bt.n_vwap_fallback == 0
+    assert int(res.trades["qty"].iloc[0]) == int(0.2 * 1000.0 * k)  # 20 % du volume ajusté
+    assert np.allclose(res.trades["price"], 2000.0)
+    assert bt.price_jumps.empty
+
+
+def test_panels_from_equities_adjusts_raw_prices_by_default_and_view_is_point_in_time() -> None:
+    """Sans ``close`` : cours ajustés par le store (plus de krach à la division) ; vue en unités du jour."""
+    k = 10.0
+    eq = _split_long(k=k)
+    dates = pd.DatetimeIndex(eq["date"])
+    panels = panels_from_equities(eq)
+    assert "adj_factor" in panels
+    obs: dict[pd.Timestamp, tuple[float, float, float]] = {}
+
+    def strat(asof: pd.Timestamp, view: PanelView) -> pd.Series:
+        c = view["close"]["SNTS"]
+        obs[asof] = (float(c.iloc[-1]), float(view["adj_factor"]["SNTS"].iloc[-1]), float(view.positions["SNTS"]))
+        if asof == dates[20]:
+            # cours de la veille de décision = cours publié, aucune trace de la division future
+            assert np.allclose(c, 20000.0)
+        return pd.Series({"SNTS": 0.9})
+
+    res = Backtester(panels, capital=1e7).run(strat, rebalance="D")
+    assert abs(float(res.returns.iloc[40])) < 1e-9  # jour de la division : rendement nul
+    assert float(res.equity.iloc[-1]) > 0.9e7
+    for day, (last_close, factor, _) in obs.items():
+        raw_close = float(eq.loc[eq["date"] == day, "close"].iloc[0])
+        assert last_close == pytest.approx(raw_close) and factor == pytest.approx(1.0)
+    q_before = obs[dates[38]][2]
+    q_after = obs[dates[41]][2]
+    assert q_after == pytest.approx(q_before * k, rel=0.02)  # titres réels multipliés par k
+    # chemin explicite sans ajustement : avertissement + détection du saut par le moteur
+    with pytest.warns(UserWarning, match="BRUTS"):
+        raw_panels = panels_from_equities(eq, adjust=False)
+    with pytest.warns(UserWarning, match="invraisemblable"):
+        bt = Backtester(raw_panels, capital=1e7)
+    assert list(bt.price_jumps["date"]) == [dates[40]]
+
+
+D_SNTS = 1740.0  # SNTS 2026 : dividende net 1 740 FCFA
+
+
+def _dividend_long(div_dates: list[pd.Timestamp | None], ex_i: int, n: int = 40) -> pd.DataFrame:
+    """Détachement à la séance ``ex_i`` (marqueur (d) et référence abaissée la veille)."""
+    dates = pd.bdate_range("2026-05-04", periods=n)
+    close = np.where(np.arange(n) < ex_i, 28900.0, 28900.0 - D_SNTS)
+    rows = []
+    for i, d in enumerate(dates):
+        rows.append(
+            {
+                "date": d,
+                "symbol": "SNTS",
+                "close": close[i],
+                "prev_close": close[i - 1] if i else close[0],
+                "change_pct": 0.0,
+                "volume": 1e5,
+                "value": close[i] * 1e5,
+                "status": "traded",
+                "ref_price": close[i] - D_SNTS if i == ex_i - 1 else close[i],
+                "ex_div": i == ex_i - 1,
+                "flags": "",
+                "last_div_net": 1655.0 if div_dates[i] is None else D_SNTS,
+                "last_div_date": pd.Timestamp("2025-05-20") if div_dates[i] is None else div_dates[i],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def test_dividend_credited_at_ex_date_not_at_late_boc_update() -> None:
+    """Non-régression : colonne « dernier dividende » mise à jour 15 séances après le détachement."""
+    n, ex_i, seen_i = 40, 14, 29
+    eq = _dividend_long([None] * seen_i + [pd.Timestamp("2026-05-26")] * (n - seen_i), ex_i, n)
+    dates = pd.DatetimeIndex(eq["date"])
+    p = panels_from_equities(eq)
+    div = p["dividend_net"]["SNTS"]  # type: ignore[index]
+    assert div[div > 0].index.tolist() == [dates[ex_i]] and float(div.sum()) == D_SNTS
+    # achat APRÈS le détachement (cours déjà ex-dividende) : aucun droit
+    late = Backtester(p, NO_IMPACT, capital=1e8).run(const_strategy({"SNTS": 0.9}), rebalance=[dates[ex_i + 1]])
+    assert len(late.trades) == 1 and float(late.dividends.sum()) == 0.0
+    # détenteur au détachement, vendu AVANT la mise à jour du BOC : il touche le dividende
+    def hold_then_sell(asof: pd.Timestamp, view: PanelView) -> pd.Series:
+        return pd.Series({"SNTS": 0.9 if asof < dates[ex_i] else 0.0})
+
+    early = Backtester(p, NO_IMPACT, capital=1e8).run(hold_then_sell, rebalance=[dates[0], dates[ex_i + 2]])
+    q = int(early.positions.iloc[ex_i - 1, 0])
+    assert q > 0 and int(early.positions.iloc[-1, 0]) == 0
+    assert float(early.dividends.iloc[ex_i]) == pytest.approx(q * D_SNTS)
+    assert float(early.dividends.sum()) == pytest.approx(q * D_SNTS)
+
+
+def test_dividend_date_correction_is_credited_once() -> None:
+    """Non-régression : correction de date à montant identique ⇒ un seul dividende."""
+    n, ex_i = 40, 14
+    dl: list[pd.Timestamp | None] = [None] * 10 + [pd.Timestamp("2026-05-20")] * 5
+    dl += [pd.Timestamp("2026-05-26")] * (n - 15)
+    eq = _dividend_long(dl, ex_i, n)
+    dates = pd.DatetimeIndex(eq["date"])
+    p = panels_from_equities(eq)
+    div = p["dividend_net"]["SNTS"]  # type: ignore[index]
+    assert div[div > 0].index.tolist() == [dates[ex_i]]
+    res = Backtester(p, NO_IMPACT, capital=1e8).run(const_strategy({"SNTS": 0.9}), rebalance=None)
+    q = int(res.positions.iloc[-1, 0])
+    assert float(res.dividends.sum()) == pytest.approx(q * D_SNTS)
+    # repli explicite « last_div » : avertissement, fusion de la correction
+    with pytest.warns(UserWarning, match="last_div"):
+        p2 = panels_from_equities(eq, dividend_method="last_div")
+    d2 = p2["dividend_net"]["SNTS"]  # type: ignore[index]
+    assert d2[d2 > 0].index.tolist() == [dates[10]] and float(d2.sum()) == D_SNTS
+    # table d'événements fournie (dividends.parquet) : utilisée telle quelle
+    table = pd.DataFrame({"symbol": ["SNTS"], "ex_date": [dates[ex_i]], "amount": [D_SNTS]})
+    p3 = panels_from_equities(eq, dividends=table)
+    pd.testing.assert_frame_equal(p3["dividend_net"], p["dividend_net"])  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        panels_from_equities(eq, dividend_method="nope")
+
+
+def test_dividend_on_missing_session_is_credited_next_session() -> None:
+    dates = _dates(10)
+    cal = dates.delete(5)  # séance du détachement absente du panel (BOC manquant)
+    close = pd.DataFrame({"SNTS": [1000.0] * 5 + [950.0] * 4}, index=cal)
+    div = pd.DataFrame({"SNTS": [30.0, 50.0]}, index=[dates[0] - pd.Timedelta(days=3), dates[5]])
+    panels = make_panels(close, dividend=div)
+    bt = Backtester(panels, NO_IMPACT, capital=1e6)
+    res = bt.run(const_strategy({"SNTS": 0.5}), rebalance=None)
+    q = int(res.positions.iloc[4, 0])
+    assert float(res.dividends.loc[dates[6]]) == pytest.approx(q * 50.0)
+    assert float(res.dividends.sum()) == pytest.approx(q * 50.0)  # dividende antérieur ignoré
+    assert res.meta["n_dividend_dates_off_calendar"] == 2
+
+
 @pytest.mark.skipif(not PANEL.exists(), reason="panel réel absent")
 def test_smoke_real_panel() -> None:
     eq = pd.read_parquet(PANEL)
@@ -740,9 +1053,13 @@ def test_smoke_real_panel() -> None:
         top = v.nlargest(10).index
         return pd.Series(0.098, index=top)
 
-    res = Backtester(panels, capital=1e7).run(equal_liquid, rebalance="M")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # ruptures inexpliquées éventuelles du panel réel
+        bt = Backtester(panels, capital=1e7)
+    res = bt.run(equal_liquid, rebalance="M")
     assert np.isfinite(res.equity).all() and (res.cash >= 0).all()
     assert len(res.trades) > 0
+    assert "adj_factor" in panels and res.meta["adj_factor"]
     s = res.summary()
     assert np.isfinite(s["cagr"])
 

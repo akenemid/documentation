@@ -6,8 +6,13 @@ reproduire les frictions qui, sur un marché étroit, séparent une performance
 « papier » d'une performance réellement capturable :
 
 * **pas d'anticipation** : la stratégie ne reçoit qu'une :class:`PanelView`,
-  vue des données *tronquée* à la date de décision ``asof`` incluse ; les
-  ordres sont exécutés au plus tôt à la séance suivante (t+1) ;
+  vue des données *tronquée* à la date de décision ``asof`` incluse, quel que
+  soit le format (panel large, table longue à colonne ``date``, ``MultiIndex``
+  (date, symbol), ``PeriodIndex``, dates en chaînes ; objet daté non
+  tronquable ⇒ ``TypeError``), sans accès aux panels complets, et dont les
+  cours ajustés sont ramenés aux unités du jour ``asof`` (un ajustement « à
+  rebours » trahirait les divisions futures) ; les ordres sont exécutés au
+  plus tôt à la séance suivante (t+1) ;
 * **titres non échangés** : aucun ordre ne s'exécute un jour sans transaction
   (volume nul, titre non coté ou suspendu) ; la valorisation utilise alors le
   dernier cours connu (prix périmés, cf. Scholes & Williams, 1977 ; Lo &
@@ -29,8 +34,12 @@ reproduire les frictions qui, sur un marché étroit, séparent une performance
   négatif** (pas d'effet de levier, pas de découvert ; les ventes passent
   avant les achats, qui sont réduits au prorata si nécessaire) ;
 * **dividendes** nets crédités en cash à la date de détachement aux titres
-  détenus à l'ouverture de cette séance (rendement total) ; retenue à la
-  source par pays si les montants fournis sont bruts (``TaxModel``).
+  détenus à l'ouverture de cette séance (rendement total), convertis en
+  unités ajustées par ``adj_factor`` (``D · f``) ; retenue à la source par
+  pays si les montants fournis sont bruts (``TaxModel``). Depuis le panel
+  long, la date de détachement vient de ``store.detect_dividends``
+  (:func:`panels_from_equities`), pas de la mise à jour tardive de la colonne
+  « dernier dividende » du BOC.
 
 Déroulé d'une séance ``t`` (dans cet ordre)
 -------------------------------------------
@@ -72,6 +81,12 @@ Limites connues (choix de prudence documentés)
 * Les dates de fin de période (``'M'``, ``'Q'``, ``'W-FRI'``) supposent le
   calendrier des séances connu à l'avance (jours fériés publiés), hypothèse
   standard ; ``anchor="first"`` l'évite.
+* Les quantités sont arrondies en titres **ajustés** : avant une division
+  future 1:k, une position peut correspondre à une fraction de titre réel
+  (écart < 1 titre réel par ligne, négligeable en valeur).
+* Seuls ``close`` et ``adj_factor`` sont remis aux unités du jour de décision
+  dans la vue ; un autre panel fourni en unités ajustées à rebours resterait
+  dépendant des divisions futures.
 
 Références
 ----------
@@ -97,6 +112,7 @@ Références
 from __future__ import annotations
 
 import math
+import numbers
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -158,26 +174,231 @@ _DAILY_RULES = frozenset({"D", "B", "1D", "1B", "C"})
 # ---------------------------------------------------------------------------
 
 
-def truncate_asof(obj: Any, asof: pd.Timestamp) -> Any:
-    """Restreint un objet daté aux observations ``≤ asof``.
+#: Noms (insensibles à la casse) d'une colonne ou d'un niveau d'index de dates
+#: dans une table longue (schéma ``indices.parquet``, ``corporate_actions.parquet``).
+_DATE_LABELS = frozenset({"date"})
 
-    * ``DataFrame`` / ``Series`` indexés par un ``DatetimeIndex`` : lignes
-      dont la date est ``≤ asof`` (``iloc[: searchsorted(asof, "right")]`` si
-      l'index est trié, masque booléen sinon) ;
-    * autres objets pandas (p. ex. ``Series`` symbole → pays) : copie
-      superficielle (*copy-on-write* : une modification par la stratégie ne
-      remonte jamais aux données du moteur) ;
-    * tout autre objet : renvoyé tel quel.
+#: Scalaires sans dimension temporelle, transmis tels quels à la stratégie.
+_STATIC_SCALARS = (str, bytes, bool, numbers.Number, np.bool_, np.str_, np.bytes_)
+
+
+def _is_date_label(name: Any) -> bool:
+    return isinstance(name, str) and name.strip().lower() in _DATE_LABELS
+
+
+def _parse_date_index(values: pd.Index) -> pd.DatetimeIndex | None:
+    """Interprète un index de chaînes (ou d'objets ``date``) comme des dates.
+
+    Renvoie ``None`` si ``values`` n'est pas un index de dates : type numérique,
+    booléen ou catégoriel, élément sans chiffre (un code BRVM comme ``SNTS``
+    n'est jamais une date) ou élément non convertible. Les ``DatetimeIndex``
+    sont renvoyés tels quels ; ``PeriodIndex`` et ``MultiIndex`` sont traités
+    à part (``None``).
+
+    Formats : ISO 8601 (``AAAA-MM-JJ[ hh:mm…]``) et ``AAAAMMJJ`` sans
+    ambiguïté ; tout autre format est lu dans les deux ordres (jour/mois et
+    mois/jour) : une divergence (``01/12/2021`` = 1er décembre en français,
+    12 janvier en anglais) pourrait avancer une date et faire fuiter le
+    futur, elle lève donc ``TypeError``.
+
+    Raises
+    ------
+    TypeError
+        Dates en chaînes ambiguës (ordre jour/mois indéterminé).
+    """
+    if isinstance(values, pd.DatetimeIndex):
+        return values
+    if isinstance(values, (pd.PeriodIndex, pd.MultiIndex, pd.CategoricalIndex)):
+        return None
+    if not (values.dtype == object or pd.api.types.is_string_dtype(values.dtype)):
+        return None
+    present = np.asarray(values.notna(), dtype=bool)
+    if len(values) == 0 or not present.any():
+        return None
+    as_text = pd.Index(values[present]).astype(str).str.strip()
+    if not bool(as_text.str.contains(r"\d", regex=True).all()):
+        return None
+
+    def attempt(**kw: Any) -> pd.DatetimeIndex | None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                cand = pd.DatetimeIndex(pd.to_datetime(values, errors="coerce", **kw))
+            except (TypeError, ValueError, OverflowError):
+                return None
+        return None if bool(np.asarray(cand.isna())[present].any()) else cand
+
+    if bool(as_text.str.fullmatch(r"\d{4}-\d{2}-\d{2}([ T].*)?").all()):
+        return attempt(format="ISO8601")
+    if bool(as_text.str.fullmatch(r"\d{8}").all()):
+        return attempt(format="%Y%m%d")
+    month_first = attempt(format="mixed")
+    day_first = attempt(format="mixed", dayfirst=True)
+    if month_first is not None and day_first is not None and not month_first.equals(day_first):
+        raise TypeError("dates en chaînes ambiguës (ordre jour/mois indéterminé) : convertir en DatetimeIndex")
+    return month_first if month_first is not None else day_first
+
+
+def _cutoff_for(asof: pd.Timestamp, tz: Any) -> pd.Timestamp:
+    """``asof`` exprimé dans le fuseau d'un index (comparaison sans erreur)."""
+    if tz is None:
+        return asof.tz_localize(None) if asof.tz is not None else asof
+    return asof.tz_localize(tz) if asof.tz is None else asof.tz_convert(tz)
+
+
+def _datetime_selector(values: pd.DatetimeIndex, asof: pd.Timestamp) -> slice | np.ndarray:
+    """Sélection des positions ``≤ asof`` (tranche si trié, masque sinon ; NaT exclu)."""
+    cut = _cutoff_for(asof, values.tz)
+    if values.is_monotonic_increasing and not values.hasnans:
+        return slice(0, int(values.searchsorted(cut, side="right")))
+    return np.asarray(values <= cut, dtype=bool)
+
+
+def _period_selector(values: pd.PeriodIndex, asof: pd.Timestamp) -> np.ndarray:
+    """Périodes **terminées** au plus tard le jour de ``asof``.
+
+    Une période (mois, trimestre…) n'est connue qu'à sa fin : la donnée de
+    janvier n'est visible qu'à partir du 31 janvier (``end_time`` ramené au
+    jour). Les périodes quotidiennes du jour ``asof`` sont visibles.
+    """
+    ends = pd.DatetimeIndex(values.end_time).normalize()
+    return np.asarray(ends <= _cutoff_for(asof, None).normalize(), dtype=bool)
+
+
+def _date_level(idx: pd.MultiIndex) -> int | None:
+    """Niveau de dates d'un ``MultiIndex`` : nommé ``date``, sinon le premier niveau daté."""
+    for i, name in enumerate(idx.names):
+        if _is_date_label(name):
+            return i
+    for i in range(idx.nlevels):
+        lv = idx.levels[i]
+        if isinstance(lv, (pd.DatetimeIndex, pd.PeriodIndex)):
+            return i
+    return None
+
+
+def _index_selector(idx: pd.Index, asof: pd.Timestamp) -> slice | np.ndarray | None:
+    """Sélection des lignes ``≤ asof`` selon l'index, ou ``None`` si l'index n'est pas daté."""
+    if isinstance(idx, pd.MultiIndex):
+        lev = _date_level(idx)
+        if lev is None:
+            return None
+        values = idx.get_level_values(lev)
+        if isinstance(values, pd.PeriodIndex):
+            return _period_selector(values, asof)
+        parsed = _parse_date_index(values)
+        if parsed is None:
+            if _is_date_label(idx.names[lev]):
+                raise TypeError(f"niveau d'index {idx.names[lev]!r} non convertible en dates")
+            return None
+        return _datetime_selector(parsed, asof)
+    if isinstance(idx, pd.PeriodIndex):
+        return _period_selector(idx, asof)
+    parsed = _parse_date_index(idx)
+    if parsed is None:
+        return None
+    return _datetime_selector(parsed, asof)
+
+
+def _as_date_column(col: pd.Series, name: Any) -> pd.DatetimeIndex:
+    """Colonne ``date`` d'une table longue convertie en ``DatetimeIndex`` (erreur sinon)."""
+    if isinstance(col.dtype, pd.PeriodDtype):
+        return pd.DatetimeIndex(pd.PeriodIndex(col).end_time).normalize()
+    if pd.api.types.is_datetime64_any_dtype(col.dtype):
+        return pd.DatetimeIndex(col)
+    parsed = _parse_date_index(pd.Index(col))
+    if parsed is None:
+        raise TypeError(f"colonne {name!r} non convertible en dates")
+    return parsed
+
+
+def _has_dated_values(obj: pd.Series | pd.DataFrame) -> bool:
+    """Vrai si un objet pandas *non indexé par des dates* contient des dates."""
+    if isinstance(obj, pd.Series):
+        dtypes = [obj.dtype]
+    else:
+        dtypes = list(obj.dtypes)
+        cols = obj.columns
+        if isinstance(cols, (pd.DatetimeIndex, pd.PeriodIndex)) or (
+            not isinstance(cols, pd.MultiIndex) and _parse_date_index(cols) is not None
+        ):
+            return True  # panel transposé : dates en colonnes
+    return any(pd.api.types.is_datetime64_any_dtype(d) or isinstance(d, pd.PeriodDtype) for d in dtypes)
+
+
+def _truncate_pandas(obj: pd.Series | pd.DataFrame, asof: pd.Timestamp) -> pd.Series | pd.DataFrame:
+    sel = _index_selector(obj.index, asof)
+    if sel is not None:
+        return obj.iloc[sel]
+    if isinstance(obj, pd.DataFrame):
+        date_cols = [c for c in obj.columns if _is_date_label(c)]
+        if date_cols:
+            name = date_cols[0]
+            col = obj.loc[:, name]
+            if isinstance(col, pd.DataFrame):
+                raise TypeError(f"colonne de dates {name!r} en double")
+            return obj.iloc[_datetime_selector(_as_date_column(col, name), asof)]
+    if _has_dated_values(obj):
+        raise TypeError(
+            "objet pandas daté mais non indexé par des dates (valeurs datetime ou dates en colonnes) : "
+            "impossible de le tronquer sans risque d'anticipation ; l'indexer par la date de publication "
+            "ou ajouter une colonne 'date'"
+        )
+    return obj.copy(deep=False)
+
+
+def truncate_asof(obj: Any, asof: Any) -> Any:
+    """Restreint un objet daté aux observations ``≤ asof`` (aucune anticipation).
+
+    Règles, dans cet ordre :
+
+    * ``DataFrame`` / ``Series`` dont l'index est un ``DatetimeIndex``, un
+      index de **chaînes de dates** (CSV lu sans ``parse_dates``) : lignes de
+      date ``≤ asof`` (``iloc[: searchsorted(asof, "right")]`` si l'index est
+      trié, masque booléen sinon ; ``NaT`` exclu) ;
+    * ``PeriodIndex`` : périodes **terminées** au plus tard le jour ``asof``
+      (``end_time`` ramené au jour ``≤ asof`` : le mois de janvier n'est
+      visible qu'au 31 janvier) ;
+    * ``MultiIndex`` : troncature sur le niveau nommé ``date`` (à défaut, le
+      premier niveau de type date ou période), p. ex. ``(date, symbol)`` ;
+    * table longue avec une colonne ``date`` (schéma ``indices.parquet``,
+      ``corporate_actions.parquet``) : lignes de date ``≤ asof`` ;
+    * autre objet pandas **sans date** (p. ex. ``Series`` symbole → pays) :
+      copie superficielle (*copy-on-write* : une modification par la
+      stratégie ne remonte jamais aux données du moteur) ; s'il contient des
+      dates (valeurs ``datetime``, dates en colonnes) : ``TypeError`` ;
+    * ``pd.Index`` : dates ``≤ asof`` s'il est daté, inchangé sinon ;
+    * ``Mapping`` (dict), ``list``, ``tuple``, ``set`` : troncature récursive
+      de chaque élément ;
+    * scalaires sans date (``str``, nombres, booléens, ``None``) : inchangés ;
+    * tout autre objet (tableau ``numpy``, date isolée, objet arbitraire),
+      dont l'alignement temporel est inconnu : ``TypeError`` plutôt qu'une
+      transmission silencieuse du futur.
+
+    Raises
+    ------
+    TypeError
+        Objet daté que la fonction ne sait pas tronquer.
     """
     asof = pd.Timestamp(asof)
     if isinstance(obj, (pd.DataFrame, pd.Series)):
-        idx = obj.index
-        if isinstance(idx, pd.DatetimeIndex):
-            if idx.is_monotonic_increasing:
-                return obj.iloc[: int(idx.searchsorted(asof, side="right"))]
-            return obj.loc[idx <= asof]
-        return obj.copy(deep=False)
-    return obj
+        return _truncate_pandas(obj, asof)
+    if isinstance(obj, pd.Index):
+        sel = _index_selector(obj, asof)
+        return obj if sel is None else obj[sel]
+    if isinstance(obj, Mapping):
+        return {k: truncate_asof(v, asof) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        items = [truncate_asof(x, asof) for x in obj]
+        if isinstance(obj, tuple) and hasattr(obj, "_fields"):
+            return type(obj)(*items)
+        return type(obj)(items)
+    if obj is None or (isinstance(obj, _STATIC_SCALARS) and not isinstance(obj, (np.datetime64, np.timedelta64))):
+        return obj
+    raise TypeError(
+        f"objet de type {type(obj).__name__} non tronquable à la date de décision (risque d'anticipation) : "
+        "fournir un DataFrame/Series indexé par date, une table longue avec colonne 'date' ou un objet statique"
+    )
 
 
 class PanelView(Mapping[str, Any]):
@@ -186,16 +407,43 @@ class PanelView(Mapping[str, Any]):
     Chaque accès ``view[clé]`` renvoie l'objet source restreint aux dates
     ``≤ asof`` (:func:`truncate_asof`, calcul paresseux mis en cache pour la
     durée de l'appel de la stratégie). Aucune ligne postérieure à ``asof``
-    n'est donc accessible par la vue : ``view["close"].index.max() ≤ asof``.
-    Avec le *copy-on-write* de pandas ≥ 3, une écriture de la stratégie sur un
-    objet renvoyé ne modifie jamais les données du moteur.
+    n'est donc accessible par la vue : ``view["close"].index.max() ≤ asof``,
+    quel que soit le format (panel large, table longue à colonne ``date``,
+    ``MultiIndex`` (date, symbol), ``PeriodIndex``, index de dates en
+    chaînes) ; un objet daté non reconnu lève ``TypeError``. Avec le
+    *copy-on-write* de pandas ≥ 3, une écriture de la stratégie sur un objet
+    renvoyé ne modifie jamais les données du moteur.
 
-    Attributs informatifs (état du portefeuille à la clôture de ``asof``) :
-    ``asof``, ``nav``, ``cash``, ``positions`` (titres détenus, ``int``),
+    Les panels source ne sont **pas** exposés : ils ne sont accessibles qu'à
+    travers une fermeture privée qui applique la troncature (pas d'attribut
+    ``_source`` ; Python n'offre pas d'encapsulation absolue, mais aucun
+    accès accidentel au futur n'est possible).
+
+    Parameters
+    ----------
+    panels
+        Dictionnaire des données (non tronquées).
+    asof
+        Date de décision.
+    nav, cash, positions, weights, pending
+        État du portefeuille à la clôture de ``asof`` (attributs informatifs).
+    rescale
+        ``{clé: Series symbole → facteur}`` : facteurs multiplicatifs par
+        colonne appliqués après troncature. Le moteur l'utilise pour exprimer
+        ``close`` et ``adj_factor`` en **unités du jour de décision**
+        (``P_t · f_t / f_asof``) : un cours ajusté « à rebours » dépend des
+        divisions *postérieures* à ``asof`` (Π des ratios futurs), ce qui
+        révélerait une division à venir ; après remise à l'échelle,
+        ``view["close"].iloc[-1]`` est le cours publié le jour ``asof``.
+
+    Attributs : ``asof``, ``nav``, ``cash``, ``positions`` (titres détenus),
     ``weights`` (poids courants), ``pending`` (ordres en attente, en titres).
+    Quand le moteur remet la vue à l'échelle (``adj_factor`` ≠ 1), ``positions``
+    et ``pending`` sont aussi exprimés en titres du jour ``asof``
+    (``q · f_asof``, ``float``) ; sinon ce sont des entiers.
     """
 
-    __slots__ = ("_asof", "_cache", "_source", "cash", "nav", "pending", "positions", "weights")
+    __slots__ = ("__fetch", "__keys", "_asof", "_cache", "cash", "nav", "pending", "positions", "weights")
 
     def __init__(
         self,
@@ -207,9 +455,22 @@ class PanelView(Mapping[str, Any]):
         positions: pd.Series | None = None,
         weights: pd.Series | None = None,
         pending: pd.Series | None = None,
+        rescale: Mapping[str, pd.Series] | None = None,
     ) -> None:
-        self._source = panels
-        self._asof = pd.Timestamp(asof)
+        stamp = pd.Timestamp(asof)
+        scales = dict(rescale or {})
+        source = panels
+
+        def fetch(key: str) -> Any:
+            out = truncate_asof(source[key], stamp)
+            factor = scales.get(key)
+            if factor is not None and isinstance(out, pd.DataFrame):
+                out = out * factor.reindex(out.columns).fillna(1.0)
+            return out
+
+        self.__fetch = fetch
+        self.__keys = tuple(panels)
+        self._asof = stamp
         self._cache: dict[str, Any] = {}
         self.nav = nav
         self.cash = cash
@@ -224,20 +485,22 @@ class PanelView(Mapping[str, Any]):
 
     def __getitem__(self, key: str) -> Any:
         if key not in self._cache:
-            self._cache[key] = truncate_asof(self._source[key], self._asof)
+            if key not in self.__keys:
+                raise KeyError(key)
+            self._cache[key] = self.__fetch(key)
         return self._cache[key]
 
     def __contains__(self, key: object) -> bool:
-        return key in self._source
+        return key in self.__keys
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._source)
+        return iter(self.__keys)
 
     def __len__(self) -> int:
-        return len(self._source)
+        return len(self.__keys)
 
     def __repr__(self) -> str:
-        return f"PanelView(asof={self._asof.date()}, keys={list(self._source)})"
+        return f"PanelView(asof={self._asof.date()}, keys={list(self.__keys)})"
 
 
 # ---------------------------------------------------------------------------
@@ -426,23 +689,63 @@ def _minimal_summary(returns: pd.Series, benchmark: pd.Series | None, rf: float,
     return out
 
 
+#: Rendement quotidien d'indice au-delà duquel une série est jugée mal interprétée
+#: (un indice d'actions ne varie pas de 50 % en une séance ; à la BRVM, chaque
+#: titre est limité à ±7,5 %).
+_MAX_ABS_BENCH_RETURN = 0.5
+
+
 def _benchmark_returns(
     benchmark: pd.Series | pd.DataFrame, index: pd.DatetimeIndex, is_level: bool | None
 ) -> pd.Series:
-    """Convertit un indice de référence (niveaux ou rendements) en rendements alignés."""
+    """Convertit un indice de référence (niveaux ou rendements) en rendements alignés.
+
+    Niveaux ``I_t`` : ``r_t = I_t / I_{t-1} − 1`` sur les séances du backtest
+    (dernier niveau connu reporté, jamais de remplissage arrière).
+
+    Détection automatique (``is_level=None``) : une série de rendements
+    quotidiens n'est jamais **entièrement** positive (elle contient des
+    baisses), alors qu'un niveau d'indice l'est toujours, qu'il soit en points
+    (≈ 200) ou normalisé à 1 (``tr / tr.iloc[0]``, valeurs ≈ 0,9-1,3) : toutes
+    les valeurs ``> 0`` ⇒ niveaux, sinon rendements. Contrôle de cohérence :
+    si les rendements obtenus dépassent ``|r| > 0,5`` à une séance (impossible
+    pour un indice d'actions), la série est ambiguë (niveaux comportant des
+    valeurs ≤ 0, rendements tous positifs sur une série très courte,
+    rendements en %) ⇒ ``ValueError`` invitant à préciser ``benchmark_is_level``.
+    Avec ``is_level`` explicite, un tel dépassement donne un avertissement.
+    """
     if isinstance(benchmark, pd.DataFrame):
         if benchmark.shape[1] != 1:
             raise ValueError("benchmark : une seule colonne attendue")
         benchmark = benchmark.iloc[:, 0]
-    b = benchmark.astype(float).sort_index()
+    b = benchmark.astype(float)
+    if not isinstance(b.index, pd.DatetimeIndex):
+        parsed = _parse_date_index(b.index)
+        if parsed is None:
+            raise TypeError("benchmark : index de dates attendu")
+        b = b.set_axis(parsed)
+    b = b.sort_index()
     b = b[~b.index.duplicated(keep="last")]
-    if is_level is None:
-        vals = b.dropna()
-        is_level = bool(len(vals) > 0 and (vals > 0).all() and float(vals.abs().median()) > 1.5)
+    vals = b.dropna()
+    auto = is_level is None
+    if auto:
+        is_level = bool(len(vals) > 0 and (vals > 0).all())
     if is_level:
         lvl = b.reindex(b.index.union(index)).ffill()
-        return lvl.reindex(index).pct_change().iloc[1:].reindex(index)
-    return b.reindex(index)
+        out = lvl.reindex(index).pct_change().iloc[1:].reindex(index)
+    else:
+        out = b.reindex(index)
+    worst = float(out.abs().max()) if out.notna().any() else 0.0
+    if worst > _MAX_ABS_BENCH_RETURN:
+        kind = "niveaux" if is_level else "rendements"
+        msg = (
+            f"benchmark interprété comme des {kind} : rendement quotidien de {worst:.0%} invraisemblable "
+            "pour un indice"
+        )
+        if auto:
+            raise ValueError(msg + " ; préciser benchmark_is_level=True (niveaux) ou False (rendements décimaux)")
+        warnings.warn(msg, stacklevel=3)
+    return out
 
 
 @dataclass
@@ -540,7 +843,10 @@ class BacktestResult:
             Taux sans risque annuel.
         benchmark_is_level
             ``True`` niveaux, ``False`` rendements, ``None`` détection
-            automatique (valeurs toutes > 0 et médiane > 1,5 ⇒ niveaux).
+            automatique : valeurs toutes > 0 ⇒ niveaux (y compris un indice
+            normalisé à 1), sinon rendements ; ``ValueError`` si le résultat
+            est invraisemblable (``|r| > 0,5`` à une séance), cf.
+            :func:`_benchmark_returns`.
         """
         bench = None
         if benchmark is not None:
@@ -578,9 +884,12 @@ def _as_wide(obj: Any, name: str) -> pd.DataFrame:
     df = obj
     if not isinstance(df.index, pd.DatetimeIndex):
         try:
-            df = df.set_axis(pd.DatetimeIndex(pd.to_datetime(df.index)), axis=0)
-        except (TypeError, ValueError) as exc:
-            raise TypeError(f"le panel {name!r} doit être indexé par des dates") from exc
+            parsed = _parse_date_index(df.index)
+        except TypeError as exc:
+            raise TypeError(f"le panel {name!r} : {exc}") from exc
+        if parsed is None:
+            raise TypeError(f"le panel {name!r} doit être indexé par des dates")
+        df = df.set_axis(parsed, axis=0)
     if df.index.has_duplicates:
         df = df[~df.index.duplicated(keep="last")]
     if not df.index.is_monotonic_increasing:
@@ -590,17 +899,104 @@ def _as_wide(obj: Any, name: str) -> pd.DataFrame:
     return df
 
 
-def _sorted_copy(obj: Any) -> Any:
-    """Copie des panels pour la vue : index de dates trié, sans doublon."""
-    if isinstance(obj, (pd.DataFrame, pd.Series)):
-        out = obj.copy()
-        if isinstance(out.index, pd.DatetimeIndex):
-            if out.index.has_duplicates:
-                out = out[~out.index.duplicated(keep="last")]
-            if not out.index.is_monotonic_increasing:
-                out = out.sort_index()
+#: Panels larges lus par le moteur lui-même (normalisés par :func:`_as_wide`).
+_ENGINE_PANELS = (
+    "close",
+    "volume",
+    "value",
+    "status",
+    "prev_close",
+    "ref_price",
+    "change_pct",
+    "dividend_net",
+    "open",
+    "adj_factor",
+)
+
+
+def _stable_order(values: pd.Index) -> np.ndarray:
+    return np.argsort(np.asarray(values.asi8 if hasattr(values, "asi8") else values), kind="stable")
+
+
+def _normalize_panel(obj: Any, name: str) -> Any:
+    """Copie d'un panel pour le moteur et la vue, avec des dates exploitables.
+
+    * panels du moteur (:data:`_ENGINE_PANELS`, ``DataFrame``) : :func:`_as_wide`
+      (index converti en ``DatetimeIndex``, trié, doublons « dernier gagne ») ;
+    * autre objet pandas indexé par des dates (y compris en chaînes) : index
+      converti en ``DatetimeIndex`` et tri stable (doublons conservés : une
+      table longue indexée par date en comporte légitimement) ;
+    * ``MultiIndex`` à niveau ``date`` et table longue à colonne ``date`` :
+      dates converties si besoin, tri stable par date (troncature par
+      ``searchsorted``) ;
+    * autre objet : inchangé (sa troncature est vérifiée à l'initialisation).
+    """
+    if not isinstance(obj, (pd.DataFrame, pd.Series)):
+        return obj
+    out = obj.copy()
+    if name in _ENGINE_PANELS and isinstance(out, pd.DataFrame):
+        return _as_wide(out, name)
+    idx = out.index
+    if isinstance(idx, pd.MultiIndex):
+        lev = _date_level(idx)
+        if lev is not None and not isinstance(idx.levels[lev], pd.PeriodIndex):
+            values = idx.get_level_values(lev)
+            parsed = _parse_date_index(values)
+            if parsed is None:
+                raise TypeError(f"panel {name!r} : niveau {idx.names[lev]!r} non convertible en dates")
+            if not isinstance(values, pd.DatetimeIndex):
+                arrays = [parsed if i == lev else idx.get_level_values(i) for i in range(idx.nlevels)]
+                out.index = pd.MultiIndex.from_arrays(arrays, names=idx.names)
+            if not parsed.is_monotonic_increasing:
+                out = out.iloc[_stable_order(parsed)]
         return out
-    return obj
+    if isinstance(idx, pd.PeriodIndex):
+        return out if idx.is_monotonic_increasing else out.iloc[_stable_order(idx)]
+    parsed = _parse_date_index(idx)
+    if parsed is not None:
+        out = out.set_axis(parsed, axis=0)
+        return out if parsed.is_monotonic_increasing else out.iloc[_stable_order(parsed)]
+    if isinstance(out, pd.DataFrame):
+        date_cols = [c for c in out.columns if _is_date_label(c)]
+        if date_cols:
+            col = out.loc[:, date_cols[0]]
+            if isinstance(col, pd.DataFrame):
+                raise TypeError(f"panel {name!r} : colonne de dates en double")
+            d = _as_date_column(col, date_cols[0])
+            if not (pd.api.types.is_datetime64_any_dtype(col.dtype) or isinstance(col.dtype, pd.PeriodDtype)):
+                out[date_cols[0]] = d.to_numpy()
+            if not d.is_monotonic_increasing:
+                out = out.iloc[_stable_order(d)]
+    return out
+
+
+def _with_key(key: str, exc: Exception) -> str:
+    """Message d'erreur préfixé du nom du panel (s'il n'y figure pas déjà)."""
+    msg = str(exc)
+    return msg if repr(key) in msg else f"panel {key!r} : {msg}"
+
+
+def _snap_to_calendar(df: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
+    """Ramène des montants datés hors calendrier sur la séance suivante (somme).
+
+    Un détachement daté d'une séance absente du panel (BOC manquant, jour non
+    ouvré) est crédité à la première séance ``≥ date`` : aucune transaction
+    n'ayant lieu entre les deux, les positions d'ouverture de cette séance
+    sont celles qui avaient droit au dividende (``searchsorted(date, "left")``).
+    Les dates antérieures à la première séance ou postérieures à la dernière
+    sont ignorées (aucune position n'est concernée).
+    """
+    if len(dates) == 0 or len(df) == 0:
+        return df.reindex(dates)
+    idx = pd.DatetimeIndex(df.index)
+    if idx.isin(dates).all():
+        return df.reindex(dates)
+    keep = (idx >= dates[0]) & (idx <= dates[-1])
+    sub = df.loc[keep]
+    pos = dates.searchsorted(pd.DatetimeIndex(sub.index), side="left")
+    snapped = sub.set_axis(dates[pos], axis=0)
+    num = snapped.apply(pd.to_numeric, errors="coerce")
+    return num.groupby(level=0, sort=True).sum(min_count=1).reindex(dates)
 
 
 def _dispatch_models(*slots: Any) -> dict[str, Any]:
@@ -670,14 +1066,25 @@ class Backtester:
           séance précédente, qui s'applique à la séance suivante ; à défaut
           la clôture précédente) ;
         * ``dividend_net`` : dividende net par action crédité à la date de
-          détachement (0 sinon) ;
+          détachement (0 sinon) ; une date absente du calendrier (BOC
+          manquant) est reportée à la séance suivante (:func:`_snap_to_calendar`) ;
         * ``open`` : pour ``ExecutionModel.price == "open"`` ;
-        * ``adj_factor`` (optionnel) : facteur ``cours ajusté / cours brut``
-          si ``close`` est ajusté mais ``volume``, ``value``, ``prev_close``
-          et ``dividend_net`` sont bruts (``volume / f``, ``VWAP · f``…) ;
+        * ``adj_factor`` : facteur ``f = cours ajusté / cours brut``,
+          **indispensable** si ``close`` est ajusté mais ``volume``,
+          ``value``, ``prev_close`` et ``dividend_net`` sont bruts (sortie de
+          :func:`panels_from_equities`) : volume ``V / f``, VWAP
+          ``(valeur / V) · f``, dividende ``D · f`` en unités ajustées. Sans
+          lui (``f = 1``), avant une division 1:k le dividende crédité serait
+          k fois trop élevé et le plafond de participation faux d'un facteur
+          k. Reporté vers l'avant uniquement, 1 avant la première valeur ;
         * ``country`` (optionnel) : ``Series`` symbole → pays (retenue à la
           source si les dividendes fournis sont bruts) ;
-        * toute autre entrée est transmise (tronquée) à la stratégie.
+        * toute autre entrée est transmise **tronquée** à la stratégie
+          (:func:`truncate_asof` : panel large, table longue à colonne
+          ``date``, ``MultiIndex`` (date, symbol), ``PeriodIndex``, index de
+          dates en chaînes, objets statiques) ; un objet daté non tronquable
+          (tableau ``numpy``, objet indexé par symbole contenant des dates…)
+          lève ``TypeError`` dès la construction.
     costs, constraints, capital, execution, taxes
         Modèles de ``brvm_alpha.config``. Ils peuvent être passés en position
         dans n'importe quel ordre — contrat ``(panels, costs, constraints,
@@ -701,6 +1108,27 @@ class Backtester:
     periods_per_year
         Séances par an (annualisation du cash, des droits de garde et de la
         rotation).
+    jump_warning
+        Contrôle des cours non ajustés : une variation de clôture d'une
+        séance à l'autre hors de ``[1 − s, 1 / (1 − s)]`` (``s = 0,40`` :
+        −40 % / +67 %), avec comme sans réintégration du dividende du jour
+        (``(P_t + D_t) / P_{t-1}`` et ``P_t / P_{t-1}``), impossible sous la
+        bande de ±7,5 %, signale le plus souvent une division non ajustée ;
+        elle est listée dans ``price_jumps`` et un avertissement est émis.
+        ``None`` désactive le contrôle.
+
+    Attributes
+    ----------
+    dates, symbols
+        Calendrier des séances et univers (colonnes de ``close``).
+    price_jumps
+        ``DataFrame`` (``date, symbol, ratio``) des variations invraisemblables.
+    n_vwap_fallback
+        Nombre de (séance, titre) où le VWAP incohérent a été remplacé par la
+        clôture (un nombre élevé signale des unités mal ajustées).
+    n_dividend_dates_off_calendar
+        Lignes de ``dividend_net`` datées hors calendrier (reportées à la
+        séance suivante, ou ignorées hors de la période).
     """
 
     def __init__(
@@ -717,6 +1145,7 @@ class Backtester:
         vwap_tolerance: float = 0.20,
         max_plausible_move: float = 0.20,
         periods_per_year: int = TRADING_DAYS,
+        jump_warning: float | None = 0.40,
     ) -> None:
         models = _dispatch_models(costs, constraints, capital, execution, taxes)
         self.costs: CostModel = models.get("costs", CostModel())
@@ -739,15 +1168,32 @@ class Backtester:
         self.vwap_tolerance = float(vwap_tolerance)
         self.max_plausible_move = float(max_plausible_move)
         self.periods_per_year = int(periods_per_year)
+        if jump_warning is not None and not 0.0 < float(jump_warning) < 1.0:
+            raise ValueError("jump_warning doit être dans ]0, 1[ ou None")
+        self.jump_warning = None if jump_warning is None else float(jump_warning)
 
         if "close" not in panels or "volume" not in panels:
             raise KeyError("les panels 'close' et 'volume' sont obligatoires")
-        # Copie triée pour la vue (indépendante des modifications ultérieures).
-        self._panels: dict[str, Any] = {k: _sorted_copy(v) for k, v in panels.items()}
+        # Copie normalisée (dates converties et triées), indépendante des
+        # modifications ultérieures des objets de l'appelant.
+        self._panels: dict[str, Any] = {}
+        for key, obj in panels.items():
+            try:
+                self._panels[key] = _normalize_panel(obj, key)
+            except TypeError as exc:
+                raise TypeError(_with_key(key, exc)) from exc
         close = _as_wide(self._panels["close"], "close").astype(float)
         self._panels["close"] = close
         self.dates = pd.DatetimeIndex(close.index)
         self.symbols = pd.Index(close.columns)
+        if len(self.dates):
+            # Échec immédiat (plutôt qu'au premier rebalancement) si un objet
+            # daté ne peut pas être tronqué sans anticipation.
+            for key, obj in self._panels.items():
+                try:
+                    truncate_asof(obj, self.dates[0])
+                except TypeError as exc:
+                    raise TypeError(_with_key(key, exc)) from exc
         self._prepare_arrays()
 
     @classmethod
@@ -785,6 +1231,7 @@ class Backtester:
         self._close = c
 
         af = self._wide("adj_factor")
+        self._has_adj_factor = af is not None
         if af is None:
             af = np.ones_like(c)
         else:
@@ -793,8 +1240,12 @@ class Backtester:
             af = pd.DataFrame(np.where(af > 0, af, np.nan)).ffill().to_numpy(dtype=float)
             af = np.where(np.isfinite(af), af, 1.0)
         self._af = af
+        # La vue n'est remise à l'échelle que si un facteur diffère de 1.
+        self._rescale_view = bool(np.any(np.abs(af - 1.0) > 1e-12))
 
-        vol_raw = np.clip(self._wide("volume", fill=0.0), 0.0, None)  # type: ignore[arg-type]
+        vol_in = self._wide("volume", fill=0.0)
+        assert vol_in is not None  # panel obligatoire (contrôlé à l'initialisation)
+        vol_raw = np.clip(vol_in, 0.0, None)
         self._volume = vol_raw / af  # volume en titres « ajustés »
         value = self._wide("value")
 
@@ -826,8 +1277,9 @@ class Backtester:
         val_src = np.where(np.isfinite(c), c, np.where(tradeable, px, np.nan))
         self._px_val = pd.DataFrame(val_src).ffill().to_numpy(dtype=float)
 
-        # Dividendes (montant par titre ajusté) et retenue éventuelle.
-        div = self._wide("dividend_net", fill=0.0)
+        # Dividendes (montant par titre ajusté) et retenue éventuelle ; une date
+        # de détachement hors calendrier est reportée à la séance suivante.
+        div = self._dividend_array()
         div = np.zeros_like(c) if div is None else np.clip(div, 0.0, None)
         div_adj = div * af
         if not self.taxes.dividends_reported_net:
@@ -859,6 +1311,54 @@ class Backtester:
             move = np.where(np.isfinite(move), move, m)
         self._move = move
         self._lim_up, self._lim_down = limit_flags(move, ex.price_limit, ex.limit_tolerance, self.max_plausible_move)
+        self._check_price_jumps(c, div_adj)
+
+    def _dividend_array(self) -> np.ndarray | None:
+        """``dividend_net`` aligné sur (séances, symboles), dates hors calendrier reportées."""
+        self.n_dividend_dates_off_calendar = 0
+        raw = self._panels.get("dividend_net")
+        if raw is None:
+            return None
+        df = _as_wide(raw, "dividend_net")
+        n_off = int((~pd.DatetimeIndex(df.index).isin(self.dates)).sum())
+        df = _snap_to_calendar(df, self.dates).reindex(columns=self.symbols)
+        self.n_dividend_dates_off_calendar = n_off
+        arr = df.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+        return np.where(np.isfinite(arr), arr, 0.0)
+
+    def _check_price_jumps(self, c: np.ndarray, div_adj: np.ndarray) -> None:
+        """Repère les variations de clôture invraisemblables (division non ajustée ?)."""
+        self.price_jumps = pd.DataFrame(columns=["date", "symbol", "ratio"])
+        if self.jump_warning is None or c.shape[0] < 2:
+            return
+        s = self.jump_warning
+        lo, hi = 1.0 - s, 1.0 / (1.0 - s)
+        prev = np.vstack([np.full((1, c.shape[1]), np.nan), self._px_val[:-1]])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = (c + div_adj) / prev
+            price_only = c / prev
+            # invraisemblable avec ET sans réintégration du dividende du jour
+            # (un dividende dont la baisse de cours n'apparaît pas n'est pas
+            # une division)
+            bad = (
+                np.isfinite(ratio)
+                & ((ratio < lo) | (ratio > hi))
+                & ((price_only < lo) | (price_only > hi))
+            )
+        if not bad.any():
+            return
+        ti, ji = np.nonzero(bad)
+        self.price_jumps = pd.DataFrame(
+            {"date": self.dates[ti], "symbol": self.symbols[ji], "ratio": ratio[ti, ji]}
+        )
+        first = self.price_jumps.iloc[0]
+        warnings.warn(
+            f"{len(self.price_jumps)} variation(s) de clôture invraisemblable(s) d'une séance à l'autre "
+            f"(p. ex. {first['symbol']} le {pd.Timestamp(first['date']).date()} : {first['ratio'] - 1.0:+.0%}) : "
+            "cours non ajustés des divisions ? fournir un 'close' ajusté et 'adj_factor' "
+            "(panels_from_equities) ; détail dans Backtester.price_jumps",
+            stacklevel=4,
+        )
 
     def _withholding_rates(self) -> np.ndarray:
         """Taux de retenue à la source par symbole (``TaxModel``, pays d'émission)."""
@@ -1096,9 +1596,9 @@ class Backtester:
                     js = np.asarray(buy_js, dtype=np.int64)
                     want_q = np.asarray(desired, dtype=np.int64)
                     got = self._affordable(want_q, px[js], vol[js], max(cash, 0.0))
-                    for j, w_n, n in zip(js, want_q, got, strict=True):
-                        j = int(j)
-                        n = int(n)
+                    for j_raw, w_n, n_raw in zip(js, want_q, got, strict=True):
+                        j = int(j_raw)
+                        n = int(n_raw)
                         if n < w_n:
                             blocked.append((day, self.symbols[j], "buy", int(w_n - n), "cash"))
                         if n <= 0:
@@ -1245,16 +1745,27 @@ class Backtester:
         px = self._px_val[t]
         val = np.where(np.isfinite(px), q * np.nan_to_num(px), 0.0)
         cur_w = val / nav if nav > 0 else np.zeros_like(val)
+        pend = pd.Series({self.symbols[j]: od.remaining for j, od in pending.items()}, dtype="int64", name="pending")
+        positions = pd.Series(q.copy(), index=self.symbols, name="positions")
+        rescale = None
+        if self._rescale_view:
+            # Vue « point-in-time » : cours, facteurs et quantités exprimés en
+            # unités du jour de décision (f_s / f_asof ne dépend que des
+            # divisions intervenues dans ]s, asof]) ; sans cela, le cours
+            # ajusté à rebours révélerait les divisions futures.
+            f_now = pd.Series(self._af[t], index=self.symbols)
+            rescale = {"close": 1.0 / f_now, "adj_factor": 1.0 / f_now}
+            positions = (positions * f_now).rename("positions")
+            pend = (pend.astype(float) * f_now.reindex(pend.index)).rename("pending")
         view = PanelView(
             self._panels,
             asof,
             nav=nav,
             cash=cash,
-            positions=pd.Series(q.copy(), index=self.symbols, name="positions"),
+            positions=positions,
             weights=pd.Series(cur_w, index=self.symbols, name="weights"),
-            pending=pd.Series(
-                {self.symbols[j]: od.remaining for j, od in pending.items()}, dtype="int64", name="pending"
-            ),
+            pending=pend,
+            rescale=rescale,
         )
         w = self._parse_weights(fn(asof, view), warned)
         if w is None:
@@ -1376,6 +1887,9 @@ class Backtester:
                 "constraints": self.constraints,
                 "lot_size": self.lot_size,
                 "n_vwap_fallback": self.n_vwap_fallback,
+                "adj_factor": self._has_adj_factor,
+                "n_dividend_dates_off_calendar": self.n_dividend_dates_off_calendar,
+                "n_price_jumps": len(self.price_jumps),
             },
         )
 
@@ -1385,16 +1899,34 @@ class Backtester:
 # ---------------------------------------------------------------------------
 
 
-def _dividends_from_last_div(last_net: pd.DataFrame, last_date: pd.DataFrame) -> pd.DataFrame:
-    """Dividendes déduits des colonnes ``last_div_net`` / ``last_div_date`` du BOC.
+#: Fenêtre (jours) de fusion d'une correction de date à montant identique,
+#: alignée sur ``store.detect_dividends``.
+_DIV_CORRECTION_DAYS = 60
+
+_DIVIDEND_METHODS = ("detect", "last_div")
+
+
+def _dividends_from_last_div(
+    last_net: pd.DataFrame, last_date: pd.DataFrame, *, merge_days: int = _DIV_CORRECTION_DAYS
+) -> pd.DataFrame:
+    """Repli **explicite** : dividendes à la date de mise à jour de la colonne BOC.
 
     Un nouveau dividende est détecté à la première séance où la date de
-    paiement publiée est strictement postérieure à toutes celles observées
-    auparavant pour ce titre ; il est crédité **à cette séance d'observation** (jamais avant
-    sa publication : aucune anticipation). La première observation de chaque
-    titre (état initial de l'historique) n'est pas créditée. Approximation :
-    le détachement réel précède souvent la publication ; préférer les
-    opérations sur titres de ``data/store.py`` quand elles sont disponibles.
+    paiement publiée (``last_div_date``) est strictement postérieure à toutes
+    celles observées auparavant pour ce titre ; il est crédité **à cette
+    séance d'observation**. La première observation de chaque titre (état
+    initial de l'historique) n'est pas créditée. Une correction de date à
+    montant identique moins de ``merge_days`` jours après un dividende
+    détecté est le même dividende (fusion, comme ``store.detect_dividends``) :
+    sans cette fusion il serait crédité deux fois.
+
+    Biais connu (raison pour laquelle ce n'est pas le défaut) : la BRVM met
+    parfois à jour cette colonne plusieurs semaines **après** le détachement.
+    Une position achetée entre le détachement et la mise à jour, donc au cours
+    déjà ex-dividende, recevrait un dividende auquel elle n'a pas droit, et
+    une position vendue entre les deux le perdrait. Préférer
+    ``store.detect_dividends`` (date de détachement estimée), chemin par
+    défaut de :func:`panels_from_equities`.
     """
     net = last_net.apply(pd.to_numeric, errors="coerce")
     dt = last_date.apply(pd.to_datetime, errors="coerce").reindex(index=net.index, columns=net.columns)
@@ -1410,8 +1942,104 @@ def _dividends_from_last_div(last_net: pd.DataFrame, last_date: pd.DataFrame) ->
         # toutes celles déjà observées (robuste aux allers-retours de saisie)
         prev_max = b_o.cummax().shift(1)
         new = (b_o > prev_max).fillna(False) & (a_o > 0)
-        out.loc[new[new].index, col] = a_o[new].to_numpy()
+        last_amount: float | None = None
+        last_seen: pd.Timestamp | None = None
+        for day, amount in a_o[new].items():
+            day = pd.Timestamp(day)
+            amount = float(amount)
+            if (
+                last_amount is not None
+                and last_seen is not None
+                and abs(amount - last_amount) < 1e-6
+                and (day - last_seen).days <= merge_days
+            ):
+                continue  # simple correction de la date de paiement
+            out.loc[day, col] = amount
+            last_amount, last_seen = amount, day
     return out
+
+
+def _dividend_panel(table: pd.DataFrame | None, dates: pd.DatetimeIndex, symbols: pd.Index) -> pd.DataFrame:
+    """Panel large ``D_{t,i}`` à partir d'une table d'événements (``symbol, ex_date, amount``).
+
+    Chaque montant (dividende net par action, en unités **brutes** du jour de
+    détachement, comme le publie le BOC) est placé à la séance de
+    détachement, ramenée au calendrier par ``searchsorted(ex_date, "left")``
+    (première séance ``≥ ex_date`` si la séance manque) ; montants d'un même
+    jour additionnés ; événements hors de ``[dates[0], dates[-1]]`` ignorés.
+    """
+    out = pd.DataFrame(0.0, index=dates, columns=symbols)
+    if table is None or not len(table) or not len(dates):
+        return out
+    need = {"symbol", "ex_date", "amount"}
+    if not need.issubset(table.columns):
+        raise KeyError(f"table de dividendes : colonnes manquantes {sorted(need - set(table.columns))}")
+    ev = table.loc[:, ["symbol", "ex_date", "amount"]].copy()
+    ev["ex_date"] = pd.to_datetime(ev["ex_date"], errors="coerce")
+    ev["amount"] = pd.to_numeric(ev["amount"], errors="coerce")
+    ok = ev["symbol"].isin(symbols) & ev["ex_date"].notna() & np.isfinite(ev["amount"]) & (ev["amount"] > 0)
+    ev = ev[ok & (ev["ex_date"] >= dates[0]) & (ev["ex_date"] <= dates[-1])]
+    if not len(ev):
+        return out
+    rows = dates.searchsorted(pd.DatetimeIndex(ev["ex_date"]), side="left")
+    cols = symbols.get_indexer(ev["symbol"])
+    arr = out.to_numpy(dtype=float, copy=True)
+    np.add.at(arr, (rows, cols), ev["amount"].to_numpy(dtype=float))
+    return pd.DataFrame(arr, index=dates, columns=symbols)
+
+
+def _complete_dividend_table(table: pd.DataFrame) -> pd.DataFrame:
+    """Table d'événements au format de ``store.detect_dividends`` (``first_seen`` = ``ex_date`` si absent)."""
+    need = {"symbol", "ex_date", "amount"}
+    if not need.issubset(table.columns):
+        raise KeyError(f"table de dividendes : colonnes manquantes {sorted(need - set(table.columns))}")
+    out = table.copy()
+    out["ex_date"] = pd.to_datetime(out["ex_date"], errors="coerce")
+    if "first_seen" not in out.columns:
+        out["first_seen"] = out["ex_date"]
+    else:
+        out["first_seen"] = pd.to_datetime(out["first_seen"], errors="coerce").fillna(out["ex_date"])
+    return out
+
+
+def _store_ready(df: pd.DataFrame) -> pd.DataFrame:
+    """Complète les colonnes facultatives attendues par ``brvm_alpha.data.store``.
+
+    ``ex_div`` (marqueur ``(d)``) faux, ``flags`` vide, ``prev_close`` /
+    ``ref_price`` / ``last_div_net`` NaN et ``last_div_date`` NaT si absents :
+    la détection se replie alors sur les indices restants.
+    """
+    out = df.copy()
+    for col in ("prev_close", "ref_price", "last_div_net"):
+        if col not in out.columns:
+            out[col] = np.nan
+    out["last_div_date"] = (
+        pd.to_datetime(out["last_div_date"], errors="coerce") if "last_div_date" in out.columns else pd.NaT
+    )
+    if "ex_div" in out.columns:
+        out["ex_div"] = out["ex_div"].astype(object).where(out["ex_div"].notna(), False).astype(bool)
+    else:
+        out["ex_div"] = False
+    out["flags"] = out["flags"].astype(object).where(out["flags"].notna(), "").astype(str) if "flags" in out else ""
+    return out.sort_values(["date", "symbol"], kind="stable").reset_index(drop=True)
+
+
+def _adjustment_factor(adjusted: pd.DataFrame, raw: pd.DataFrame) -> pd.DataFrame:
+    """Facteur ``f_t = P̃_t / P_t`` (cours ajusté / cours brut), reporté vers l'avant.
+
+    Avec ``adjusted_prices`` (convention de la colonne ``cfacpr`` de CRSP),
+    ``P̃_t = P_t / Π_{s>t} k_s`` : ``f`` est constant par morceaux et vaut
+    ``1 / Π`` des ratios des divisions postérieures à ``t``. Valeurs non
+    finies ou ≤ 0 (titre non coté) : dernier facteur connu (jamais de
+    remplissage arrière), 1 avant la première observation (convention du
+    moteur). Écarts à 1 inférieurs à 1e-9 (arrondis) ramenés à 1.
+    """
+    raw = raw.reindex(index=adjusted.index, columns=adjusted.columns).astype(float)
+    adj = adjusted.astype(float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f = adj / raw
+    f = f.where(np.isfinite(f) & (f > 0)).ffill()
+    return f.mask((f - 1.0).abs() < 1e-9, 1.0)
 
 
 def panels_from_equities(
@@ -1420,29 +2048,84 @@ def panels_from_equities(
     close: pd.DataFrame | None = None,
     dividend_net: pd.DataFrame | None = None,
     infer_dividends: bool = True,
+    dividends: pd.DataFrame | None = None,
+    corporate_actions: pd.DataFrame | None = None,
+    adjust: bool = True,
+    dividend_method: str = "detect",
 ) -> dict[str, Any]:
     """Construit les panels larges du moteur à partir de ``equities.parquet``.
+
+    Unités. Le moteur raisonne en titres **ajustés des divisions** : le cours
+    ``close`` est ajusté (``P̃ = P · f``) et ``adj_factor`` (``f = P̃ / P``)
+    convertit les grandeurs brutes du BOC : volume ``V / f``, VWAP
+    ``(valeur / V) · f``, dividende ``D · f``. Sans ce facteur, avant une
+    division 1:k, un dividende brut serait crédité k fois sur des titres
+    « ajustés » (biais optimiste énorme), le VWAP brut serait rejeté comme
+    incohérent et le plafond de participation serait faux d'un facteur k.
+
+    Dividendes. Par défaut (``dividend_method="detect"``), les montants
+    proviennent de ``store.detect_dividends`` : un nouveau dividende apparaît
+    quand la date du « dernier dividende payé » change, mais il est daté du
+    **détachement** (marqueur ``(d)``, baisse de la référence d'environ le
+    montant, à défaut estimation par la date de paiement), et une correction
+    de date à montant identique (≤ 60 jours) est fusionnée. Le dividende
+    revient aux titres détenus à l'ouverture de la séance de détachement,
+    celle où le cours baisse d'environ le montant (Elton & Gruber, 1970) :
+    c'est la date d'ayant droit, même si le BOC ne met à jour la colonne que
+    plus tard. ``dividend_method="last_div"`` est un repli explicite
+    (:func:`_dividends_from_last_div`, avec avertissement) qui crédite à la
+    date de mise à jour de la colonne.
 
     Parameters
     ----------
     equities
         Table longue (schéma ``ARCHITECTURE.md`` : une ligne par (date,
-        symbole)).
+        symbole)), ou indexée par ``(date, symbol)`` (``store.load_equities``).
     close
-        Cours ajustés des divisions (``store.adjusted_prices``) ; à défaut la
-        colonne ``close`` brute.
+        Cours ajustés des divisions (``store.adjusted_prices``). ``adj_factor``
+        en est déduit (``close / close brut``). Ne pas fournir de cours
+        ajustés **des dividendes** (ils seraient comptés deux fois).
     dividend_net
-        Dividendes nets par date de détachement ; à défaut, si
-        ``infer_dividends``, déduits de ``last_div_net`` / ``last_div_date``
-        (:func:`_dividends_from_last_div`), sinon 0.
+        Dividendes nets par action (unités brutes) par date de détachement
+        (panel large) ; prioritaire sur ``dividends``.
+    infer_dividends
+        Si ni ``dividend_net`` ni ``dividends`` n'est fourni : déduire les
+        dividendes (``dividend_method``) ; ``False`` ⇒ aucun dividende.
+    dividends
+        Table d'événements (``dividends.parquet`` : ``symbol, ex_date,
+        amount``) ; à défaut calculée par ``store.detect_dividends``.
+    corporate_actions
+        Opérations sur titres (``corporate_actions.parquet``) pour
+        l'ajustement ; à défaut ``store.detect_corporate_actions``.
+    adjust
+        Si ``close`` n'est pas fourni : ``True`` (défaut) calcule les cours
+        ajustés par ``store.adjusted_prices`` ; ``False`` garde les cours
+        bruts **avec un avertissement** (une division 1:k y apparaît comme une
+        chute de ``1 − 1/k``, p. ex. −83 % pour 1:6).
+    dividend_method
+        ``"detect"`` (défaut, date de détachement) ou ``"last_div"`` (repli).
 
     Returns
     -------
     dict
-        ``close, volume, value, status, prev_close, ref_price, change_pct,
-        open, net_yield_pct, per, last_div_net, last_div_date`` (si présents),
-        ``dividend_net``, ``country`` (``Series``) et ``sector`` (``Series``).
+        ``close`` (ajusté), ``adj_factor`` (si ajusté), ``volume, value,
+        status, prev_close, ref_price, change_pct, open, net_yield_pct, per,
+        last_div_net, last_div_date`` (bruts, si présents), ``dividend_net``,
+        ``country`` (``Series``) et ``sector`` (``Series``).
+
+    References
+    ----------
+    * Elton, E. J. & Gruber, M. J. (1970). Marginal Stockholder Tax Rates and
+      the Clientele Effect. *Review of Economics and Statistics*, 52(1), 68-74.
+    * CRSP (2001). *CRSP Data Description Guide* (facteurs d'ajustement des
+      cours ``cfacpr`` et des quantités ``cfacshr``).
     """
+    if dividend_method not in _DIVIDEND_METHODS:
+        raise ValueError(f"dividend_method doit valoir l'un de {_DIVIDEND_METHODS}")
+    if "date" not in equities.columns or "symbol" not in equities.columns:
+        names = [n for n in equities.index.names if n is not None]
+        if {"date", "symbol"} & set(names):
+            equities = equities.reset_index()
     need = {"date", "symbol", "close", "volume"}
     if not need.issubset(equities.columns):
         raise KeyError(f"colonnes manquantes : {sorted(need - set(equities.columns))}")
@@ -1468,18 +2151,54 @@ def panels_from_equities(
         if c in df.columns:
             panels[c] = df.pivot(index="date", columns="symbol", values=c).sort_index()
     panels["volume"] = panels["volume"].astype(float).fillna(0.0)
+    raw_close = panels["close"].astype(float)
+    has_last_div = "last_div_net" in df.columns and "last_div_date" in df.columns
+
+    use_detect = dividend_net is None and dividends is None and infer_dividends and dividend_method == "detect"
+    need_store = use_detect or (close is None and adjust)
+    ready = _store_ready(df) if need_store else None
+    div_table = _complete_dividend_table(dividends) if dividends is not None else None
+    if div_table is None and need_store and has_last_div:
+        from brvm_alpha.data import store
+
+        div_table = store.detect_dividends(ready)
+
+    if close is None and adjust:
+        from brvm_alpha.data import store
+
+        ca = corporate_actions if corporate_actions is not None else store.detect_corporate_actions(ready, div_table)
+        close = store.adjusted_prices(ready, ca, div_table)
     if close is not None:
-        panels["close"] = close.sort_index()
+        adj = _as_wide(close, "close").astype(float)
+        panels["close"] = adj
+        panels["adj_factor"] = _adjustment_factor(adj, raw_close)
+    else:
+        warnings.warn(
+            "panels_from_equities(adjust=False) : cours BRUTS non ajustés des divisions ; une division 1:k "
+            "apparaîtra comme une chute de 1 - 1/k du portefeuille (fournir close=store.adjusted_prices(...))",
+            stacklevel=2,
+        )
+
+    dates = pd.DatetimeIndex(panels["close"].index)
+    symbols = pd.Index(panels["close"].columns)
     if dividend_net is not None:
         panels["dividend_net"] = dividend_net.sort_index()
-    elif infer_dividends and "last_div_net" in panels and "last_div_date" in panels:
-        panels["dividend_net"] = _dividends_from_last_div(panels["last_div_net"], panels["last_div_date"])
+    elif div_table is not None and (dividends is not None or (infer_dividends and dividend_method == "detect")):
+        panels["dividend_net"] = _dividend_panel(div_table, dates, symbols)
+    elif infer_dividends and has_last_div and dividend_method == "last_div":
+        warnings.warn(
+            "dividend_method='last_div' : dividendes crédités à la date de mise à jour de la colonne "
+            "« dernier dividende » du BOC, parfois plusieurs semaines après le détachement (droit mal attribué)",
+            stacklevel=2,
+        )
+        last_net = panels["last_div_net"].reindex(index=dates, columns=symbols)
+        last_date = panels["last_div_date"].reindex(index=dates, columns=symbols)
+        panels["dividend_net"] = _dividends_from_last_div(last_net, last_date)
     else:
-        panels["dividend_net"] = pd.DataFrame(0.0, index=panels["close"].index, columns=panels["close"].columns)
+        panels["dividend_net"] = pd.DataFrame(0.0, index=dates, columns=symbols)
     from brvm_alpha.reference import countries
 
-    symbols = list(panels["close"].columns)
-    panels["country"] = countries(symbols)
+    panels["country"] = countries(list(symbols))
     if "sector" in df.columns:
-        panels["sector"] = df.sort_values("date").groupby("symbol")["sector"].last().reindex(symbols)
+        panels["sector"] = df.sort_values("date").groupby("symbol")["sector"].last().reindex(list(symbols))
     return panels

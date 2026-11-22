@@ -216,7 +216,8 @@ def test_real_dividend_detected(div_panel: Path) -> None:
 
 def synth(symbol: str, closes: list[float], *, prev: list[float] | None = None, ref: list[float] | None = None,
           div: list[float] | None = None, div_date: list[str | None] | None = None,
-          ex_div: list[bool] | None = None, start: str = "2024-01-01") -> pd.DataFrame:
+          ex_div: list[bool] | None = None, flags: list[str] | None = None,
+          start: str = "2024-01-01") -> pd.DataFrame:
     """Petit panel synthétique d'un titre (séances ouvrées consécutives)."""
     n = len(closes)
     dates = pd.bdate_range(start, periods=n)
@@ -227,29 +228,48 @@ def synth(symbol: str, closes: list[float], *, prev: list[float] | None = None, 
         "last_div_net": div if div is not None else [np.nan] * n,
         "last_div_date": pd.to_datetime(div_date if div_date is not None else [None] * n),
         "ex_div": ex_div if ex_div is not None else [False] * n,
-        "flags": "", "status": "traded",
+        "flags": flags if flags is not None else [""] * n, "status": "traded",
     })
 
 
 def test_split_by_price_jump_and_reverse_split() -> None:
     a = synth("AAAA", [5000, 5050, 1010, 1000, 1020])  # 1:5 sans ajustement publié
-    b = synth("BBBB", [40, 41, 405, 410])  # regroupement 10:1
-    ca = detect_corporate_actions(pd.concat([a, b]))
+    b = synth("BBBB", [40, 41, 405, 410], prev=[np.nan, 40, 410, 405])  # regroupement 10:1 publié
+    c = synth("CCCC", [40, 41, 80, 82])  # doublement sans ajustement publié : pas un regroupement
+    ca = detect_corporate_actions(pd.concat([a, b, c]))
     ra = ca[ca["symbol"] == "AAAA"].iloc[0]
     assert (ra["kind"], ra["ratio"], ra["confidence"]) == ("split", 5.0, "medium")
     assert ra["date"] == a["date"].iloc[2]
     rb = ca[ca["symbol"] == "BBBB"].iloc[0]
     assert rb["kind"] == "reverse_split" and rb["ratio"] == pytest.approx(0.1)
+    assert ca[ca["symbol"] == "CCCC"].iloc[0]["kind"] == "unexplained_jump"
 
 
 def test_published_adjustment_ratios() -> None:
-    # Ajustement publié par la BRVM : « 3 pour 2 » (1,5) puis ajustement non simple (droits).
-    a = synth("AAAA", [3000, 3020, 2030], prev=[np.nan, 3000, 2013.33])
-    b = synth("BBBB", [5505, 4175, 4200], prev=[np.nan, 3890, 4175])
-    ca = detect_corporate_actions(pd.concat([a, b])).set_index("symbol")
+    # Ajustements publiés par la BRVM (cours précédent du lendemain ajusté).
+    a = synth("AAAA", [3000, 3020, 2030], prev=[np.nan, 3000, 2013.33])  # « 3 pour 2 »
+    b = synth("BBBB", [5505, 4175, 4200], prev=[np.nan, 3890, 4175],  # droits (« Ex-d »)
+              ref=[3890, 4175, 4200], flags=["(EX-D)", "", ""])
+    c = synth("CCCC", [120000, 1875, 1880], prev=[np.nan, 1875, 1875], flags=["(#)", "", ""])  # 1:64
+    d = synth("DDDD", [3500, 2500, 2500], prev=[np.nan, 2500, 2500])  # remise à niveau sans marqueur
+    e = synth("EEEE", [100, 105, 106, 107], prev=[np.nan, 100, 105, 2000])  # précédent publié aberrant
+    ca = detect_corporate_actions(pd.concat([a, b, c, d, e])).set_index("symbol")
     assert ca.loc["AAAA", "kind"] == "split" and ca.loc["AAAA", "ratio"] == 1.5
     assert ca.loc["BBBB", "kind"] == "capital_adjustment"
     assert ca.loc["BBBB", "ratio"] == pytest.approx(5505 / 3890)
+    assert ca.loc["CCCC", "kind"] == "split" and ca.loc["CCCC", "ratio"] == 64
+    assert ca.loc["DDDD", "kind"] == "unexplained_jump"
+    assert "EEEE" not in ca.index  # pas de rupture du cours : pas d'événement
+
+
+def test_price_reset_round_trip_keeps_returns_continuous() -> None:
+    # Référence publiée qui fait des allers-retours (SAFC fin 2018) : rendements continus.
+    eq = synth("AAAA", [5300, 5300, 215, 5300, 5300, 215, 210],
+               prev=[np.nan, 5300, 215, 5300, 5300, 215, 215])
+    ca = detect_corporate_actions(eq)
+    assert set(ca["kind"]) <= {"price_reset", "split"}
+    t = adjusted_table(eq, ca)
+    assert t["ret"].abs().max() < 0.05
 
 
 def test_dividend_drop_is_not_a_split() -> None:

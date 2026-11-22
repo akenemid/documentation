@@ -5,9 +5,17 @@ ligne du panel = une coupe transversale) : la valeur en ``t`` ne dépend que
 de la ligne ``t``. Elles n'introduisent donc aucun biais d'anticipation. Les
 seules fonctions tournées vers le futur sont :func:`forward_returns` (cible
 d'évaluation, jamais une caractéristique) et, par construction, l'IC et les
-rendements par quantile qui l'utilisent ; :func:`shrunk_ic_weights` et
-:func:`rolling_ic_weights` appliquent un embargo pour que les poids en ``t``
-ne reposent que sur des IC **déjà observables** en ``t``.
+rendements par quantile qui l'utilisent.
+
+L'IC daté ``d`` dépend des cours jusqu'à ``d + lag + h`` : il n'est observable
+qu'en ``d + lag + h``. :func:`shrunk_ic_weights` et :func:`rolling_ic_weights`
+appliquent donc **par défaut** un embargo ``E = lag + horizon`` (22 séances
+avec les conventions par défaut de :func:`forward_returns`, ``h = 21``,
+``lag = 1``) : les poids décidés en ``t`` ne reposent que sur des IC datés
+``<= t - E``, déjà observables en ``t``. Un embargo explicite plus court que
+``lag + horizon`` (quand l'un des deux est précisé) lève ``ValueError`` ;
+``embargo=0`` n'est légitime que pour un historique d'IC déjà daté de sa date
+d'observation. Lopez de Prado (2018, ch. 7) pour la purge et l'embargo.
 
 Convention d'orientation : un signal doit être orienté de sorte qu'une valeur
 élevée soit attractive (par ex. ``-volatilité`` pour l'anomalie de faible
@@ -26,6 +34,8 @@ Références
   McGraw-Hill (IC, loi fondamentale, scores).
 * James, W. & Stein, C. (1961). Estimation with Quadratic Loss. *Proc. 4th
   Berkeley Symposium on Mathematical Statistics and Probability*, 1, 361-379.
+* Lopez de Prado, M. (2018). *Advances in Financial Machine Learning*. Wiley
+  (ch. 7 : validation croisée purgée, embargo).
 * Qian, E., Hua, R. & Sorensen, E. (2007). *Quantitative Equity Portfolio
   Management*. Chapman & Hall/CRC (pondération des facteurs par ``IC/σ(IC)``).
 * Spearman, C. (1904). The Proof and Measurement of Association between Two
@@ -61,6 +71,10 @@ _NA_GROUP = "__sans_groupe__"
 _EPS = 1e-14
 _WINSOR_MAX_ITER = 500
 _WINSOR_RTOL = 1e-9
+
+#: Horizon et délai d'exécution par défaut des rendements futurs (séances).
+DEFAULT_HORIZON: int = 21
+DEFAULT_LAG: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +373,7 @@ def combine(
 
 
 def forward_returns(
-    tr_index: pd.DataFrame | pd.Series, horizon: int = 21, lag: int = 1
+    tr_index: pd.DataFrame | pd.Series, horizon: int = DEFAULT_HORIZON, lag: int = DEFAULT_LAG
 ) -> pd.DataFrame | pd.Series:
     """Rendement futur sur ``horizon`` séances, **pour l'évaluation seulement**.
 
@@ -482,6 +496,72 @@ def _shrink(ir: pd.Series, prior: pd.Series, shrinkage: float) -> pd.Series:
     return w / w.sum()
 
 
+def _resolve_embargo(embargo: int | None, horizon: int | None, lag: int | None) -> int:
+    """Embargo effectif en séances : ``lag + horizon`` par défaut.
+
+    Un ``embargo`` explicite est accepté tel quel (par ex. ``0`` pour un
+    historique d'IC déjà daté de sa date d'observation), sauf s'il est plus
+    court que ``lag + horizon`` alors que ``horizon`` ou ``lag`` est précisé
+    (paramétrage contradictoire, donc anticipation).
+    """
+    h = DEFAULT_HORIZON if horizon is None else int(horizon)
+    lg = DEFAULT_LAG if lag is None else int(lag)
+    if h < 1 or lg < 0:
+        raise ValueError("il faut horizon >= 1 et lag >= 0")
+    required = h + lg
+    if embargo is None:
+        return required
+    if embargo < 0:
+        raise ValueError("embargo doit être >= 0")
+    if (horizon is not None or lag is not None) and embargo < required:
+        raise ValueError(
+            f"embargo={embargo} < lag + horizon = {required} : les poids utiliseraient des IC "
+            "qui dépendent de rendements postérieurs à la date de décision"
+        )
+    return int(embargo)
+
+
+def _last_usable_rows(
+    ic_index: pd.Index,
+    decision: pd.Index,
+    embargo: int,
+    calendar: pd.DatetimeIndex | None,
+) -> np.ndarray:
+    """Dernière ligne d'IC utilisable pour chaque date de décision (-1 : aucune).
+
+    Sans ``calendar``, l'embargo est compté en **lignes** de l'historique :
+    exact pour un IC quotidien aligné sur les séances, prudent (plus long)
+    si l'historique est sous-échantillonné. Avec ``calendar`` (séances), il
+    est compté en séances : seuls les IC datés ``<= calendar[p(t) - E]``, où
+    ``p(t)`` est la dernière séance ``<= t``, sont utilisables.
+    """
+    pos_t = ic_index.searchsorted(decision, side="right") - 1
+    if calendar is None:
+        return np.asarray(pos_t - embargo, dtype=int)
+    if not isinstance(ic_index, pd.DatetimeIndex):
+        raise TypeError("calendar exige un historique d'IC indexé par un DatetimeIndex")
+    cal = pd.DatetimeIndex(calendar).unique().sort_values()
+    if not len(cal):
+        return np.full(len(decision), -1, dtype=int)
+    p = cal.searchsorted(decision, side="right") - 1 - embargo
+    last = ic_index.searchsorted(cal[np.clip(p, 0, None)], side="right") - 1
+    return np.where(p >= 0, last, -1).astype(int)
+
+
+def _check_ic_args(shrinkage: float, lookback: int | None) -> None:
+    if not 0.0 <= shrinkage <= 1.0:
+        raise ValueError("shrinkage doit être dans [0, 1]")
+    if lookback is not None and lookback < 1:
+        raise ValueError("lookback doit être >= 1 ou None")
+
+
+def _sorted_ic(ic_history: pd.DataFrame) -> pd.DataFrame:
+    ic = _finite(ic_history)
+    if not ic.index.is_monotonic_increasing:
+        raise ValueError("l'index de ic_history doit être trié par date croissante")
+    return ic
+
+
 def shrunk_ic_weights(
     ic_history: pd.DataFrame,
     prior: Mapping[str, float],
@@ -489,9 +569,12 @@ def shrunk_ic_weights(
     min_periods: int = 12,
     lookback: int | None = None,
     asof: pd.Timestamp | str | None = None,
-    embargo: int = 0,
+    embargo: int | None = None,
+    horizon: int | None = None,
+    lag: int | None = None,
+    calendar: pd.DatetimeIndex | None = None,
 ) -> pd.Series:
-    """Poids de combinaison ∝ IR d'IC, rétrécis vers un a priori.
+    """Poids de combinaison ∝ IR d'IC, rétrécis vers un a priori, sans anticipation.
 
     ``IR_k = mean(IC_k) / sd(IC_k)`` (Qian, Hua & Sorensen, 2007) ;
     ``w_IC,k = max(IR_k, 0) / Σ_j max(IR_j, 0)`` ;
@@ -506,29 +589,41 @@ def shrunk_ic_weights(
     normalisé (équipondération s'il est nul).
 
     Absence d'anticipation : l'IC daté ``d`` dépend des rendements jusqu'à
-    ``d + lag + h``. Pour décider en ``asof``, ne garder que les IC datés
-    ``<= asof`` puis retirer les ``embargo >= lag + h`` dernières lignes.
+    ``d + lag + h``. Pour décider en ``asof`` (par défaut : dernière date de
+    l'historique), seuls les IC datés au plus tard ``E`` séances avant
+    ``asof`` sont utilisés, avec ``E = embargo`` ou, par défaut,
+    ``E = lag + horizon`` (22 séances pour ``h = 21``, ``lag = 1``).
 
     Parameters
     ----------
     ic_history
-        IC par date (lignes) et par signal (colonnes).
+        IC par date (lignes, triées) et par signal (colonnes), daté comme
+        :func:`information_coefficient` (date du signal).
     prior
         Poids a priori par signal.
     shrinkage
         ``s ∈ [0, 1]`` (1 : a priori seul ; 0 : IC seuls).
     lookback
-        Si fourni, seules les ``lookback`` dernières lignes (après embargo).
+        Si fourni, seules les ``lookback`` dernières lignes utilisables.
+    asof
+        Date de décision ; ``None`` : dernière ligne de ``ic_history``.
+    embargo
+        Embargo en séances ; ``None`` (défaut) : ``lag + horizon``.
+    horizon, lag
+        Paramètres de :func:`forward_returns` ayant servi aux IC (défauts
+        ``21`` et ``1``). Les préciser interdit un ``embargo`` plus court.
+    calendar
+        Calendrier des séances, pour compter l'embargo en séances lorsque
+        l'historique d'IC est sous-échantillonné (par ex. IC mensuels) ;
+        sinon l'embargo est compté en lignes (prudent dans ce cas).
     """
-    if not 0.0 <= shrinkage <= 1.0:
-        raise ValueError("shrinkage doit être dans [0, 1]")
-    if embargo < 0:
-        raise ValueError("embargo doit être >= 0")
-    ic = _finite(ic_history)
-    if asof is not None:
-        ic = ic.loc[: pd.Timestamp(asof)]
-    if embargo:
-        ic = ic.iloc[: max(len(ic) - embargo, 0)]
+    _check_ic_args(shrinkage, lookback)
+    emb = _resolve_embargo(embargo, horizon, lag)
+    ic = _sorted_ic(ic_history)
+    if len(ic):
+        decision = pd.Index([ic.index[-1] if asof is None else pd.Timestamp(asof)])
+        last = int(_last_usable_rows(ic.index, decision, emb, calendar)[0])
+        ic = ic.iloc[: max(last + 1, 0)]
     if lookback is not None:
         ic = ic.iloc[-lookback:]
     names = list(dict.fromkeys([*prior.keys(), *ic.columns]))
@@ -548,26 +643,40 @@ def rolling_ic_weights(
     shrinkage: float = 0.5,
     min_periods: int = 12,
     lookback: int | None = None,
-    embargo: int = 0,
+    embargo: int | None = None,
+    horizon: int | None = None,
+    lag: int | None = None,
+    calendar: pd.DatetimeIndex | None = None,
 ) -> pd.DataFrame:
     """Poids :func:`shrunk_ic_weights` recalculés à chaque date, sans anticipation.
 
-    La ligne ``t`` n'utilise que les IC des lignes ``<= t - embargo``
-    (fenêtre glissante de ``lookback`` lignes, ou expansive). Avant que
-    ``min_periods`` IC soient disponibles, les poids valent l'a priori.
+    La ligne ``t`` n'utilise que les IC des lignes ``<= t - E`` (fenêtre
+    glissante de ``lookback`` lignes, ou expansive), ``E = embargo`` ou, par
+    défaut, ``E = lag + horizon`` ; avec ``calendar``, ``E`` est compté en
+    séances (voir :func:`shrunk_ic_weights`). La ligne ``t`` est identique à
+    ``shrunk_ic_weights(..., asof=t)``. Avant que ``min_periods`` IC soient
+    utilisables, les poids valent l'a priori.
     """
-    if not 0.0 <= shrinkage <= 1.0:
-        raise ValueError("shrinkage doit être dans [0, 1]")
-    ic = _finite(ic_history)
+    _check_ic_args(shrinkage, lookback)
+    emb = _resolve_embargo(embargo, horizon, lag)
+    ic = _sorted_ic(ic_history)
     names = list(dict.fromkeys([*prior.keys(), *ic.columns]))
     p = _normalized_prior(prior, names)
     ic = ic.reindex(columns=names)
-    roll = ic.rolling(lookback, min_periods=1) if lookback else ic.expanding(min_periods=1)
-    mean = roll.mean().shift(embargo)
-    sd = roll.std(ddof=1).shift(embargo)
-    cnt = roll.count().shift(embargo).fillna(0.0)
-    ir = (mean / sd).where((cnt >= min_periods) & (sd > _EPS), 0.0).fillna(0.0).clip(lower=0.0)
-    IR = ir.to_numpy(dtype=float)
+    roll = ic.rolling(lookback, min_periods=1) if lookback is not None else ic.expanding(min_periods=1)
+    last = _last_usable_rows(ic.index, ic.index, emb, calendar)[:, None]
+    last = np.broadcast_to(last, ic.shape)
+
+    def _at_cutoff(stat: pd.DataFrame) -> np.ndarray:
+        arr = stat.to_numpy(dtype=float)
+        return np.where(last >= 0, np.take_along_axis(arr, np.clip(last, 0, None), axis=0), np.nan)
+
+    mean = _at_cutoff(roll.mean())
+    sd = _at_cutoff(roll.std(ddof=1))
+    cnt = np.nan_to_num(_at_cutoff(roll.count()), nan=0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ir = np.where((cnt >= min_periods) & (sd > _EPS), mean / sd, 0.0)
+    IR = np.clip(np.nan_to_num(ir, nan=0.0), 0.0, None)
     tot = IR.sum(axis=1, keepdims=True)
     prior_row = p.to_numpy(dtype=float)[None, :]
     with np.errstate(invalid="ignore", divide="ignore"):

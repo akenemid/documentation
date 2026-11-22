@@ -13,7 +13,10 @@ Fonctions principales :
   Toutes respectent : long-only, ``Σw = 1 − cash_buffer`` (si réalisable),
   ``w_i ≤ max_weight``, plafond de liquidité ``w_i ≤ liquidity_i``, plafonds
   secteur / pays, au plus ``max_names`` lignes, toute ligne non nulle
-  ``≥ min_weight``.
+  ``≥ min_weight``. « Si réalisable » est vérifié exactement : lorsque les
+  meilleurs scores sont trop peu liquides, la sélection est résolue par
+  programmation linéaire en nombres entiers (cardinalité + poids
+  semi-continus) plutôt que gloutonnement.
 * :func:`liquidity_caps` — poids maximal par titre déduit de la valeur
   quotidienne moyenne échangée (ADV), du capital et du délai de sortie.
 * :func:`average_daily_value` — ADV sans biais d'anticipation.
@@ -777,24 +780,143 @@ def _validate_constraints(c: Constraints) -> None:
         raise ValueError("les plafonds secteur/pays doivent être > 0")
 
 
-def _select(
-    order: np.ndarray,
+_MILP_CAP_TOL = 1e-7  # tolérance (absolue) sur la capacité visée dans les PLNE de sélection
+_MILP_TIME_LIMIT = 10.0  # garde-fou (secondes) par résolution HiGHS ; jamais atteint en pratique
+
+
+@dataclass
+class _Selection:
+    """Résultat de :func:`_select`.
+
+    ``idx`` : titres retenus (ordre des scores) ; ``capacity`` : investissement
+    maximal ``C*`` réalisable avec au plus ``k_max`` lignes (et au moins
+    ``min_names`` si c'est réalisable ; PLNE), ``None`` s'il n'a pas été
+    calculé (les ``k_max`` meilleurs scores suffisent) ;
+    ``support`` : lignes d'une solution témoin atteignant ``C*`` (⊆ ``idx``) ;
+    ``mode`` : ``"top"`` (meilleurs scores), ``"milp"`` ou ``"greedy"`` (repli).
+    """
+
+    idx: list[int]
+    capacity: float | None
+    support: list[int] | None
+    mode: str = "top"
+
+
+def _cardinality_milp(
+    upper: np.ndarray,
+    floor: float,
+    g: np.ndarray,
+    caps: np.ndarray,
+    budget: float,
+    k_max: int,
+    *,
+    forced_in: np.ndarray | None = None,
+    forced_out: np.ndarray | None = None,
+    target: float | None = None,
+    n_min: int = 0,
+) -> np.ndarray | None:
+    """PLNE de capacité sous contrainte de cardinalité (HiGHS via ``scipy.optimize.milp``).
+
+    Variables : poids ``w ∈ ℝⁿ`` et indicatrices de ligne ``y ∈ {0,1}ⁿ``.
+    Chaque poids est **semi-continu** (Bienstock 1996 ; Chang, Meade, Beasley
+    & Sharaiha 2000) : ``m·y_i ≤ w_i ≤ u_i·y_i`` (``m`` = ``floor`` =
+    ``min_weight``), c.-à-d. ``w_i ∈ {0} ∪ [m, u_i]``. Contraintes :
+
+    * cardinalité ``Σ_{j∉F} y_j ≤ k_max − |F|`` où ``F`` = ``forced_in`` (titres
+      déjà retenus : ils occupent une place, qu'ils soient pondérés ou non) ;
+    * ``y_j = 0`` pour ``j ∈ forced_out`` ;
+    * au moins ``n_min`` lignes effectivement pondérées : ``Σ_j y_j ≥ n_min``
+      (``min_names``) ;
+    * plafonds de groupe ``Gw ≤ c`` et budget ``1ᵀw ≤ B`` ;
+    * si ``target`` est fourni : ``1ᵀw ≥ target`` (problème de faisabilité,
+      objectif nul) ; sinon on **maximise** ``1ᵀw`` (capacité ``C*``).
+
+    Renvoie le vecteur ``(w, y)`` d'une solution réalisable (optimale pour la
+    maximisation) ou ``None`` si le problème est infaisable ou non résolu.
+    """
+    n = len(upper)
+    fin = np.zeros(n, bool) if forced_in is None else np.asarray(forced_in, bool)
+    fout = np.zeros(n, bool) if forced_out is None else np.asarray(forced_out, bool)
+    slots = k_max - int(fin.sum())
+    if n == 0 or slots < 0:
+        return None
+    eye = np.eye(n)
+    zero_n = np.zeros(n)
+    rows = [np.hstack([eye, -np.diag(upper)])]  # w − u·y ≤ 0
+    ub = [zero_n]
+    lb = [np.full(n, -np.inf)]
+    if floor > 0:
+        rows.append(np.hstack([-eye, floor * eye]))  # m·y − w ≤ 0
+        ub.append(zero_n)
+        lb.append(np.full(n, -np.inf))
+    rows.append(np.concatenate([zero_n, (~fin).astype(float)])[None, :])  # cardinalité
+    ub.append(np.array([float(slots)]))
+    lb.append(np.array([-np.inf]))
+    if n_min > 0:
+        rows.append(np.concatenate([zero_n, np.ones(n)])[None, :])  # lignes minimales
+        ub.append(np.array([np.inf]))
+        lb.append(np.array([float(n_min)]))
+    if g.shape[0]:
+        rows.append(np.hstack([g, np.zeros_like(g)]))
+        ub.append(np.asarray(caps, float))
+        lb.append(np.full(g.shape[0], -np.inf))
+    rows.append(np.concatenate([np.ones(n), zero_n])[None, :])  # budget (et cible)
+    ub.append(np.array([float(budget)]))
+    lb.append(np.array([-np.inf if target is None else float(target)]))
+    y_hi = np.where(fout, 0.0, 1.0)
+    c = np.zeros(2 * n) if target is not None else np.concatenate([-np.ones(n), zero_n])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            res = optimize.milp(
+                c,
+                constraints=optimize.LinearConstraint(np.vstack(rows), np.concatenate(lb), np.concatenate(ub)),
+                integrality=np.concatenate([zero_n, np.ones(n)]),
+                bounds=optimize.Bounds(np.zeros(2 * n), np.concatenate([upper * y_hi, y_hi])),
+                options={"mip_rel_gap": 1e-9, "time_limit": _MILP_TIME_LIMIT},
+            )
+        except (ValueError, np.linalg.LinAlgError):
+            return None
+    if res.x is None or res.status not in (0, 1):
+        return None
+    x = np.asarray(res.x, float)
+    if target is not None and x[:n].sum() < target - 1e-9:
+        return None
+    return x
+
+
+def _capacity_milp(
+    upper: np.ndarray,
+    floor: float,
+    g: np.ndarray,
+    caps: np.ndarray,
+    budget: float,
+    k_max: int,
+    n_min: int,
+) -> tuple[np.ndarray | None, int]:
+    """Capacité maximale ``C*`` (:func:`_cardinality_milp`) avec au moins
+    ``n_min`` lignes ; si ce plancher de cardinalité est irréalisable (planchers
+    de poids incompatibles avec les plafonds de groupe), il est abandonné.
+    Renvoie la solution et le ``n_min`` effectivement imposé."""
+    n_min = max(0, min(int(n_min), int(k_max), len(upper)))
+    x = _cardinality_milp(upper, floor, g, caps, budget, k_max, n_min=n_min)
+    if x is None and n_min > 0:
+        n_min = 0
+        x = _cardinality_milp(upper, floor, g, caps, budget, k_max)
+    return x, n_min
+
+
+def _select_greedy(
+    order: list[int],
     k_max: int,
     upper: np.ndarray,
     g: np.ndarray,
     caps: np.ndarray,
     budget: float,
 ) -> list[int]:
-    """Sélection des ``max_names`` meilleurs titres, consciente de la capacité.
-
-    On prend d'abord les ``k_max`` meilleurs scores. Si leurs plafonds
-    (liquidité, secteur, pays) ne permettent pas d'investir le budget, on
-    construit la sélection gloutonnement par score décroissant en sautant les
-    titres qui n'augmentent pas la capacité investissable tant que le budget
-    n'est pas atteignable, puis on complète avec les titres sautés.
-    """
-    order = list(order)
-    top = order[:k_max]
+    """Repli glouton (si la PLNE échoue) : par score décroissant, on retient un
+    titre s'il augmente la capacité investissable (PL), puis on complète avec
+    les titres sautés. Sans garantie d'optimalité de la capacité."""
 
     def cap_of(sel: list[int]) -> float:
         if not sel:
@@ -802,8 +924,6 @@ def _select(
         v = _max_investable(np.zeros(len(sel)), upper[sel], g[:, sel], caps)
         return 0.0 if v is None else v
 
-    if len(order) <= k_max or cap_of(top) >= budget - 1e-12:
-        return top
     selected: list[int] = []
     skipped: list[int] = []
     current = 0.0
@@ -825,6 +945,86 @@ def _select(
         selected.append(i)
     rank = {v: r for r, v in enumerate(order)}
     return sorted(selected, key=rank.__getitem__)
+
+
+def _select(
+    order: np.ndarray,
+    k_max: int,
+    upper: np.ndarray,
+    g: np.ndarray,
+    caps: np.ndarray,
+    budget: float,
+    floor: float = 0.0,
+    n_min: int = 0,
+) -> _Selection:
+    """Sélection d'au plus ``k_max`` titres, la meilleure par score parmi celles
+    qui maximisent la capacité investissable.
+
+    1. Si les ``k_max`` meilleurs scores permettent d'investir ``B`` même avec
+       le plancher ``w_i ≥ m`` sur chacun (PL de capacité), ils sont retenus
+       (cas usuel, aucun PLNE). S'il y a au plus ``k_max`` titres, tous sont
+       retenus.
+    2. Sinon, **phase 1** : capacité maximale ``C* = max 1ᵀw`` sur tous les
+       portefeuilles de ``n_min`` à ``k_max`` lignes semi-continues
+       ``w_i ∈ {0} ∪ [m, u_i]`` avec plafonds de groupe et ``1ᵀw ≤ B``
+       (:func:`_capacity_milp` ; ``n_min = min_names`` est abandonné s'il est
+       irréalisable). ``C* = B`` ssi le budget complet est réalisable.
+    3. **Phase 2** : parmi les sélections atteignant ``C*``, on retient la
+       meilleure pour l'ordre **lexicographique** des scores (Ehrgott 2005,
+       *Multicriteria Optimization*, ch. 5) par fixation séquentielle : on
+       parcourt les titres par score décroissant ; un titre est retenu s'il
+       existe une complétion d'au plus ``k_max`` titres contenant les titres
+       déjà retenus et lui-même qui atteint ``C*`` avec au moins ``n_min``
+       lignes (PLNE de faisabilité), sinon
+       il est écarté définitivement. Une solution témoin est conservée : si
+       elle utilise déjà le titre, ou s'il reste une place libre, aucun PLNE
+       n'est nécessaire. Le témoin final (``support``) atteint ``C*`` avec les
+       seuls titres retenus.
+
+    Comparé à un glouton qui retient tout titre augmentant (même de très peu)
+    la capacité — et sature ainsi ``k_max`` avec des titres peu liquides — cette
+    procédure garantit ``capacité(sélection) = C*`` tout en privilégiant les
+    meilleurs scores. Repli glouton (:func:`_select_greedy`) si HiGHS échoue.
+    """
+    order = list(order)
+    top = order[:k_max]
+    if len(order) <= k_max:
+        return _Selection(top, None, None)
+    # PL avec planchers m sur tous les titres du « top » : borne inférieure de
+    # la capacité semi-continue ; si elle atteint B, le top suffit.
+    cap_top = _max_investable(np.full(len(top), floor), upper[top], g[:, top], caps)
+    if cap_top is not None and cap_top >= budget - 1e-12:
+        return _Selection(top, None, None)
+
+    n = len(upper)
+    x, n_min = _capacity_milp(upper, floor, g, caps, budget, k_max, n_min)
+    if x is None:
+        return _Selection(_select_greedy(order, k_max, upper, g, caps, budget), None, None, "greedy")
+    cap_star = float(min(budget, x[:n].sum()))
+    target = cap_star - _MILP_CAP_TOL
+    witness = x[n:] > 0.5
+    fin = np.zeros(n, bool)
+    fout = np.zeros(n, bool)
+    for i in order:
+        n_in = int(fin.sum())
+        if n_in >= k_max:
+            break
+        used_free = int((witness & ~fin).sum())
+        fin[i] = True
+        if witness[i] or used_free <= k_max - n_in - 1:
+            continue  # le témoin reste réalisable avec i retenu
+        x_i = _cardinality_milp(
+            upper, floor, g, caps, budget, k_max, forced_in=fin, forced_out=fout, target=target, n_min=n_min
+        )
+        if x_i is None:
+            fin[i] = False
+            fout[i] = True
+        else:
+            witness = x_i[n:] > 0.5
+    witness &= fin
+    sel = [i for i in order if fin[i]]
+    support = [i for i in order if witness[i]]
+    return _Selection(sel, cap_star, support, "milp")
 
 
 def _zscore(x: np.ndarray, clip: float = 3.0) -> np.ndarray:
@@ -859,15 +1059,21 @@ def build_portfolio(
        (un titre absent de ``liquidity`` a un plafond nul).
     2. **Sélection** des ``max_names`` meilleurs scores (``"mv_alpha"`` : score
        ``α_i + 2κ·1{détenu}``, la rotation d'un titre détenu coûtant un aller-
-       retour), en garantissant si possible que les plafonds permettent
-       d'investir ``B = 1 − cash_buffer`` (:func:`_select`). Si ce n'est pas
-       réalisable, ``B`` est réduit à l'investissement maximal (PL) et le reste
+       retour), en garantissant que les plafonds permettent d'investir
+       ``B = 1 − cash_buffer`` dès que c'est réalisable avec au plus
+       ``max_names`` lignes (:func:`_select`) : si les meilleurs scores n'y
+       suffisent pas, la capacité maximale ``C*`` est calculée par PLNE
+       (cardinalité, poids semi-continus ``{0} ∪ [min_weight, u_i]``, plafonds
+       secteur/pays ; Bienstock 1996 ; Chang et al. 2000) et la sélection est
+       la meilleure, dans l'ordre lexicographique des scores, parmi celles qui
+       atteignent ``C*``. Si ``C* < B``, ``B`` est réduit à ``C*`` et le reste
        demeure en liquidités.
     3. **Pondération** (selon ``method``) puis **élagage** : les lignes
        ``< min_weight`` sont supprimées (en conservant au moins ``min_names``
-       lignes et la capacité d'investissement) et les poids sont recalculés sur
-       les titres restants avec le plancher ``w_i ≥ min_weight`` — ce qui
-       constitue la renormalisation.
+       lignes et la capacité d'investissement ; si l'élagage heuristique perd
+       de la capacité, on repart de la solution témoin de la PLNE) et les poids
+       sont recalculés sur les titres restants avec le plancher
+       ``w_i ≥ min_weight`` — ce qui constitue la renormalisation.
 
     Méthodes :
 
@@ -914,7 +1120,11 @@ def build_portfolio(
         Poids sur l'union de ``alpha.index`` et ``prev_weights.index`` (0 pour
         les titres non retenus ; ``1 − Σw`` = liquidités). ``attrs`` :
         ``method``, ``solver``, ``budget`` (investissement visé), ``n_names``,
-        ``feasible_full_budget``.
+        ``max_investable`` (capacité maximale ``C*`` de **toutes** les
+        sélections admissibles, PLNE, bornée par ``B``),
+        ``feasible_full_budget`` (``C* ≥ B`` : le budget complet est réalisable
+        sous les contraintes — calculé sur ``C*``, pas sur la sélection
+        retenue) et ``selection`` (``"top"``, ``"milp"``, ``"greedy"``).
     """
     cons = Constraints() if constraints is None else constraints
     _validate_constraints(cons)
@@ -935,7 +1145,15 @@ def build_portfolio(
     def _empty(reason: str) -> pd.Series:
         res = pd.Series(0.0, index=out_index, name="weight")
         res.attrs.update(
-            {"method": method, "solver": reason, "budget": 0.0, "n_names": 0, "feasible_full_budget": False}
+            {
+                "method": method,
+                "solver": reason,
+                "budget": 0.0,
+                "n_names": 0,
+                "feasible_full_budget": False,
+                "max_investable": 0.0,
+                "selection": "none",
+            }
         )
         return res
 
@@ -974,7 +1192,10 @@ def build_portfolio(
     # 2. Sélection -----------------------------------------------------------
     score = a_all + (2.0 * kappa * (wp_all > 0) if method == "mv_alpha" else 0.0)
     order = np.lexsort((np.asarray(names.astype(str)), -score))
-    sel = _select(order, cons.max_names, u_all, g_all, c_all, budget_target)
+    selection = _select(
+        order, cons.max_names, u_all, g_all, c_all, budget_target, floor=cons.min_weight, n_min=cons.min_names
+    )
+    sel = selection.idx
 
     def sub_groups(idx: list[int]) -> tuple[np.ndarray, np.ndarray]:
         g = g_all[:, idx]
@@ -1054,6 +1275,29 @@ def build_portfolio(
         pos = {v: w1[sel.index(v)] for v in keep}
         keep.remove(min(keep, key=lambda v: (pos[v], a_all[v])))
         cap_k = cap_floor(keep)
+    # Repli PLNE : l'élagage ci-dessus peut perdre de la capacité (planchers ×
+    # plafonds de groupe) ; on repart alors d'un témoin semi-continu, complété
+    # jusqu'à min_names lignes sans réduire la capacité.
+    ref_cap = budget_s if selection.capacity is None else min(budget_s, selection.capacity)
+    if cap_k is None or cap_k < ref_cap - _MILP_CAP_TOL:
+        support = selection.support
+        if support is None:
+            g_s, c_s = sub_groups(sel)
+            x_s, _ = _capacity_milp(u_all[sel], floor_w, g_s, c_s, budget_s, len(sel), cons.min_names)
+            support = None if x_s is None else [sel[j] for j in range(len(sel)) if x_s[len(sel) + j] > 0.5]
+        cap_t = cap_floor(support) if support else None
+        if cap_t is not None and (cap_k is None or cap_t > cap_k + 1e-9):
+            keep = list(support)
+            need = min(cap_t, budget_s)
+            extra = sorted((v for v in sel if v not in keep), key=lambda v: (-w1[sel.index(v)], -a_all[v]))
+            for v in extra:
+                if len(keep) >= min(cons.min_names, len(sel)):
+                    break
+                c2 = cap_floor(keep + [v])
+                if c2 is not None and c2 >= need - 1e-12:
+                    keep.append(v)
+                    cap_t = c2
+            cap_k = cap_t
     if cap_k is None:
         return _empty("infeasible")
     budget_k = min(budget_s, cap_k)
@@ -1067,13 +1311,26 @@ def build_portfolio(
     res = pd.Series(0.0, index=out_index, name="weight")
     vals = np.where(w2 > 1e-15, w2, 0.0)
     res.loc[names[keep]] = vals
+    # Capacité maximale admissible (≤ max_names lignes semi-continues, PLNE) :
+    # c'est elle, et non la sélection retenue, qui dit si B est réalisable.
+    full = budget_k >= budget_target - 1e-9
+    if full:
+        max_inv = budget_target
+    elif selection.capacity is not None:
+        max_inv = selection.capacity
+    else:
+        x_g, _ = _capacity_milp(u_all, floor_w, g_all, c_all, budget_target, cons.max_names, cons.min_names)
+        max_inv = budget_k if x_g is None else float(min(budget_target, x_g[: len(names)].sum()))
+    max_inv = max(float(max_inv), float(budget_k))
     res.attrs.update(
         {
             "method": method,
             "solver": tag2,
             "budget": float(budget_k),
             "n_names": int((vals > 0).sum()),
-            "feasible_full_budget": bool(budget_k >= budget_target - 1e-9),
+            "feasible_full_budget": bool(full or max_inv >= budget_target - _MILP_CAP_TOL),
+            "max_investable": max_inv,
+            "selection": selection.mode,
         }
     )
     return res

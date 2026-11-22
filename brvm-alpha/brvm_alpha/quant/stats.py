@@ -132,6 +132,14 @@ _TINY: float = 1e-14
 #: Tolérance relative pour décider qu'un portefeuille est « sous l'eau ».
 _DD_TOL: float = 1e-12
 
+#: Écart absolu maximal (rendements décimaux) entre le plus haut et le plus bas
+#: rendement d'une moitié CSCV pour la déclarer « sans risque » (rendement
+#: constant) : très au-dessus des erreurs d'arrondi d'un calcul de NAV
+#: (≈ 1e-16 par séance) et économiquement nul.
+_RISKLESS_ATOL: float = 1e-12
+
+BoolArray: TypeAlias = npt.NDArray[np.bool_]
+
 FloatArray: TypeAlias = npt.NDArray[np.float64]
 ArrayLike: TypeAlias = pd.Series | np.ndarray | Sequence[float]
 
@@ -908,6 +916,28 @@ def _cscv_combinations(n_splits: int, max_combinations: int | None, seed: int) -
     return np.array(sorted(chosen), dtype=int)
 
 
+def _half_range(
+    in_half: BoolArray, block_max: FloatArray, block_min: FloatArray
+) -> tuple[FloatArray, FloatArray]:
+    """Plus haut et plus bas rendement de chaque (combinaison, configuration).
+
+    ``in_half`` (``C × S``) indique les blocs de la moitié ; ``block_max`` et
+    ``block_min`` (``S × N``) sont les extrema par bloc (``-inf``/``+inf``
+    pour un bloc sans observation). Calcul exact (aucune annulation
+    numérique), en boucle sur les ``S`` blocs pour rester en mémoire
+    ``O(C·N)``.
+    """
+    C = in_half.shape[0]
+    N = block_max.shape[1]
+    hi = np.full((C, N), -np.inf)
+    lo = np.full((C, N), np.inf)
+    for b in range(in_half.shape[1]):
+        sel = in_half[:, b]
+        hi[sel] = np.maximum(hi[sel], block_max[b])
+        lo[sel] = np.minimum(lo[sel], block_min[b])
+    return hi, lo
+
+
 def _perf_from_sums(
     cnt: FloatArray,
     s1: FloatArray,
@@ -915,8 +945,24 @@ def _perf_from_sums(
     shift: FloatArray,
     metric: str,
     periods_per_year: int,
+    hi: FloatArray | None = None,
+    lo: FloatArray | None = None,
 ) -> FloatArray:
-    """Moyenne ou Sharpe annualisés à partir de sommes centrées sur ``shift``."""
+    """Moyenne ou Sharpe annualisés à partir de sommes centrées sur ``shift``.
+
+    Pour le Sharpe, ``hi``/``lo`` (extrema exacts de la moitié, voir
+    :func:`_half_range`) détectent les moitiés **sans risque**
+    (``hi - lo ≤ 1e-12`` : rendement constant ``c ≈ (hi + lo)/2``), dont
+    l'écart-type calculé par les sommes n'est que du bruit d'arrondi :
+
+    * ``c = 0`` (configuration restée en cash, aucun titre retenu) : pas
+      d'excès de rendement ni de risque, ``SR = 0`` par convention — la
+      configuration se classe ainsi au-dessus de celles qui perdent de
+      l'argent et au-dessous de celles qui en gagnent ;
+    * ``c ≠ 0`` : ``SR = ±∞`` mathématiquement, donc **indéfini** (NaN) ;
+      pour un cash rémunéré au taux sans risque, passer des rendements
+      excédentaires (``perf_matrix - rf_p``), ce qui ramène au cas ``c = 0``.
+    """
     with np.errstate(divide="ignore", invalid="ignore"):
         mean_c = s1 / cnt
         mean = mean_c + shift
@@ -928,7 +974,13 @@ def _perf_from_sums(
         sd = np.sqrt(var)
         sr = mean / sd * math.sqrt(periods_per_year)
         valid = (cnt >= 2) & (sd > 1e-12 * np.maximum(1.0, np.abs(mean)))
-        return np.where(valid, sr, np.nan)
+        if hi is None or lo is None:
+            return np.where(valid, sr, np.nan)
+        riskless = (cnt >= 2) & (hi - lo <= _RISKLESS_ATOL)
+        level = 0.5 * (hi + lo)
+        cash = riskless & (np.abs(level) <= _RISKLESS_ATOL)
+        out = np.where(valid & ~riskless, sr, np.nan)
+        return np.where(cash, 0.0, out)
 
 
 def pbo_cscv(
@@ -952,12 +1004,30 @@ def pbo_cscv(
        (échantillon d'apprentissage, IS) et son complément ``J̄`` (test, OOS),
        on calcule la performance ``R_n`` (IS) et ``R̄_n`` (OOS) de chaque
        configuration ;
-    3. ``n* = argmax_n R_n`` est la configuration qu'aurait choisie le
-       chercheur ; ``ω̄ = rang(R̄_{n*}) / (N + 1)`` est son rang relatif OOS
-       (rang moyen en cas d'égalité, de 1 = pire à N = meilleur) et
+    3. ``n* = argmax_n R_n`` (parmi les ``R_n`` définis) est la
+       configuration qu'aurait choisie le chercheur ;
+       ``ω̄ = rang(R̄_{n*}) / (N_c + 1)`` est son rang relatif OOS parmi les
+       ``N_c`` configurations dont la performance OOS est définie (finie),
+       rang moyen en cas d'égalité, de 1 = pire à ``N_c`` = meilleur, et
        ``λ = ln(ω̄ / (1 - ω̄))`` son logit ;
     4. ``PBO = P(λ ≤ 0)`` = fréquence à laquelle la meilleure configuration
        IS finit sous la médiane OOS.
+
+    Performances indéfinies. Une configuration sans performance définie sur
+    une moitié (colonne entièrement NaN, moins de deux observations, Sharpe
+    d'un rendement constant non nul) est **exclue de la comparaison** sur
+    cette moitié, au lieu d'être comptée comme la pire : sinon ``n*``
+    remonterait artificiellement dans le classement OOS et la PBO
+    s'effondrerait vers 0 alors même que ``n*`` n'est que du bruit. Avec
+    ``N = N_c`` (aucune performance indéfinie) on retrouve exactement
+    Bailey et al. (2017). Une combinaison est ignorée (logit NaN) si la
+    performance OOS de ``n*`` est elle-même indéfinie ou si ``N_c < 2``.
+    Pour le Sharpe, une moitié à rendements identiquement nuls
+    (configuration restée en cash, p. ex. dont les filtres ne retiennent
+    aucun titre — cas fréquent dans ``run_param_grid``) a un Sharpe **nul**,
+    bien défini : elle se classe au-dessus des configurations perdantes.
+    Pour évaluer le Sharpe en excès du taux sans risque (cash rémunéré),
+    passer ``perf_matrix - rf_p``.
 
     La dégradation de performance est mesurée par la régression MCO
     ``R̄_{n*} = a + b·R_{n*}`` (pente ``b`` attendue négative en cas de
@@ -973,7 +1043,9 @@ def pbo_cscv(
     ----------
     perf_matrix
         ``DataFrame`` ``T × N`` de rendements par période (une colonne par
-        configuration). Les NaN sont ignorés colonne par colonne.
+        configuration). Les NaN sont ignorés colonne par colonne ; une
+        performance non finie (NaN, ``±inf`` d'une métrique fournie) est
+        traitée comme indéfinie (voir ci-dessus).
     n_splits
         Nombre pair ``S`` de blocs (16 par défaut → 12 870 combinaisons).
     metric
@@ -995,7 +1067,9 @@ def pbo_cscv(
         ``oos_perf`` (performances de ``n*``), ``degradation_slope``,
         ``degradation_intercept``, ``degradation_r2``, ``prob_oos_loss``,
         ``selected`` (fréquence de sélection par configuration, ``Series``),
-        ``n_combinations``, ``n_splits``, ``block_size``, ``n_configs``.
+        ``n_combinations``, ``n_valid_combinations`` (combinaisons ayant un
+        logit défini, dénominateur de la PBO), ``n_splits``, ``block_size``,
+        ``n_configs``.
     """
     frame = perf_matrix if isinstance(perf_matrix, pd.DataFrame) else pd.DataFrame(perf_matrix)
     X = frame.to_numpy(dtype=float)
@@ -1031,11 +1105,26 @@ def pbo_cscv(
         cnt = mask.sum(axis=1).astype(float)
         s1 = centred.sum(axis=1)
         s2 = (centred * centred).sum(axis=1)
+        is_hi = is_lo = oos_hi = oos_lo = None
+        if key == "sharpe":
+            # Extrema exacts par bloc : détection des moitiés sans risque.
+            block_max = np.where(mask, blocks, -np.inf).max(axis=1)
+            block_min = np.where(mask, blocks, np.inf).min(axis=1)
+            in_is = member.astype(bool)
+            is_hi, is_lo = _half_range(in_is, block_max, block_min)
+            oos_hi, oos_lo = _half_range(~in_is, block_max, block_min)
         is_all = _perf_from_sums(
-            member @ cnt, member @ s1, member @ s2, shift, key, periods_per_year
+            member @ cnt, member @ s1, member @ s2, shift, key, periods_per_year, is_hi, is_lo
         )
         oos_all = _perf_from_sums(
-            complement @ cnt, complement @ s1, complement @ s2, shift, key, periods_per_year
+            complement @ cnt,
+            complement @ s1,
+            complement @ s2,
+            shift,
+            key,
+            periods_per_year,
+            oos_hi,
+            oos_lo,
         )
         metric_name = key
     elif callable(metric):
@@ -1052,21 +1141,28 @@ def pbo_cscv(
     else:
         raise TypeError("metric doit être une chaîne ou une fonction")
 
-    valid = np.isfinite(is_all).any(axis=1)
-    train_score = np.where(np.isfinite(is_all), is_all, -np.inf)
+    # Sélection IS parmi les performances définies uniquement.
+    finite_is = np.isfinite(is_all)
+    valid = finite_is.any(axis=1)
+    train_score = np.where(finite_is, is_all, -np.inf)
     n_star = np.argmax(train_score, axis=1)
     rows = np.arange(C)
-    oos_score = np.where(np.isfinite(oos_all), oos_all, -np.inf)
-    chosen_oos = oos_score[rows, n_star]
-    less = (oos_score < chosen_oos[:, None]).sum(axis=1)
-    equal = (oos_score == chosen_oos[:, None]).sum(axis=1)
-    rank = less + (equal + 1.0) / 2.0
-    omega = rank / (N + 1.0)
-    logits = np.log(omega / (1.0 - omega))
-    logits = np.where(valid, logits, np.nan)
-
     is_perf = np.where(valid, is_all[rows, n_star], np.nan)
     oos_perf = np.where(valid, oos_all[rows, n_star], np.nan)
+
+    # Rang OOS de n* parmi les N_c configurations à performance OOS définie :
+    # une performance indéfinie n'est ni « pire » ni « meilleure », elle est
+    # hors comparaison.
+    finite_oos = np.isfinite(oos_all)
+    n_comparable = finite_oos.sum(axis=1)
+    less = (finite_oos & (oos_all < oos_perf[:, None])).sum(axis=1)
+    equal = (finite_oos & (oos_all == oos_perf[:, None])).sum(axis=1)
+    rank = less + (equal + 1.0) / 2.0
+    ranked = valid & np.isfinite(oos_perf) & (n_comparable >= 2)
+    omega = np.where(ranked, rank / (n_comparable + 1.0), np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logits = np.log(omega / (1.0 - omega))
+
     finite_logits = logits[np.isfinite(logits)]
     pbo = float(np.mean(finite_logits <= 0.0)) if finite_logits.size else math.nan
 
@@ -1087,7 +1183,7 @@ def pbo_cscv(
     return {
         "pbo": pbo,
         "logits": logits,
-        "oos_rank": np.where(valid, omega, np.nan),
+        "oos_rank": omega,
         "is_perf": is_perf,
         "oos_perf": oos_perf,
         "degradation_slope": slope,
@@ -1096,6 +1192,7 @@ def pbo_cscv(
         "prob_oos_loss": prob_loss,
         "selected": selected,
         "n_combinations": int(C),
+        "n_valid_combinations": int(ranked.sum()),
         "n_splits": int(n_splits),
         "block_size": int(block),
         "n_configs": int(N),
@@ -1268,6 +1365,7 @@ def ic_summary(
 def _summary_keys(var_tag: str, with_benchmark: bool) -> list[str]:
     keys = [
         "n_obs",
+        "n_periods",
         "start",
         "end",
         "total_return",
@@ -1314,13 +1412,34 @@ def _summary_keys(var_tag: str, with_benchmark: bool) -> list[str]:
 
 
 def _cagr(r: FloatArray, periods_per_year: int) -> float:
-    """``CAGR = (Π(1 + r))^(P/n) - 1`` ; -1 si le capital est anéanti."""
+    """``CAGR = (Π(1 + r))^(P/n) - 1`` ; -1 si le capital est anéanti.
+
+    ``r`` doit être le chemin **calendaire** (une valeur par séance écoulée,
+    séances sans observation mises à 0) : ``n = r.size`` est alors la durée
+    réellement écoulée. Le passer après ``dropna`` sous-estimerait la durée
+    et surestimerait le CAGR.
+    """
     if r.size == 0:
         return math.nan
     wealth = float(np.prod(1.0 + r))
     if wealth <= 0.0:
         return -1.0
     return wealth ** (periods_per_year / r.size) - 1.0
+
+
+def _calendar_path(x: pd.Series) -> pd.Series:
+    """Chemin calendaire de ``x`` entre sa première et sa dernière valeur non NaN.
+
+    Les NaN de tête et de queue (série pas encore commencée ou déjà
+    terminée) sont retirés ; les NaN intérieurs sont des séances écoulées
+    sans rendement observé (titre non échangé ou suspendu, date absente du
+    panel), mises à 0 (capital inchangé), comme dans :func:`rolling_drawdown`.
+    Série vide si ``x`` n'a aucune valeur.
+    """
+    pos = np.flatnonzero(x.notna().to_numpy())
+    if pos.size == 0:
+        return x.iloc[:0]
+    return x.iloc[pos[0] : pos[-1] + 1].fillna(0.0)
 
 
 def perf_summary(
@@ -1334,19 +1453,33 @@ def perf_summary(
 ) -> dict[str, Any]:
     """Tableau de bord de performance d'une série de rendements.
 
-    Notations : ``r_t`` rendements simples, ``n`` observations non NaN,
-    ``P = periods_per_year``, ``rf_p = (1 + rf)^(1/P) - 1`` le taux sans
-    risque par période, ``e_t = r_t - rf_p``, ``W_t = Π(1 + r_s)``.
+    Notations : ``r_t`` rendements simples, ``n`` observations non NaN
+    (``n_obs``), ``P = periods_per_year``, ``rf_p = (1 + rf)^(1/P) - 1`` le
+    taux sans risque par période, ``e_t = r_t - rf_p``, ``W_t = Π(1 + r_s)``.
+
+    Deux bases de temps, explicites :
+
+    * **mesures de capital** (``total_return``, ``cagr``, drawdowns et leurs
+      durées, ``calmar``, ``benchmark_cagr``, ``excess_cagr``) : calendrier
+      des séances ``n_periods = i_last - i_first + 1`` entre la première et
+      la dernière observation valide ; les NaN intérieurs (titre non
+      échangé, suspendu, date absente) sont des séances écoulées à
+      rendement nul, comme dans :func:`rolling_drawdown` et
+      :func:`drawdown_episodes`. Annualiser sur ``n`` au lieu de
+      ``n_periods`` comprimerait le temps et surestimerait le CAGR ;
+    * **mesures distributionnelles** (moyenne, volatilité, Sharpe, Sortino,
+      moments, VaR, PSR…) : les ``n`` observations valides, NaN ignorés
+      (convention du module, cohérente avec :func:`sharpe_ratio`).
 
     Mesures absolues
-        * ``total_return = W_n - 1`` ; ``cagr = W_n^(P/n) - 1`` ;
+        * ``total_return = W - 1`` ; ``cagr = W^(P/n_periods) - 1`` ;
           ``ann_return = P·mean(r)`` (arithmétique) ;
         * ``vol = sqrt(P)·std(r)`` (``ddof=1``) ;
         * ``sharpe = sqrt(P)·mean(e)/std(e)`` (Sharpe, 1994) ;
         * ``sortino = P·mean(e) / (sqrt(P)·DD)`` avec la semi-déviation
           ``DD = sqrt(mean(min(e, 0)²))`` (Sortino & Price, 1994) ;
         * ``max_drawdown = min_t (W_t / max(1, max_{s≤t} W_s) - 1)`` (≤ 0),
-          ``max_drawdown_duration`` = séances sous l'eau de l'épisode le plus
+          ``max_drawdown_duration`` = séances (calendaires) sous l'eau de l'épisode le plus
           profond (jusqu'à récupération ou fin de série), dates de plus haut,
           creux et récupération, ``longest_drawdown_duration`` = plus long
           épisode sous l'eau ;
@@ -1370,14 +1503,17 @@ def perf_summary(
         * ``tracking_error = sqrt(P)·std(r - b)`` ;
           ``information_ratio = P·mean(r - b) / tracking_error`` ;
         * ``benchmark_cagr`` et ``excess_cagr = cagr_stratégie - cagr_indice``
-          (période commune) ;
+          sur la période commune ``[max(début), min(fin)]`` des deux séries,
+          en calendrier de séances (NaN intérieurs de l'une ou l'autre = 0) ;
         * ``up_capture = mean(r | b > 0)/mean(b | b > 0)`` et
           ``down_capture = mean(r | b < 0)/mean(b | b < 0)``.
 
     Parameters
     ----------
     returns
-        Rendements simples de la stratégie ; NaN ignorés.
+        Rendements simples de la stratégie, une valeur par séance ; NaN
+        ignorés pour les statistiques, rendement nul pour le capital (voir
+        ci-dessus).
     benchmark
         Rendements de l'indice de référence (p. ex. BRVM Composite), alignés
         sur l'index.
@@ -1400,10 +1536,13 @@ def perf_summary(
         raise ValueError("var_level doit être dans ]0, 1[")
     P = int(periods_per_year)
     var_tag = f"{var_level * 100:g}".replace(".", "_")
-    s = _as_series(returns).dropna()
+    full = _as_series(returns)
+    s = full.dropna()
+    path = _calendar_path(full)
     out: dict[str, Any] = dict.fromkeys(_summary_keys(var_tag, benchmark is not None), math.nan)
     n = len(s)
     out["n_obs"] = n
+    out["n_periods"] = len(path)
     for key in (
         "start",
         "end",
@@ -1419,8 +1558,10 @@ def perf_summary(
     rf_p = (1.0 + rf) ** (1.0 / P) - 1.0
     e = r - rf_p
 
-    out["total_return"] = float(np.prod(1.0 + r) - 1.0)
-    out["cagr"] = _cagr(r, P)
+    # Mesures de capital : calendrier des séances (NaN intérieurs = 0).
+    r_path = path.to_numpy(dtype=float)
+    out["total_return"] = float(np.prod(1.0 + r_path) - 1.0)
+    out["cagr"] = _cagr(r_path, P)
     out["ann_return"] = float(np.mean(r) * P)
     out["best"] = float(r.max())
     out["worst"] = float(r.min())
@@ -1430,8 +1571,8 @@ def perf_summary(
     out["avg_loss"] = float(losses.mean()) if losses.size else math.nan
     out["profit_factor"] = float(gains.sum() / -losses.sum()) if losses.size else math.nan
 
-    dd = _drawdown_array(r)
-    episodes = _episodes_from_dd(dd, s.index)
+    dd = _drawdown_array(r_path)
+    episodes = _episodes_from_dd(dd, path.index)
     out["max_drawdown"] = float(min(dd.min(), 0.0))
     if len(episodes):
         worst = episodes.loc[episodes["depth"].idxmin()]
@@ -1469,7 +1610,10 @@ def perf_summary(
         both_unindexed = not isinstance(benchmark, pd.Series) and not isinstance(returns, pd.Series)
         if both_unindexed and len(b_series) != len(_as_series(returns)):
             raise ValueError("returns et benchmark doivent avoir la même longueur")
-        joint = pd.concat({"r": s, "b": b_series}, axis=1, join="inner").dropna()
+        # Calendrier commun (dates présentes dans les deux index, NaN
+        # conservés) ; les statistiques utilisent les observations communes.
+        aligned = pd.concat({"r": full, "b": b_series}, axis=1, join="inner")
+        joint = aligned.dropna()
         m = len(joint)
         out["n_obs_common"] = m
         if m >= 2:
@@ -1488,8 +1632,14 @@ def perf_summary(
             out["tracking_error"] = te
             if te > 0:
                 out["information_ratio"] = float(np.mean(active)) * P / te
-            out["benchmark_cagr"] = _cagr(ba, P)
-            out["excess_cagr"] = _cagr(ra, P) - out["benchmark_cagr"]
+            # CAGR comparés sur la même durée écoulée : séances de la première
+            # à la dernière observation commune, NaN intérieurs = 0.
+            pos = np.flatnonzero(aligned.notna().all(axis=1).to_numpy())
+            common = aligned.iloc[pos[0] : pos[-1] + 1].fillna(0.0)
+            out["benchmark_cagr"] = _cagr(common["b"].to_numpy(dtype=float), P)
+            out["excess_cagr"] = (
+                _cagr(common["r"].to_numpy(dtype=float), P) - out["benchmark_cagr"]
+            )
             up, down = ba > 0, ba < 0
             if up.any():
                 out["up_capture"] = float(ra[up].mean() / ba[up].mean())

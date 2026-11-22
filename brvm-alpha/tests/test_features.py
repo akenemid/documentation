@@ -385,10 +385,16 @@ def test_turnover_measures() -> None:
     dates = pd.bdate_range("2021-01-04", periods=40)
     vol = pd.DataFrame({"X": [10.0] * 30 + [40.0] * 10}, index=dates)
     P = {"volume": vol}
-    rel = ft.turnover_proxy(P, window=10, base_window=40, min_obs=40)["X"].iloc[-1]
+    rel = ft.turnover_proxy(P, window=10, base_window=40, min_obs=40, split_adjust=False)["X"].iloc[-1]
     assert rel == pytest.approx(40.0 / ((30 * 10 + 10 * 40) / 40))
-    to = ft.turnover(P, pd.Series({"X": 1000.0}), window=10, min_obs=10)["X"].iloc[-1]
+    to = ft.turnover(P, pd.Series({"X": 1000.0}), 10, 10, split_adjust=False)["X"].iloc[-1]
     assert to == pytest.approx(0.04)
+    # Sans information de split, le volume brut n'est pas utilisé implicitement.
+    with pytest.raises(KeyError, match="split"):
+        ft.turnover_proxy(P, window=10, base_window=40, min_obs=40)
+    # Facteur unitaire (aucun split) : identique au volume brut.
+    one = {"volume": vol, "split_factor": pd.DataFrame(1.0, index=dates, columns=["X"])}
+    assert ft.turnover_proxy(one, window=10, base_window=40, min_obs=40)["X"].iloc[-1] == pytest.approx(rel)
 
 
 def test_limit_hits_counts_and_sign() -> None:
@@ -449,16 +455,21 @@ def test_dividend_growth_stability_and_age() -> None:
     P = _dividend_panels()
     idx = P["close_adj"].index
     loc = lambda d: int(np.searchsorted(idx, pd.Timestamp(d)))
-    g = ft.dividend_growth(P)["X"]
+    g = ft.dividend_growth(P, split_adjust=False)["X"]
     assert g.iloc[: loc("2019-07-10")].isna().all()
     assert g.iloc[loc("2019-07-10")] == pytest.approx(0.10)
     assert g.iloc[loc("2020-07-08") - 1] == pytest.approx(0.10)
     assert g.iloc[loc("2020-07-08")] == pytest.approx(0.10)  # 121 / 110 - 1
     assert g.iloc[loc("2021-07-07")] == pytest.approx(-1.0)  # dividend supprimé
-    # Correction d'un split (facteur 0,5 avant juillet 2020) : 121 / (110 × 0,5) - 1.
-    factor = pd.DataFrame({"X": np.where(idx < pd.Timestamp("2020-07-01"), 0.5, 1.0)}, index=idx)
+    # Sans information de split : erreur explicite plutôt qu'un signal biaisé.
+    with pytest.raises(KeyError, match="split"):
+        ft.dividend_growth(P)
+    # Split 2:1 le 2020-07-01, convention du store (close_adj = close / f, f = 2
+    # avant) : 110 FCFA d'avant split = 55 FCFA d'aujourd'hui -> 121 / 55 - 1.
+    factor = pd.DataFrame({"X": np.where(idx < pd.Timestamp("2020-07-01"), 2.0, 1.0)}, index=idx)
     g_split = ft.dividend_growth(P, split_factor=factor)["X"]
     assert g_split.iloc[loc("2020-07-08")] == pytest.approx(121.0 / 55.0 - 1)
+    assert g_split.iloc[loc("2020-07-08") - 1] == pytest.approx(0.10)  # 110 / 100, même base
 
     s = ft.dividend_stability(P, grace_days=550)["X"]
     assert s.iloc[0] == 0.0  # coté, aucun dividende connu
@@ -649,19 +660,24 @@ def test_shrunk_ic_weights() -> None:
     prior = {"mom": 0.2, "val": 0.5, "low_vol": 0.3}
     w_prior = sc.shrunk_ic_weights(ic, prior, shrinkage=1.0)
     assert w_prior["val"] == pytest.approx(0.5) and w_prior["bad"] == 0.0
-    w0 = sc.shrunk_ic_weights(ic, prior, shrinkage=0.0)
+    # Analyse ex post (IC supposés déjà observables) : embargo explicite nul.
+    w0 = sc.shrunk_ic_weights(ic, prior, shrinkage=0.0, embargo=0)
     ir = (ic.mean() / ic.std(ddof=1)).clip(lower=0)
     np.testing.assert_allclose(w0[["mom", "val"]].to_numpy(), (ir / ir.sum())[["mom", "val"]].to_numpy())
     assert w0["bad"] == 0.0 and w0["low_vol"] == 0.0
-    w = sc.shrunk_ic_weights(ic, prior, shrinkage=0.3)
+    w = sc.shrunk_ic_weights(ic, prior, shrinkage=0.3, embargo=0)
     np.testing.assert_allclose(w.to_numpy(), (0.7 * w0 + 0.3 * w_prior).to_numpy(), rtol=1e-12)
+    # Défaut : embargo = lag + horizon = 1 + 21 lignes.
+    pd.testing.assert_series_equal(
+        sc.shrunk_ic_weights(ic, prior, 0.3), sc.shrunk_ic_weights(ic.iloc[:-22], prior, 0.3, embargo=0)
+    )
     assert w.sum() == pytest.approx(1.0) and (w >= 0).all()
     # Historique trop court : a priori seul.
     w_short = sc.shrunk_ic_weights(ic.iloc[:5], prior, shrinkage=0.3, min_periods=12)
     pd.testing.assert_series_equal(w_short, w_prior)
     # Embargo / asof : ne dépend que des IC observables.
     w_emb = sc.shrunk_ic_weights(ic, prior, 0.3, asof=idx[40], embargo=5)
-    pd.testing.assert_series_equal(w_emb, sc.shrunk_ic_weights(ic.iloc[:36], prior, 0.3))
+    pd.testing.assert_series_equal(w_emb, sc.shrunk_ic_weights(ic.iloc[:36], prior, 0.3, embargo=0))
     roll = sc.rolling_ic_weights(ic, prior, 0.3, embargo=5)
     pd.testing.assert_series_equal(roll.loc[idx[40]], w_emb, check_names=False)
     np.testing.assert_allclose(roll.sum(axis=1), 1.0)
@@ -799,7 +815,258 @@ def test_market_regime_with_hmm_columns() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Intégration sur le panel réel (si disponible)
+# 5. Non-régression : anomalies de revue (embargo IC, splits)
+# ---------------------------------------------------------------------------
+
+
+def _ic_history(prices: pd.DataFrame) -> pd.DataFrame:
+    """IC (Spearman) de deux momentums, cible forward_returns(h=21, lag=1)."""
+    P = {"tr_index": prices}
+    fwd = sc.forward_returns(prices, horizon=21, lag=1)
+    sig = {"mom": ft.momentum(P, 63, 0), "mom_long": ft.momentum(P, 126, 0)}
+    return pd.DataFrame({k: sc.information_coefficient(v, fwd, min_obs=5) for k, v in sig.items()})
+
+
+def test_ic_weights_default_embargo_has_no_lookahead() -> None:
+    """Anomalie 1 : avec les paramètres par défaut, les poids en t ne dépendent
+    d'aucun cours postérieur à t (embargo = lag + horizon = 22)."""
+    rng = np.random.default_rng(21)
+    T, N, t = 700, 20, 600
+    dates = pd.bdate_range("2018-01-01", periods=T)
+    drift = rng.normal(0.0, 0.002, N)  # momentum transversal persistant : IC > 0
+    r = drift[None, :] + rng.normal(0.0, 0.015, (T, N))
+    tr = pd.DataFrame(100.0 * np.exp(np.cumsum(r, axis=0)), index=dates, columns=[f"S{i}" for i in range(N)])
+    pert = tr.copy()
+    pert.iloc[t + 1 :] = tr.iloc[t + 1 :].to_numpy() * rng.uniform(0.5, 1.5, (T - t - 1, N))
+    ic0, ic1 = _ic_history(tr), _ic_history(pert)
+    # Les IC récents (datés d > t - 22) sont contaminés par les cours futurs...
+    assert not np.allclose(ic0.iloc[t - 21 : t + 1], ic1.iloc[t - 21 : t + 1], equal_nan=True)
+    pd.testing.assert_frame_equal(ic0.iloc[: t - 21], ic1.iloc[: t - 21])
+    prior = {"mom": 0.5, "mom_long": 0.5}
+    kw: dict[str, object] = {"shrinkage": 0.0, "min_periods": 5, "lookback": 20, "asof": dates[t]}
+    # ... ce qui contaminait les poids avec embargo = 0 (ancien défaut) ...
+    leaky0 = sc.shrunk_ic_weights(ic0, prior, embargo=0, **kw)
+    leaky1 = sc.shrunk_ic_weights(ic1, prior, embargo=0, **kw)
+    assert not np.allclose(leaky0.to_numpy(), leaky1.to_numpy())
+    # ... mais plus avec le défaut.
+    w0 = sc.shrunk_ic_weights(ic0, prior, **kw)
+    w1 = sc.shrunk_ic_weights(ic1, prior, **kw)
+    pd.testing.assert_series_equal(w0, w1)
+    pd.testing.assert_series_equal(w0, sc.shrunk_ic_weights(ic0, prior, embargo=22, **kw))
+    roll0 = sc.rolling_ic_weights(ic0, prior, 0.0, 5, 20)
+    roll1 = sc.rolling_ic_weights(ic1, prior, 0.0, 5, 20)
+    pd.testing.assert_frame_equal(roll0.iloc[: t + 1], roll1.iloc[: t + 1])
+    pd.testing.assert_series_equal(roll0.loc[dates[t]], w0, check_names=False)
+    # Embargo dérivé de l'horizon ; embargo explicite incompatible refusé.
+    pd.testing.assert_series_equal(
+        sc.shrunk_ic_weights(ic0, prior, horizon=63, **kw), sc.shrunk_ic_weights(ic0, prior, embargo=64, **kw)
+    )
+    with pytest.raises(ValueError, match="embargo"):
+        sc.shrunk_ic_weights(ic0, prior, embargo=5, horizon=21)
+    with pytest.raises(ValueError, match="embargo"):
+        sc.rolling_ic_weights(ic0, prior, embargo=10, lag=1)
+    with pytest.raises(ValueError):
+        sc.shrunk_ic_weights(ic0, prior, embargo=-1)
+
+
+def test_ic_weights_embargo_in_sessions_with_calendar() -> None:
+    """IC sous-échantillonnés (une date sur 5) : avec ``calendar``, l'embargo est
+    compté en séances et reproduit le résultat de l'historique quotidien."""
+    rng = np.random.default_rng(5)
+    dates = pd.bdate_range("2020-01-01", periods=300)
+    ic = pd.DataFrame({"a": rng.normal(0.05, 0.1, 300), "b": rng.normal(0.03, 0.1, 300)}, index=dates)
+    monthly = ic.iloc[::5]
+    prior = {"a": 0.5, "b": 0.5}
+    asof = dates[250]
+    w_cal = sc.shrunk_ic_weights(monthly, prior, 0.2, min_periods=5, asof=asof, calendar=dates)
+    expected = sc.shrunk_ic_weights(monthly.loc[: dates[250 - 22]], prior, 0.2, min_periods=5, embargo=0)
+    pd.testing.assert_series_equal(w_cal, expected)
+    # Sans calendrier, l'embargo en lignes (22 lignes = 110 séances) est plus prudent.
+    w_rows = sc.shrunk_ic_weights(monthly, prior, 0.2, min_periods=5, asof=asof)
+    prudent = sc.shrunk_ic_weights(monthly.loc[:asof].iloc[:-22], prior, 0.2, min_periods=5, embargo=0)
+    pd.testing.assert_series_equal(w_rows, prudent)
+    roll = sc.rolling_ic_weights(monthly, prior, 0.2, min_periods=5, calendar=dates)
+    pd.testing.assert_series_equal(roll.loc[dates[250]], w_cal, check_names=False)
+
+
+def _split_panels(T: int = 420, t_split: int = 300, k: float = 10.0, seed: int = 4) -> dict[str, pd.DataFrame]:
+    """Un titre « X » qui divise ses actions k:1 à la séance ``t_split`` ; valeur
+    échangée et cours ajusté sans rupture (aucun changement économique)."""
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range("2020-01-01", periods=T)
+    adj = 1000.0 * np.exp(np.cumsum(rng.normal(0, 0.01, T)))
+    f = np.where(np.arange(T) < t_split, k, 1.0)  # convention du store
+    close = adj * f
+    value = 5e6 * rng.uniform(0.5, 1.5, T)
+    frame = lambda a: pd.DataFrame({"X": a}, index=dates)  # noqa: E731
+    return {
+        "close_adj": frame(adj),
+        "tr_index": frame(adj),
+        "close": frame(close),
+        "split_factor": frame(f),
+        "volume": frame(value / close),
+        "value": frame(value),
+        "status": frame(np.full(T, "traded", dtype=object)),
+    }
+
+
+def test_turnover_is_split_invariant() -> None:
+    """Anomalie 2 : un split ne crée plus de faux « volume anormal »."""
+    P = _split_panels()
+    no_split = {"volume": P["value"] / P["close_adj"], "close_adj": P["close_adj"]}
+    ref = ft.turnover_proxy(no_split, split_adjust=False)["X"]
+    sources = {
+        "split_factor": {k: P[k] for k in ("volume", "split_factor", "close_adj")},
+        "close_brut": {k: P[k] for k in ("volume", "close", "close_adj")},
+        "value_implicite": {k: P[k] for k in ("volume", "value", "close_adj")},
+    }
+    for name, panel in sources.items():
+        got = ft.turnover_proxy(panel)["X"]
+        np.testing.assert_allclose(got.to_numpy(), ref.to_numpy(), rtol=1e-10, equal_nan=True, err_msg=name)
+    # Argument explicite = clé du panel ; facteur multiplié par une constante
+    # (split futur) : résultat inchangé, donc aucune anticipation.
+    base = {k: P[k] for k in ("volume", "close_adj")}
+    a = ft.turnover_proxy(base, split_factor=P["split_factor"])
+    b = ft.turnover_proxy(base, split_factor=P["split_factor"] * 4.0)
+    pd.testing.assert_frame_equal(a, b)
+    # Valeur constante : TO = 1 de part et d'autre du split (cf. revue : 4,75 en t = 330).
+    Pc = _split_panels()
+    Pc["close_adj"] = Pc["close_adj"] * 0.0 + 1000.0  # cours économique constant
+    Pc["close"] = Pc["close_adj"] * Pc["split_factor"]
+    Pc["value"] = Pc["value"] * 0.0 + 5e6
+    Pc["volume"] = Pc["value"] / Pc["close"]
+    lib = ft.compute_features({k: Pc[k] for k in ("close_adj", "volume", "value", "status")})
+    to = lib["turnover_rel_21_252"]["X"]
+    assert to.iloc[[299, 330, 399]].to_numpy() == pytest.approx([1.0, 1.0, 1.0])
+    raw = ft.turnover_proxy(Pc, split_adjust=False)["X"]
+    assert raw.iloc[330] > 4.0  # le biais d'origine, désormais seulement sur demande explicite
+    # Rotation classique : nombre de titres actuel (base de close_adj).
+    shares = pd.Series({"X": 1e6})
+    turn = ft.turnover(Pc, shares, window=21, min_obs=21)["X"]
+    ref_turn = ft.turnover(
+        {"volume": Pc["value"] / Pc["close_adj"], "close_adj": Pc["close_adj"]}, shares, 21, 21, split_adjust=False
+    )["X"]
+    np.testing.assert_allclose(turn.to_numpy(), ref_turn.to_numpy(), rtol=1e-10, equal_nan=True)
+    assert turn.iloc[[290, 330, 399]].to_numpy() == pytest.approx([0.005, 0.005, 0.005])
+    # Volume brut avant le split : 10 fois trop faible face au nombre de titres actuel.
+    assert ft.turnover(Pc, shares, 21, 21, split_adjust=False)["X"].iloc[290] == pytest.approx(0.0005)
+    assert ft.compute_features({"volume": P["volume"]}).get("turnover_rel_21_252") is None
+
+
+def _split_dividend_panels(rebase: bool = False) -> dict[str, pd.DataFrame]:
+    """Dividendes 950 (2019) puis 1000 (2020) FCFA, split 10:1 le 2021-03-01,
+    puis 110 FCFA (2021) : +10 % en base ajustée. ``rebase`` : le BOC recalcule le
+    dividende affiché (1000 -> 100) le jour du split sans changer la date."""
+    dates = pd.bdate_range("2019-01-01", "2021-12-31")
+    n = len(dates)
+    t_split = int(np.searchsorted(dates, pd.Timestamp("2021-03-01")))
+    f = np.where(np.arange(n) < t_split, 10.0, 1.0)
+    adj = np.full(n, 2000.0)
+    close = adj * f
+    amount = np.full(n, np.nan)
+    pay = np.full(n, np.datetime64("NaT", "ns"), dtype="datetime64[ns]")
+    for seen, amt in (("2019-06-14", 950.0), ("2020-06-15", 1000.0), ("2021-06-15", 110.0)):
+        k = int(np.searchsorted(dates, pd.Timestamp(seen)))
+        amount[k:] = amt
+        pay[k:] = np.datetime64(pd.Timestamp(seen), "ns")
+    if rebase:
+        k2 = int(np.searchsorted(dates, pd.Timestamp("2021-06-15")))
+        amount[t_split:k2] = 100.0
+    ref = close.copy()
+    ref[t_split - 1] = close[t_split - 1] / 10.0  # référence du lendemain, déjà ajustée
+    frame = lambda a: pd.DataFrame({"X": a}, index=dates)  # noqa: E731
+    return {
+        "close_adj": frame(adj),
+        "close": frame(close),
+        "ref_price": frame(ref),
+        "split_factor": frame(f),
+        "last_div_net": frame(amount),
+        "last_div_date": frame(pay),
+    }
+
+
+def test_dividend_growth_split_adjusted_in_compute_features() -> None:
+    """Anomalie 3 : compute_features ajuste les splits (ou s'abstient)."""
+    at = pd.Timestamp("2021-07-01")
+    before = pd.Timestamp("2020-07-01")
+    for rebase in (False, True):
+        P = _split_dividend_panels(rebase)
+        exact = {k: P[k] for k in ("close_adj", "split_factor", "last_div_net", "last_div_date")}
+        g = ft.compute_features(exact)["dividend_growth"]["X"]
+        assert g[at] == pytest.approx(0.10)  # et non -0,89
+        assert g[before] == pytest.approx(1000.0 / 950.0 - 1)
+        assert g[pd.Timestamp("2021-03-02")] == pytest.approx(1000.0 / 950.0 - 1)  # recalcul neutre
+        via_close = {k: P[k] for k in ("close_adj", "close", "last_div_net", "last_div_date")}
+        assert ft.compute_features(via_close)["dividend_growth"]["X"][at] == pytest.approx(0.10)
+        base = {k: P[k] for k in ("close_adj", "last_div_net", "last_div_date")}
+        via_arg = ft.compute_features(base, split_factor=P["split_factor"])["dividend_growth"]["X"]
+        assert via_arg[at] == pytest.approx(0.10)
+        # Facteur + ref_price cohérents : identique au facteur seul.
+        full = ft.dividend_growth({**exact, "ref_price": P["ref_price"]})["X"]
+        pd.testing.assert_series_equal(full, ft.dividend_growth(exact)["X"])
+        # Sans facteur, split détecté par ref_price / close_adj : NaN, pas -89 % ;
+        # si le BOC a recalculé l'ancien dividende (100), 110 / 100 est de même base.
+        det = ft.compute_features({**base, "ref_price": P["ref_price"]})["dividend_growth"]["X"]
+        assert det[before] == pytest.approx(1000.0 / 950.0 - 1)
+        if rebase:
+            assert det[at] == pytest.approx(0.10)
+        else:
+            assert np.isnan(det[at])
+        # Aucune information de split : caractéristique omise, appel direct refusé.
+        assert "dividend_growth" not in ft.compute_features(base)
+        assert "dividend_stability" in ft.compute_features(base)
+        with pytest.raises(KeyError, match="split"):
+            ft.dividend_growth(base)
+    raw = ft.dividend_growth(_split_dividend_panels(), split_adjust=False)["X"]
+    assert raw[at] == pytest.approx(110.0 / 1000.0 - 1)  # biais brut, sur demande explicite
+    # La stabilité ne dépend pas des splits.
+    P = _split_dividend_panels(rebase=True)
+    pd.testing.assert_frame_equal(ft.dividend_stability(P), ft.dividend_stability(P, split_factor=P["split_factor"]))
+
+
+def test_dividend_growth_store_factor_inconsistent_with_ref_price() -> None:
+    """Split daté trop tard par le store (SEMC, déc. 2018) : le BOC recalcule le
+    dividende la veille du split effectif ; le facteur du store, contredit par
+    ref_price, n'est pas utilisé (repli sur la base implicite du BOC)."""
+    P = _split_dividend_panels(rebase=True)
+    idx = P["close_adj"].index
+    t_split = int(np.searchsorted(idx, pd.Timestamp("2021-03-01")))
+    late = P["split_factor"].copy()
+    late.iloc[t_split : t_split + 3] = 10.0  # le store voit le split 3 séances trop tard
+    bad = {**P, "split_factor": late, "close": P["close_adj"] * late}
+    naive = ft.dividend_growth({k: v for k, v in bad.items() if k != "ref_price"})["X"]
+    assert naive[pd.Timestamp("2021-07-01")] == pytest.approx(10 * 1.1 - 1)  # +1000 % : faux
+    g = ft.dividend_growth(bad)["X"]
+    assert g[pd.Timestamp("2021-07-01")] == pytest.approx(0.10)  # 110 / 100 dans la base du BOC
+    assert np.isnan(g[pd.Timestamp("2021-03-02")])  # 100 (après) contre 950 (avant) : indécidable
+
+
+def test_split_factor_follows_store_convention() -> None:
+    """Anomalie 4 : le ``split_factor`` de ``store.adjusted_table`` s'utilise tel quel."""
+    from brvm_alpha.data import store
+
+    P = _split_dividend_panels()
+    dates = P["close"].index
+    eq = pd.DataFrame({"date": dates, "symbol": "X", "close": P["close"]["X"].to_numpy()})
+    ca = pd.DataFrame({"symbol": ["X"], "date": [pd.Timestamp("2021-03-01")], "kind": ["split"], "ratio": [10.0]})
+    divs = pd.DataFrame({"symbol": pd.Series(dtype=str), "ex_date": pd.Series(dtype="datetime64[ns]"),
+                         "amount": pd.Series(dtype=float)})
+    table = store.adjusted_table(eq, ca, divs)
+    sf = table.pivot(index="date", columns="symbol", values="split_factor")
+    adj = table.pivot(index="date", columns="symbol", values="adj_close")
+    np.testing.assert_allclose(adj.to_numpy(), P["close_adj"].to_numpy())  # close_adj = close / f
+    panels = {"close_adj": adj, "last_div_net": P["last_div_net"], "last_div_date": P["last_div_date"]}
+    g = ft.dividend_growth(panels, split_factor=sf)["X"]
+    assert g[pd.Timestamp("2021-07-01")] == pytest.approx(0.10)
+    pd.testing.assert_frame_equal(ft.split_factor_panel({"split_factor": sf}), sf)
+    # Volume : la même convention ramène le volume brut à la base de close_adj.
+    vol = pd.DataFrame({"X": np.where(np.arange(len(dates)) < sf["X"].lt(10).argmax(), 500.0, 5000.0)}, index=dates)
+    v_adj = ft.adjusted_volume({"volume": vol, "close_adj": adj}, split_factor=sf)
+    assert np.allclose(v_adj["X"].to_numpy(), 5000.0)
+
+
+# ---------------------------------------------------------------------------
+# 6. Intégration sur le panel réel (si disponible)
 # ---------------------------------------------------------------------------
 
 
@@ -807,8 +1074,11 @@ def test_market_regime_with_hmm_columns() -> None:
 def test_smoke_on_real_panel() -> None:
     eq = pd.read_parquet(PANEL)
     eq["date"] = pd.to_datetime(eq["date"])
-    wide = lambda col: eq.pivot_table(index="date", columns="symbol", values=col, aggfunc="last").sort_index()
-    close = wide("close")
+    grid = eq.pivot_table(index="date", columns="symbol", values="close", aggfunc="last").sort_index()
+    wide = lambda col: eq.pivot_table(  # noqa: E731
+        index="date", columns="symbol", values=col, aggfunc="last", dropna=False
+    ).reindex(index=grid.index, columns=grid.columns)
+    close = grid
     panels = {
         "close_adj": close,
         "tr_index": close,
@@ -818,11 +1088,21 @@ def test_smoke_on_real_panel() -> None:
         "per": wide("per"),
         "last_div_net": wide("last_div_net"),
         "change_pct": wide("change_pct"),
-        "status": eq.pivot(index="date", columns="symbol", values="status").sort_index(),
-        "last_div_date": eq.pivot(index="date", columns="symbol", values="last_div_date").sort_index(),
+        "ref_price": wide("ref_price"),
+        "status": eq.pivot(index="date", columns="symbol", values="status").reindex_like(grid),
+        "last_div_date": eq.pivot(index="date", columns="symbol", values="last_div_date").reindex_like(grid),
     }
+    adj_path = ROOT / "data" / "panel" / "adjusted_prices.parquet"
+    if adj_path.exists():
+        adj = pd.read_parquet(adj_path)
+        adj["date"] = pd.to_datetime(adj["date"])
+        if {"split_factor", "adj_close", "tr_index"} <= set(adj.columns):
+            pv = lambda col: adj.pivot(index="date", columns="symbol", values=col).reindex_like(grid)  # noqa: E731
+            panels.update(close=close, close_adj=pv("adj_close"), tr_index=pv("tr_index"),
+                          split_factor=pv("split_factor"))
     lib = ft.compute_features(panels)
     assert len(lib) >= 15
+    assert "dividend_growth" in lib and "turnover_rel_21_252" in lib
     for name, df in lib.items():
         assert df.shape == close.shape, name
         assert not np.isinf(df.to_numpy(dtype=float)).any(), name
@@ -831,3 +1111,20 @@ def test_smoke_on_real_panel() -> None:
         {"mom_6_1": 0.5, "dividend_yield": 0.5},
     )
     assert z.shape == close.shape
+    if "split_factor" in panels:
+        # Dividendes : là où le facteur du store change la croissance (split entre
+        # les deux dividendes), la détection par ref_price / close_adj neutralise
+        # presque toujours la comparaison ; ailleurs les deux modes coïncident.
+        adj_g = lib["dividend_growth"]
+        raw = ft.dividend_growth(panels, split_adjust=False)
+        det = ft.dividend_growth({k: v for k, v in panels.items() if k not in ("split_factor", "close")})
+        diff = adj_g.notna() & raw.notna() & (adj_g - raw).abs().gt(1e-9)
+        if diff.to_numpy().any():
+            assert (det.isna() & diff).to_numpy().sum() / diff.to_numpy().sum() > 0.95
+        both = det.notna() & adj_g.notna()
+        assert ((det - adj_g).abs().lt(1e-9) & both).to_numpy().sum() / both.to_numpy().sum() > 0.99
+        # Volume : facteur exact et volume implicite value / close_adj concordent.
+        exact = ft.turnover_proxy(panels).stack()
+        implied = ft.turnover_proxy({k: v for k, v in panels.items() if k not in ("split_factor", "close")}).stack()
+        pair = pd.concat([exact, implied], axis=1).dropna()
+        assert pair.corr().iloc[0, 1] > 0.99

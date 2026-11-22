@@ -14,8 +14,14 @@ colonne par symbole, index ``DatetimeIndex`` trié par séance) et renvoie un
 ``per``            PER publié par le BOC ;
 ``last_div_net``   dernier dividende net payé (FCFA) ;
 ``last_div_date``  date de paiement du dernier dividende ;
-``ref_price``      cours de référence ;
+``ref_price``      cours de référence (brut, non ajusté des splits) ;
 ``change_pct``     (facultatif) variation du jour publiée par le BOC, en %.
+``split_factor``   (facultatif) facteur de division cumulé **dans la convention de
+                   ``data/store.py``** : ``close_adj = close / split_factor``
+                   (pivot large de la colonne ``split_factor`` de
+                   ``store.adjusted_table``) ;
+``close``          (facultatif) cours de clôture **brut** ; avec ``close_adj``, il
+                   donne le facteur exact ``split_factor = close / close_adj``.
 
 Principes
 ---------
@@ -35,6 +41,17 @@ Principes
 * Les ratios de cours ajustés « vers l'arrière » (splits) sont invariants aux
   ajustements futurs : un momentum ou une distance au plus haut calculés sur
   ``close_adj`` n'introduisent donc pas d'information future.
+* **Splits et grandeurs par action** : le ``volume`` (nombre de titres) et
+  ``last_div_net`` (FCFA par action) du BOC sont **bruts**. Après une division
+  k:1, ils sont multipliés (resp. divisés) par ``k`` sans changement
+  économique. Les caractéristiques qui les comparent dans le temps
+  (:func:`turnover_proxy`, :func:`turnover`, :func:`dividend_growth`) les
+  ramènent à la base de titres de ``close_adj`` à l'aide de ``split_factor``
+  (convention du store : ``brut / split_factor`` pour un prix ou un dividende,
+  ``brut × split_factor`` pour un nombre de titres). Le facteur « vers
+  l'arrière » dépend des splits futurs, mais seulement par une constante
+  multiplicative commune à toutes les dates antérieures, qui s'annule dans
+  les ratios calculés : aucune anticipation.
 * Annualisation : 252 séances.
 
 Références
@@ -105,6 +122,7 @@ __all__ = [
     "MOMENTUM_PRESETS",
     "TRADING_DAYS",
     "Panels",
+    "adjusted_volume",
     "amihud_illiquidity",
     "average_daily_value",
     "beta_dimson",
@@ -125,6 +143,7 @@ __all__ = [
     "returns",
     "seasonality",
     "short_term_reversal",
+    "split_factor_panel",
     "traded_mask",
     "turnover",
     "turnover_proxy",
@@ -639,28 +658,144 @@ def average_daily_value(panels: Panels, window: int = 63, min_obs: int = 20) -> 
     return v.rolling(window, min_periods=min_obs).mean()
 
 
+def _listed_or_observed(panels: Panels, like: pd.DataFrame) -> pd.DataFrame:
+    """Masque « coté » si un panel de prix existe, sinon cellules renseignées de ``like``."""
+    if any(panels.get(k) is not None for k in ("close_adj", "tr_index")):
+        return listed_mask(panels, like=like)
+    return like.notna()
+
+
+def split_factor_panel(
+    panels: Panels,
+    split_factor: pd.DataFrame | None = None,
+    like: pd.DataFrame | None = None,
+) -> pd.DataFrame | None:
+    """Facteur de division cumulé, **convention de** ``data/store.py``.
+
+    ``close_adj_t = close_t / f_t`` : ``f_t`` est le produit des ratios ``k``
+    des divisions k:1 postérieures à ``t`` (``f = 1`` après la dernière
+    division, ``f = k`` avant une division k:1). Un montant par action brut se
+    ramène à la base de ``close_adj`` par ``montant / f`` ; un nombre de titres
+    brut par ``titres × f``.
+
+    Sources, par ordre de priorité :
+
+    1. l'argument ``split_factor`` ;
+    2. le panel ``panels["split_factor"]`` (pivot large de la colonne
+       ``split_factor`` de :func:`brvm_alpha.data.store.adjusted_table`) ;
+    3. le facteur exact ``f = close / close_adj`` si le cours **brut**
+       ``close`` et ``close_adj`` sont fournis.
+
+    Renvoie ``None`` si aucune source n'est disponible. Les facteurs ``<= 0``
+    deviennent NaN ; les trous sont comblés par report vers l'avant (le
+    facteur est constant par morceaux). Seuls les **ratios** ``f_s / f_u``
+    (``s, u <= t``) sont utilisés par les caractéristiques : ils ne dépendent
+    que des divisions survenues entre ``s`` et ``u``, donc pas du futur.
+
+    Parameters
+    ----------
+    like
+        Grille cible (index et colonnes) ; par défaut celle de la source.
+    """
+    if split_factor is not None:
+        _check_index(split_factor, "split_factor")
+        src = split_factor
+    elif panels.get("split_factor") is not None:
+        src = _raw(panels, "split_factor")
+    elif panels.get("close") is not None and panels.get("close_adj") is not None:
+        adj = _price(panels, "close_adj")
+        src = _price(panels, "close").reindex(index=adj.index, columns=adj.columns) / adj
+    else:
+        return None
+    f = src.apply(pd.to_numeric, errors="coerce").astype(float)
+    f = f.where(np.isfinite(f) & (f > 0))
+    if like is not None:
+        f = f.reindex(columns=like.columns)
+        f = f.reindex(f.index.union(like.index)).ffill().reindex(like.index)
+    return f.ffill()
+
+
+def adjusted_volume(
+    panels: Panels,
+    split_factor: pd.DataFrame | None = None,
+    split_adjust: bool = True,
+) -> pd.DataFrame:
+    """Volume en titres ramené à la base de titres de ``close_adj`` (ajusté des splits).
+
+    * Facteur connu (voir :func:`split_factor_panel`) : ``V^adj_t = V_t · f_t``
+      (exact ; une séance sans échange reste à 0 même si ``f_t`` est inconnu,
+      une séance échangée dont le facteur est inconnu devient NaN).
+    * Sinon, volume implicite ``V^adj_t ≈ value_t / close_adj_t`` (valeur
+      échangée en FCFA, invariante aux splits, divisée par le cours ajusté) :
+      exact au rapport ``VWAP_t / close_t`` près, borné par la limite de
+      variation journalière.
+    * ``split_adjust=False`` : volume brut ``V_t`` (à réserver aux titres dont
+      on sait qu'ils n'ont connu aucune division).
+
+    Les séances sans échange valent 0, les séances non cotées NaN.
+
+    Raises
+    ------
+    KeyError
+        si ``split_adjust=True`` et qu'aucune des combinaisons ``volume`` +
+        facteur, ou ``value`` + ``close_adj``, n'est disponible.
+    """
+    has_vol = panels.get("volume") is not None
+    if split_adjust:
+        f = None
+        if has_vol:
+            vol = _numeric(panels, "volume")
+            f = split_factor_panel(panels, split_factor, like=vol)
+        if f is not None:
+            listed = _listed_or_observed(panels, vol)
+            v = vol.fillna(0.0)
+            adj = (v * f).mask(f.isna() & (v == 0.0), 0.0)
+            return adj.where(listed)
+        if panels.get("value") is not None and panels.get("close_adj") is not None:
+            val = _numeric(panels, "value")
+            px = _price(panels, "close_adj").reindex(index=val.index, columns=val.columns)
+            listed = _listed_or_observed(panels, val)
+            v = val.fillna(0.0)
+            adj = (v / px).mask(v == 0.0, 0.0)
+            return adj.where(listed)
+        raise KeyError(
+            "volume ajusté des splits : fournir 'volume' + 'split_factor' (ou 'close' brut "
+            "+ 'close_adj'), ou bien 'value' + 'close_adj' ; split_adjust=False pour "
+            f"utiliser le volume brut (clés disponibles : {sorted(panels)})"
+        )
+    vol = _numeric(panels, "volume")
+    listed = _listed_or_observed(panels, vol)
+    return vol.fillna(0.0).where(listed)
+
+
 def turnover_proxy(
-    panels: Panels, window: int = 21, base_window: int = 252, min_obs: int | None = None
+    panels: Panels,
+    window: int = 21,
+    base_window: int = 252,
+    min_obs: int | None = None,
+    split_factor: pd.DataFrame | None = None,
+    split_adjust: bool = True,
 ) -> pd.DataFrame:
     """Rotation relative (volume anormal), sans nombre de titres en circulation.
 
-    ``TO_t = mean(volume sur window) / mean(volume sur base_window)``
+    ``TO_t = mean(V^adj sur window) / mean(V^adj sur base_window)``
 
-    (séances sans échange à 0, fenêtres se terminant en ``t``). Sans capital
+    où ``V^adj`` est le volume ajusté des splits (:func:`adjusted_volume`),
+    séances sans échange à 0, fenêtres se terminant en ``t``. Sans capital
     flottant fiable, on mesure la rotation d'un titre **par rapport à sa
     propre norme** ; un volume anormalement élevé précède des rendements
-    supérieurs (Gervais, Kaniel & Mingelgrin, 2001). ``NaN`` si la base est
-    nulle ou trop courte (``min_obs``, défaut ``base_window // 2``).
+    supérieurs (Gervais, Kaniel & Mingelgrin, 2001). Sur le volume brut, une
+    division k:1 multiplierait ``TO`` par jusqu'à ``k`` pendant
+    ``base_window`` séances sans aucun changement de liquidité. Les deux
+    moyennes étant exprimées dans la même base de titres, un split postérieur
+    à ``t`` ne modifie pas ``TO_t``. ``NaN`` si la base est nulle ou trop
+    courte (``min_obs``, défaut ``base_window // 2``).
     """
     if not 1 <= window <= base_window:
         raise ValueError("il faut 1 <= window <= base_window")
     min_obs = base_window // 2 if min_obs is None else min_obs
     _check_window(base_window, min_obs)
-    vol = _numeric(panels, "volume")
-    listed = listed_mask(panels, like=vol) if any(
-        k in panels for k in ("close_adj", "tr_index")
-    ) else vol.notna()
-    vol = vol.fillna(0.0).where(listed)
+    vol = adjusted_volume(panels, split_factor=split_factor, split_adjust=split_adjust)
     short = vol.rolling(window, min_periods=min(window, min_obs)).mean()
     base = vol.rolling(base_window, min_periods=min_obs).mean()
     return short / base.where(base > 0)
@@ -671,20 +806,23 @@ def turnover(
     shares_outstanding: pd.Series | pd.DataFrame,
     window: int = 63,
     min_obs: int = 20,
+    split_factor: pd.DataFrame | None = None,
+    split_adjust: bool = True,
 ) -> pd.DataFrame:
     """Taux de rotation classique (Datar, Naik & Radcliffe, 1998).
 
-    ``TURN_t = mean(volume_s, s ∈ (t-window, t]) / titres_en_circulation``
+    ``TURN_t = mean(V^adj_s, s ∈ (t-window, t]) / N^adj_t``
 
-    ``shares_outstanding`` : ``Series`` (symbole -> nombre de titres, constant)
-    ou panel large (connu à chaque date, sans anticipation de l'appelant).
+    ``V^adj`` : volume ajusté des splits (:func:`adjusted_volume`).
+    ``shares_outstanding`` (``N^adj``) doit être exprimé dans la **même base
+    de titres que** ``close_adj`` (nombre de titres après les divisions,
+    comme le nombre actuel) : ``Series`` (symbole -> nombre, constant) ou
+    panel large connu à chaque date (sans anticipation de l'appelant). Un
+    panel de nombres **bruts** ``N_t`` se convertit par ``N_t · split_factor``,
+    ou s'utilise tel quel avec ``split_adjust=False`` (ratio brut / brut).
     """
     _check_window(window, min_obs)
-    vol = _numeric(panels, "volume")
-    listed = listed_mask(panels, like=vol) if any(
-        k in panels for k in ("close_adj", "tr_index")
-    ) else vol.notna()
-    vol = vol.fillna(0.0).where(listed)
+    vol = adjusted_volume(panels, split_factor=split_factor, split_adjust=split_adjust)
     adv = vol.rolling(window, min_periods=min_obs).mean()
     if isinstance(shares_outstanding, pd.DataFrame):
         sh = shares_outstanding.reindex(index=adv.index, columns=adv.columns).astype(float)
@@ -826,16 +964,18 @@ def earnings_yield(panels: Panels) -> pd.DataFrame:
 
 
 def _dividend_state(
-    panels: Panels, split_factor: pd.DataFrame | None = None
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, np.ndarray]:
-    """Montants, validité et événements de dividende détectés.
+    panels: Panels,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, np.ndarray]:
+    """Montants bruts, validité, événements et apparitions de dividende.
 
     Un **événement** est une ligne où ``last_div_date`` (renseignée) diffère
     de la dernière valeur renseignée précédente ; la première observation
     renseignée est aussi un événement (dividende connu à l'entrée dans
     l'échantillon). La date de l'événement est la **ligne** où le changement
     apparaît dans le BOC (information publiée en ``t``), pas la date de
-    paiement elle-même.
+    paiement elle-même. Une **apparition** est un événement ou une
+    correction (montant modifié, date inchangée) : la ligne où le couple
+    (date, montant) affiché apparaît pour la première fois.
     """
     d = _raw(panels, "last_div_date")
     a = _numeric(panels, "last_div_net", like=d)
@@ -843,47 +983,142 @@ def _dividend_state(
     d_days = pd.DataFrame(_day_numbers(d_arr), index=d.index, columns=d.columns)
     valid = d_days.notna() & a.notna()
     dv = d_days.where(valid)
-    prev = dv.ffill().shift(1)
-    new = valid & (dv != prev)
-    if split_factor is not None:
-        # Le BOC continue d'afficher le montant brut (par action d'avant split)
-        # tant qu'aucun nouveau dividende n'est publié : on applique donc le
-        # facteur en vigueur à la ligne de l'événement, reporté ensuite.
-        _check_index(split_factor, "split_factor")
-        f = split_factor.reindex(index=d.index, columns=d.columns).astype(float)
-        a = a * f.where(new).ffill()
-    return a.where(valid), valid, new, d_arr
+    av = a.where(valid)
+    new = valid & (dv != dv.ffill().shift(1))
+    appear = new | (valid & (av != av.ffill().shift(1)))
+    return av, valid, new, appear, d_arr
 
 
-def dividend_growth(panels: Panels, split_factor: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Croissance du dividende net entre les deux derniers dividendes connus.
+def _take_rows(values: np.ndarray, pos: np.ndarray) -> np.ndarray:
+    """``out[t, j] = values[pos[t, j], j]`` ; NaN là où ``pos < 0``."""
+    out = np.take_along_axis(values, np.clip(pos, 0, None), axis=0)
+    return np.where(pos >= 0, out, np.nan)
 
-    ``g_t = D_k / D_{k-1} - 1``
+
+def _last_true_row(mask: np.ndarray) -> np.ndarray:
+    """Numéro de la dernière ligne ``<= t`` où ``mask`` est vrai (-1 sinon)."""
+    rows = np.arange(mask.shape[0])[:, None]
+    return np.maximum.accumulate(np.where(mask, rows, -1), axis=0)
+
+
+def dividend_growth(
+    panels: Panels,
+    split_factor: pd.DataFrame | None = None,
+    split_adjust: bool = True,
+    split_tolerance: float = 0.25,
+) -> pd.DataFrame:
+    """Croissance du dividende net entre les deux derniers dividendes connus, ajustée des splits.
+
+    ``g_t = D̃_k / D̃_{k-1} - 1``,  ``D̃ = D / f_a``
 
     où ``D_k`` est le dernier dividende connu en ``t`` (dernière valeur
-    publiée, corrections comprises) et ``D_{k-1}`` le précédent ; un nouveau
-    dividende est détecté par un changement de ``last_div_date``. ``NaN``
-    tant que deux dividendes n'ont pas été observés ou si ``D_{k-1} <= 0``.
+    publiée, corrections comprises), ``D_{k-1}`` le dernier montant affiché
+    avant l'événement ``k`` ; un nouveau dividende est détecté par un
+    changement de ``last_div_date``. ``f_a`` est le facteur de division
+    (convention du store, ``close_adj = close / f``) de la ligne ``a`` où le
+    montant affiché est **apparu** : le BOC conserve parfois le montant
+    d'avant split jusqu'au dividende suivant (BOAB, 2024) et le recalcule
+    parfois le jour du split sans changer la date (PRSC 2019, SNTS 2026) ;
+    dans les deux cas le montant est rapporté à la base de titres en vigueur
+    à son apparition. ``g`` ne dépend que de ``f_a / f_b`` (lignes ``<= t``),
+    donc des seules divisions survenues entre les deux apparitions : aucune
+    anticipation. ``NaN`` tant que deux dividendes n'ont pas été observés, si
+    ``D̃_{k-1} <= 0`` ou si le facteur est inconnu.
+
     Lintner (1956) : les dirigeants ne relèvent le dividende que s'ils jugent
     la hausse des bénéfices durable — la croissance du dividende est un
-    signal de qualité.
+    signal de qualité. Sans ajustement, une division k:1 ressemblerait à une
+    baisse de ``1 - 1/k`` (−90 % pour un 10:1).
 
     Parameters
     ----------
     split_factor
-        Facultatif : facteurs d'ajustement cumulés des splits (``ajusté =
-        brut × facteur``) pour comparer des dividendes de part et d'autre d'un
-        split ; chaque montant est ajusté par le facteur de la ligne où il est
-        apparu. Le ratio de deux dividendes ajustés « vers l'arrière » ne
-        dépend que des splits survenus entre eux : aucune anticipation.
+        Facteurs de division cumulés, **convention de** ``data/store.py``
+        (``split_factor`` de :func:`brvm_alpha.data.store.adjusted_table`,
+        pivoté en large). À défaut : ``panels["split_factor"]``, puis
+        ``close / close_adj`` (voir :func:`split_factor_panel`).
+    split_adjust
+        ``True`` (défaut) : sans facteur exact, une division est **détectée**
+        par le facteur implicite ``f̂ = ref_price / close_adj`` (cours de
+        référence brut / cours ajusté) et ``g`` vaut NaN lorsque ``f̂`` varie
+        de plus de ``split_tolerance`` (en relatif) entre les apparitions de
+        ``D_{k-1}`` et de ``D_k`` ; sans ``ref_price`` ni facteur :
+        ``KeyError``. Avec les deux, ``f̂`` sert de **contrôle de cohérence** :
+        un facteur du store qui s'écarte de ``f̂`` de plus de
+        ``split_tolerance`` à l'apparition d'un montant (split daté quelques
+        séances trop tard, par ex. SEMC en décembre 2018) n'est pas utilisé et
+        l'on se rabat sur la règle de détection. ``ref_price`` étant la
+        référence de la séance suivante (``close - D`` la veille d'un
+        détachement), ``f̂`` est évalué avec ``ref`` et avec ``ref + D`` et
+        l'écart le plus faible est retenu. ``False`` : montants bruts (titres
+        sans division).
+    split_tolerance
+        Seuil de détection (défaut 25 % : au-dessus du bruit de la limite de
+        variation ±7,5 %, en dessous des plus petits ajustements observés,
+        1,3 à 1,5).
     """
-    a, _, new, _ = _dividend_state(panels, split_factor)
-    cur = a.ffill()
-    prev_at_event = a.ffill().shift(1).where(new)
-    # Ligne de l'événement le plus récent : valeur précédente associée.
-    event_id = new.cumsum()
-    prev = prev_at_event.ffill().where(event_id >= 2)
-    return (cur / prev.where(prev > 0) - 1.0).astype(float)
+    if split_tolerance <= 0:
+        raise ValueError("split_tolerance doit être > 0")
+    a, valid, new, appear, _ = _dividend_state(panels)
+    raw = a.to_numpy(dtype=float)
+    app_pos = _last_true_row(appear.to_numpy(dtype=bool))
+    tol = math.log1p(split_tolerance)
+    f_app: np.ndarray | None = None  # facteur du store à l'apparition du montant
+    implied: np.ndarray | None = None  # facteurs implicites (ref, ref + D) / close_adj, idem
+    if split_adjust:
+        f = split_factor_panel(panels, split_factor, like=a)
+        if f is not None:
+            f_app = _take_rows(f.to_numpy(dtype=float), app_pos)
+        if panels.get("ref_price") is not None and panels.get("close_adj") is not None:
+            # ref_price est la référence de la séance suivante : la veille d'un
+            # détachement, ref = close - D ; on retient aussi le candidat (ref + D).
+            ref = _price(panels, "ref_price").reindex(index=a.index, columns=a.columns).ffill()
+            adj = _price(panels, "close_adj").reindex(index=a.index, columns=a.columns).ffill()
+            lo = _take_rows((ref / adj).to_numpy(dtype=float), app_pos)
+            hi = _take_rows(((ref + a.fillna(0.0)) / adj).to_numpy(dtype=float), app_pos)
+            implied = np.stack([lo, hi])
+        if f_app is None and implied is None:
+            raise KeyError(
+                "dividend_growth : information de split requise ('split_factor', 'close' brut "
+                "+ 'close_adj', ou 'ref_price' + 'close_adj') ; split_adjust=False pour "
+                f"comparer les montants bruts (clés disponibles : {sorted(panels)})"
+            )
+    new_arr = new.to_numpy(dtype=bool)
+    cur_pos = _last_true_row(valid.to_numpy(dtype=bool))
+    before = np.vstack([np.full((1, cur_pos.shape[1]), -1), cur_pos[:-1]])
+    ev_pos = _last_true_row(new_arr)
+    prev_pos = np.where(ev_pos >= 0, np.take_along_axis(before, np.clip(ev_pos, 0, None), axis=0), -1)
+    prev_pos = np.where(np.cumsum(new_arr, axis=0) >= 2, prev_pos, -1)
+
+    def _growth(amounts: np.ndarray) -> np.ndarray:
+        cur, prev = _take_rows(amounts, cur_pos), _take_rows(amounts, prev_pos)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            return np.where(prev > 0, cur / prev - 1.0, np.nan)
+
+    g_raw = _growth(raw)
+    if f_app is None and implied is None:
+        return pd.DataFrame(g_raw, index=a.index, columns=a.columns, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        if implied is not None:
+            # Même base de titres (selon le BOC) aux deux apparitions : ratio brut valable.
+            cur_c = [_take_rows(c, cur_pos) for c in implied]
+            prev_c = [_take_rows(c, prev_pos) for c in implied]
+            jump = np.fmin.reduce([np.abs(np.log(x / y)) for x in cur_c for y in prev_c])
+            g_same_base = np.where(jump <= tol, g_raw, np.nan)
+        if f_app is None:
+            return pd.DataFrame(g_same_base, index=a.index, columns=a.columns, dtype=float)
+        g = _growth(raw / f_app)
+        if implied is not None:
+            # Contrôle de cohérence : un facteur du store contredit par le cours de
+            # référence brut du BOC (split mal daté) n'est pas utilisé ; on se replie
+            # alors sur le ratio brut si le BOC n'indique aucun split entre les deux.
+            gap = np.fmin(np.abs(np.log(implied[0] / f_app)), np.abs(np.log(implied[1] / f_app)))
+            coherent = (gap <= tol) | ~np.isfinite(implied[0])
+            pair_ok = _take_rows(coherent.astype(float), cur_pos) * _take_rows(
+                coherent.astype(float), prev_pos
+            )
+            g = np.where(pair_ok == 1.0, g, g_same_base)
+    return pd.DataFrame(g, index=a.index, columns=a.columns, dtype=float)
 
 
 def dividend_stability(
@@ -899,8 +1134,13 @@ def dividend_stability(
     dividende connu : 0 ; titre non coté : NaN. L'historique est borné par le
     début de l'échantillon. Une omission de dividende est suivie d'une dérive
     négative (Michaely, Thaler & Womack, 1995).
+
+    Seuls le signe des montants et les dates comptent : la mesure est
+    invariante aux divisions. ``split_factor`` est accepté pour la symétrie
+    avec :func:`dividend_growth` mais n'a aucun effet.
     """
-    a, _valid, new, d_arr = _dividend_state(panels, split_factor)
+    del split_factor  # invariance aux splits : seul le signe du montant compte
+    a, _valid, new, _appear, d_arr = _dividend_state(panels)
     idx_days = _index_days(a.index)
     years = d_arr.astype("datetime64[Y]").astype(np.int64) + 1970
     pay_days = _day_numbers(d_arr)
@@ -1009,6 +1249,11 @@ def seasonality(
 
 _FeatureFn: TypeAlias = Callable[[Panels], pd.DataFrame]
 
+#: Panels permettant un volume ajusté des splits (voir :func:`adjusted_volume`).
+_SPLIT_INVARIANT_VOLUME = "volume+split_factor|volume+close+close_adj|value+close_adj"
+#: Panels permettant d'ajuster ou de détecter les splits (voir :func:`dividend_growth`).
+_SPLIT_INFO = "split_factor|close+close_adj|ref_price+close_adj"
+
 
 def _default_specs(market: pd.Series | None) -> list[tuple[str, tuple[str, ...], _FeatureFn]]:
     specs: list[tuple[str, tuple[str, ...], _FeatureFn]] = [
@@ -1023,14 +1268,18 @@ def _default_specs(market: pd.Series | None) -> list[tuple[str, tuple[str, ...],
         ("zero_volume_63", ("status|volume",), lambda P: zero_volume_fraction(P, 63)),
         ("median_value_63", ("value",), lambda P: median_value_traded(P, 63)),
         ("adv_63", ("value",), lambda P: average_daily_value(P, 63)),
-        ("turnover_rel_21_252", ("volume",), lambda P: turnover_proxy(P, 21, 252)),
+        (
+            "turnover_rel_21_252",
+            (_SPLIT_INVARIANT_VOLUME,),
+            lambda P: turnover_proxy(P, 21, 252),
+        ),
         ("limit_net_21", ("change_pct|close_adj",), lambda P: limit_hits(P, 21, "net")),
         ("limit_up_21", ("change_pct|close_adj",), lambda P: limit_hits(P, 21, "up")),
         ("limit_down_21", ("change_pct|close_adj",), lambda P: limit_hits(P, 21, "down")),
         ("dist_high_252", ("close_adj",), lambda P: distance_to_high(P, 252)),
         ("dividend_yield", ("net_yield_pct",), dividend_yield),
         ("earnings_yield", ("per",), earnings_yield),
-        ("dividend_growth", ("last_div_date", "last_div_net"), dividend_growth),
+        ("dividend_growth", ("last_div_date", "last_div_net", _SPLIT_INFO), dividend_growth),
         ("dividend_stability", ("last_div_date", "last_div_net"), dividend_stability),
         ("days_since_dividend", ("last_div_date",), days_since_dividend),
         ("seasonality", ("tr_index",), lambda P: seasonality(P)),
@@ -1040,27 +1289,45 @@ def _default_specs(market: pd.Series | None) -> list[tuple[str, tuple[str, ...],
     return specs
 
 
+def _requirement_met(need: str, available: set[str]) -> bool:
+    """``"a+b|c"`` : (``a`` et ``b``) ou ``c``."""
+    return any(all(k in available for k in alt.split("+")) for alt in need.split("|"))
+
+
 def compute_features(
     panels: Panels,
     market: pd.Series | None = None,
     include: list[str] | None = None,
+    split_factor: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Calcule la bibliothèque de caractéristiques par défaut.
 
     Les caractéristiques dont les panels requis sont absents sont omises
-    (une clé ``"a|b"`` signifie « ``a`` ou ``b`` »). ``market`` (niveau de
-    l'indice, par ex. BRVM Composite) active le bêta de Dimson. ``include``
-    restreint le calcul à une liste de noms.
+    (``"a|b"`` signifie « ``a`` ou ``b`` », ``"a+b"`` « ``a`` et ``b`` »).
+    ``market`` (niveau de l'indice, par ex. BRVM Composite) active le bêta de
+    Dimson. ``include`` restreint le calcul à une liste de noms.
+
+    ``split_factor`` (convention de ``data/store.py`` : ``close_adj = close /
+    split_factor``), équivalent à la clé ``panels["split_factor"]``, ajuste
+    des divisions les grandeurs par action brutes : ``turnover_rel_21_252``
+    (volume) et ``dividend_growth`` (dividende). Sans facteur,
+    ``turnover_rel_21_252`` utilise le volume implicite ``value / close_adj``
+    et ``dividend_growth`` neutralise (NaN) les comparaisons de part et
+    d'autre d'une division détectée par ``ref_price / close_adj`` ; sans
+    aucune de ces informations, ces caractéristiques sont **omises** plutôt
+    que biaisées.
 
     Les **sens** économiques (valeur élevée = attractive ?) ne sont pas
     imposés ici : c'est au modèle (``strategy/alpha.py``) d'orienter chaque
     caractéristique avant normalisation et combinaison.
     """
+    if split_factor is not None:
+        panels = {**panels, "split_factor": split_factor}
     available = {k for k, v in panels.items() if v is not None}
     out: dict[str, pd.DataFrame] = {}
     for name, needs, fn in _default_specs(market):
         if include is not None and name not in include:
             continue
-        if all(any(alt in available for alt in need.split("|")) for need in needs):
+        if all(_requirement_met(need, available) for need in needs):
             out[name] = fn(panels)
     return out

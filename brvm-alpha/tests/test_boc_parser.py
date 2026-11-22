@@ -551,3 +551,63 @@ def test_untraded_reference_moved_by_exchange() -> None:
     r = row(d, "SAFC")
     assert_row(r, status="not_traded", prev_close=215.0, close=210.0, ref_price=210.0, change_pct=-2.33)
     assert "untraded_ref_change" in r["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# BOC historiques (jusqu'à novembre 2017)
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_2017_layout() -> None:
+    # Colonnes : volume, valeur, préc., ouv., clôt., moyen, var., var. an., réf., seuils
+    # bas/haut, dividende, date, compartiment (« 1er »/« 2eme »), rendement, PER.
+    d = edge("20170124")
+    assert d.meta["legacy_layout"] is True
+    assert len(d.equities) == 43 == d.market["n_listed"]
+    assert d.equities["volume"].sum() == d.market["equity_total_volume"] == 2192005
+    assert d.equities["value"].sum() == d.market["equity_total_value"] == 388706501
+    assert_row(row(d, "SNTS"), volume=1223.0, value=29382820.0, prev_close=24300.0, open=24200.0,
+               close=24000.0, change_pct=-1.23, ytd_pct=-4.0, ref_price=24000.0, last_div_net=1500.0,
+               last_div_date=dt.date(2016, 5, 10), net_yield_pct=6.25, per=10.86, sector="SPU")
+    # Non coté : variation du jour vide, variation annuelle lue à sa place.
+    assert_row(row(d, "CABC"), status="not_traded", close=79100.0, change_pct=None, ytd_pct=-9.60,
+               last_div_net=1200.0, last_div_date=dt.date(2016, 7, 28), net_yield_pct=1.52, per=16.70)
+    assert_row(row(d, "FTSC"), name="FILTISAC CI", flags="(*)", net_yield_pct=12.41, per=18.40)
+    assert_row(row(d, "ETIT"), volume=2179424.0, value=52306176.0, close=24.0, last_div_net=2.0, per=6.78)
+    assert_row(row(d, "TTRC"), status="suspended", close=490.0)
+    assert_row(idx(d, "BRVM 10"), level=248.24, change_pct=-0.49, ytd_pct=-5.23)
+    assert_row(idx(d, "BRVM COMPOSITE"), level=277.59, change_pct=-0.49, ytd_pct=-4.99)
+    # Indices sectoriels lus dans les en-têtes de groupe (« SECTEUR - INDUSTRIE 146,08 points -1,10% »).
+    assert_row(idx(d, "BRVM - INDUSTRIE (base 1999)"), level=146.08, change_pct=-1.10, ytd_pct=None)
+    assert_row(idx(d, "BRVM - TRANSPORT (base 1999)"), level=1301.03, change_pct=0.0)
+    m = d.market
+    assert m["market_cap"] == 7332030000000 and m["bond_market_cap"] == 2489500000000  # milliards
+    assert m["avg_per"] == 23.05 and m["n_sgi"] == 23 and m["avg_liquidity_ratio"] == 69.94
+    assert (m["n_traded"], m["n_up"], m["n_unchanged"], m["n_down"]) == (33, 10, 10, 13)
+    # Carnet d'ordres historique : prix sans séparateur, « - » pour les cases vides.
+    assert_row(ob(d, "CABC"), bid_qty=1.0, bid=79150.0, ask=85000.0, ask_qty=14.0, ref_price=79100.0)
+    assert_row(ob(d, "NEIC"), bid_qty=2.0, bid=3200.0, ask=None, ask_qty=None, ref_price=3000.0)
+    assert_row(ob(d, "SEMC"), name="CROWN SIEM CI", bid=None, ask=44990.0, ask_qty=5.0)
+    assert_row(ob(d, "STAC"), ask_at_market=True, ask_qty=7.0, ref_price=33000.0)
+    assert {warning_code(w) for w in d.warnings} <= {"yield_mismatch"}
+
+
+def test_legacy_order_book_before_price_table() -> None:
+    # 30/11/2017 : le carnet d'ordres précède la cote (pages permutées).
+    d = edge("20171130")
+    # 44 lignes de carnet, dont 2 sans aucun ordre (« TTRC ... -  -  -  490 », sans « / »).
+    assert len(d.equities) == 44 == d.market["n_listed"] and len(d.order_book) == 44
+    assert_row(row(d, "SNTS"), volume=32356.0, value=740743790.0, prev_close=22505.0, close=22900.0,
+               change_pct=1.76, ytd_pct=-8.40, last_div_date=dt.date(2017, 5, 15), net_yield_pct=6.55, per=10.61)
+    assert_row(row(d, "NTLC"), net_yield_pct=None, per=42.84, last_div_net=31.5)
+    assert_row(ob(d, "CABC"), bid_qty=37.0, bid=950.0, ask=970.0, ask_qty=62.0, ref_price=950.0)
+    assert_row(ob(d, "NEIC"), name="NEI-CEDA CI", ask_at_market=True, ask_qty=75.0, ref_price=40.0)
+    assert not d.warnings
+
+
+def test_number_split_by_stray_space() -> None:
+    # 22/12/2017 : cours précédent imprimé « 4 30 » (430) -> recollé.
+    d = edge("20171222")
+    r = row(d, "SIVC")
+    assert_row(r, prev_close=430.0, open=430.0, close=430.0, change_pct=0.0, volume=77.0, value=33110.0, per=54.35)
+    assert "split_number_joined" in r["warnings"]
