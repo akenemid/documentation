@@ -29,7 +29,6 @@ import re
 import secrets
 import socket
 import threading
-import time
 import traceback
 import warnings
 from collections import OrderedDict, deque
@@ -444,11 +443,24 @@ class Services:
 # ---------------------------------------------------------------------------
 
 
+#: Délai d'expiration (s) de la lecture des en-têtes et du corps d'une connexion (revue produit du
+#: 22/11/2026 : un corps annoncé jamais envoyé bloquait un fil indéfiniment).
+REQUEST_TIMEOUT_S = 20.0
+#: Connexions traitées simultanément au plus (au-delà : refus immédiat, connexion fermée).
+MAX_CONNECTIONS = 32
+
+
 class UIServer(ThreadingHTTPServer):
-    """Serveur de l'interface (un fil par requête, plus un fil de travail pour les opérations longues)."""
+    """Serveur de l'interface (un fil par requête, plus un fil de travail pour les opérations longues).
+
+    Les connexions simultanées sont bornées (:data:`MAX_CONNECTIONS`, sémaphore dans
+    :meth:`process_request`) et chaque connexion expire après :data:`REQUEST_TIMEOUT_S` secondes
+    d'inactivité (``Handler.timeout``) : aucun fil ne reste bloqué sur un corps jamais envoyé.
+    """
 
     daemon_threads = True
     allow_reuse_address = True
+    max_connections = MAX_CONNECTIONS
 
     def __init__(self, address: tuple[str, int], *, services: Services | None = None, allow_remote: bool = False):
         host = address[0]
@@ -468,6 +480,24 @@ class UIServer(ThreadingHTTPServer):
             names.add(host.strip("[]").lower())
         self.allowed_names = frozenset(names)
         self.last_results: dict[str, Any] = {}
+        self._slots = threading.BoundedSemaphore(int(self.max_connections))
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        """Un fil par connexion, dans la limite de ``max_connections`` (au-delà : connexion fermée)."""
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
     def shutdown_jobs(self) -> None:
         self.jobs.shutdown()
@@ -507,6 +537,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "BRVMAlpha"
     sys_version = ""
     protocol_version = "HTTP/1.0"
+    #: Expiration des lectures sur la connexion (en-têtes et corps) : ``socket.settimeout`` dans ``setup``.
+    timeout = REQUEST_TIMEOUT_S
 
     # -- journal discret -----------------------------------------------------
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - signature de la bibliothèque
@@ -522,7 +554,7 @@ class Handler(BaseHTTPRequestHandler):
                    "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox")
             frame = "SAMEORIGIN"
         else:
-            csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}' 'unsafe-inline'; "
+            csp = (f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
                    "img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-src 'self'; "
                    "frame-ancestors 'none'; base-uri 'none'")
             frame = "DENY"
@@ -615,7 +647,14 @@ class Handler(BaseHTTPRequestHandler):
                             f"le formulaire dépasse {MAX_BODY_BYTES // 1024} Ko (texte trop long ?)")
         if ctype != "application/x-www-form-urlencoded":
             raise HTTPError(415, "Type non pris en charge", "formulaire attendu (application/x-www-form-urlencoded)")
-        raw = self.rfile.read(length) if length else b""
+        try:
+            raw = self.rfile.read(length) if length else b""
+        except (TimeoutError, OSError) as exc:  # corps annoncé jamais envoyé : la connexion expire
+            self.close_connection = True
+            raise HTTPError(408, "Délai dépassé", f"corps de la requête non reçu en {REQUEST_TIMEOUT_S:g} s") from exc
+        if len(raw) < length:
+            self.close_connection = True
+            raise HTTPError(400, "Requête invalide", "corps de la requête incomplet")
         try:
             text = raw.decode("utf-8")
             return parse_qs(text, keep_blank_values=True, max_num_fields=MAX_FIELDS, strict_parsing=False)

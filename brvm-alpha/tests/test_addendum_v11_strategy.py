@@ -482,9 +482,11 @@ _S1_CHRONOLOGY = [
     ("2022-01-09", "ML", "severe"), ("2022-01-24", "BF", "coup"), ("2022-07-03", "ML", "relief"),
     ("2022-09-30", "BF", "coup"),
 ]
+# Élections postérieures à S1 : connues au plus tard à J − 30 jours ouvrés (correction du 22/11/2026, §8.5 E9) ;
+# la chronologie de S1 (élection connue la veille du scrutin) reste celle de D10.
 _LATER = [
-    ("2023-07-26", "NE", "coup"), ("2023-07-30", "NE", "severe"), ("2024-02-24", "NE", "relief"),
-    ("2024-03-24", "SN", "election"), ("2025-10-25", "CI", "election"), ("2026-04-12", "BJ", "election"),
+    ("2023-07-26", "NE", "coup"), ("2023-07-30", "NE", "severe"), ("2024-02-12", "SN", "election"),
+    ("2024-02-24", "NE", "relief"), ("2025-09-15", "CI", "election"), ("2026-03-02", "BJ", "election"),
 ]
 
 

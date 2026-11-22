@@ -133,6 +133,14 @@ def _validate_record(d: dict[str, Any]) -> str | None:
         return f"status inconnu ({d['status']!r})"
     if d.get("analysis") is not None and not isinstance(d["analysis"], dict):
         return "analysis n'est pas un objet"
+    # Enregistrement réduit à son identifiant (ligne éditée à la main ou tronquée) : jamais une note active
+    # « (titre vide) » sans date (revue produit du 22/11/2026).
+    if not str(d.get("title") or "").strip() and not str(d.get("text") or "").strip():
+        return "ni titre ni texte"
+    if d.get("published_at") in (None, "") and d.get("created_at") in (None, ""):
+        return "date de publication absente (published_at, created_at)"
+    if d.get("recorded_at") in (None, "") and d.get("created_at") in (None, ""):
+        return "date d'enregistrement absente (recorded_at, created_at)"
     return None
 
 

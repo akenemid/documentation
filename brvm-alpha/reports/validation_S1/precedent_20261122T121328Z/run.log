@@ -1,0 +1,55 @@
+début UTC : 2026-11-22T09:56:26Z (commit a2bfeb4c9b09c6a97f1208dfd7d585146455b651)
+verrou S1 écrit : /home/user/documentation/brvm-alpha/reports/validation_S1/lock.json (commit a2bfeb4c9b09c6a97f1208dfd7d585146455b651, empreinte f1582ed8e9fa1c85)
+chargement du panel /home/user/documentation/brvm-alpha/data/panel
+30 runs, 3 processus
+run 1/30 A_central_10M : ok, 60.0 s
+run 2/30 A_stress_10M : ok, 60.3 s
+run 3/30 B_central_10M : ok, 60.5 s
+run 4/30 B_stress_10M : ok, 60.3 s
+run 5/30 C_central_10M : ok, 64.5 s
+run 6/30 C_stress_10M : ok, 64.5 s
+run 7/30 E_central_10M : ok, 61.0 s
+run 8/30 D_central_10M : ok, 79.1 s
+run 9/30 D_stress_10M : ok, 78.0 s
+run 10/30 E_stress_10M : ok, 61.0 s
+run 11/30 F_central_10M : ok, 61.6 s
+run 12/30 F_stress_10M : ok, 62.2 s
+run 13/30 G_central_10M : ok, 63.8 s
+run 14/30 G_stress_10M : ok, 63.8 s
+run 15/30 H_central_10M : ok, 65.7 s
+run 16/30 H_stress_10M : ok, 62.4 s
+run 17/30 I_central_10M : ok, 69.0 s
+run 18/30 I_stress_10M : ok, 65.5 s
+run 19/30 REF_central_10M : ok, 57.4 s
+run 20/30 REF_stress_10M : ok, 55.7 s
+run 21/30 A_optimistic_10M : ok, 65.5 s
+run 22/30 A_severe_10M : ok, 58.8 s
+run 23/30 I_optimistic_10M : ok, 67.7 s
+run 24/30 I_severe_10M : ok, 59.3 s
+run 25/30 A_central_100M : ok, 59.1 s
+run 26/30 A_central_1Md : ok, 58.7 s
+run 27/30 I_central_100M : ok, 64.2 s
+run 28/30 I_central_1Md : ok, 64.9 s
+run 29/30 REF_central_100M : ok, 60.0 s
+run 30/30 REF_central_1Md : ok, 59.6 s
+t0 = 2017-08-01 (première séance investie de A) ; fenêtre [2017-08-01 ; 2022-11-16]
+métriques par run (bootstrap stationnaire n_boot = 5000, blocs de 8 semaines)
+contrôles comptables : tous verts
+registre : N = 88 essais (G1 vert)
+registre enregistré : /home/user/documentation/brvm-alpha/reports/trials.parquet (N = 88)
+terminé en 679.6 s : /home/user/documentation/brvm-alpha/reports/validation_S1
+Validation S1 : t0 = 2017-08-01, fin = 2022-11-16, durée 680 s (estimations sous hypothèses)
+  A    REJETÉ       actif net / TR -7.2 %/an, IR -1.14
+  B    REJETÉ       actif net / TR -7.3 %/an, IR -1.16
+  C    REJETÉ       actif net / TR -7.2 %/an, IR -1.15
+  D    REJETÉ       actif net / TR -7.5 %/an, IR -1.22
+  E    REJETÉ       actif net / TR -7.2 %/an, IR -1.14
+  F    REJETÉ       actif net / TR -7.1 %/an, IR -1.13
+  G    REJETÉ       actif net / TR -7.1 %/an, IR -1.14
+  H    REJETÉ       actif net / TR -7.1 %/an, IR -1.14
+  I    REJETÉ       actif net / TR -5.8 %/an, IR -1.16
+  REF  REJETÉ       actif net / TR -3.6 %/an, IR -0.94
+Rapport : /home/user/documentation/brvm-alpha/reports/validation_S1/resultats.md
+Performance passée ≠ garantie. Aucun gain n'est garanti.
+CODE_SORTIE=0
+fin UTC : 2026-11-22T10:07:47Z

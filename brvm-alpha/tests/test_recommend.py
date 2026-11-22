@@ -54,12 +54,13 @@ def test_limit_prices_hand_cases():
     # Tolérance plus large que la bande : la borne s'impose (1 000 : bornes 925 ; 1 075).
     lp = R.limit_prices(1000, tolerance=0.10)
     assert (lp["buy"], lp["sell"]) == (1075.0, 925.0)
-    # Frontière de 100 FCFA : achat 101 → 100 (pas 5) ; vente 99 (pas 1).
+    # Frontière de 100 FCFA : achat 101 → 100 = dernier cours, porté à un pas au-dessus (105, pas de 5) ;
+    # vente 99 (pas 1). Correction du 22/11/2026 : au moins un pas d'écart quand le pas dépasse la tolérance.
     lp = R.limit_prices(100)
-    assert (lp["buy"], lp["sell"]) == (100.0, 99.0)
-    # Pas de 1 FCFA : 57 × 1,01 = 57,57 → 57 ; 57 × 0,99 = 56,43 → 57.
+    assert (lp["buy"], lp["sell"]) == (105.0, 99.0)
+    # Pas de 1 FCFA : 57 × 1,01 = 57,57 → 57 et 57 × 0,99 = 56,43 → 57 (= dernier cours) : un pas d'écart.
     lp = R.limit_prices(57)
-    assert (lp["buy"], lp["sell"]) == (57.0, 57.0)
+    assert (lp["buy"], lp["sell"]) == (58.0, 56.0)
     # Référence ex-dividende (4 200) : bornes (3 885 ; 4 515), limites autour du dernier cours.
     lp = R.limit_prices(4385, reference_price=4200)
     assert (lp["low"], lp["high"], lp["buy"], lp["sell"]) == (3885.0, 4515.0, 4425.0, 4345.0)

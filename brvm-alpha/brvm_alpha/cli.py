@@ -134,7 +134,7 @@ def parse_date(value: Any) -> pd.Timestamp:
 
 def parse_capital(value: Any) -> float:
     """Montant en FCFA : « 10000000 », « 10 000 000 », « 10M », « 1,5 Md », « 250k » (``ValueError`` sinon)."""
-    s = str(value or "").strip().lower().replace(" ", "").replace("\xa0", "").replace(" ", "").replace("_", "")
+    s = str(value or "").strip().lower().replace("\u202f", "").replace("\xa0", "").replace(" ", "").replace("_", "")
     s = s.replace("fcfa", "").replace("xof", "")
     m = re.fullmatch(r"(\d+(?:[.,]\d+)?)(k|m|md|mds|mrd|g)?", s)
     if not m:
@@ -147,6 +147,9 @@ def parse_capital(value: Any) -> float:
     if x > 1e13:
         raise ValueError("montant hors de portée (plus de 10 000 milliards de FCFA)")
     return x
+
+
+_HOLDINGS_HEADER = frozenset({"symbole", "symboles", "symbol", "titre", "code", "valeur", "ticker"})
 
 
 def parse_holdings(text: str) -> dict[str, int]:
@@ -165,11 +168,10 @@ def parse_holdings(text: str) -> dict[str, int]:
         if len(parts) < 2:
             raise ValueError(f"ligne {i} : « symbole,titres » attendu, lu {s[:40]!r}")
         sym = parts[0].upper()
-        qty_s = re.sub(r"[\s \xa0]", "", parts[1])
-        if not seen_data and not re.fullmatch(r"-?\d+", qty_s):
+        qty_s = re.sub(r"[\s\u202f\xa0]", "", parts[1])
+        if not seen_data and parts[0].strip().lower() in _HOLDINGS_HEADER:
             seen_data = True
-            if re.fullmatch(r"[a-zéè_ ]+", parts[1].lower()):
-                continue  # en-tête
+            continue  # en-tête « symbole,titres »
         seen_data = True
         if not re.fullmatch(r"[A-Z0-9]{2,8}", sym):
             raise ValueError(f"ligne {i} : symbole invalide {parts[0][:20]!r}")
@@ -572,10 +574,16 @@ def build_parser() -> argparse.ArgumentParser:
                            metavar="[dossier CODE]")
     ixd = ixs.add_parser("dossier", help="dossier détaillé d'un indice (constituants, contributions, notes)")
     ixd.add_argument("code", metavar="CODE", help="indice : IDX:BRVM-C, IDX:BRVM-30, IDX:PRESTIGE, IDX:SECT:FIN…")
-    ixd.add_argument("--date", dest="dossier_date", type=_date_arg, default=None, metavar="AAAA-MM-JJ",
+    # Options répétées après « dossier » : SUPPRESS conserve la valeur donnée avant la sous-commande.
+    ixd.add_argument("--date", type=_date_arg, default=argparse.SUPPRESS, metavar="AAAA-MM-JJ",
                      help="date d'évaluation (défaut : dernière séance du panel)")
-    ixd.add_argument("--format", dest="dossier_format", choices=("texte", "json"), default=None,
+    ixd.add_argument("--format", choices=("texte", "json"), default=argparse.SUPPRESS,
                      help="format de sortie (défaut : texte)")
+    ixd.add_argument("--sans-notes", action="store_true", default=argparse.SUPPRESS,
+                     help="exclut les notes de l'analyste")
+    ixd.add_argument("--racine", default=argparse.SUPPRESS, metavar="DOSSIER",
+                     help="dossier du journal des notes (défaut : data/notes)")
+    ixd.add_argument("--panel-dir", default=argparse.SUPPRESS, metavar="DOSSIER", help="panel (défaut : data/panel)")
 
     # -- univers, explication, backtest, validation -----------------------------------
     u = sub.add_parser("universe", help="univers éligible U1-U10 à une date (contrôle de forme)")
@@ -643,6 +651,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--sortie", default=None, metavar="CHEMIN", help="écrit la sortie dans ce fichier")
     r.add_argument("--sans-notes", action="store_true", help="ignore les notes de l'analyste")
     r.add_argument("--sans-indices", action="store_true", help="n'évalue pas les indices (plus rapide)")
+    _add_notes_root(r)
     r.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
 
     rp = sub.add_parser("report", help="rapport HTML autonome (marché, S1, ordre de bataille, indices, notes…)")
@@ -656,6 +665,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="liquidités disponibles (défaut : capital − titres détenus)")
     rp.add_argument("--variante", default=None, help="variante imposée (défaut : choix d'après le test S1)")
     rp.add_argument("--tirages", type=_positive_int, default=5000, metavar="N", help="tirages du bootstrap (5000)")
+    rp.add_argument("--couts", default="central", help="scénario de coûts : optimistic, central, stress, severe")
+    rp.add_argument("--graine", type=int, default=0, metavar="N", help="graine du bootstrap (0)")
     _add_notes_root(rp)
     rp.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
 
@@ -1018,9 +1029,8 @@ def _cmd_indices(args: argparse.Namespace) -> int:
     from brvm_alpha.notes import index_eval
 
     dossier = args.indices_cmd == "dossier"
-    date_arg = args.dossier_date if dossier and args.dossier_date is not None else args.date
-    fmt = (args.dossier_format or args.format) if dossier else args.format
-    t = _decision_date(date_arg, args.panel_dir)
+    fmt = args.format
+    t = _decision_date(args.date, args.panel_dir)
     if in_s1(t):
         _say(s1_refusal(t, "l'évaluation des indices"))
         return 2
@@ -1046,7 +1056,7 @@ def _cmd_indices(args: argparse.Namespace) -> int:
     when = fr_date(ev["date"].max()) if len(ev) and "date" in ev else fr_date(t)
     print(f"Évaluation des indices au {when} — aide à la décision, pas un signal validé "
           f"(notes : {'incluses' if store is not None else 'aucune'}).")
-    rows = [[code, str(r["label"])[:34], fr_num(r["level"], 2), fr_pct(r.get("ret_1m")), fr_pct(r.get("ret_12m")),
+    rows = [[code, str(r["label"])[:40], fr_num(r["level"], 2), fr_pct(r.get("ret_1m")), fr_pct(r.get("ret_12m")),
              fr_pct(r.get("ytd")), str(r["stance"]), fr_num(r["confidence"], 2), fr_num(r["composite"], 2, True)]
             for code, r in ev.iterrows()]
     print(_table(rows, ["Code", "Indice", "Niveau", "1 mois", "12 mois", "Depuis 31/12", "Position", "Confiance",
@@ -1278,10 +1288,17 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
     holdings = _holdings_arg(args.portefeuille)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        if args.sans_notes:
+            store: Any = False
+        elif args.racine:
+            from brvm_alpha.notes.store import NoteStore
+
+            store = NoteStore(args.racine)  # même journal que l'interface et le rapport (--racine)
+        else:
+            store = None
         o = rec.recommend(t, args.capital, holdings=holdings, cash=args.cash, variant=args.variante,
-                          costs=args.couts, n_boot=args.tirages, seed=args.graine,
-                          notes_store=False if args.sans_notes else None, panel_dir=args.panel_dir,
-                          index_evaluation=not args.sans_indices)
+                          costs=args.couts, n_boot=args.tirages, seed=args.graine, notes_store=store,
+                          panel_dir=args.panel_dir, index_evaluation=not args.sans_indices)
     if args.format == "json":
         out = json.dumps(o.to_dict(), ensure_ascii=False, indent=1)
     elif args.format == "html":
@@ -1307,7 +1324,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         return 2
     out = Path(args.sortie) if args.sortie else DEFAULT_REPORTS_DIR / f"rapport_{t:%Y-%m-%d}.html"
     kw: dict[str, Any] = {"holdings": _holdings_arg(args.portefeuille), "variant": args.variante,
-                          "cash": args.cash, "n_boot": args.tirages}
+                          "cash": args.cash, "n_boot": args.tirages, "costs": args.couts, "seed": args.graine}
     if args.racine:
         kw["notes_root"] = args.racine
     if args.panel_dir:

@@ -666,6 +666,22 @@ COUNTRY_EVENT_RECORDS: tuple[CountryEvent, ...] = (
 
 #: Fin de l'échantillon vierge S1 (§8.1).
 _S1_END = pd.Timestamp("2022-11-16")
+#: Élections postérieures à S1 (S0 et suivi réel, §8.5 E9 de la spécification) : la date d'un scrutin est
+#: publique à l'avance (calendrier électoral) ; elle est réputée connue au plus tard à J − 30 jours ouvrés,
+#: de sorte que la règle « élection » du §4.3 s'applique sur toute sa fenêtre [J − 30 ; J + 10]. Hypothèse
+#: [NON VÉRIFIÉ] sur la date de publication. Sur S1, la chronologie D10 figée (élection connue la veille du
+#: scrutin) reste appliquée telle quelle.
+ELECTION_KNOWN_BEFORE_BDAYS = 30
+
+
+def election_known_date(event_date, announced) -> pd.Timestamp:
+    """Date de connaissance d'une élection (date d'annonce du tableau D10 sur S1 ; après S1 : au plus tard
+    ``J − 30`` jours ouvrés, :data:`ELECTION_KNOWN_BEFORE_BDAYS`)."""
+    a = _ts(announced)
+    ed = _ts(event_date) if event_date else None
+    if ed is None or ed <= _S1_END:
+        return a
+    return min(a, pd.Timestamp(ed - pd.offsets.BDay(ELECTION_KNOWN_BEFORE_BDAYS)).normalize())
 
 
 def country_event_action_date(date, calendar=None) -> pd.Timestamp:
@@ -691,11 +707,19 @@ def country_events_table(calendar=None) -> pd.DataFrame:
     rows = []
     for e in COUNTRY_EVENT_RECORDS:
         d = _ts(e.date)
+        remark = e.remark
+        if e.rule == "election" and e.event_date:
+            known = election_known_date(e.event_date, d)
+            if known != d:
+                d = known
+                remark = (remark + " ; " if remark else "") + (
+                    f"date du scrutin connue au plus tard à J − {ELECTION_KNOWN_BEFORE_BDAYS} jours ouvrés "
+                    "(calendrier électoral public, hypothèse [NON VÉRIFIÉ])")
         rows.append({"date": d, "country": e.country, "rule": e.rule,
                      "event_date": _ts(e.event_date) if e.event_date else pd.NaT,
                      "action_date": country_event_action_date(d, calendar),
                      "sample": "S1" if d <= _S1_END else "posterieur",
-                     "source": e.source, "confidence": e.confidence, "label": e.remark})
+                     "source": e.source, "confidence": e.confidence, "label": remark})
     return pd.DataFrame(rows).sort_values(["date", "country"]).reset_index(drop=True)
 
 

@@ -104,6 +104,19 @@ def stance_badge(stance: Any) -> Safe:
     return Safe(f'<span class="badge {cls}">{esc(s or "—")}</span>')
 
 
+def _fmt_value(v: Any) -> str:
+    """Valeur extraite lisible (nombres au format français, listes et dictionnaires en texte)."""
+    if isinstance(v, bool):
+        return "oui" if v else "non"
+    if isinstance(v, int):
+        return fr_num(v, 0)
+    if isinstance(v, float):
+        return fr_num(v, 4 if abs(v) < 10 else 2).rstrip("0").rstrip(",") if v == v else "n.d."
+    if isinstance(v, (dict, list, tuple)):
+        return str(v)
+    return str(v)
+
+
 def _val(x: Any) -> Any:
     if isinstance(x, (list, dict, tuple)):
         return x
@@ -267,6 +280,7 @@ table{border-collapse:collapse;font-size:13.5px;min-width:100%}
 th,td{border-bottom:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top}
 th{font-weight:600;white-space:nowrap}
 td.num,th.num{text-align:right;white-space:nowrap}
+td:first-child{white-space:nowrap}
 .box{border:1px solid var(--line);border-left-width:4px;border-radius:6px;padding:8px 12px;margin:8px 0;background:var(--surface)}
 .box.info{border-left-color:var(--accent)}.box.warn{border-left-color:var(--warn)}.box.error{border-left-color:var(--bad)}
 .box.ok{border-left-color:var(--ok)}.box.fact{border-left-color:var(--ok)}.box.estimate{border-left-color:var(--warn)}
@@ -292,7 +306,7 @@ pre{padding:10px;overflow-x:auto;white-space:pre-wrap;font-size:13px}
 pre.log{max-height:320px;overflow-y:auto}
 blockquote{margin:8px 0;padding:6px 12px;border-left:3px solid var(--line);color:var(--muted)}
 details{margin:6px 0}summary{cursor:pointer;font-weight:600}
-iframe.report{width:100%;height:75vh;border:1px solid var(--line);border-radius:6px;background:#fff}
+iframe.report{width:100%;height:75vh;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
 footer.foot{max-width:1180px;margin:0 auto;padding:16px;color:var(--muted);font-size:13px}
 .legend span{margin-right:12px}
 .brvm-ordre-de-bataille .bandeau{border-left:4px solid var(--warn);padding:6px 10px}
@@ -666,8 +680,8 @@ def page_note(ctx: PageContext, *, note: Mapping[str, Any], versions: Sequence[M
         ext = an.get("extracted") or {}
         if ext:
             analysis.append(Safe("<h3>Chiffres et dates extraits (faits lus dans le texte)</h3>"))
-            analysis.append(table(["Champ", "Valeur"], [[k, v if not isinstance(v, (dict, list)) else str(v)]
-                                                        for k, v in ext.items()]))
+            analysis.append(table(["Champ", "Valeur"], [[k, _fmt_value(v)] for k, v in ext.items()
+                                                        if _val(v) is not None and v != ""]))
         terms = an.get("matched_terms") or []
         if terms:
             analysis.append(Safe("<details><summary>Termes reconnus</summary>"))

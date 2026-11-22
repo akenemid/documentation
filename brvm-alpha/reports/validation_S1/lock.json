@@ -2,70 +2,85 @@
   "arbre_propre": true,
   "bandeau": "Performance passée ≠ garantie. Aucun gain n'est garanti.",
   "branche": "claude/brvm-stock-analysis-platform-4myn3g",
-  "commit": "a2bfeb4c9b09c6a97f1208dfd7d585146455b651",
-  "duree_runs_s": 648.9,
-  "duree_totale_s": 679.6,
+  "commit": "1819997bc8f01ef6977a7db6dc3ddac0c2875401",
+  "duree_runs_s": 702.5,
+  "duree_totale_s": 755.3,
   "durees_runs_s": {
-    "A_central_100M": 59.092,
-    "A_central_10M": 60.011,
-    "A_central_1Md": 58.739,
-    "A_optimistic_10M": 65.536,
-    "A_severe_10M": 58.75,
-    "A_stress_10M": 60.329,
-    "B_central_10M": 60.478,
-    "B_stress_10M": 60.344,
-    "C_central_10M": 64.541,
-    "C_stress_10M": 64.532,
-    "D_central_10M": 79.101,
-    "D_stress_10M": 78.04,
-    "E_central_10M": 60.962,
-    "E_stress_10M": 60.968,
-    "F_central_10M": 61.642,
-    "F_stress_10M": 62.231,
-    "G_central_10M": 63.791,
-    "G_stress_10M": 63.819,
-    "H_central_10M": 65.734,
-    "H_stress_10M": 62.439,
-    "I_central_100M": 64.207,
-    "I_central_10M": 69.048,
-    "I_central_1Md": 64.936,
-    "I_optimistic_10M": 67.748,
-    "I_severe_10M": 59.274,
-    "I_stress_10M": 65.538,
-    "REF_central_100M": 60.008,
-    "REF_central_10M": 57.408,
-    "REF_central_1Md": 59.566,
-    "REF_stress_10M": 55.746
+    "A_central_100M": 62.195,
+    "A_central_10M": 64.234,
+    "A_central_1Md": 63.186,
+    "A_optimistic_10M": 72.31,
+    "A_severe_10M": 65.264,
+    "A_stress_10M": 66.416,
+    "B_central_10M": 64.955,
+    "B_stress_10M": 59.062,
+    "C_central_10M": 62.093,
+    "C_stress_10M": 65.342,
+    "D_central_10M": 83.896,
+    "D_stress_10M": 81.714,
+    "E_central_10M": 65.159,
+    "E_stress_10M": 72.438,
+    "F_central_10M": 73.28,
+    "F_stress_10M": 72.013,
+    "G_central_10M": 76.993,
+    "G_stress_10M": 72.791,
+    "H_central_10M": 76.732,
+    "H_stress_10M": 70.842,
+    "I_central_100M": 65.594,
+    "I_central_10M": 74.591,
+    "I_central_1Md": 64.167,
+    "I_optimistic_10M": 74.827,
+    "I_severe_10M": 69.377,
+    "I_stress_10M": 75.084,
+    "REF_central_100M": 62.95,
+    "REF_central_10M": 62.188,
+    "REF_central_1Md": 58.316,
+    "REF_stress_10M": 61.351
   },
   "echantillon": "S1",
   "empreinte_config": "f1582ed8e9fa1c85",
   "empreinte_controle": {
     "actuelle": "f1582ed8e9fa1c85",
     "conforme": true,
+    "conforme_etat_fige": true,
+    "etat_fige": {
+      "commit": "a2bfeb4c9b09c6a97f1208dfd7d585146455b651",
+      "empreinte": "f1582ed8e9fa1c85"
+    },
+    "preenregistree_independante": false,
     "preenregistree_v11": [
+      "f1582ed8e9fa1c85"
+    ],
+    "reference_preenregistrement": {
+      "commit": "751d1be729ac1501fe672eb47be084c794dac7a9",
+      "empreinte_v1_0": "dcdf1fb7db530c44",
+      "note": "spécification inchangée depuis 751d1be ; YAML passé de 1.0 à 1.1 entre 751d1be et a2bfeb4 (clés v1.1 = valeurs D1-D12 du §8.4) ; l'empreinte f1582ed8e9fa1c85 est celle de l'état figé a2bfeb4, écrite dans le même commit que le run (11 s avant), pas une valeur pré-enregistrée indépendante",
+      "version_yaml": "1.0"
+    },
+    "registre_s1_i_ref": [
       "f1582ed8e9fa1c85"
     ]
   },
   "essais": {
-    "A_central_10M": "S1-A",
-    "B_central_10M": "S1-B",
-    "C_central_10M": "S1-C",
-    "D_central_10M": "S1-D",
-    "E_central_10M": "S1-E",
-    "F_central_10M": "S1-F",
-    "G_central_10M": "S1-G",
-    "H_central_10M": "S1-H",
-    "I_central_10M": "S1-I",
-    "REF_central_10M": "REF-ID"
+    "A_central_10M": "S1-A-R1",
+    "B_central_10M": "S1-B-R1",
+    "C_central_10M": "S1-C-R1",
+    "D_central_10M": "S1-D-R1",
+    "E_central_10M": "S1-E-R1",
+    "F_central_10M": "S1-F-R1",
+    "G_central_10M": "S1-G-R1",
+    "H_central_10M": "S1-H-R1",
+    "I_central_10M": "S1-I-R1",
+    "REF_central_10M": "REF-ID-R1"
   },
   "fichiers_modifies": [],
   "fichiers_non_suivis": [],
-  "fin_utc": "2026-11-22T10:07:46.919316+00:00",
+  "fin_utc": "2026-11-22T12:26:03.512052+00:00",
   "graine": 0,
-  "horodatage_utc": "2026-11-22T09:56:27.353723+00:00",
+  "horodatage_utc": "2026-11-22T12:13:28.193940+00:00",
   "mode_decision": "evenementiel",
   "n_boot": 5000,
-  "n_essais_registre_apres": 88,
+  "n_essais_registre_apres": 98,
   "n_essais_registre_avant": 88,
   "panel": "/home/user/documentation/brvm-alpha/data/panel",
   "periode": [
@@ -286,8 +301,320 @@
   ],
   "plan_standard": true,
   "registre": "/home/user/documentation/brvm-alpha/reports/trials.parquet",
-  "relance": null,
-  "sha256_metrics": "88b0ee6a26fc0911be54040599a37587962b8ffd4fd414c454281fe3c4fa50ab",
+  "relance": {
+    "essais_deja_executes": [
+      "REF-ID",
+      "S1-A",
+      "S1-B",
+      "S1-C",
+      "S1-D",
+      "S1-E",
+      "S1-F",
+      "S1-G",
+      "S1-H",
+      "S1-I"
+    ],
+    "motif": "Bogues démontrés par l'audit du 22/11/2026 (comptabilité des statistiques) : (1) semaines multi-séances après un trou de BOC retirées du chaînage du rendement, de l'actif et des drawdowns, contrairement au §3.1.3 (« gardé pour chaîner le TR ») ; (2) garde-fou de couverture tautologique (semaines attendues = semaines du TR calculées avec les mêmes retraits). Corrections de publication associées : coûts annualisés en années calendaires, DSR sous deux conventions de variance, sensibilité de la PBO, un IC par mois, contrôle d'empreinte sans autoréférence. Aucun paramètre de stratégie modifié.",
+    "precedent": "/home/user/documentation/brvm-alpha/reports/validation_S1/precedent_20261122T121328Z",
+    "verrou_precedent": {
+      "arbre_propre": true,
+      "bandeau": "Performance passée ≠ garantie. Aucun gain n'est garanti.",
+      "branche": "claude/brvm-stock-analysis-platform-4myn3g",
+      "commit": "a2bfeb4c9b09c6a97f1208dfd7d585146455b651",
+      "duree_runs_s": 648.9,
+      "duree_totale_s": 679.6,
+      "durees_runs_s": {
+        "A_central_100M": 59.092,
+        "A_central_10M": 60.011,
+        "A_central_1Md": 58.739,
+        "A_optimistic_10M": 65.536,
+        "A_severe_10M": 58.75,
+        "A_stress_10M": 60.329,
+        "B_central_10M": 60.478,
+        "B_stress_10M": 60.344,
+        "C_central_10M": 64.541,
+        "C_stress_10M": 64.532,
+        "D_central_10M": 79.101,
+        "D_stress_10M": 78.04,
+        "E_central_10M": 60.962,
+        "E_stress_10M": 60.968,
+        "F_central_10M": 61.642,
+        "F_stress_10M": 62.231,
+        "G_central_10M": 63.791,
+        "G_stress_10M": 63.819,
+        "H_central_10M": 65.734,
+        "H_stress_10M": 62.439,
+        "I_central_100M": 64.207,
+        "I_central_10M": 69.048,
+        "I_central_1Md": 64.936,
+        "I_optimistic_10M": 67.748,
+        "I_severe_10M": 59.274,
+        "I_stress_10M": 65.538,
+        "REF_central_100M": 60.008,
+        "REF_central_10M": 57.408,
+        "REF_central_1Md": 59.566,
+        "REF_stress_10M": 55.746
+      },
+      "echantillon": "S1",
+      "empreinte_config": "f1582ed8e9fa1c85",
+      "empreinte_controle": {
+        "actuelle": "f1582ed8e9fa1c85",
+        "conforme": true,
+        "preenregistree_v11": [
+          "f1582ed8e9fa1c85"
+        ]
+      },
+      "essais": {
+        "A_central_10M": "S1-A",
+        "B_central_10M": "S1-B",
+        "C_central_10M": "S1-C",
+        "D_central_10M": "S1-D",
+        "E_central_10M": "S1-E",
+        "F_central_10M": "S1-F",
+        "G_central_10M": "S1-G",
+        "H_central_10M": "S1-H",
+        "I_central_10M": "S1-I",
+        "REF_central_10M": "REF-ID"
+      },
+      "fichiers_modifies": [],
+      "fichiers_non_suivis": [],
+      "fin_utc": "2026-11-22T10:07:46.919316+00:00",
+      "graine": 0,
+      "horodatage_utc": "2026-11-22T09:56:27.353723+00:00",
+      "mode_decision": "evenementiel",
+      "n_boot": 5000,
+      "n_essais_registre_apres": 88,
+      "n_essais_registre_avant": 88,
+      "panel": "/home/user/documentation/brvm-alpha/data/panel",
+      "periode": [
+        "2017-01-02",
+        "2022-11-16"
+      ],
+      "plan": [
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "A_central_10M",
+          "variant": "A"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "A_stress_10M",
+          "variant": "A"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "B_central_10M",
+          "variant": "B"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "B_stress_10M",
+          "variant": "B"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "C_central_10M",
+          "variant": "C"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "C_stress_10M",
+          "variant": "C"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "D_central_10M",
+          "variant": "D"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "D_stress_10M",
+          "variant": "D"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "E_central_10M",
+          "variant": "E"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "E_stress_10M",
+          "variant": "E"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "F_central_10M",
+          "variant": "F"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "F_stress_10M",
+          "variant": "F"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "G_central_10M",
+          "variant": "G"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "G_stress_10M",
+          "variant": "G"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "H_central_10M",
+          "variant": "H"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "H_stress_10M",
+          "variant": "H"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (famille)",
+          "run_id": "I_central_10M",
+          "variant": "I"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "I_stress_10M",
+          "variant": "I"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "central",
+          "role": "essai (référence, hors PBO)",
+          "run_id": "REF_central_10M",
+          "variant": "REF"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "stress",
+          "role": "sensibilité",
+          "run_id": "REF_stress_10M",
+          "variant": "REF"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "optimistic",
+          "role": "sensibilité",
+          "run_id": "A_optimistic_10M",
+          "variant": "A"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "severe",
+          "role": "sensibilité",
+          "run_id": "A_severe_10M",
+          "variant": "A"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "optimistic",
+          "role": "sensibilité",
+          "run_id": "I_optimistic_10M",
+          "variant": "I"
+        },
+        {
+          "capital": 10000000.0,
+          "costs": "severe",
+          "role": "sensibilité",
+          "run_id": "I_severe_10M",
+          "variant": "I"
+        },
+        {
+          "capital": 100000000.0,
+          "costs": "central",
+          "role": "sensibilité",
+          "run_id": "A_central_100M",
+          "variant": "A"
+        },
+        {
+          "capital": 1000000000.0,
+          "costs": "central",
+          "role": "sensibilité",
+          "run_id": "A_central_1Md",
+          "variant": "A"
+        },
+        {
+          "capital": 100000000.0,
+          "costs": "central",
+          "role": "sensibilité",
+          "run_id": "I_central_100M",
+          "variant": "I"
+        },
+        {
+          "capital": 1000000000.0,
+          "costs": "central",
+          "role": "sensibilité",
+          "run_id": "I_central_1Md",
+          "variant": "I"
+        },
+        {
+          "capital": 100000000.0,
+          "costs": "central",
+          "role": "sensibilité",
+          "run_id": "REF_central_100M",
+          "variant": "REF"
+        },
+        {
+          "capital": 1000000000.0,
+          "costs": "central",
+          "role": "sensibilité",
+          "run_id": "REF_central_1Md",
+          "variant": "REF"
+        }
+      ],
+      "plan_standard": true,
+      "registre": "/home/user/documentation/brvm-alpha/reports/trials.parquet",
+      "relance": null,
+      "sha256_metrics": "88b0ee6a26fc0911be54040599a37587962b8ffd4fd414c454281fe3c4fa50ab",
+      "sha256_yaml": "1d40bc143891008db26ee5ab5a3865a8ffef1d95473c9451c8cadda9136b76cf",
+      "statut": "terminé",
+      "t0": "2017-08-01T00:00:00",
+      "version_yaml": "1.1",
+      "window_basis": "sessions",
+      "workers": 3
+    }
+  },
+  "sha256_metrics": "0df57e1e9f503b2fc87e5bbc241bc7243113d0390b314a69a2873494beb303e6",
   "sha256_yaml": "1d40bc143891008db26ee5ab5a3865a8ffef1d95473c9451c8cadda9136b76cf",
   "statut": "terminé",
   "t0": "2017-08-01T00:00:00",

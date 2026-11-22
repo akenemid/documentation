@@ -94,6 +94,7 @@ DEFAULT_PANEL_DIR = Path(__file__).resolve().parents[2] / "data" / "panel"
 
 #: Bornes de l'échantillon vierge S1 et début de S0 (§8.1).
 S1_END = "2022-11-16"
+_S1_END_TS = pd.Timestamp(S1_END)
 S0_START = "2022-11-17"
 
 #: Bandeau permanent (§10).
@@ -1384,7 +1385,18 @@ class BrvmAlpha:
             elapsed = int(((idx > since) & (idx <= d.t)).sum())
             if gs is not None and elapsed > 0:
                 p0 = int(idx.searchsorted(since, side="right"))
-                elapsed = int(gs[len(idx) - 1] - gs[p0]) + 1
+                if since > _S1_END_TS and p0 > 0:
+                    # Hors S1 (§8.5 E9) : la règle court depuis la première SÉANCE du calendrier qui suit
+                    # l'annonce, BOC manquants compris (D1) : une annonce tombée dans un trou de BOC ne
+                    # prolonge pas la règle de la durée du trou. Numéro de cette séance = dernier numéro
+                    # connu avant l'annonce + jours ouvrés écoulés jusqu'à l'annonce + 1.
+                    prev_day = pd.Timestamp(idx[p0 - 1]).normalize()
+                    gap_bd = int(np.busday_count((prev_day + pd.Timedelta(days=1)).date(),
+                                                 (pd.Timestamp(since).normalize() + pd.Timedelta(days=1)).date()))
+                    s_action = int(gs[p0 - 1]) + gap_bd + 1
+                    elapsed = max(int(gs[len(idx) - 1]) - min(s_action, int(gs[p0])) + 1, 1)
+                else:
+                    elapsed = int(gs[len(idx) - 1] - gs[p0]) + 1
             active = False
             ramp = None
             remaining: int | None = None

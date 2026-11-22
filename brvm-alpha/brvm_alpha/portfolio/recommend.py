@@ -193,7 +193,11 @@ def limit_prices(last_close: float, *, reference_price: float | None = None,
     * bornes : ``macro.price_band(réf)``, ``réf`` = cours de référence de la prochaine séance
       (par défaut le dernier cours ; la référence ex-dividende si le détachement est connu) ;
     * achat : ``min(borne haute ; dernier cours × (1 + tolérance))`` arrondi au pas **inférieur** ;
-    * vente : ``max(borne basse ; dernier cours × (1 − tolérance))`` arrondi au pas **supérieur**.
+    * vente : ``max(borne basse ; dernier cours × (1 − tolérance))`` arrondi au pas **supérieur** ;
+    * titre dont le pas dépasse la tolérance (sous 100 FCFA avec un pas de 1, sous 500 FCFA avec un pas
+      de 5) : la limite serait égale au dernier cours ; elle est portée à **un pas** au-dessus (achat)
+      ou au-dessous (vente) du dernier cours, dans la bande (correction du 22/11/2026 : ETIT à 57 FCFA,
+      limite 57 et coûts implicites mis à zéro).
 
     Exemple : dernier cours 4 385 FCFA ⇒ bornes (4 060 ; 4 710), achat 4 425, vente 4 345.
     """
@@ -204,8 +208,15 @@ def limit_prices(last_close: float, *, reference_price: float | None = None,
     low, high = macro.price_band(ref)
     buy = floor_to_tick(min(high, c * (1.0 + tolerance)))
     sell = ceil_to_tick(max(low, c * (1.0 - tolerance)))
+    one_tick = False
+    if buy <= c and high > c:
+        buy = max(buy, floor_to_tick(min(high, c + float(macro.tick_size(c)))))
+        one_tick = True
+    if sell >= c and low < c:
+        sell = min(sell, ceil_to_tick(max(low, c - float(macro.tick_size(max(c - 0.5, 0.5))))))
+        one_tick = True
     return {"reference": ref, "low": float(low), "high": float(high), "buy": buy, "sell": sell,
-            "tick": float(macro.tick_size(c)), "tolerance": float(tolerance)}
+            "tick": float(macro.tick_size(c)), "tolerance": float(tolerance), "un_pas": one_tick}
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +387,17 @@ def future_sessions(asof: Any, n: int, sessions: Any = None) -> list[pd.Timestam
         if cur.weekday() < 5 and not _is_fixed_holiday(cur):
             out.append(cur)
     return out
+
+
+def expected_missing_sessions(last_session: Any, today: Any) -> list[pd.Timestamp]:
+    """Séances attendues **après** le dernier BOC du panel et **avant** ``today`` (exclu : le BOC du jour
+    n'est publié qu'après la clôture) : jours ouvrés hors fériés à date fixe (hypothèse, fêtes mobiles
+    inconnues). Une liste non vide signale un panel en retard (lancer ``update``)."""
+    a = pd.Timestamp(last_session).normalize() + pd.Timedelta(days=1)
+    b = pd.Timestamp(today).normalize() - pd.Timedelta(days=1)
+    if b < a:
+        return []
+    return [pd.Timestamp(d) for d in pd.bdate_range(a, b) if not _is_fixed_holiday(pd.Timestamp(d))]
 
 
 def _session_calendar(asof: Any, sessions: Any, horizon_days: int = 800) -> pd.DatetimeIndex:
@@ -583,6 +605,13 @@ def choose_variant(variant: str | None = None, validation_dir: str | Path | None
         variants = m.get("variantes") or {}
         out["statut_A"] = _norm_status((variants.get("A") or {}).get("statut")) or "INDÉTERMINÉ"
         out["statut_REF"] = _norm_status((variants.get("REF") or {}).get("statut"))
+        res_s1: dict[str, Any] = {}
+        for code, vd in variants.items():
+            run = ((m.get("runs") or {}).get((vd or {}).get("run_id")) or {})
+            act = run.get("actif_tr_an")
+            res_s1[str(code)] = {"statut": _norm_status((vd or {}).get("statut")),
+                                 "actif_tr_an": float(act) if isinstance(act, (int, float)) else None}
+        out["resultats_s1"] = res_s1
         if not s1_done:
             out["avertissements"].append("incohérence : metrics.json de S1 présent mais le registre n'indique aucun "
                                          "essai S1 exécuté ; vérifier reports/trials.parquet")
@@ -891,10 +920,14 @@ def return_distribution(weekly: pd.DataFrame, weights: Mapping[str, float], *, h
     """Distribution historique à ``horizon_weeks`` semaines du portefeuille aux poids fixes et du
     Composite TR, tirés **ensemble** (mêmes semaines) par bootstrap stationnaire.
 
-    Rendement hebdomadaire du portefeuille ``r_p = Σ w_i r_i`` (liquidités à 0 %, semaine sans cours
-    d'une ligne : 0 %, compté) ; ``R = Π(1 + r) − 1`` sur l'horizon ; net : ``(1 + R)(1 − c) − 1``
-    avec ``c = cost_drag`` (coûts d'entrée et frais fixes de l'horizon, en fraction de la valeur).
-    Sorties : médiane, P10, P90, P(perte), P(battre le TR) (net contre TR), quantiles du TR, β.
+    Rendement hebdomadaire du portefeuille ``r_p = Σ w_i r_i`` (liquidités à 0 %). Une ligne **pas
+    encore cotée** (semaines antérieures à sa première observation dans la fenêtre) n'est pas comptée
+    à 0 % : les poids des lignes cotées sont renormalisés à l'exposition totale (correction du
+    22/11/2026 : compter ces semaines à 0 % revenait à détenir des liquidités pendant la baisse de
+    2017-2020). Après la cotation, une semaine sans cours (suspension) compte 0 % (cours inchangé).
+    ``R = Π(1 + r) − 1`` sur l'horizon ; net : ``(1 + R)(1 − c) − 1`` avec ``c = cost_drag`` (coûts
+    d'entrée et frais fixes de l'horizon, en fraction de la valeur). Sorties : médiane, P10, P90,
+    P(perte), P(battre le TR) (net contre TR), quantiles du TR, β, lignes sans historique complet.
     **Distribution historique, pas une prévision.**
     """
     if _BENCH not in weekly.columns:
@@ -904,7 +937,27 @@ def return_distribution(weekly: pd.DataFrame, weights: Mapping[str, float], *, h
     missing_cols = [s for s in w.index if s not in data.columns]
     sub = data.reindex(columns=list(w.index)).astype(float)
     n_missing = int(sub.isna().sum().sum())
-    rp = (sub.fillna(0.0) * w.reindex(sub.columns).to_numpy()).sum(axis=1)
+    wv = w.reindex(sub.columns).to_numpy(dtype=float)
+    listed = np.zeros(sub.shape, dtype=bool)
+    partial: list[dict[str, Any]] = []
+    for j, c in enumerate(sub.columns):
+        fv = sub[c].first_valid_index()
+        if fv is None:
+            continue
+        listed[:, j] = sub.index >= fv
+        if len(sub) and fv > sub.index[0]:
+            partial.append({"symbole": c, "poids": float(wv[j]), "premiere_semaine": pd.Timestamp(fv),
+                            "semaines_avant_cotation": int((sub.index < fv).sum())})
+    for c in missing_cols:
+        partial.append({"symbole": c, "poids": float(w[c]), "premiere_semaine": None,
+                        "semaines_avant_cotation": int(len(sub))})
+    n_before = int((~listed).sum())
+    n_missing_after = int((sub.isna().to_numpy() & listed).sum())
+    w_listed = listed * wv[None, :]
+    tot = float(wv.sum())
+    act = w_listed.sum(axis=1)
+    scale = np.divide(tot, act, out=np.zeros_like(act), where=act > 0)
+    rp = pd.Series((sub.fillna(0.0).to_numpy() * w_listed).sum(axis=1) * scale, index=sub.index)
     rb = data[_BENCH].astype(float)
     n = int(len(rp))
     if n < 26:
@@ -929,6 +982,9 @@ def return_distribution(weekly: pd.DataFrame, weights: Mapping[str, float], *, h
             "vol_annuelle": float(np.std(rp_a, ddof=1) * math.sqrt(WEEKS_PER_YEAR)),
             "tr_vol_annuelle": float(np.std(rb_a, ddof=1) * math.sqrt(WEEKS_PER_YEAR)),
             "valeurs_manquantes": n_missing, "lignes_sans_historique": missing_cols,
+            "lignes_sans_historique_complet": partial,
+            "poids_sans_historique_complet": float(sum(x["poids"] for x in partial)),
+            "valeurs_avant_cotation_renormalisees": n_before, "valeurs_manquantes_apres_cotation": n_missing_after,
             "avertissement": "distribution historique, pas une prévision"}
 
 
@@ -1256,18 +1312,29 @@ class OrdreDeBataille:
             f"Achats : brut {_fcfa(k['achats_brut'])}, coûts {_fcfa(k['achats_couts'])} (explicites "
             f"{_fcfa(k['achats_explicites'])}, implicites estimés {_fcfa(k['achats_implicites'])}), net "
             f"{_fcfa(k['achats_net'])} ; provision pire cas {_fcfa(k['achats_pire_cas'])}",
-            f"Ventes : brut {_fcfa(k['ventes_brut'])}, coûts {_fcfa(k['ventes_couts'])}, net {_fcfa(k['ventes_net'])}",
+            f"Ventes : brut {_fcfa(k['ventes_brut'])}, coûts {_fcfa(k['ventes_couts'])} (explicites "
+            f"{_fcfa(k.get('ventes_explicites'))}, implicites estimés {_fcfa(k.get('ventes_implicites'))}), net "
+            f"{_fcfa(k['ventes_net'])}",
             f"Coûts totaux du plan : {_fcfa(k['total'])} ({_pct(k['total_pct'])} de la valeur du portefeuille)",
             f"Frais fixes annuels estimés : garde {_fcfa(k['garde_annuelle'])} ({_pct(k['taux_garde'])} de l'encours) "
             f"+ tenue de compte {_fcfa(k['tenue_compte_annuelle'])} ({_int(k['n_lignes'])} lignes × "
             f"{_fcfa(k['frais_par_ligne'])})",
             f"Investi après ordres (au cours de référence) : {_fcfa(k['investi_apres'])} "
-            f"({_pct(k['investi_pct'])}) pour une cible de {_pct(k['cible_pct'])} ; reliquat de l'arrondi vers le bas "
+            f"({_pct(k['investi_pct'])}) pour une cible atteignable de {_pct(k['cible_pct'])} (cible de la "
+            f"spécification : {_pct(k.get('cible_specification', 0.98))}"
+            + (f", reliquat non investissable sous les plafonds {_pct(k.get('reliquat_plafonds'))}, D4"
+               if (k.get("reliquat_plafonds") or 0) > 0.0005 else "") + ") ; reliquat de l'arrondi vers le bas "
             f"{_fcfa(k['reliquat_arrondi'])} (reste en liquidités, §6) ; liquidités restantes estimées "
             f"{_fcfa(k['liquidites_apres'])} (pire cas {_fcfa(self.execution.get('liquidites_finales_pire_cas'))})",
             f"Scénario de coûts : {k['scenario']} (courtage {_pct(k['taux_courtage'])} × (1 + TVA "
             f"{_pct(k['taux_tva'], 0)}), BRVM {_pct(k['taux_brvm'])}, DC/BR {_pct(k['taux_dcbr'])}, impact "
             f"κ = {_num(k['kappa'], 3)})"]))
+        mm = [m for m in self.messages_modele if m]
+        if mm:
+            B.append(("h3", "Messages du modèle (signalés)"))
+            B.append(("ul", mm))
+        if self.execution.get("perime"):
+            B.append(("warn", "ORDRES PÉRIMÉS : panel en retard (voir l'avertissement en tête) ; ne pas transmettre."))
         if self.execution.get("reductions"):
             B.append(("p", "Quantités réduites pour que le pire cas (tout exécuté à la limite) reste finançable : "
                            + ", ".join(f"{s} −{_int(n)}" for s, n in self.execution["reductions"].items()) + "."))
@@ -1315,7 +1382,7 @@ class OrdreDeBataille:
         dist_blocks = self._dist_blocks()
         stress_blocks = self._stress_blocks()
         if self.meta.get("valorisation", {}).get("regime") == "chère":
-            B.append(("p", f"Valorisation du marché « chère » (prime du BOC {_num(self.meta['valorisation'].get('prime'))} "
+            B.append(("p", f"Valorisation du marché « cher » (prime du BOC {_num(self.meta['valorisation'].get('prime'))} "
                            "< 1 %) : les stress sont affichés en premier (§4.5) ; l'exposition ne change pas."))
             B.extend(stress_blocks)
             B.extend(dist_blocks)
@@ -1358,17 +1425,24 @@ class OrdreDeBataille:
                        f"({_pct(D['frais_deduits'])}). C'est une distribution historique, pas une prévision."))
         if D.get("biais_fenetre"):
             B.append(("warn", D["biais_fenetre"]))
+        if D.get("biais_retrospectif"):
+            B.append(("warn", D["biais_retrospectif"]))
+        rs1 = D.get("resultat_s1") or {}
+        if rs1.get("texte"):
+            B.append(("warn", rs1["texte"]))
         B.append(("table", (["Mesure", "Portefeuille (net)", "Composite TR"], [
             ["Médiane", f"{_pct(D['mediane'], 1, True)} ({_fcfa(nav * (1 + D['mediane']))})", _pct(D['tr_mediane'], 1, True)],
             ["P10", f"{_pct(D['p10'], 1, True)} ({_fcfa(nav * (1 + D['p10']))})", _pct(D['tr_p10'], 1, True)],
             ["P90", f"{_pct(D['p90'], 1, True)} ({_fcfa(nav * (1 + D['p90']))})", _pct(D['tr_p90'], 1, True)],
             ["P(perte)", _pct(D['p_perte'], 1), "—"],
-            ["P(battre le TR)", _pct(D['p_battre_tr'], 1), "—"],
+            ["P(battre le TR)", _pct(D['p_battre_tr'], 1) + (" (fréquence historique aux poids actuels)"
+                                                             if rs1.get("texte") else ""),
+             rs1.get("court", "—")],
             ["Rendement des dividendes (net)", _pct(self.revenus.get('rendement_net'), 2), "inclus dans le TR"],
             ["Rendement annualisé du TR sur la fenêtre (fait)", "— (poids actuels : biais rétrospectif)",
              _pct(D['tr_rendement_annualise_fenetre'], 1, True)],
             ["Volatilité annualisée (hebdo)", _pct(D['vol_annuelle'], 1), _pct(D['tr_vol_annuelle'], 1)],
-            ["β hebdomadaire contre le TR", _num(D['beta_hebdo']), "1"]])))
+            [f"β hebdomadaire contre le TR ({_d(D['debut'])} → {_d(D['fin'])})", _num(D['beta_hebdo']), "1"]])))
         return B
 
     def _stress_blocks(self) -> list[tuple[str, Any]]:
@@ -1561,7 +1635,8 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
                 held_q: Mapping[str, int], close: pd.Series, costs: CostModel, cost_name: str, taxes: TaxModel,
                 notes_arg: Any, calendar_past: Any, horizon_months: int, n_boot: int, seed: int,
                 window: dict[str, Any], tolerance: float, max_participation: float, mean_block: float,
-                cfg: Mapping[str, Any], prebuilt: tuple[Any, Any] | None = None) -> _Plan:
+                cfg: Mapping[str, Any], prebuilt: tuple[Any, Any] | None = None,
+                exec_after: pd.Timestamp | None = None, blocked: Mapping[str, Any] | None = None) -> _Plan:
     from brvm_alpha.strategy import BrvmAlpha
 
     held_w = pd.Series({s: q * float(close[s]) / nav for s, q in held_q.items() if q > 0}, dtype=float)
@@ -1575,7 +1650,9 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
     w = dec.weights.astype(float).fillna(0.0)
     uni = dec.universe
     syms = sorted(set(w[w > 0].index) | {s for s, q in held_q.items() if q > 0})
-    fut = future_sessions(t, 400, calendar_past)
+    # Première séance d'exécution : après la décision ET pas avant aujourd'hui (panel en retard : jamais
+    # d'ordre daté dans le passé).
+    fut = future_sessions(max(t, exec_after) if exec_after is not None else t, 400, calendar_past)
     next_s = fut[0]
     hs_all = _half_spreads(panels, t, close.reindex(uni.index), costs)
     status_t = _get(panels, "status")
@@ -1599,7 +1676,13 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
             tgt = cur
             note = (note + " ; " if note else "") + f"écart < {_pct(band, 0)} : bande de non-transaction (§6)"
         suspended = status_t is not None and str(status_t.get(s, "")) == "suspended"
-        if suspended and tgt != cur:
+        if blocked and s in blocked:
+            b = blocked[s]
+            note = (note + " ; " if note else "") + (
+                f"bloquée, hors BOC (dernier cours {_num(b['dernier_cours'], 0)} FCFA le {_d(b['date_dernier_cours'])}, "
+                "valorisé −10 %, §7.1.7) : aucun ordre possible")
+            tgt = cur
+        elif suspended and tgt != cur:
             note = (note + " ; " if note else "") + "titre suspendu (R1) : aucun ordre possible"
             tgt = cur
         mdv = float(uni["mdv63"].get(s, np.nan)) if "mdv63" in uni.columns else float("nan")
@@ -1650,6 +1733,24 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
                 reductions[lines[i]["symbole"]] = q - new[i]
                 lines[i]["cibles"] = lines[i]["detenus"] + new[i]
     # Ordres et coûts.
+    def apply_costs(r: dict[str, Any], tr: list[int]) -> None:
+        side, q = r["sens"], int(r["quantite"])
+        r["tranches"] = list(tr)
+        r["seances"] = len(tr)
+        if side == "aucun":
+            oc = order_costs(0, r["cours_reference"], costs, side="achat")
+            r["pire_cas"] = 0
+        else:
+            oc = order_costs(q, r["cours_reference"], costs, side=side, half_spread=r["demi_spread_pct"],
+                             mdv63=r["mdv63"], tranches=tr, limit=r["prix_limite"])
+            r["pire_cas"] = _worst_case(tr, r["prix_limite"], costs, side)
+        r["implicites_plafonnes"] = bool(oc.get("implicites_plafonnes", False))
+        r["_oc"] = oc
+        for k in ("brut", "courtage", "tva", "brvm", "dcbr", "redevance", "explicites", "demi_spread", "impact",
+                  "implicites", "total", "net", "participation_max"):
+            r[{"brut": "montant_brut", "total": "couts_total", "net": "montant_net",
+               "explicites": "frais_explicites", "implicites": "couts_implicites"}.get(k, k)] = oc[k]
+
     orders = []
     for r in lines:
         dq = r["cibles"] - r["detenus"]
@@ -1658,26 +1759,15 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
         r["sens"], r["quantite"] = side, q
         r["prix_limite"] = r["limite_achat"] if side == "achat" else r["limite_vente"] if side == "vente" else np.nan
         tr = tranches_for(r, q)
-        r["tranches"] = tr
-        r["seances"] = len(tr)
-        if side == "aucun":
-            oc = order_costs(0, r["cours_reference"], costs, side="achat")
-            r["pire_cas"] = 0
-        else:
-            oc = order_costs(q, r["cours_reference"], costs, side=side, half_spread=r["demi_spread_pct"],
-                             mdv63=r["mdv63"], tranches=tr, limit=r["prix_limite"])
+        apply_costs(r, tr)
+        oc = r.pop("_oc")
+        if side != "aucun":
             if oc["implicites_plafonnes"]:
                 r["note"] = ((r["note"] + " ; ") if r["note"] else "") + (
                     "coûts implicites plafonnés par le prix limite (écart limite − cours : l'ordre peut ne pas être "
                     "servi)")
-            r["pire_cas"] = _worst_case(tr, r["prix_limite"], costs, side)
             orders.append({"symbol": r["symbole"], "side": side, "qty": q, "tranches": tr, "limit": r["prix_limite"],
                            "ref_price": r["cours_reference"], "weight": r["poids_cible"]})
-        r["implicites_plafonnes"] = bool(oc.get("implicites_plafonnes", False))
-        for k in ("brut", "courtage", "tva", "brvm", "dcbr", "redevance", "explicites", "demi_spread", "impact",
-                  "implicites", "total", "net", "participation_max"):
-            r[{"brut": "montant_brut", "total": "couts_total", "net": "montant_net",
-               "explicites": "frais_explicites", "implicites": "couts_implicites"}.get(k, k)] = oc[k]
         r["poids_realise"] = r["cibles"] * r["cours_reference"] / nav
         r["valeur_apres"] = r["cibles"] * r["cours_reference"]
         mdv = r["mdv63"]
@@ -1685,6 +1775,22 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
                                            and r["cours_reference"] > max_participation * mdv)
     orders.sort(key=lambda o: (o["side"] != "vente", -float(o["weight"]), o["symbol"]))
     tranches, einfo = plan_execution(orders, cash, fut, costs)
+    # Lignes recalculées sur les tranches EFFECTIVEMENT planifiées (le financement peut réduire et décaler
+    # une tranche) : séances, frais et pire cas au franc près, cohérents avec l'échéancier.
+    for r in lines:
+        if r["sens"] == "aucun" or not len(tranches):
+            continue
+        sel = tranches[(tranches["symbole"] == r["symbole"]) & (tranches["sens"] == r["sens"])]
+        planned = [int(x) for x in sel.sort_values("seance")["titres"]]
+        rest = int(r["quantite"]) - sum(planned)
+        if rest > 0:
+            planned.append(rest)
+            r["note"] = ((r["note"] + " ; ") if r["note"] else "") + (
+                f"{_int(rest)} titre(s) non planifié(s) dans l'horizon (financement) : coûts estimés sur une tranche "
+                "supplémentaire")
+        if planned != list(r["tranches"]):
+            apply_costs(r, planned)
+            r.pop("_oc", None)
     L = pd.DataFrame(lines)
     if len(L):
         L = L.sort_values(["poids_cible", "symbole"], ascending=[False, True]).reset_index(drop=True)
@@ -1707,7 +1813,11 @@ def _cost_summary(L: pd.DataFrame, nav: float, cash: float, costs: CostModel, na
             "achats_explicites": s("achat", "frais_explicites"), "achats_implicites": s("achat", "couts_implicites"),
             "achats_net": s("achat", "montant_net"), "achats_pire_cas": s("achat", "pire_cas"),
             "ventes_brut": s("vente", "montant_brut"), "ventes_couts": s("vente", "couts_total"),
+            "ventes_explicites": s("vente", "frais_explicites"), "ventes_implicites": s("vente", "couts_implicites"),
             "ventes_net": s("vente", "montant_net"), "ventes_pire_cas": s("vente", "pire_cas"),
+            "explicites": s("achat", "frais_explicites") + s("vente", "frais_explicites"),
+            "implicites": s("achat", "couts_implicites") + s("vente", "couts_implicites"),
+            "flux_net": s("achat", "montant_net") - s("vente", "montant_net"),
             "courtage": s("achat", "courtage") + s("vente", "courtage"), "tva": s("achat", "tva") + s("vente", "tva"),
             "brvm": s("achat", "brvm") + s("vente", "brvm"), "dcbr": s("achat", "dcbr") + s("vente", "dcbr"),
             "demi_spread": s("achat", "demi_spread") + s("vente", "demi_spread"),
@@ -1723,6 +1833,44 @@ def _cost_summary(L: pd.DataFrame, nav: float, cash: float, costs: CostModel, na
             "taux_tva": float(costs.vat_on_commission), "taux_brvm": float(costs.brvm_fee),
             "taux_dcbr": float(costs.dcbr_fee), "kappa": float(costs.impact_coef),
             "taux_explicites": float(costs.rate())}
+
+
+def _capital_warnings(L: pd.DataFrame, k: Mapping[str, Any], nav: float, costs: CostModel, spec_target: float,
+                      variant: str) -> list[str]:
+    """Avertissements de capital (correction du 22/11/2026) : réplication impossible (part investie sous la
+    cible de plus de 10 points, moins de lignes que la cible) ou frais **fixes** (tenue de compte par ligne)
+    supérieurs à 1 % par an de la valeur du portefeuille. Les droits de garde, proportionnels à l'encours, ne
+    dépendent pas du capital et ne sont pas comptés ici."""
+    if not len(L) or nav <= 0:
+        return []
+    tgt = L[L["poids_cible"] > 0]
+    n_target = int(len(tgt))
+    n_lines = int(k.get("n_lignes") or 0)
+    inv = float(k.get("investi_pct") or 0.0)
+    fixed = float(k.get("tenue_compte_annuelle") or 0)
+    fixed_pct = fixed / nav
+    repl = []
+    if inv < spec_target - 0.10:
+        repl.append(f"{_pct(inv, 1)} investi contre une cible de {_pct(spec_target, 0)}")
+    if n_lines < n_target:
+        repl.append(f"{_int(n_lines)} ligne(s) sur {_int(n_target)} visée(s)")
+    fee_txt = (f"frais fixes de tenue de compte {_fcfa(fixed)} par an, soit {_pct(fixed_pct, 1)} de la valeur "
+               f"({_pct(fixed / max(float(k.get('investi_apres') or 0), 1.0), 0)} de l'investi)")
+    k_lines = max((float(r.cours_reference) / float(r.poids_cible) for r in tgt.itertuples(index=False)
+                   if r.poids_cible > 0), default=0.0)
+    k_fees = n_target * float(costs.account_fee_per_line_fcfa) / 0.01 if costs.account_fee_per_line_fcfa else 0.0
+    out = []
+    if repl:
+        out.append(f"Capital insuffisant pour répliquer {variant} : " + " ; ".join(repl)
+                   + (f" ; {fee_txt}" if fixed_pct > 0.01 else "")
+                   + f". Capital minimal indicatif : {_fcfa(max(k_lines, k_fees))} (au moins un titre de chaque "
+                     f"ligne : {_fcfa(k_lines)} ; tenue de compte ≤ 1 %/an : {_fcfa(k_fees)}). Les frais fixes "
+                     "peuvent absorber tout rendement espéré ; préférer une SGI sans frais par ligne (§6) ou un "
+                     "capital plus élevé.")
+    elif fixed_pct > 0.01:
+        out.append(f"Frais fixes élevés : {fee_txt}. Capital pour les ramener à 1 %/an : {_fcfa(k_fees)} ; "
+                   "préférer une SGI sans frais par ligne (§6).")
+    return out
 
 
 def _revenue_summary(div: pd.DataFrame, nav: float, invested: float, horizon: int) -> dict[str, Any]:
@@ -1752,6 +1900,22 @@ def _distribution_for(plan: _Plan, panels: Mapping[str, Any], nav: float, costs_
                                seed=seed, cost_drag=drag)
     dist["fenetre"] = window["texte"]
     dist["s1_utilise"] = bool(window["s1_utilise"])
+    if dist.get("disponible") and window["s1_utilise"]:
+        # Fenêtre 2017-2026 : poids ACTUELS et sélection d'AUJOURD'HUI appliqués au passé (biais rétrospectif).
+        part = sorted(dist.get("lignes_sans_historique_complet") or [], key=lambda x: -x["poids"])
+        lst = ", ".join(f"{x['symbole']} ({_pct(x['poids'], 1)}, "
+                        + (f"depuis le {_d(x['premiere_semaine'])}" if x.get("premiere_semaine") is not None
+                           else "aucun cours dans la fenêtre") + ")" for x in part)
+        dist["biais_retrospectif"] = (
+            "Biais rétrospectif : poids actuels et sélection d'aujourd'hui (plus grosses capitalisations au "
+            f"{_d(window['fin'])}) appliqués à toute l'histoire 2017-2026 ; les titres alors en difficulté ou "
+            "radiés n'y figurent pas, ce qui flatte la distribution. "
+            + (f"Lignes sans historique complet : {lst}, soit {_pct(dist.get('poids_sans_historique_complet'), 1)} "
+               f"du portefeuille ; {_int(dist.get('valeurs_avant_cotation_renormalisees'))} valeur(s) "
+               "antérieure(s) à la cotation : poids renormalisés sur les lignes cotées (et non comptées à 0 %). "
+               if part else "Toutes les lignes ont un historique complet sur la fenêtre. ")
+            + f"{_int(dist.get('valeurs_manquantes_apres_cotation'))} valeur(s) manquante(s) après cotation "
+              "(suspensions) comptée(s) à 0 %.")
     if dist.get("disponible") and not window["s1_utilise"]:
         dist["biais_fenetre"] = (
             f"Fenêtre S0 seulement : le Composite TR y a progressé de "
@@ -2074,8 +2238,9 @@ def _valuation_regime(panels: Mapping[str, Any], t: pd.Timestamp) -> dict[str, A
     if not np.isfinite(prime):
         return {"regime": None}
     regime = "chère" if prime < 1.0 else "bon marché" if prime > 4.0 else "neutre"
-    return {"regime": regime, "prime": prime,
-            "texte": f"prime de risque du BOC {_num(prime)} : marché « {regime} » (information, jamais un signal, §4.5)"}
+    label = {"chère": "cher"}.get(regime, regime)  # clé historique « chère » ; texte accordé : marché « cher »
+    return {"regime": regime, "libelle": label, "prime": prime,
+            "texte": f"prime de risque du BOC {_num(prime)} : marché « {label} » (information, jamais un signal, §4.5)"}
 
 
 def _names(panel_dir: Path | None, panels: Mapping[str, Any]) -> dict[str, str]:
@@ -2114,6 +2279,7 @@ def recommend(
     comparison: bool = True,
     explanations: bool = True,
     index_evaluation: bool = True,
+    today: Any = None,
 ) -> OrdreDeBataille:
     """Ordre de bataille à la date ``asof`` pour un capital ``capital`` (FCFA).
 
@@ -2150,6 +2316,12 @@ def recommend(
     comparison, explanations, index_evaluation
         Calculs facultatifs (variante de comparaison, explications ``BrvmAlpha.explain``,
         ``notes.index_eval``).
+    today
+        Date du jour pour le contrôle de fraîcheur du panel (défaut : date système quand le panel est
+        lu sur disque ; aucun contrôle pour des panels fournis en mémoire sans ``today``). Si la
+        décision porte sur le dernier BOC du panel et que des séances manquent avant ``today`` :
+        avertissement en tête (« panel en retard »), ordres marqués **périmés**, et aucune séance
+        d'exécution antérieure à ``today``.
     """
     t0 = time.time()
     if capital is None or float(capital) <= 0:
@@ -2177,13 +2349,27 @@ def recommend(
     close_df = close_df if close_df is not None and len(close_df) else _wide_upto(panels, "close", t)
     close = close_df.iloc[-1].astype(float)
     hold = {str(k).upper().strip(): int(v) for k, v in (holdings or {}).items() if int(v) != 0}
+    warn: list[str] = []
+    blocked_off_boc: dict[str, dict[str, Any]] = {}
     for s, q in hold.items():
         if q < 0:
             raise ValueError(f"{s} : nombre de titres négatif (vente à découvert interdite, art. 1123)")
         if s not in close.index or not np.isfinite(close.get(s, np.nan)):
-            raise ValueError(f"{s} : titre inconnu ou sans cours au {_d(t)}")
+            # Titre connu du panel mais absent du BOC à t (suspendu de longue date, radié) : dernier cours
+            # connu − 10 % (§7.1.7), ligne bloquée « hors BOC » ; seuls les symboles jamais vus sont refusés.
+            hist = close_df[s].dropna() if s in close_df.columns else pd.Series(dtype=float)
+            hist = hist[np.isfinite(hist) & (hist > 0)]
+            if not len(hist):
+                raise ValueError(f"{s} : titre inconnu ou sans cours au {_d(t)}")
+            last_px, last_dt = float(hist.iloc[-1]), pd.Timestamp(hist.index[-1])
+            val_px = floor_to_tick(last_px * 0.90) or last_px
+            close = close.copy()
+            close[s] = val_px
+            blocked_off_boc[s] = {"dernier_cours": last_px, "date_dernier_cours": last_dt, "cours_valorisation": val_px}
+            warn.append(f"{s} : absent du BOC du {_d(t)} (dernier cours {_num(last_px, 0)} FCFA le {_d(last_dt)}) : "
+                        f"ligne bloquée « hors BOC », valorisée {_num(val_px, 0)} FCFA (dernier cours − 10 %, §7.1.7), "
+                        "aucun ordre possible ; les autres lignes sont calculées normalement.")
     held_value = float(sum(q * float(close[s]) for s, q in hold.items()))
-    warn: list[str] = []
     if cash is None:
         cash_v = float(capital) - held_value
         if cash_v < 0:
@@ -2201,8 +2387,29 @@ def recommend(
         raise ValueError("valeur du portefeuille nulle")
     if t != t_req:
         warn.append(f"{_d(t_req)} n'est pas une séance du panel : décision à la clôture du {_d(t)}")
+    # Fraîcheur du panel : le dernier BOC attendu avant aujourd'hui est-il présent ?
+    stale: list[pd.Timestamp] = []
+    exec_after: pd.Timestamp | None = None
+    full_close = _get(panels, "close_raw")
+    full_close = full_close if isinstance(full_close, pd.DataFrame) and len(full_close) else _get(panels, "close")
+    last_panel = pd.Timestamp(pd.DatetimeIndex(full_close.index).max()).normalize()
+    if today is not None or not panels_given:
+        tt = pd.Timestamp(today) if today is not None else pd.Timestamp.now()
+        if tt.tzinfo is not None:
+            tt = tt.tz_convert("UTC").tz_localize(None)
+        today_ts = tt.normalize()
+        if t >= last_panel and t_req >= last_panel:
+            stale = expected_missing_sessions(last_panel, today_ts)
+            exec_after = max(t, today_ts - pd.Timedelta(days=1))
+    stale_msg = None
+    if stale:
+        stale_msg = (f"PANEL EN RETARD de {len(stale)} séance(s) : dernier BOC du panel le {_d(last_panel)}, "
+                       f"séance(s) attendue(s) avant aujourd'hui : {', '.join(_d(x) for x in stale[:5])}"
+                       + ("…" if len(stale) > 5 else "") + " (jours ouvrés hors fériés fixes, hypothèse). Lancer "
+                       "`python -m brvm_alpha update` puis recalculer : les ordres ci-dessous sont PÉRIMÉS (cours, "
+                       f"bornes et prix limites du {_d(t)}), à ne pas transmettre.")
     choice = choose_variant(variant, validation_dir, registry_path)
-    warn = list(choice["avertissements"]) + warn
+    warn = ([stale_msg] if stale_msg else []) + list(choice["avertissements"]) + warn
     from brvm_alpha.strategy import VARIANT_SPECS
 
     if choice["variante"] not in VARIANT_SPECS:
@@ -2223,17 +2430,32 @@ def recommend(
     common = dict(t=t, panels=panels, nav=nav, cash=cash_v, held_q=hold, close=close, costs=cm, cost_name=cost_name,
                   taxes=taxes, notes_arg=notes_arg, calendar_past=sessions, horizon_months=horizon_months,
                   n_boot=n_boot, seed=seed, window=window, tolerance=tolerance, max_participation=max_participation,
-                  mean_block=mean_block_weeks, cfg=cfg)
+                  mean_block=mean_block_weeks, cfg=cfg, exec_after=exec_after, blocked=blocked_off_boc)
     plan = _build_plan(variant=choice["variante"], **common)
     L = plan.lines
     names = _names(pdir, panels)
     if len(L):
         L.insert(1, "nom", [names.get(s, s) for s in L["symbole"]])
     csum = _cost_summary(L, nav, cash_v, cm, cost_name)
+    spec_target = float((cfg.get("portfolio") or {}).get("gross_equity", 0.98))
+    csum["cible_specification"] = spec_target
+    csum["reliquat_plafonds"] = max(0.0, spec_target - float(csum["cible_pct"]))
+    warn += _capital_warnings(L, csum, nav, cm, spec_target, choice["variante"])
     quantities = {r.symbole: int(r.cibles) for r in L.itertuples(index=False) if r.cibles > 0}
     div = dividend_schedule(quantities, t, panels, taxes=taxes, horizon_months=horizon_months, calendar=sessions)
     rev = _revenue_summary(div, nav, float(csum["investi_apres"]), horizon_months)
     dist, _weekly = _distribution_for(plan, panels, nav, csum, window, horizon_months, n_boot, seed, mean_block_weeks)
+    res_s1 = (choice.get("resultats_s1") or {}).get(choice["variante"]) or {}
+    if dist.get("disponible") and res_s1.get("actif_tr_an") is not None:
+        act = float(res_s1["actif_tr_an"])
+        st1 = res_s1.get("statut") or "n.d."
+        dist["resultat_s1"] = {
+            "variante": choice["variante"], "actif_tr_an": act, "statut": st1,
+            "court": f"test S1 : {choice['variante']} {_pct(act, 1, True)}/an contre le TR ({st1})",
+            "texte": (f"Résultat du test unique S1 (metrics.json, fait de simulation) : la variante appliquée "
+                      f"{choice['variante']} fait {_pct(act, 1, True)} par an contre le Composite TR (statut {st1}). "
+                      "P(battre le TR) ci-dessous est une fréquence historique aux poids actuels, pas une probabilité "
+                      "de surperformance future.")}
     # Stress : module dédié s'il existe, sinon chocs du §9.3.
     values = {r.symbole: float(r.valeur_apres) for r in L.itertuples(index=False) if r.cibles > 0}
     weights_after = {s: v / nav for s, v in values.items()}
@@ -2304,6 +2526,14 @@ def recommend(
                     + ", ".join(f"{k} {v}" for k, v in exec_info["non_finance"].items()))
     if dist.get("biais_fenetre"):
         warn.append(dist["biais_fenetre"])
+    if dist.get("biais_retrospectif"):
+        warn.append(dist["biais_retrospectif"])
+    if (dist.get("resultat_s1") or {}).get("texte"):
+        warn.append(dist["resultat_s1"]["texte"])
+    exec_info["perime"] = bool(stale)
+    exec_info["seances_manquantes"] = list(stale)
+    exec_info["dernier_boc_panel"] = last_panel
+    exec_info["lignes_hors_boc"] = sorted(blocked_off_boc)
     val = _valuation_regime(panels, t)
     faits = [
         f"Cours de clôture et cours de référence du BOC du {_d(t)} (source : BOC, data/panel).",

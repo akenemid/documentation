@@ -1079,11 +1079,21 @@ def run_validation(
                 sens["sans_clones"] = _pbo_of(fam_disp[no_clone])
                 sens["sans_clones_variantes"] = no_clone
             if "A" in fam_disp.columns:
-                rng = np.random.default_rng(seed)
+                # Repère mécanique : famille de quasi-clones de A de MÊME performance sur l'échantillon complet
+                # (bruit de 1e-4 recentré), moyenne de 10 graines. Avant la correction du 22/11/2026 : une seule
+                # graine, bruit non recentré (repère bruité, 0,198 au test S1 relancé, non probant).
                 base = fam_disp["A"].to_numpy(dtype=float)
-                clone_fam = pd.DataFrame({f"C{k}": base + rng.normal(0.0, 1e-4, base.size) for k in
-                                          range(len(fam_cols))}, index=fam_disp.index)
-                sens["famille_de_quasi_clones_simulee"] = _pbo_of(clone_fam)
+                sims = []
+                for k_seed in range(10):
+                    rng = np.random.default_rng(seed + k_seed)
+                    noise = rng.normal(0.0, 1e-4, (base.size, len(fam_cols)))
+                    noise -= noise.mean(axis=0, keepdims=True)
+                    clone_fam = pd.DataFrame(base[:, None] + noise, index=fam_disp.index,
+                                             columns=[f"C{k}" for k in range(len(fam_cols))])
+                    sims.append(_pbo_of(clone_fam))
+                sens["famille_de_quasi_clones_simulee"] = float(np.nanmean(sims)) if sims else math.nan
+                sens["famille_de_quasi_clones_note"] = ("quasi-clones de A de même performance sur l'échantillon "
+                                                        "complet (bruit 1e-4 recentré, 10 graines)")
             sens["note"] = ("Sensibilité publiée (correction du 22/11/2026) : la PBO dépend du découpage et de la "
                             "convention λ = 0 ; avec N impair, la PBO nulle vaut ⌊(N + 1)/2⌋/N (5/9 pour N = 9). Une "
                             "famille de quasi-clones donne une PBO élevée mécaniquement : la PBO n'a alors pas de "

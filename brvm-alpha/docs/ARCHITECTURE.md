@@ -12,11 +12,11 @@ brvm-alpha/
     config.py              # paramètres (frais, taxes, contraintes) — dataclasses
     reference.py           # métadonnées des titres : pays, secteur, fiscalité
     data/
-      boc_download.py      # téléchargement des BOC (PDF -> texte .txt.gz)
+      boc_download.py      # téléchargement poli des BOC (PDF -> texte .txt.gz) : robots.txt, ≥ 10 s, arrêt 403/429
       boc_parser.py        # extraction d'un BOC -> BocDay
       store.py             # panel parquet + ajustements (splits, total return)
       live.py              # cours du jour depuis www.brvm.org (page publique)
-      news.py              # (à venir) actualités / communiqués (brvm.org) + sentiment
+      news.py              # (remplacé par notes/research.py : `notes research`)
     quant/
       features.py          # caractéristiques par titre et par date
       scoring.py           # normalisation transversale, composites, IC
@@ -41,8 +41,11 @@ brvm-alpha/
       alpha.py             # le modèle BRVM Alpha (signaux de la spécification)
     report/                # rapport final (build_report)
       html.py              # rapport HTML autonome : 11 sections, SVG inline, thème clair/sombre
-    cli.py                 # commandes v1 : universe, backtest (S1 refusé sans --validation-s1) ;
-                           # update, panel, live, news, analyze, report : à venir
+    ui/                    # interface web locale (python -m brvm_alpha serve), 127.0.0.1 uniquement
+      server.py            # ThreadingHTTPServer, sécurité (CSRF, Host, corps), services, fil de travail
+      pages.py             # pages HTML en français (styles et script en ligne, thème clair/sombre)
+    cli.py                 # update, panel, live, notes, indices, universe, explain, backtest,
+                           # validate, recommend, report, serve (S1 refusé pour tout signal)
     __main__.py            # python -m brvm_alpha
   tests/
   docs/
@@ -178,9 +181,17 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
 - `recommend(asof, capital, *, panels=None, holdings=None, cash=None, variant=None, costs="central",
   notes_store=None, validation_dir="reports/validation_S1", horizon_months=12, n_boot=5000, seed=0,
   registry_path=None, panel_dir=None, sessions=None, tolerance=0.01, max_participation=0.10,
-  mean_block_weeks=8, comparison=True, explanations=True, index_evaluation=True) -> OrdreDeBataille`
-  (`holdings` : symbole → nombre de titres ; `cash=None` : `capital − titres détenus` ;
-  `notes_store=None` : journal du dépôt, `False` : aucune note). Export : `from brvm_alpha.portfolio
+  mean_block_weeks=8, comparison=True, explanations=True, index_evaluation=True, today=None) -> OrdreDeBataille`
+  (`holdings` : symbole → nombre de titres ; un titre connu du panel mais absent du BOC à t est gardé
+  « bloqué, hors BOC », valorisé au dernier cours − 10 % (§7.1.7), seuls les symboles jamais vus sont refusés ;
+  `cash=None` : `capital − titres détenus` ; `notes_store=None` : journal du dépôt, `False` : aucune note ;
+  `today` : contrôle de fraîcheur du panel (défaut : date système si le panel est lu sur disque) : séances
+  attendues manquantes avant `today` (`expected_missing_sessions`) ⇒ avertissement « PANEL EN RETARD » en tête,
+  `execution["perime"]`, aucune séance d'exécution avant `today`). Distribution : lignes pas encore cotées
+  renormalisées (et non comptées à 0 %), `biais_retrospectif` (fenêtre 2017-2026) et `resultat_s1` (actif de la
+  variante appliquée lu dans `metrics.json`, affiché à côté de P(battre le TR)) ; avertissement de capital
+  insuffisant (investi < cible − 10 points, lignes < cible, frais fixes > 1 %/an) ; lignes recalculées sur les
+  tranches effectivement planifiées ; messages du modèle affichés (Markdown, HTML, rapport). Export : `from brvm_alpha.portfolio
   import recommend` donne le sous-module, **appelable** comme la fonction ; alias `ordre_de_bataille`.
 - `OrdreDeBataille` (dataclass) : `lignes` (titres détenus / cibles, `sens`, `quantite`, poids cible et
   réalisé, cours de référence, bornes, `prix_limite`, `montant_brut`, `courtage`, `tva`, `brvm`, `dcbr`,
@@ -194,8 +205,9 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
   INDÉTERMINÉ ⇒ REF (D8) avec A en comparaison et avertissement ; A CANDIDAT ou PROMU ⇒ A, ou la variante
   promue par la règle du §3.4 ; A REJETÉ ⇒ REF. `s1_executed(registry_path)` lit le registre.
 - Arrondis : `limit_prices(dernier_cours, reference_price=None, tolerance=0.01)` (achat
-  `min(borne haute ; C × 1,01)` au pas inférieur, vente `max(borne basse ; C × 0,99)` au pas supérieur ;
-  bornes `macro.price_band` de la référence de la prochaine séance) ; `floor_to_tick`, `ceil_to_tick`,
+  `min(borne haute ; C × 1,01)` au pas inférieur, vente `max(borne basse ; C × 0,99)` au pas supérieur ; au
+  moins **un pas** d'écart avec le dernier cours quand le pas dépasse la tolérance, dans la bande ; bornes
+  `macro.price_band` de la référence de la prochaine séance) ; `floor_to_tick`, `ceil_to_tick`,
   `round_fcfa` (chaque composante de coût arrondie au franc) ; titres = `⌊w × valeur / cours⌋` (quotité 1),
   bande de non-transaction de 2 points pour les lignes détenues ; quantités réduites si la provision
   pire cas (tout exécuté à la limite) dépasse les liquidités disponibles.
@@ -240,21 +252,29 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
   inconnue (dict plat ou section `execution` du YAML) lève `KeyError`.
 
 ### `backtest/metrics.py` et `backtest/walkforward.py` (validation, §8)
-- `weekly_returns(daily, exclude_windows=EXCLUDE_STATS_WINDOWS, max_sessions=6, session_no=None)` (la
-  fenêtre du 06/05 au 25/06/2021 est exclue **par défaut**), `weekly_observation_mask(...)`,
-  `monthly_one_way_turnover(result)`, `first_investment_date(result)`
+- `weekly_returns(daily, exclude_windows=EXCLUDE_STATS_WINDOWS, max_sessions=None, session_no=None)` (la
+  fenêtre du 06/05 au 25/06/2021 est exclue **par défaut** ; les semaines multi-séances après un trou de BOC sont
+  **gardées** pour le chaînage, §3.1.3, et listées dans `attrs["multi_session_weeks"]` ; `max_sessions=6` :
+  échantillon de dispersion), `multi_session_weeks(days, weeks=None, session_no=None)`,
+  `dispersion_sample(x, multi_weeks)` (IR, TE, Sharpe, PSR/DSR, PBO, CVaR, bootstrap seulement),
+  `weekly_observation_mask(...)`, `monthly_one_way_turnover(result)`, `first_investment_date(result)`,
+  `family_pbo(..., split="trim_oldest"|"array_split", ties="le"|"half")`, `pbo_null_reference(n, ties)`
 - Fenêtre d'évaluation de l'additif v1.1 (D2) : `evaluation_window(daily, t0, end)` (rendements de
   `[t0 ; fin]`, rendement de t0 compté), `rebase_at(level, t0)` (base 100 à la veille de t0),
   `evaluation_subperiods(t0, S1_SUBPERIODS, end=None)` (`[t0 ; 2019-12-31]`, `[2020-01-01 ; 2022-11-16]`) ;
   `S0_SUBPERIODS` (diagnostic), `FAMILY_SIZE_V11 = 9`
-- `monthly_ic(scores, tr_index, horizon=21, lag=1, min_names=15, end=None, eligible=None)` (IC mensuel de
-  Spearman, aucune fenêtre à terme au-delà de `end`)
+- `monthly_ic(scores, tr_index, horizon=21, lag=1, min_names=15, end=None, eligible=None, one_per_month=True)`
+  (IC mensuel de Spearman, une décision par mois civil, aucune fenêtre à terme au-delà de `end`)
 - `evaluate_status(..., s2_ic_monthly=None, s2_pbo=None, s2_pbo_slope=None, start=None, result=None,
-  exposure=None, expected_period=None, exclude_windows=None, rules="v1.1", expected_weeks=None) -> StatusReport`
+  exposure=None, expected_period=None, exclude_windows=None, rules="v1.1", expected_weeks=None,
+  dispersion_exclude=None) -> StatusReport`
   (statuts REJETÉ / CANDIDAT / INDÉTERMINÉ / PROMU ; **D7** : G7 du suivi réel sur les IC S1 puis S2 bout à
   bout, au moins 36 mois, autres filtres de S2 sur S2 seul, au moins 12 mois ; `rules="v1.0"` : lecture
   antérieure ; échantillon trop court ou incomplet : tous les critères `None`, statut INDÉTERMINÉ ;
-  `expected_weeks` : semaines attendues explicites, les retraits légitimes ne sont pas des manques)
+  critères chaînés R1, R2, R4, R5, C1, C3, C4 sur toutes les semaines, dispersion R3, C2, G2-G9 sans
+  `dispersion_exclude` ; couverture sur le calendrier W-FRI de `expected_period` moins la fenêtre du §8.1, seuil
+  95 % (§8.5 E2), `couverture_dispersion` publiée ; `expected_weeks` ne doit jamais venir d'une série calculée avec
+  les mêmes retraits)
 - `variant_promotion(weekly_active, benchmark=None, pbo=None, baseline="A", n_trials=None) -> PromotionReport`
   (règle du §3.4 ; `n_trials=None` : taille de la famille, 9 pour A-I)
 - `TrialRegistry.initialize(path, addendum_v11=False)` (`True` : ajoute `S1-I`, `REF-ID` et les essais de
@@ -303,7 +323,9 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
 - Verrou (`lock.py`, S1 seulement) : `git diff --quiet HEAD -- brvm_alpha configs` exigé **et** aucun fichier
   non suivi (non ignoré) sous `brvm_alpha/` ni `configs/` (pré-vol du 22/11/2026 : un module non commité
   serait importé sans figurer dans le commit) ; `lock.json` (commit, empreinte `settings.config_fingerprint`
-  et `empreinte_controle` : comparaison avec l'empreinte des essais pré-enregistrés S1-I et REF-ID, version et
+  et `empreinte_controle` (`lock.fingerprint_check`) : comparaison avec l'empreinte de l'état figé `a2bfeb4`,
+  référence de pré-enregistrement citée = commit `751d1be` (YAML 1.0, `dcdf1fb7db530c44`), sans autoréférence ;
+  le registre garde l'empreinte du pré-enregistrement dans `note` quand l'exécution la remplace), version et
   SHA-256 du YAML, horodatage UTC, plan, `n_boot`, statut `en cours` / `terminé` / `échec`, empreinte de
   `metrics.json`) ; refus (`ValidationRefused`, code 2) si le registre contient des essais S1 « exécuté » ou
   si un verrou existe, sauf `rerun_reason` (nouveaux essais, anciens résultats déplacés dans
@@ -371,13 +393,75 @@ Modèle v1 + additif v1.1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §8.4, §9
   de t si l'annonce précède la séance d'exécution t + 1.
 
 ### `cli.py`
-`python -m brvm_alpha <commande>`. Disponibles (v1) : `universe --date` (contrôle de forme)
-et `backtest --start --end [--variant] [--capital] [--costs]` ; une période qui recoupe
-l'échantillon vierge S1 est refusée (code 2) sans `--validation-s1`, qui exige aussi
-`--window-basis`. `validate --sample S1|S0 [--rerun-reason TEXTE] [--workers N] [--out-dir]
-[--panel-dir] [--decision-mode evenementiel|mensuel]` (défaut `evenementiel`) : exécuteur de la validation (`validation.run_validation`) ; refus du verrou → code 2,
-run en échec → code 1. **À venir** : `update`, `panel`, `live`, `news`, `analyze`, `report` (commande ; la
-fonction existe : `report.build_report`), ainsi que `data/news.py`.
+`python -m brvm_alpha <commande>` ; aide et messages d'erreur en français (`FrArgumentParser`), bannière
+« Performance passée ≠ garantie. Aucun gain n'est garanti. » sur toute sortie destinée à l'utilisateur.
+Codes de sortie : 0 succès, 1 échec (données absentes, collecte arrêtée), 2 refus ou saisie invalide.
+- Données : `update [--from AAAA-MM-JJ] [--jusqu-au] [--delai 10] [--max-requetes 200] [--simulation]
+  [--sans-panel]` (BOC manquants depuis le lendemain du dernier BOC local ; client `brvm_fetcher` =
+  `notes.research.PoliteSession` sans cache disque : robots.txt, ≥ 10 s entre requêtes **d'une session à
+  l'autre**, arrêt définitif et blocage persistant au premier 403/429, refus si www.brvm.org est déjà bloqué ;
+  panel reconstruit si un BOC est ajouté) ; `panel [--force] [--workers]` (`store.build_panel`) ; `live
+  [--format texte|json] [--symbole] [--hors-ligne]` (page publique, une requête polie, cache 60 s).
+- Notes (`--racine` : journal, défaut `data/notes`) : `notes add --cible … --titre --texte|--fichier --avis
+  haussier|baissier|neutre --conviction 1-5 --horizon --source --url --publie-le --type --etiquette`
+  (`make_manual_note` : source libre en étiquette `source:…`, URL http(s) seulement, date future refusée ;
+  `NoteStore.add(analyze=True)`), `notes list [--cible] [--depuis] [--jusqu-au] [--statut]`, `notes show ID`
+  et `notes archive ID [--motif]` (préfixe unique d'identifiant, `resolve_note_id`), `notes export [--sortie
+  chemin|-]`, `notes research [--cibles] [--hors-ligne] [--max-requetes] [--depuis] [--simulation]`
+  (`run_research`, règles de politesse affichées), `notes analyze --texte|--fichier` (sans enregistrer).
+- Analyse : `indices [--date] [--detail] [--format]` et `indices dossier CODE` (`evaluate_indices`,
+  `index_dossier`) ; `universe [--date]` ; `explain SYMBOLE [--date] [--variante]` (`explain_symbol` :
+  variante par défaut = `choose_variant`) ; `recommend --capital K [--portefeuille fichier.csv] [--cash]
+  [--variante] [--format md|json|html] [--date] [--couts] [--tirages] [--graine] [--racine] [--sortie]` (CSV
+  « symbole,titres », `parse_holdings` ; `--racine` : même journal des notes que `serve` et `report`) ;
+  `report --capital K [--couts] [--tirages] [--graine] [--racine] [--sortie]` (`report.build_report`, défaut
+  `reports/rapport_AAAA-MM-JJ.html`) ; `serve [--port 8765] [--hote]`.
+- **S1** : `indices`, `explain`, `recommend`, `report` refusent (code 2) toute date de décision ≤ 2022-11-16
+  avant tout calcul (`in_s1`, `s1_refusal`) ; `backtest` refuse une période qui recoupe S1 sans
+  `--validation-s1` (qui exige `--window-basis`) ; `universe` (comptage) reste permis.
+- `validate --sample S1|S0 [--rerun-reason TEXTE] [--workers N] [--out-dir] [--panel-dir] [--decision-mode
+  evenementiel|mensuel]` : exécuteur de la validation (`validation.run_validation`) ; refus du verrou → 2,
+  run en échec → 1.
+- Saisies partagées avec l'interface : `parse_date`, `parse_capital` (« 10 000 000 », « 10M », « 1,5Md »),
+  `parse_holdings`, `is_loopback`, `last_session(panel_dir)`.
+
+### `data/boc_download.py`
+`download_range(start, end, out_dir, pause=10.0, *, fetcher=None, today=None, progress=None) -> int`,
+`fetch_one(fetcher, day, out_dir, pause=None, *, mark_missing=True)`, `pending_days(start, end, out_dir)`,
+`PoliteFetcher(session=None, pause=10.0, *, sleep, clock, max_requests)` (robots.txt lu une fois et respecté,
+délai ≥ `MIN_DELAY_S = 10` s ou `Crawl-delay`, redirections non suivies, arrêt `DownloadStopped` au premier
+403/429 ou sur interdiction ; aucun marqueur `.missing` dans ce cas ni pour les `RECENT_DAYS = 3` derniers
+jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
+
+### `ui/` (interface web locale, `python -m brvm_alpha serve`)
+- `server.make_server(host="127.0.0.1", port=8765, *, allow_remote=False, services=None) -> UIServer`
+  (`ThreadingHTTPServer` ; `port=0` : port libre ; adresse non locale refusée sans `allow_remote`) ;
+  `Services(notes_root, panel_dir, reports_dir, validation_dir, diagnostic_dir, boc_dir, research_kwargs)` :
+  seuls accès aux données (remplaçables dans les tests) ; `JobManager` : **une** opération longue à la fois
+  (recherche, rapport, ordre de bataille) dans un fil, `Job.snapshot()` (statut, progression, journal),
+  `JobBusy` → 409.
+- Connexions : au plus `MAX_CONNECTIONS = 32` simultanées (sémaphore de `UIServer.process_request`, au-delà
+  connexion fermée) ; lecture des en-têtes et du corps expirant après `REQUEST_TIMEOUT_S = 20` s
+  (`Handler.timeout` ; corps jamais envoyé → 408, connexion fermée).
+- Sécurité : en-tête `Host` ∈ {localhost, 127.0.0.1, [::1]} avec le port du serveur (sinon 400) ; jeton
+  anti-CSRF propre au lancement (`_jeton`) sur chaque POST, `Origin` / `Sec-Fetch-Site` d'un autre site →
+  403 ; corps ≤ 256 Ko (413), `Content-Length` obligatoire (411), formulaire urlencodé seulement (415), champs
+  bornés ; CSP `default-src 'none'` avec nonce de script, `X-Frame-Options`, `nosniff`, `no-referrer`,
+  `no-store` ; échappement systématique (`pages.esc`, Markdown sûr `md_to_html`) ; aucune commande système ;
+  fichiers servis choisis dans la liste `reports/*.html` (jamais un chemin saisi), rapport régénéré écrit sous
+  `reports/rapport_<date du panel>.html` et servi dans un `iframe` *sandbox* avec sa propre CSP.
+- Pages (GET) : `/` tableau de bord (état S1, variante, dernier rapport, « régénérer »), `/notes` (saisie
+  manuelle avec aide aux codes SYMBOLE / IDX:… / PAYS:… / SECT:… / THEME:… / MARCHE, liste filtrable),
+  `/notes/fiche?id=` (analyse, lecture, versions, archivage), `/recherche` (confirmation, hors ligne / en
+  ligne, quota ≤ 150, journal et progression, règles de politesse), `/indices` et `/indices/dossier?code=`
+  (notes qui influencent l'indice), `/portefeuille` (capital, portefeuille « symbole,titres », liquidités,
+  variante → ordre de bataille complet, exports Markdown / JSON), `/expliquer?symbole=`, `/validation`
+  (résultats S1 lus, diagnostic S0 replié et marqué contaminé), `/rapport/voir?nom=`, `/api/travail?id=`.
+  Actions (POST) : `/notes/ajouter`, `/notes/archiver`, `/recherche/lancer`, `/rapport/regenerer`,
+  `/portefeuille/calculer`. Dates de S1 refusées comme dans la CLI.
+- Rendu : aucune ressource externe, thème clair/sombre (variables CSS sur `:root`, préférence du système ou
+  bouton), gouttière de 16 px, tableaux dans `.tablewrap` (téléphone), bannière et légende faits /
+  estimations / hypothèses sur chaque page.
 
 ### `report/html.py` (rapport final, exporté par `brvm_alpha.report`)
 - `build_report(asof, capital, out_path, *, panels=None, panel_dir="data/panel", notes_root="data/notes",

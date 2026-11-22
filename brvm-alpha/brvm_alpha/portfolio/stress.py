@@ -95,6 +95,20 @@ def _fcfa(x: float) -> str:
     return f"{float(x):,.0f}".replace(",", "\u202f") + " FCFA"
 
 
+def _num(x: float, decimals: int = 2) -> str:
+    """Nombre au format français (virgule décimale, signe −)."""
+    return f"{float(x):.{decimals}f}".replace(".", ",").replace("-", "−")
+
+
+def _pct(x: float, decimals: int = 2) -> str:
+    """Pourcentage au format français : « 14,09 % », « −89,3 % »."""
+    return f"{100.0 * float(x):.{decimals}f}".replace(".", ",").replace("-", "−") + " %"
+
+
+def _d(x: Any) -> str:
+    return pd.Timestamp(x).strftime("%d/%m/%Y")
+
+
 def _params(params: Mapping[str, Any] | None) -> dict[str, Any]:
     p = {k: (dict(v) if isinstance(v, dict) else v) for k, v in STRESS_DEFAULTS.items()}
     for k, v in dict(params or {}).items():
@@ -153,12 +167,12 @@ def portfolio_beta(weights: pd.Series, panels: Mapping[str, Any], asof: Any,
     both = both.iloc[-int(p["beta_window_weeks"]):]
     n = len(both)
     if n < int(p["beta_min_weeks"]) or float(both["m"].var(ddof=1)) <= 0:
-        return 1.0, f"β = 1 supposé ({n} semaines < {int(p['beta_min_weeks'])} depuis le {start.date()})", n
+        return 1.0, f"β = 1 supposé ({n} semaines < {int(p['beta_min_weeks'])} depuis le {_d(start)})", n
     beta = float(both["p"].cov(both["m"]) / both["m"].var(ddof=1))
     lo, hi = p["beta_bounds"]
     b = float(np.clip(beta, lo, hi))
-    return b, (f"β hebdomadaire {beta:.2f} (borné à {b:.2f}) sur {n} semaines jusqu'au {t.date()}, "
-               f"depuis le {both.index[0].date()} (aucune donnée de S1)"), n
+    return b, (f"β {n} semaines (hebdomadaire) {_num(beta)}, borné à {_num(b)}, jusqu'au {_d(t)}, "
+               f"depuis le {_d(both.index[0])} (aucune donnée de S1)"), n
 
 
 def _half_spreads(panels: Mapping[str, Any], syms: list[str], asof: pd.Timestamp, p: Mapping[str, Any],
@@ -283,8 +297,8 @@ def stress_tests(weights: pd.Series | Mapping[str, float], panels: Mapping[str, 
     # ST4 : choc pays sévère AES (exposition λ : siège, filiales pour SNTS)
     aes = tuple(reference.AES_COUNTRIES)
     v_aes = float(sum(val[s] * _lambda(s, aes) for s in syms))
-    lam_note = (f"exposition λ AES {v_aes / K:.2%} du capital (siège ; filiales pour SNTS : "
-                f"ML {reference.economic_exposure('SNTS').get('ML', 0.0):.3f})")
+    lam_note = (f"exposition λ AES {_pct(v_aes / K)} du capital (siège ; filiales pour SNTS : "
+                f"ML {_num(reference.economic_exposure('SNTS').get('ML', 0.0), 3)})")
     add("ST4", "sévère 21 %", "choc pays sévère AES (sanctions, gel BCEAO) : −21 % sur BF, ML, NE",
         -float(p["severe_loss"]) * v_aes, lam_note, "§4.3 ; §11 macro.jump_loss ; [R05] §12")
     add("ST4", "stress 26 % (Niger 2023)", "choc pays sévère AES : −26 % en 9 séances, dont 3 au plancher sans "
@@ -292,7 +306,7 @@ def stress_tests(weights: pd.Series | Mapping[str, float], panels: Mapping[str, 
         lam_note + " ; aucune vente possible avant la 4ᵉ séance", "[R05] §9")
     v_ml = float(sum(val[s] * _lambda(s, ("ML",)) for s in syms))
     add("ST4", "Mali 2022", "variante Mali 2022 : plancher dès t+1, −16,9 % en 3 séances sur ML",
-        -float(p["mali_2022_3_sessions"]) * v_ml, f"exposition λ ML {v_ml / K:.2%} du capital", "[R05] §9")
+        -float(p["mali_2022_3_sessions"]) * v_ml, f"exposition λ ML {_pct(v_ml / K)} du capital", "[R05] §9")
     add("ST4", "modéré 8 %", "coup d'État sans sanctions UEMOA : −8 % sur BF, ML, NE",
         -float(p["moderate_loss"]) * v_aes, lam_note, "§4.3 ; [R05] §12")
 
@@ -301,11 +315,11 @@ def stress_tests(weights: pd.Series | Mapping[str, float], panels: Mapping[str, 
     v_sn = float(val[sn].sum()) if sn else 0.0
     add("ST5", "relatif −9 %", "stress souverain Sénégal : −9 % relatif en 60 séances (audit 2024) sur les titres "
         "sénégalais", -float(p["sn_relative_60"]) * v_sn,
-        f"titres SN détenus : {', '.join(sn) or 'aucun'} ({v_sn / K:.2%}) ; marché supposé stable", "[R05] §9")
+        f"titres SN détenus : {', '.join(sn) or 'aucun'} ({_pct(v_sn / K)}) ; marché supposé stable", "[R05] §9")
     names = [s for s in p["sn_stress_names"] if s in val.index]
     v_st = float(val[names].sum()) if names else 0.0
     add("ST5", "stress −26 %", "stress souverain Sénégal : −26 % sur BOAS et SNTS",
-        -float(p["sn_stress_loss"]) * v_st, f"BOAS + SNTS : {v_st / K:.2%} du capital (hypothèse de stress)",
+        -float(p["sn_stress_loss"]) * v_st, f"BOAS + SNTS : {_pct(v_st / K)} du capital (hypothèse de stress)",
         "[R05] §9, §12")
 
     # ST6 : liquidité (participation 5 %, demi-spread × 2, 20 séances)
@@ -331,9 +345,9 @@ def stress_tests(weights: pd.Series | Mapping[str, float], panels: Mapping[str, 
     worst = days.idxmax() if days.notna().any() else None
     add("ST6", "", "liquidité : participation divisée par 2 (5 %) et demi-spread × 2 pendant 20 séances "
         "(liquidation complète)", -liq_cost,
-        f"coût de sortie {liq_cost / max(inv, 1.0):.2%} de la valeur investie (normal, 10 % de participation : "
-        f"{normal_cost / max(inv, 1.0):.2%}) ; non liquidable en {n_sess} séances : {_fcfa(float(unsold.sum()))}"
-        + (f" ; ligne la plus lente : {worst} ({float(days[worst]):.1f} séances à 5 %)" if worst is not None else ""),
+        f"coût de sortie {_pct(liq_cost / max(inv, 1.0))} de la valeur investie (normal, 10 % de participation : "
+        f"{_pct(normal_cost / max(inv, 1.0))}) ; non liquidable en {n_sess} séances : {_fcfa(float(unsold.sum()))}"
+        + (f" ; ligne la plus lente : {worst} ({_num(float(days[worst]), 1)} séances à 5 %)" if worst is not None else ""),
         "hypothèse de conception ; §7.2")
 
     # ST7 : coûts sévères du §7.2 sur 12 mois (rotation objectif 15 %/mois aller)
@@ -350,13 +364,13 @@ def stress_tests(weights: pd.Series | Mapping[str, float], panels: Mapping[str, 
     sev, cen = annual(p["costs_severe"]), annual(p["costs_central"])
     add("ST7", "", "coûts : scénario sévère du §7.2 sur 12 mois (courtage 1,5 %, demi-spread × 2, κ = 0,05, "
         "garde 0,5 %, 10 000 FCFA par ligne)", -sev,
-        f"rotation {to:.0%}/mois aller (objectif du §6, hypothèse) ; coûts centraux sur 12 mois : {_fcfa(cen)} ; "
+        f"rotation {_pct(to, 0)}/mois aller (objectif du §6, hypothèse) ; coûts centraux sur 12 mois : {_fcfa(cen)} ; "
         f"surcoût du scénario sévère : {_fcfa(sev - cen)}", "§7.2")
 
     # ST8 : suspension de la plus grosse ligne
     if len(val):
         top = str(val.idxmax())
-        add("ST8", "−10 %", f"suspension de la plus grosse ligne ({top}, {w[top]:.2%}) pendant 60 séances, valorisée "
+        add("ST8", "−10 %", f"suspension de la plus grosse ligne ({top}, {_pct(w[top])}) pendant 60 séances, valorisée "
             "−10 %", -float(p["suspension_haircut"]) * float(val[top]), "valorisation de risque (§7.1.7)", "[R07] §4.7")
         add("ST8", "−30 %", f"suspension de la plus grosse ligne ({top}) : valorisée −30 % (stress)",
             -float(p["suspension_haircut_stress"]) * float(val[top]), "hypothèse de stress", "[R07] §4.7")
@@ -376,7 +390,7 @@ def stress_tests(weights: pd.Series | Mapping[str, float], panels: Mapping[str, 
     else:
         hyp9 = f"contrôle non vérifiable : {how}"
         loss9 = 0.0
-    add("ST9", "", f"erreur de données : division non ajustée sur {sym9} (faux {r9:.1%})", loss9, hyp9, "[R08] §1",
+    add("ST9", "", f"erreur de données : division non ajustée sur {sym9} (faux {_pct(r9, 1)})", loss9, hyp9, "[R08] §1",
         nature="contrôle")
 
     # ST10 : rupture de parité ou sortie de l'UEMOA
@@ -385,7 +399,7 @@ def stress_tests(weights: pd.Series | Mapping[str, float], panels: Mapping[str, 
     for lab, key in (("sévère 21 %", "severe_loss"), ("stress 26 %", "severe_stress_loss")):
         add("ST10", lab, "rupture de parité ou sortie de l'UEMOA : règle « sévère » sur les titres AES et les "
             "filiales de SNTS", -float(p[key]) * v10,
-            f"exposition {v10 / K:.2%} du capital (AES ; SNTS : ML, GN, SL, GW) ; perte de change NON chiffrée "
+            f"exposition {_pct(v10 / K)} du capital (AES ; SNTS : ML, GN, SL, GW) ; perte de change NON chiffrée "
             "(aucune source)", "[R05] §7")
 
     out = pd.DataFrame(rows, columns=["code", "variante", "scenario", "perte_fcfa", "perte_pct", "hypothese", "base",

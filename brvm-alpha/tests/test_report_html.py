@@ -291,7 +291,7 @@ def test_report_structure_banner_and_sections(rep_absent):
     s1 = _section(h, "s1")
     assert "Test S1 non exécuté." in s1 and "§8.3" in s1 and "<table" not in s1
     # Marché : prime < 1 ⇒ « chère » et stress tests d'abord dans la distribution (§4.5).
-    assert "chère" in _section(h, "marche")
+    assert "cher" in _section(h, "marche") and "« chère »" not in h  # accord : marché « cher » (22/11/2026)
     dist = _section(h, "distribution")
     assert dist.index("Stress tests du §9.3") < dist.index("Rendement net à 12 mois")
     # Ordre de bataille : REF par défaut, A en comparaison, faits / estimations / hypothèses.

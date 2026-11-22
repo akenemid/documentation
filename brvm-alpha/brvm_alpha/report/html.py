@@ -344,8 +344,10 @@ def _tiles(items: Sequence[tuple[Any, Any, Any, str | None]]) -> H:
 
 
 def _table(headers: Sequence[Any], rows: Sequence[Sequence[Any]], *, left: Iterable[int] = (0,),
-           cls: str = "", foot: Sequence[Any] | None = None, caption: Any = None) -> H:
-    """Tableau dans un conteneur défilant ; ``left`` : colonnes alignées à gauche."""
+           cls: str = "", foot: Sequence[Any] | None = None, caption: Any = None,
+           foot_rows: Sequence[Sequence[Any]] | None = None) -> H:
+    """Tableau dans un conteneur défilant ; ``left`` : colonnes alignées à gauche ; ``foot`` : une ligne de
+    pied ; ``foot_rows`` : plusieurs lignes de pied (p. ex. total des achats, total des ventes, flux net)."""
     left = set(left)
 
     def cell(tag: str, j: int, x: Any) -> str:
@@ -354,7 +356,9 @@ def _table(headers: Sequence[Any], rows: Sequence[Sequence[Any]], *, left: Itera
 
     head = "".join(cell("th", j, h) for j, h in enumerate(headers))
     body = "".join("<tr>" + "".join(cell("td", j, x) for j, x in enumerate(r)) + "</tr>" for r in rows)
-    tfoot = ("<tfoot><tr>" + "".join(cell("th", j, x) for j, x in enumerate(foot)) + "</tr></tfoot>") if foot else ""
+    frows = list(foot_rows or []) + ([foot] if foot else [])
+    tfoot = ("<tfoot>" + "".join("<tr>" + "".join(cell("th", j, x) for j, x in enumerate(fr)) + "</tr>"
+                                 for fr in frows) + "</tfoot>") if frows else ""
     cap = f"<caption>{_h(caption)}</caption>" if caption else ""
     return H(f'<div class="tablewrap"><table class="{esc(cls)}">{cap}<thead><tr>{head}</tr></thead>'
              f"<tbody>{body}</tbody>{tfoot}</table></div>")
@@ -869,7 +873,9 @@ class _Ctx:
                                       validation_dir=self.validation_dir, n_boot=self.n_boot, seed=self.seed,
                                       registry_path=self.registry_path, index_evaluation=False,
                                       panel_dir=self.panel_dir if self.panel_dir is not None and self.panel_dir.exists()
-                                      else None)
+                                      else None,
+                                      # Contrôle de fraîcheur du panel (retard de BOC) à la date du rapport.
+                                      today=self.now)
             kw.update(self.recommend_kwargs)
             fn = mod.recommend
             try:
@@ -1078,6 +1084,10 @@ def _valuation_band(prime: float | None) -> str | None:
     return "chère" if prime < 1.0 else "bon marché" if prime > 4.0 else "neutre"
 
 
+#: Libellés affichés des bandes de valorisation (clé historique « chère » ; accord : marché « cher »).
+_BAND_LABEL = {"chère": "cher"}
+
+
 def _market_snapshot(ctx: _Ctx) -> dict[str, Any]:
     t = ctx.t()
     out: dict[str, Any] = {"t": t}
@@ -1165,9 +1175,10 @@ def _sec_marche(ctx: _Ctx) -> H:
          else "n.d.", "actions, au BOC", "fait" if _ok(m.get("market_cap")) else None),
         ("PER du marché", fmt_num(m.get("avg_per"), 2), "PER moyen publié au BOC", "fait" if _ok(m.get("avg_per"))
          else None),
-        ("Prime de risque du BOC", H(esc(fmt_num(prime, 2)) + " " + (_chip(band, {"chère": "no", "bon marché": "ok"}
+        ("Prime de risque du BOC", H(esc(fmt_num(prime, 2)) + " " + (_chip(_BAND_LABEL.get(band, band),
+                                                                            {"chère": "no", "bon marché": "ok"}
                                                                             .get(band, "")) if band else "")),
-         "bandes : chère < 1 ; neutre 1-4 ; bon marché > 4 (§4.5)", "fait" if band else None),
+         "bandes : cher < 1 ; neutre 1-4 ; bon marché > 4 (§4.5)", "fait" if band else None),
         ("Taux de référence (rf)", fmt_pct(snap.get("rf"), 2) if _ok(snap.get("rf")) else "n.d.",
          "100/PER − prime, médiane 20 séances (§4.1)" if _ok(snap.get("rf")) else snap.get("rf_err", "non calculable"),
          "estimation" if _ok(snap.get("rf")) else None),
@@ -1578,12 +1589,21 @@ def _active_constraints(od: Mapping[str, Any]) -> list[list[Any]]:
     return rows
 
 
+def _explicit_costs(k: Mapping[str, Any], lines: Sequence[Mapping[str, Any]]) -> float:
+    """Frais explicites des deux sens (achats ET ventes) : clé ``explicites`` de l'ordre de bataille, sinon
+    somme des ``frais_explicites`` des lignes (avant le 22/11/2026, la tuile ignorait les ventes)."""
+    if _ok(k.get("explicites")):
+        return float(k["explicites"])
+    return float(sum(float(r.get("frais_explicites") or 0) for r in lines if str(r.get("sens")) in ("achat", "vente")))
+
+
 def _sec_ordre(ctx: _Ctx) -> H:
     od = ctx.order_dict()
     o = ctx.order()
     k = od.get("couts") or {}
     ex = od.get("execution") or {}
     ch = od.get("choix") or {}
+    lines_all = od.get("lignes") or []
     parts: list[Any] = [
         _box("warn", f"{od.get('bandeau') or BANNER} Statut : {od.get('statut', 'n.d.')}.",
              (od.get("phrase_etude") or "").capitalize() + ("." if od.get("phrase_etude") else "")),
@@ -1592,10 +1612,10 @@ def _sec_ordre(ctx: _Ctx) -> H:
             ("Valeur du portefeuille", fmt_fcfa(od.get("valeur_portefeuille")),
              f"dont liquidités {fmt_fcfa(od.get('liquidites_initiales'))}", "fait"),
             ("Investi après ordres", fmt_fcfa(k.get("investi_apres")), f"{fmt_pct(k.get('investi_pct'), 2)} ; cible "
-             f"{fmt_pct(k.get('cible_pct'), 0)}", "estimation"),
+             f"atteignable {fmt_pct(k.get('cible_pct'), 2)} ; cible de la spécification "
+             f"{fmt_pct(k.get('cible_specification', 0.98), 0)}", "estimation"),
             ("Coûts d'entrée", fmt_fcfa(k.get("total")), f"{fmt_pct(k.get('total_pct'), 2)} de la valeur ; explicites "
-             f"{fmt_fcfa((k.get('achats_explicites') or 0) + (k.get('ventes_explicites') or 0)) if _ok(k.get('achats_explicites')) else 'n.d.'}",
-             "estimation"),
+             f"{fmt_fcfa(_explicit_costs(k, lines_all))} (achats et ventes)", "estimation"),
             ("Frais fixes annuels", fmt_fcfa((k.get("garde_annuelle") or 0) + (k.get("tenue_compte_annuelle") or 0)),
              f"garde {fmt_pct(k.get('taux_garde'), 2)} + {fmt_fcfa(k.get('frais_par_ligne'))} par ligne", "hypothese"),
             ("Exécution", f"{fmt_int(ex.get('n_seances'))} séance(s)", f"du {fmt_date(ex.get('premiere_seance'))} au "
@@ -1604,6 +1624,9 @@ def _sec_ordre(ctx: _Ctx) -> H:
     ]
     for w in od.get("avertissements") or []:
         parts.append(_box("warn", "Avertissement", w))
+    mm = [str(m) for m in od.get("messages_modele") or [] if m]
+    if mm:
+        parts.append(_box("info", f"Messages du modèle ({len(mm)}, signalés)", _ul(mm)))
     lines = od.get("lignes") or []
     rows = []
     compact = []
@@ -1636,15 +1659,26 @@ def _sec_ordre(ctx: _Ctx) -> H:
                         fmt_num(r.get("montant_net"), 0)])
         if r.get("note"):
             remarks.append(f"{r.get('symbole')} : {r.get('note')}")
-    foot = ["Total", "", "", "", "", "", fmt_fcfa(sum(float(r.get("montant_brut") or 0) for r in lines)),
-            fmt_fcfa(k.get("total")), fmt_fcfa(sum(float(r.get("montant_net") or 0) for r in lines)), ""]
+    def _tot(side: str, col: str) -> float:
+        return float(sum(float(r.get(col) or 0) for r in lines if str(r.get("sens")) == side))
+
+    # Pied du tableau : achats et ventes séparés (avant : brut des deux sens additionné, au-delà de la valeur
+    # du portefeuille) et flux net de liquidités (achats nets − ventes nettes).
+    foot_rows = [
+        ["Total achats", "", "", "", "", "", fmt_fcfa(_tot("achat", "montant_brut")), fmt_fcfa(_tot("achat", "couts_total")),
+         fmt_fcfa(_tot("achat", "montant_net")), ""],
+        ["Total ventes", "", "", "", "", "", fmt_fcfa(_tot("vente", "montant_brut")), fmt_fcfa(_tot("vente", "couts_total")),
+         fmt_fcfa(_tot("vente", "montant_net")), ""],
+        ["Flux net (achats − ventes)", "", "", "", "", "", "", fmt_fcfa(k.get("total")),
+         fmt_fcfa(_tot("achat", "montant_net") - _tot("vente", "montant_net")), ""],
+    ]
     parts.append(_card(H("<h3>Ordres (au titre et au franc près)</h3>"),
                        H('<div class="narrow-only">'), _table(["Titre", "Ordre", "Prix limite", "Net (FCFA)"], compact,
                                                              left=(0, 1)),
                        H('<p class="muted small">Résumé pour petit écran ; le détail (poids, bornes, coûts, séances) '
                          "suit et défile horizontalement.</p></div>"),
                        _table(["Titre", "Sens", "Quantité", "Poids cible", "Cours réf.", "Prix limite", "Brut",
-                               "Coûts", "Net", "Séances"], rows, left=(0,), foot=foot),
+                               "Coûts", "Net", "Séances"], rows, left=(0,), foot_rows=foot_rows),
                        _details(f"Remarques par ligne ({len(remarks)})", _ul(remarks)) if remarks else "",
                        _p("Prix limite d'achat : min(borne haute ; cours × 1,01) au pas inférieur ; de vente : "
                           "max(borne basse ; cours × 0,99) au pas supérieur. Coûts : courtage, TVA, BRVM 0,20 %, DC/BR "
@@ -1792,8 +1826,17 @@ def _stress_table(od: Mapping[str, Any]) -> H:
                      esc(s.get("base", "")), _tag("estimation" if s.get("nature") != "contrôle" else "fait")])
     if not rows:
         return _box("empty", "Aucun scénario de stress.")
-    return _table(["Code", "Variante", "Scénario", "Variation (FCFA)", "Variation (%)", "Hypothèse", "Base", "Nature"],
-                  rows, left=(0, 1, 2, 5, 6))
+    # Petit écran : résumé compact (code, variante, pertes) d'abord ; le détail suit (défilement horizontal),
+    # pertes en 2e et 3e colonnes pour rester visibles (revue produit du 22/11/2026).
+    compact = [[H(f"<b>{esc(s.get('code'))}</b>"
+                  + (f" <span class='muted small'>{esc(s.get('variante'))}</span>" if s.get("variante") else "")),
+                H(f"<span class='{_cls(s.get('perte_fcfa'))}'>{esc(fmt_fcfa(s.get('perte_fcfa'), True))}</span>"),
+                _num_cell(s.get("perte_pct"), signed=True)] for s in od.get("stress") or []]
+    full = [[r[0], r[3], r[4], r[1], r[2], r[5], r[6], r[7]] for r in rows]
+    return _join([H('<div class="narrow-only">'), _table(["Code", "Variation (FCFA)", "Variation (%)"], compact),
+                  H('<p class="muted small">Résumé pour petit écran ; scénario, hypothèse et base suivent.</p></div>'),
+                  _table(["Code", "Variation (FCFA)", "Variation (%)", "Variante", "Scénario", "Hypothèse", "Base",
+                          "Nature"], full, left=(0, 3, 4, 5, 6))])
 
 
 def _sec_distribution(ctx: _Ctx) -> H:
@@ -1817,7 +1860,9 @@ def _sec_distribution(ctx: _Ctx) -> H:
              f"({fmt_pct(d.get('frais_deduits'), 2)})", "estimation"),
             ("P10 / P90", f"{fmt_pct(d.get('p10'), 1, True)} / {fmt_pct(d.get('p90'), 1, True)}",
              "1 tirage sur 10 sous P10, 1 sur 10 au-dessus de P90", "estimation"),
-            ("P(battre le TR)", fmt_pct(d.get("p_battre_tr"), 0), f"médiane du TR {fmt_pct(d.get('tr_mediane'), 1, True)}",
+            ("P(battre le TR)", fmt_pct(d.get("p_battre_tr"), 0),
+             (f"fréquence historique aux poids actuels ; {(d.get('resultat_s1') or {}).get('court')}"
+              if (d.get("resultat_s1") or {}).get("court") else f"médiane du TR {fmt_pct(d.get('tr_mediane'), 1, True)}"),
              "estimation"),
             ("P(perte)", fmt_pct(d.get("p_perte"), 1), "rendement net < 0 à 12 mois", "estimation"),
             ("Volatilité annuelle", fmt_pct(d.get("vol_annuelle"), 1), f"TR {fmt_pct(d.get('tr_vol_annuelle'), 1)} ; β "
@@ -1825,6 +1870,10 @@ def _sec_distribution(ctx: _Ctx) -> H:
         ]))
         if d.get("biais_fenetre"):
             parts.append(_box("warn", "Fenêtre d'estimation optimiste", d["biais_fenetre"]))
+        if d.get("biais_retrospectif"):
+            parts.append(_box("warn", "Biais rétrospectif (fenêtre 2017-2026, poids actuels)", d["biais_retrospectif"]))
+        if (d.get("resultat_s1") or {}).get("texte"):
+            parts.append(_box("warn", "Résultat du test S1 à lire avec P(battre le TR)", d["resultat_s1"]["texte"]))
         draws = ctx.try_get("draws", "tirages du bootstrap", ctx.draws)
         cap = (f"{fmt_int(d.get('n_boot'))} tirages du bootstrap stationnaire (blocs moyens de "
                f"{fmt_num(d.get('bloc_moyen_semaines'), 0)} semaines, graine {d.get('graine')}) sur "
@@ -2059,7 +2108,8 @@ def _sec_risques(ctx: _Ctx) -> H:
     prime = _get(snap, "market", "risk_premium")
     band = _valuation_band(float(prime)) if _ok(prime) else None
     parts.append(_card(H("<h3>Valorisation du marché (§4.5)</h3>"), _ul([
-        (f"Prime de risque du BOC : {fmt_num(prime, 2)} → marché « {band} » (chère < 1 ; neutre 1-4 ; bon marché > 4)."
+        (f"Prime de risque du BOC : {fmt_num(prime, 2)} → marché « {_BAND_LABEL.get(band, band)} » (cher < 1 ; "
+         "neutre 1-4 ; bon marché > 4)."
          if band else "Prime de risque du BOC indisponible."),
         f"PER moyen du marché : {fmt_num(_get(snap, 'market', 'avg_per'), 2)} ; taux de référence estimé "
         f"{fmt_pct(snap.get('rf'), 2)}.",
