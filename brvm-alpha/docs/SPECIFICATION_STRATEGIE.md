@@ -208,7 +208,7 @@ Source : [C-SPEC], `docs/annexes-spec/univ_breadth.py` sur `data/panel/equities.
 
 `mom3_1`, `mom6_0`, `mom12_1`, `mom12_7`, momentum résiduel (résidus sur le marché, avec le bêta de Dimson à 1 avance et 5 retards, et sur le pays), continuation à 1 mois (`str1` de signe +), illiquidité d'Amihud (63 séances, en log), bêta de Dimson (504 séances), score de sentiment S5, signaux pays. Chacun est calculé sur l'historique et son IC est journalisé dans le registre des essais (`TrialRegistry`) ; aucun n'entre dans le score tant qu'il n'a pas franchi les filtres G1-G9 (§8). Sources : [R03] §9, [R04] §13, [R07] §6.5.
 
-### 3.4 Variantes pré-enregistrées pour l'échantillon de validation (N = 8)
+### 3.4 Variantes pré-enregistrées pour l'échantillon de validation (N = 9 depuis l'additif v1.1, §8.4)
 
 Elles sont **déclarées ici, avant** toute exécution sur 2017-01-02 → 2022-11-16.
 
@@ -222,8 +222,9 @@ Elles sont **déclarées ici, avant** toute exécution sur 2017-01-02 → 2022-1
 | F | A + baisse de 25 % de l'exposition en régime agité (§4.4) | Valeur du dosage par le régime |
 | G | A pondéré par `hrp_tilt` (HRP sur une covariance de Ledoit-Wolf hebdomadaire, γ = 0,5) | Pondération par le risque |
 | H | A pondéré par `mv_alpha` (alpha de Grinold avec IC_post = 0,02 ; λ = 5 ; κ = coût aller central) | Optimisation moyenne-variance rétrécie |
+| I | **Cœur-satellite** : 50 % « indice discipliné » (§8.4, D8) + 50 % A. Ajoutée par l'additif v1.1 (§8.4, D9), **avant** toute exécution sur S1 | Réduction du pari structurel contre l'étalon (TEL, SNTS) |
 
-**Règle de promotion** : A reste le principal. Une variante X ne remplace A que si, sur l'échantillon de validation, X bat A en rendement actif net **et** franchit DSR ≥ 0,95 avec N = 8 **et** a une PBO ≤ 0,25 sur la famille ([R03] §8.4, `promotion_rule`).
+**Règle de promotion** : A reste le principal. Une variante X ne remplace A que si, sur l'échantillon de validation, X bat A en rendement actif net **et** franchit DSR ≥ 0,95 avec N = 9 (famille de l'additif v1.1) **et** a une PBO ≤ 0,25 sur la famille ([R03] §8.4, `promotion_rule`).
 
 ### 3.5 Apprentissage des poids (phase 2, après la validation)
 
@@ -485,7 +486,7 @@ Correspondance dans `config.py` (`CostModel`) : `sgi_commission=0.008`, `brvm_fe
 | Walk-forward | expansif ; `train_years=2`, `test_months=3`, `embargo_days = h + 21` (42 pour un label mensuel), `min_train_days=480` | [R04] §6.3 |
 | CPCV | 10 groupes, k = 2 (45 découpages, 9 chemins), purge = 21 séances, embargo = 21 séances | [R04] §6 ; López de Prado 2018 |
 | Étalons | (1) **Composite TR** (officiel depuis le 02/01/2025, reconstruit avant, §1.1) ; (2) **panier équipondéré TR des titres éligibles** (il isole la compétence de sélection) ; (3) Composite prix (information seulement) ; (4) BRVM 10 jusqu'au 30/12/2022, BRVM 30 et Prestige à partir du 02/01/2023 ; (5) **médiane des fonds actions** (catégorie A du BOC, même fenêtre que les VL) | [R01] §10 ; [R08] §6 |
-| Registre | `TrialRegistry` (`reports/trials.parquet`) : chaque variante est journalisée avec ses paramètres, ses rendements hebdomadaires nets et sa date d'exécution. N de départ = 55 (S0) + 8 (S1) | [R04] §17.3 |
+| Registre | `TrialRegistry` (`reports/trials.parquet`) : chaque variante est journalisée avec ses paramètres, ses rendements hebdomadaires nets et sa date d'exécution. N de départ = 55 (S0) + 8 (S1), porté par l'additif v1.1 (§8.4) à 55 + 9 + 1 (référence « indice discipliné ») + les essais de diagnostic S0 réellement exécutés | [R04] §17.3 |
 
 ### 8.3 Critères de décision (écrits avant toute exécution sur S1)
 
@@ -524,6 +525,56 @@ Si A est rejeté, la plate-forme passe en **mode « indice discipliné »** : r�
 - rendement actif net sur 36 mois glissants < 0 avec t < −1 : retour au mode « indice discipliné » ;
 - coupe-circuit de S1 (§5.2) ;
 - tout écart de données avec le BOC de plus de 1 pb : gel des ordres.
+
+
+### 8.4 Additif v1.1 — décisions figées le 22/11/2026, **avant toute exécution sur S1**
+
+**Pourquoi cet additif.** La mise en œuvre du moteur v1 et sa revue adversariale ont relevé des points que la spécification laissait ouverts, ou qui créent un biais mécanique. Ils sont tranchés ici, une fois pour toutes. **Aucune performance, aucun IC et aucun signal n'a été calculé sur S1** (2017-01-02 → 2022-11-16) avant cette décision. Seuls des comptages d'univers (titres éligibles en 2017, 2020 et 2021) et des contrôles de données y ont été faits.
+
+**Ce qui a été vu, et qui est déclaré.** Deux informations contaminées ont motivé une partie de ces décisions : l'essai de fumée de A sur S0 et la décision du 20/11/2026.
+- **Essai de fumée de A sur S0** (variante A, 10 M FCFA, coûts centraux) : environ 28 %/an contre 34,6 %/an pour le TR ; drawdown relatif de −15 % au 30/09/2024, puis −20 % au 29/11/2024, donc arrêt et passage en « indice discipliné ».
+- **Décision du 20/11/2026** : remplissage de capacité, poids de CIEC (rang 19) à 8,58 % contre 5,98 % pour BOAC (rang 1).
+
+Ces essais S0 sont inscrits au registre et comptent dans N. Aucun paramètre libre n'a été réglé sur S0 : chaque décision ci-dessous est structurelle ou fixée a priori.
+
+| N° | Point | Décision figée | Raison |
+|---|---|---|---|
+| **D1** | Fenêtres et BOC manquants (§3.1.3, §3.2, §2) | **Longueur** des fenêtres comptée en **séances** (numéros de BOC, `window_basis = "sessions"`). **Bornes** d'une fenêtre de rendement (MOM) : dernier cours disponible à la date de borne ou avant, à 5 séances au plus ; sinon NaN. **Seuils minimaux d'observations** (MOM6_1 100/126, LOWVOL 200/250 et 100/126, U2, U3, et tout seuil « au moins m observations sur L séances ») : `m_eff = ⌈m × n_BOC_disponibles / L⌉`, avec un plancher absolu de **40** observations pour les signaux et de **20** pour les filtres d'univers. Sous le plancher : bloc manquant (z = 0) pour un signal, exclusion pour un filtre | En base « lignes du panel », MOM6_1 couvre jusqu'à 221 séances au 30/11/2021 : c'est un autre signal. En base « séances » sans prorata, l'univers est vide du 30/06 au 30/11/2021 (0 titre contre 26 à 33) : un BOC manquant est une perte de **nos** données, pas une absence de cotation |
+| **D2** | Fenêtre d'évaluation de S1 | **t0** = première séance où la variante A détient des titres (premier rebalancement exécuté, `start = "first_investment"`). Tous les critères du §8.3 et toutes les métriques se calculent sur **[t0 ; 2022-11-16]**, pour **toutes** les variantes et **tous** les étalons, rebasés à t0. Sous-période 1 = [t0 ; 2019-12-31]. Une variante qui ne peut pas encore calculer sa propre pondération (G, H : historique de covariance insuffisant) utilise celle de A jusqu'à ce qu'elle le puisse ; c'est journalisé. Les chiffres sur la fenêtre complète [02/01/2017 ; 16/11/2022] sont publiés **pour information seulement** | Sans historique de 126 séances, aucun titre n'est éligible avant juillet 2017. Comparer 6 à 9 mois de liquidités à un TR qui baisse en 2017 crée un rendement actif mécanique (+1,88 %/an mesuré sur données synthétiques sans alpha) |
+| **D3** | Garde de capitalisation (§9.1) | Un écart > 3 % entre capitalisation reconstruite et publiée déclenche une **alerte journalisée, non bloquante**. La garde « rendement journalier > \|50 %\| » reste **bloquante** | Le nombre de titres reconstruit ne sert qu'à l'étalon et aux références b_c, pas aux signaux. Bloquer gèlerait juillet-août 2017 pour une raison étrangère aux cours (opérations BOA de juin 2017) |
+| **D4** | Remplissage de capacité (§6, exposition de 98 %) | Si les plafonds empêchent d'investir 98 % sur la sélection de la bande, on ajoute des titres éligibles **par ordre de score** (au-delà des 50 % supérieurs si nécessaire), jusqu'à 20 lignes. Un titre ajouté pèse **au plus 98 % / n_cible** (le poids d'une ligne de la bande). Le reliquat reste en liquidités et est publié | Des liquidités non voulues sont un pari de marché non enregistré. Mais un titre ajouté pour capacité ne doit pas peser plus qu'un titre choisi par le score |
+| **D5** | Drawdown relatif (§9.1) | Mesuré sur le ratio VL / TR **rebasé à t0**, contre son plus haut depuis t0 (en production : depuis le début du suivi réel). Le panier w_EW de la règle −15 % est l'équipondération des **20 éligibles les mieux classés** (et non de tous les éligibles). Ses entrées et sorties sont exemptées de la bande de non-transaction | La lettre du §9.1 créait jusqu'à 35 lignes sous le plancher de 2 % et la limite de 20 lignes, avec 5 000 FCFA de frais par ligne |
+| **D6** | Montants de dividende | **Flux de trésorerie** du backtest : montant corrigé (meilleure estimation du versement réel). **Signaux** (DY, S1, S2) : montant connu en t, ligne « (d) » du BOC. L'écart total est publié | La comptabilité doit refléter l'argent reçu. Les signaux ne doivent utiliser que l'information disponible |
+| **D7** | Statut « PROMU » | G7 (t de Newey-West de l'IC ≥ 2 sur au moins 36 mois) s'évalue sur la série d'IC **S1 puis S2 mise bout à bout**. Les autres filtres de S2 s'évaluent sur S2 seul, avec au moins 12 mois. Statut « INDÉTERMINÉ » (données insuffisantes) : aucun suivi réel autorisé | Sans cette règle, PROMU est impossible avant 36 mois de S2, ce qui contredit le seuil de 12 mois du §8.3 |
+| **D8** | Mode « indice discipliné » : repli du §8.3 **et** étalon investissable | **20 plus grosses capitalisations éligibles** (toutes s'il y en a moins), poids **proportionnels à la capitalisation** point-in-time, 98 % investis. **Plafond de ligne** = max(10 % × multiplicateur pays ; min(30 % ; 1,25 × b_i)), avec b_i le poids du titre dans l'étalon. **Plancher** de 0,5 %. **Plafond sectoriel** = max(15 % ; 1,25 × b_s). Plafonds pays, AES et liquidité de A. Filtres R et règles pays actifs. **Rebalancement annuel** (première décision de janvier), plus les sorties forcées (filtres R, inéligibilité). Évalué sur S1 comme **référence** (essai REF-ID du registre, hors famille de la PBO) | Avec les plafonds de A, ce mode n'était pas une réplication : l'étalon place environ 21 à 35 % sur SNTS selon les années (20,9 % au 20/11/2026) et 36 % dans TEL au 20/11/2026 (SNTS + ORAC) |
+| **D9** | Nouvelle variante **I « cœur-satellite »** | w_I = 0,5 × w_D8 + 0,5 × w_A, chevauchements additionnés, puis projection sur les plafonds de groupe de D8 ; le côté A se rebalance chaque mois, le cœur chaque année. **Aucun paramètre libre** : 50/50 fixé a priori. Famille de la PBO et du DSR : **N = 9**. Promotion du §3.4 inchangée (I ne remplace A que si elle bat A en actif net **et** franchit DSR ≥ 0,95 **et** PBO ≤ 0,25) | Les plafonds de A (TEL ≤ 15 %, SNTS ≤ 8,5 %) imposent contre l'étalon un pari structurel d'environ −20 points sur TEL, que la thèse du §1 ne justifie pas. Motivé par S0 (déclaré ci-dessus), testé une seule fois sur S1 |
+| **D10** | Événements pays utilisés sur S1 (§4.3) | Les règles pays s'appliquent sur S1 avec la chronologie ci-dessous, **à la date de l'annonce publique** (action à la première séance qui suit). Aucune autre information future | Ce sont des règles de risque actives dans toutes les variantes (§4.3) |
+| **D11** | Notes de l'analyste sur S1 | Aucun rôle : S5 a un poids nul ; les notes reconstituées sont exclues des vues strictes ; ni veto ni inclinaison manuelle sur S1 | Aucune note n'existait en temps réel sur 2017-2022 |
+| **D12** | Exécution unique et verrou | S1 est exécuté **une seule fois** par `python -m brvm_alpha validate --sample S1`, qui exige un arbre git propre et enregistre le commit, l'empreinte de configuration et l'horodatage. La commande écrit `reports/validation_S1/` et marque les essais « exécuté » dans le registre, avec leurs rendements hebdomadaires. Elle **refuse** de se relancer. Une relance n'est permise que pour un **bogue démontré** (anticipation, comptabilité, données) avec `--rerun-reason` : elle crée de nouveaux essais (N augmente) et **les deux résultats sont publiés** | Sans verrou, le DSR et la PBO perdent leur sens (§8, [R03][R04]) |
+
+**Analyses de sensibilité (ce ne sont pas des essais supplémentaires)** : coûts centraux et de stress pour les 9 variantes et la référence ; coûts optimistes et sévères pour A et I ; capacité à 100 M et 1 Md FCFA pour A, I et la référence. Ces runs mesurent le **même** essai sous d'autres hypothèses ; seuls les runs centraux à 10 M FCFA entrent dans la PBO et le DSR.
+
+**Chronologie des événements pays pour S1 (D10).** Dates d'annonce, actions à la première séance BOC suivante. Les dates de confiance « M » sont **[NON VÉRIFIÉ]** en source primaire ([R05] §8-9). Les présidentielles sont tirées de la connaissance générale, également **[NON VÉRIFIÉ]**.
+
+| Date d'annonce | Pays | Règle du §4.3 | Remarque |
+|---|---|---|---|
+| 29/07/2018 | ML | élection | présidentielle (2ᵉ tour le 12/08/2018) |
+| 24/02/2019 | SN | élection | présidentielle |
+| 22/02/2020 | TG | élection | présidentielle |
+| 18/08/2020 | ML | coup (sans sanctions UEMOA) | [R05] §9 : BOAM −1,5 % |
+| 31/10/2020 | CI | élection | présidentielle |
+| 22/11/2020 | BF | élection | présidentielle |
+| 27/12/2020 | NE | élection | présidentielle (2ᵉ tour le 21/02/2021) |
+| 11/04/2021 | BJ | élection | présidentielle |
+| 24/05/2021 | ML | coup (sans sanctions UEMOA) | second coup d'État au Mali |
+| 09/01/2022 | ML | **sévère** (sanctions CEDEAO/UEMOA, gel BCEAO) | dimanche ; action le 10/01/2022 ; [R05] §9 : BOAM −7,47 % à t+1 |
+| 24/01/2022 | BF | coup (sans sanctions UEMOA) | [R05] §9 |
+| 03/07/2022 | ML | levée de sanctions | sommet CEDEAO du 03/07/2022 ; [R05] §9 : +35,7 % en 5 séances |
+| 30/09/2022 | BF | coup (sans sanctions UEMOA) | [R05] §9 |
+
+Événements postérieurs (pour S0 et le suivi réel) : NE coup 26/07/2023, NE sévère 30/07/2023, NE levée 24/02/2024, SN élection 24/03/2024, CI élection 25/10/2025, BJ élection 12/04/2026 ([R05] §8 ; dates M ou connaissance générale, [NON VÉRIFIÉ]).
+
+**Prédiction maintenue.** Ces décisions ne changent pas la prédiction du §8.3. Le statut le plus probable, même pour une bonne stratégie, est « candidat ». Le rejet de A est un résultat plausible : l'essai de fumée de S0 est défavorable.
 
 ---
 
@@ -897,7 +948,7 @@ validation:
 5. `dy_used(FTSC, 2026-11-20)` = 0 ; `ep(ETIT)` = 10/57.
 6. Univers à K = 10 M au 30/06/2020 : entre 15 et 26 titres ; à K = 1 Md : mode repli.
 7. Un achat est bloqué quand la clôture est à la borne haute ; une vente est bloquée à la borne basse ; en rejeu de BOAN du 03 au 08/08/2023, les ventes ne sont pas servies aux séances au plancher.
-8. Le registre compte au moins 63 essais avant la première exécution de S1.
+8. Le registre compte au moins 63 essais avant la première exécution de S1 (au moins 65 après l'additif v1.1 : variante I et référence REF-ID).
 
 ---
 
