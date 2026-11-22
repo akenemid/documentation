@@ -1,7 +1,8 @@
 # 02 — Littérature académique et empirique sur la BRVM
 
 > **Projet** : BRVM Alpha · **Module** : recherche / revue de littérature
-> **Rédigé le** : 2026-11-22 · **Statut** : v1 (à réviser quand les textes intégraux seront accessibles)
+> **Rédigé le** : 2026-11-22 · **Statut** : v1.1, après vérification adversariale du 2026-11-22 (voir la dernière section). À réviser quand les textes intégraux seront accessibles.
+> **Après vérification** : les paramètres de marché (limite de ±7,5 %, frais BRVM et DC/BR, date de la cotation en continu, chiffres du BOC) sont confirmés sur des sources primaires. Trois valeurs codées ont été **corrigées** : le coût aller-retour de base passe de 2,0 % à 2,5 % (erreur de calcul), les ratios de variance sont recalculés (persistance limitée à 2026), et l'affirmation « chaque titre non suspendu cote chaque jour » est fausse (166 séances-titres « NC », non coté, en 2025-2026). Les chiffres tirés d'articles académiques (demi-vies, R², etc.) sont **restés invérifiables** ce jour, faute d'accès réseau aux éditeurs. Ils sont marqués [NON VÉRIFIÉ].
 > **Portée** : efficience faible, anomalies (calendrier, momentum/retournement, taille, dividendes, IPO), limites de variation, volatilité, trading peu fréquent, intégration et contagion, analyse technique. Le document couvre la BRVM et, à titre de comparaison, quelques marchés africains.
 
 ---
@@ -22,12 +23,12 @@
 | # | Conclusion | Confiance |
 |---|---|---|
 | 1 | **L'efficience faible de la BRVM n'est pas tranchée.** Les tests de ratio de variance sur l'indice composite ne rejettent souvent pas la marche aléatoire (N'Dri 2015, période 2002-2004). En revanche, les tests qui tiennent compte de la non-linéarité, du trading peu fréquent ou de l'échelle (Appiah-Kusi & Menyah 2003 ; Smith 2008 ; Mlambo & Biekpe 2007 ; Diallo et al. 2021) concluent à l'inefficience. | medium |
-| 2 | **Le retour à la moyenne à court terme est l'inefficience la mieux documentée.** Gbenro & Moussa (2019) estiment une demi-vie d'environ **7 jours pour le Composite** et d'environ **2 jours pour le BRVM 10** (2005-2018), avec une asymétrie faible et une vitesse de retour qui diminue légèrement dans le temps. | medium |
+| 2 | **Le retour à la moyenne à court terme est l'inefficience la mieux documentée.** Gbenro & Moussa (2019) estiment une demi-vie d'environ **7 jours pour le Composite** et d'environ **2 jours pour le BRVM 10** (2005-2018), avec une asymétrie faible et une vitesse de retour qui diminue légèrement dans le temps. **[NON VÉRIFIÉ]** : les chiffres de demi-vie viennent d'extraits de moteur de recherche, et le texte n'a pu être lu ni par le chercheur ni par le vérificateur. Le BRVM 10 n'est plus publié depuis le 30/12/2022. | low |
 | 3 | **Les effets calendaires sont instables.** Selon les études, on trouve un effet lundi, un effet mercredi, un effet vendredi, un effet décembre ou un Ramadan à volatilité plus faible, mais ces effets disparaissent dans les modèles à fenêtre glissante (Obalade et al. 2022) ou dans les spécifications les mieux ajustées (RMEEF 2016). Ils ne sont **pas exploitables** comme signaux autonomes. | medium |
 | 4 | **Aucune étude publiée sur le momentum transversal (Jegadeesh-Titman) propre à la BRVM n'a été trouvée.** Sur les marchés frontières en général, la valeur et le momentum sont les principaux moteurs de rendement (Zaremba et co-auteurs), mais ce résultat n'est pas spécifique à la BRVM. | medium (absence constatée) |
-| 5 | **Le CAPM explique mal la BRVM.** La prime de risque est positive mais non significative en GARCH-M sur 2010-2018. Le modèle de Fama-French à 3 facteurs atteint un R² ajusté moyen de 20,4 % (28 titres, 2001-2008) et laisse au moins 60 % de la variance inexpliquée. | medium |
-| 6 | **La volatilité est persistante et asymétrique (effet de levier).** L'EGARCH avec une loi de Student asymétrique est le meilleur modèle d'après Djahoué (2018). Le sentiment des investisseurs améliore les prévisions de volatilité (Djahoué 2025). | medium |
-| 7 | **Le trading peu fréquent était extrême avant 2013** (plus de 90 % de rendements journaliers nuls selon Hearn 2014). La cotation en continu existe depuis le **16/09/2013**. Dans nos BOC 2025-2026, **chaque titre non suspendu affiche un volume non nul chaque jour**, et 19,7 % des séances-titres ont une variation nulle. Le régime de liquidité a donc changé, et les résultats anciens doivent être réestimés. | high (BOC) / medium (Hearn) |
+| 5 | **Le CAPM explique mal la BRVM.** La prime de risque est positive mais non significative en GARCH-M sur 2010-2018. Le modèle de Fama-French à 3 facteurs atteint un R² ajusté moyen de 20,4 % (28 titres, 2001-2008) et laisse au moins 60 % de la variance inexpliquée [NON VÉRIFIÉ]. | low-medium |
+| 6 | **La volatilité est persistante et asymétrique (effet de levier).** L'EGARCH avec une loi de Student asymétrique est le meilleur modèle d'après Djahoué (2018) [NON VÉRIFIÉ]. Le sentiment des investisseurs améliore les prévisions de volatilité (Djahoué 2025) [NON VÉRIFIÉ]. | low-medium |
+| 7 | **Le trading peu fréquent était extrême avant 2013** (plus de 90 % de rendements journaliers nuls selon Hearn 2014 [NON VÉRIFIÉ]). La cotation en continu existe depuis le **16/09/2013** (confirmé par brvm.org). Dans nos BOC 2025-2026, **presque** tous les titres non suspendus cotent chaque jour. Il reste toutefois **166 séances-titres « NC » (non coté)** hors suspensions, sur 466 séances. Environ 19 % des séances-titres ont une variation nulle. Le changement de régime est **récent** : la part de variations nulles était encore de 27 à 35 % chaque année de 2018 à 2024, puis de 22,9 % en 2025 et de 14,9 % en 2026. Les résultats anciens, y compris ceux de 2014-2024, doivent être réestimés. | high (BOC) / low (Hearn) |
 | 8 | **L'intégration avec les autres marchés est faible.** Il n'y a pas de causalité entre la BRVM et le Ghana, mais une rétroaction avec le Nigeria (Emenike 2021). Les flux d'information depuis les marchés ESG mondiaux sont surtout non significatifs (Kyei et al. 2024). La contagion est surtout apparue pendant la crise de 2008. | medium |
 | 9 | **Aucune étude académique publiée sur l'effet aimant des limites de ±7,5 % de la BRVM n'a été trouvée.** Notre vérification exploratoire sur les BOC 2025-2026 montre : (a) après un plafond haut, la continuation se fait surtout **dans le gap de la nuit**, qu'on ne peut pas capter ; (b) après un plafond bas, on observe un **rebond sur 5 séances mesuré depuis l'ouverture du lendemain** (médiane +3,1 % contre +0,07 % sans condition). C'est une piste à valider, pas un résultat établi. | low (exploratoire, interne) |
 | 10 | **L'analyse technique simple (moyennes mobiles) n'a pas battu l'achat-conservation** dans le seul test BRVM trouvé, un mémoire. Ailleurs en Afrique, les résultats sont mitigés et dépendent des coûts. | low |
@@ -44,13 +45,21 @@
 | PER moyen du marché, hors Unilever CI | 15,79 | 20/11/2026 | idem | high |
 | Taux de rendement moyen du marché | 7,12 % | 20/11/2026 | idem | high |
 | Taux de rotation moyen du marché | 0,16 | 20/11/2026 | idem | high |
-| Limite de variation statique (actions et obligations) | ±7,5 % par rapport au cours de référence ; au-delà, la cotation est reportée | Instruction I-A (document non daté) | https://www.brvm.org/sites/default/files/regles_negociation_admission_0.pdf | high (règle) / medium (version en vigueur) |
-| Vérification empirique de la limite | max = +7,50 %, min = −7,50 % sur 21 528 séances-titres | 03/01/2025 → 20/11/2026 | calcul interne sur les BOC | high |
-| Passage du fixing à la cotation en continu | 16/09/2013 | 2013 | https://www.financialafrik.com/2013/09/17/bourse-afrique-abidjan-bascule-dans-la-cotation-en-continu/ | high |
-| Commissions BRVM / DC-BR | 0,2 % et 0,1 % du montant, payées par l'acheteur et par le vendeur | consulté le 22/11/2026 | https://www.brvm.org/fr/node/312 | high |
-| Courtage des SGI | environ 0,2 % à 1,5 % selon la SGI ; tarifs homologués par le régulateur | 2026 | https://www.richbourse.com/common/apprendre/ouvrir-compte-titres ; https://www.westbourse.com/comparateur-sgi | low (sources secondaires) |
+| Limite de variation statique (actions et obligations) | ±7,5 % par rapport au **cours de référence** ; au-delà, la cotation est reportée | Instruction I-A, dans un PDF **créé le 22/01/2013**, donc antérieur à la cotation en continu. Ce document est obsolète sur d'autres points : il décrit encore des séances le lundi, le mercredi et le vendredi, alors que la cotation est quotidienne depuis le 12/11/2001 | https://www.brvm.org/sites/default/files/regles_negociation_admission_0.pdf | high (règle) / medium (version en vigueur) |
+| Vérification empirique de la limite | max = +7,50 %, min = −7,50 % sur 21 362 à 21 528 séances-titres selon le parseur ; **aucun dépassement de 2023 à 2026**. De 2018 à 2022, il y a 14 dépassements apparents. Les 6 examinés s'expliquent tous :
+<br>• détachements de dividendes : BOABF le 29/04/2019, SMBC le 28/08/2019, CABC le 28/07/2020, SLBC le 18/08/2022. La variation publiée est alors calculée sur le cours précédent **non ajusté**. SLBC clôture exactement à 0,925 × (135 000 − 4 050) ;
+<br>• fractionnement : STBC le 31/07/2018 ;
+<br>• effet de pas de cotation : ETIT, 13 → 14 FCFA = +7,69 %.
+<br>Les 8 autres cas n'ont pas été examinés | 03/01/2025 → 20/11/2026 ; contrôle 2018-2026 par le vérificateur | BOC locaux `data/boc_text/` | high |
+| Limite appliquée dès la 1re séance d'une introduction en bourse | oui : Bridge Bank Group CI (BBGC), introduit le 25/09/2026, fait +7,44 %, +7,44 % et +7,46 % sur ses 3 premières séances, puis 0,00 % | 25/09/2026 → 30/09/2026 | BOC locaux (ex. https://www.brvm.org/sites/default/files/boc_20260925_2.pdf) | high |
+| Passage du fixing à la cotation en continu | 16/09/2013 (article 29 du Règlement général modifié par la décision CREPMF n° 2013-060 du 29/06/2013) | 2013 | https://www.brvm.org/fr/historique ; https://www.brvm.org/sites/default/files/rg_brvm_-_apres_approbation_crepmf_sept_2021_01_07_2022_bis.pdf ; https://www.financialafrik.com/2013/09/17/bourse-afrique-abidjan-bascule-dans-la-cotation-en-continu/ | high |
+| Commissions BRVM / DC-BR | 0,2 % et 0,1 % du montant, payées par l'acheteur et par le vendeur (« actuellement », page non datée) | consulté le 22/11/2026 | https://www.brvm.org/fr/node/312 | high |
+| Courtage des SGI | environ 0,2 % à 1,5 % selon la SGI ; tarifs homologués par le régulateur | 2026 | https://www.richbourse.com/common/apprendre/ouvrir-compte-titres ; https://www.westbourse.com/comparateur-sgi | low (sources secondaires) [NON VÉRIFIÉ] |
+| Taxes sur l'avis d'opéré | brvm.org mentionne des « taxes » **sans en donner le taux**. La page Fiscalité renvoie seulement à la directive 02/2010/CM/UEMOA. Le taux de 18 % utilisé en section 13 n'est **pas sourcé**, et la revue 01 utilise 10 % (TAF) | consulté le 22/11/2026 | https://www.brvm.org/fr/node/312 ; https://www.brvm.org/fr/node/313 | [NON VÉRIFIÉ] |
+| Indices phares | Le BRVM 10 est publié pour la dernière fois le 30/12/2022. Il est remplacé par le **BRVM 30** (base 100 au 02/01/2023 ; 100,13 ce jour-là) et le BRVM Prestige | 2022-2023 | BOC du 30/12/2022 et du 02/01/2023 (https://www.brvm.org/sites/default/files/boc_20230102_2.pdf) | high |
+| Fractionnement Sonatel (SNTS) | **1 pour 10** : dernier cours avant fractionnement 43 850 le 23/10/2026 (cours de référence ajusté 4 385), 1re séance fractionnée le 26/10/2026 ; dividende retraité de 1 740 à 174 FCFA | 23-26/10/2026 | BOC du 23/10/2026 et du 26/10/2026 | high |
 
-> Conséquence directe : l'indice **BRVM Composite est un indice de prix**, sans dividendes, alors que le rendement moyen du marché est d'environ 7 %. Pour savoir si une stratégie « bat les indices », il faut la comparer au **Composite Total Return**, sinon la surperformance est artificiellement gonflée d'environ 7 points par an.
+> Conséquence directe : l'indice **BRVM Composite est un indice de prix**, sans dividendes, alors que le rendement moyen du marché est d'environ 7 %. Pour savoir si une stratégie « bat les indices », il faut la comparer au **Composite Total Return**. Sinon, la surperformance est artificiellement gonflée de plusieurs points par an. Contrôle sur les BOC : en 2025, le Composite passe de 276,13 (02/01) à 345,75 (31/12), soit +25,2 %, contre environ +33,1 % pour le Total Return (133,14 implicite au 31/12/2025). En 2026, jusqu'au 20/11, c'est +42,56 % contre +49,19 %. L'écart est donc de 6,6 à 7,9 points, soit environ 4,7 à 6,3 % en relatif (confirmé).
 
 ---
 
@@ -68,7 +77,7 @@
 | Toe, Toe & Zoungrana (2023), *SN Business & Economics* 3, 170 | Données BRVM et BCEAO, 1998-2020 | ADF, runs, ratio de variance (forme faible) ; Johansen et Granger (forme semi-forte) | Le ratio de variance et les runs **ne rejettent pas** la marche aléatoire, mais les auteurs concluent à l'inefficience sur la base de l'ADF (conclusion **discutable** : l'absence de racine unitaire dans les rendements ne prouve rien). En forme semi-forte, **M1 et M2 ont un pouvoir prédictif sur les cours** | https://link.springer.com/article/10.1007/s43546-023-00550-0 | medium (données) / low (interprétation) |
 | Houndalidji, Tchindro & Hounkou (2024), *Journal of Financial Risk Management* 13(4), 769-797 | Composite, **1 618 observations journalières** (janvier 2016 à juin 2022), 45 titres | Test des runs, ARIMA (Box-Jenkins) | Conclusion **formulée de façon contradictoire** dans le résumé ; à la lecture des extraits, elle va vers l'inefficience faible | https://www.scirp.org/journal/paperinformation?paperid=138677 | low |
 | Gil-Alana, Mudida & Kariuki (2025), *Journal of Economic Studies* 52(9), 146-160 | 14 pays africains, indices **mensuels** (Côte d'Ivoire incluse) | Intégration fractionnaire | Marche aléatoire **non rejetée** sauf pour le Maroc et l'Afrique du Sud | https://doi.org/10.1108/JES-04-2022-0238 | medium |
-| Gbenro & Moussa (2019), *Journal of Risk and Financial Management* 12(1), 38 | BRVM Composite et BRVM 10, journaliers, environ 2005-2018 | AR non linéaire asymétrique (Nam et al. 2006) avec innovations EGARCH, fenêtres glissantes de 2, 4, 6 et 8 ans | **Retour à la moyenne** ; **demi-vie d'environ 7 jours (Composite) et d'environ 2 jours (BRVM 10)** ; asymétrie faible ; la vitesse de retour du Composite diminue légèrement | https://doi.org/10.3390/jrfm12010038 | medium |
+| Gbenro & Moussa (2019), *Journal of Risk and Financial Management* 12(1), 38 | BRVM Composite et BRVM 10, journaliers, environ 2005-2018 | AR non linéaire asymétrique (Nam et al. 2006) avec innovations EGARCH, fenêtres glissantes de 2, 4, 6 et 8 ans | **Retour à la moyenne** ; **demi-vie d'environ 7 jours (Composite) et d'environ 2 jours (BRVM 10)** ; asymétrie faible ; la vitesse de retour du Composite diminue légèrement. **[NON VÉRIFIÉ]** : texte inaccessible (hôte mdpi.com bloqué), chiffres issus d'extraits. Mise en garde du vérificateur : l'autocorrélation d'ordre 1 des rendements du Composite vaut ρ1 = 0,012 sur 2024-2026. Une demi-vie de 7 jours ne peut donc pas porter sur un AR(1) des rendements, qui demanderait un coefficient d'environ 0,91. Elle porte sur une autre grandeur, à identifier dans le texte avant tout codage | https://doi.org/10.3390/jrfm12010038 | low (chiffres) / medium (existence) |
 | Doumbia (2023), mémoire (Univ. Glasgow) | BRVM comparée à d'autres marchés africains | n.d. | Résultats non lus | https://www.researchgate.net/publication/374899681 | low |
 | *Dirassat Iqtissadiya* 12(1) (2025), pp. 380-402 | 5 marchés africains, BRVM incluse | Tests de forme faible | La BRVM serait efficiente au sens faible, contrairement aux 4 autres marchés (extrait fragmentaire) | https://asjp.cerist.dz/en/downArticle/67/12/1/267468 | low |
 
@@ -93,7 +102,7 @@
 | Alloul & Ferrouhi (2025), *Organizations and Markets in Emerging Economies* 16(1), 155-192 | Avant et pendant le Covid ; BRVM Composite et 11 indices | GJR-GARCH | Certaines anomalies apparaissent ou disparaissent pendant le Covid ; résultat propre au Composite non lu | https://www.journals.vu.lt/omee/article/view/36475 | low (pour la BRVM) |
 | Djahoué, M. G. (2025), *Modern Economy* 16(11), 1802-1826 | Journalier, du 04/01/2014 au 26/02/2025, 5 indices | Régressions linéaires et logit binomial, indice de sentiment | **Pas de consensus** sur l'effet jour de la semaine : il change selon l'indice. Le **sentiment des investisseurs** joue un rôle important | https://www.scirp.org/journal/paperinformation?paperid=147179 | medium |
 
-**Verdict.** Ces effets ne résistent ni au changement d'indice, ni au changement de période, ni à la fenêtre glissante. Ils sont **trop petits face à un coût aller-retour de l'ordre de 1,5 à 3 %** (section 2). Dans la plate-forme, on les garde comme **variables de contrôle**, pas comme signaux.
+**Verdict.** Ces effets ne résistent ni au changement d'indice, ni au changement de période, ni à la fenêtre glissante. Ils sont **trop petits face à un coût aller-retour de l'ordre de 2,2 à 3 %, avec 2,5 % comme base** (section 13, valeur corrigée). Dans la plate-forme, on les garde comme **variables de contrôle**, pas comme signaux.
 
 ---
 
@@ -111,7 +120,7 @@
 | Étude | Période / données | Méthode | Résultat | Lien | Confiance |
 |---|---|---|---|---|---|
 | N'Dri (2007), *African Journal of Business Management* 1(5), 107-112 | Hebdomadaire, 1999-2005 | GARCH-M, EGARCH-M, GJR (lois normale, Student et GED) | Persistance de la volatilité élevée. Relation rendement-volatilité **non significative** selon le résumé ; une source secondaire dit l'inverse | https://academicjournals.org/article/article1380545342_N%E2%80%99dri.pdf | medium |
-| « Applying the CAPM and the Fama–French models to the BRVM stock market », *Applied Financial Economics* 23(4), 275-285 (2013) ; auteur non vérifié | 28 sociétés, juillet 2001 à décembre 2008 | CAPM, Fama-French à 3 facteurs | Le CAPM est validé pour 11 titres ; avec Fama-French, le **R² ajusté moyen est de 20,40 %** ; **au moins 60 % de la variance reste inexpliquée** | https://www.tandfonline.com/doi/abs/10.1080/09603107.2012.718062 | medium |
+| « Applying the CAPM and the Fama–French models to the BRVM stock market », *Applied Financial Economics* 23(4), 275-285 (2013) ; auteur non vérifié | 28 sociétés, juillet 2001 à décembre 2008 | CAPM, Fama-French à 3 facteurs | Le CAPM est validé pour 11 titres ; avec Fama-French, le **R² ajusté moyen est de 20,40 %** ; **au moins 60 % de la variance reste inexpliquée** [NON VÉRIFIÉ : auteur inconnu, texte non lu ; un R² moyen de 20,4 % laisse en fait près de 80 % inexpliqué, d'où un « au moins 60 % » à vérifier dans le texte] | https://www.tandfonline.com/doi/abs/10.1080/09603107.2012.718062 | low |
 | Kolani & Ekoue (Vikpossi) (2014), *Research in World Economy* 5(1) | 17 sociétés, mensuel, 2000-2008 | Tests du CAPM | **CAPM rejeté** : constante non nulle, pente différente de la prime de marché | https://www.researchgate.net/publication/315042349 | medium |
 | Olasehinde-Williams (2018), *Journal of International Business Research and Marketing* 3(5), 7-11 | n.d. | ARMA(1,2)-GARCH(1,1)-M | Les investisseurs **ne sont pas rémunérés** pour le risque | https://researchleap.com/examination-relationship-volatility-expected-returns-brvm-stock-market/ | medium |
 | « Do Africa stock markets exhibit any evidence of risk-return trade-off? », *Int. J. of Bonds and Derivatives* 4(3), 221-235 (2021) | 04/01/2010 au 30/11/2018, 7 marchés | AR(p)-GARCH(1,1)-M | Prime de risque de la BRVM **positive mais non significative** | https://www.inderscience.com/info/inarticle.php?artid=116970 | medium |
@@ -133,15 +142,16 @@
 | Étude sur les banques UEMOA cotées | n.d. | Rendements anormaux cumulés | Sous-évaluation des IPO bancaires « bien réelle » | https://zenodo.org/records/5052654 | low |
 | Communication financière, secteur distribution (Servair, Bernabé) | n.d. | E-views et questionnaire | Corrélation significative entre BPA, DPA, endettement, PER, ROE et les cours | https://zenodo.org/records/21847511 | low |
 
-- **Effet du détachement de dividende** : **aucune étude systématique trouvée**, seulement des anecdotes de presse. Exemple : Tractafric Motors CI a perdu 11,42 % sur la semaine de son détachement en octobre 2026 (https://dabafinance.com/en/news/brvm-stocks-fall-for-second-week-as-sonatel-stock-split-nears ; low).
+- **Effet du détachement de dividende** : **aucune étude systématique trouvée**, seulement des anecdotes de presse. Exemple : Tractafric Motors CI (PRSC) a perdu 11,42 % sur la semaine de son détachement en octobre 2026 (https://dabafinance.com/en/news/brvm-stocks-fall-for-second-week-as-sonatel-stock-split-nears). **Vérifié sur les BOC** : 4 290 le 16/10/2026, puis 3 800 le 23/10/2026, soit −11,42 %. Mais le dividende net de 183,92 FCFA, détaché le 22/10/2026 (cours de référence 3 970), représente environ 4,3 points de cette baisse. **Net du dividende, la baisse n'est que d'environ −7,1 %** (high pour le chiffre, l'anecdote ne prouve rien sur l'effet de détachement).
 - **Dérive post-annonce de résultats (PEAD)** : **aucune étude BRVM trouvée**.
-- **Interaction avec les limites** : le rendement initial d'une IPO est plafonné à +7,5 % par séance. La sous-évaluation se répartit donc sur **plusieurs séances consécutives au plafond**. Il faut la mesurer sur plusieurs jours, pas sur le premier seul (déduction mécanique de la règle I-A, non testée dans la littérature).
+- **Interaction avec les limites** : le rendement initial d'une IPO est plafonné à +7,5 % par séance. La sous-évaluation se répartit donc sur **plusieurs séances consécutives au plafond**. Il faut la mesurer sur plusieurs jours, pas sur le premier seul. C'est une déduction mécanique de la règle I-A, non testée dans la littérature, mais **observée dans les BOC** : BBGC a fait +7,44 %, +7,44 % et +7,46 % du 25 au 29/09/2026, ECOC a fait +7,49 %, +5,80 %, +6,32 % et +7,48 % sur ses 4 premières séances, du 13 au 18/12/2017.
 
 ---
 
 ## 7. Limites de variation : effet aimant et continuation
 
-- **Règle** : écart maximal de ±7,5 % par séance par rapport au cours de référence. Si le fixing dépasse le seuil, la cotation est reportée et un prix indicatif est affiché au seuil franchi (Instruction I-A : https://www.brvm.org/sites/default/files/regles_negociation_admission_0.pdf ; high). Un support pédagogique mentionne aussi un **seuil dynamique de ±2 %** (±3 % si le pas de cotation est inférieur à 5 FCFA), avec réservation de 5 minutes en séance continue (https://www.gpe-afrique.com/moodledata/filedir/c5/9b/c59ba17efa07ba3df075a7cdb160fee4a33f571e ; low, version en vigueur à confirmer).
+- **Règle** : écart maximal de ±7,5 % par séance par rapport au cours de référence. Si le fixing dépasse le seuil, la cotation est reportée et un prix indicatif est affiché au seuil franchi (Instruction I-A : https://www.brvm.org/sites/default/files/regles_negociation_admission_0.pdf ; high). Un support pédagogique mentionne aussi un **seuil dynamique de ±2 %** (±3 % si le pas de cotation est inférieur à 5 FCFA), avec réservation de 5 minutes en séance continue (https://www.gpe-afrique.com/moodledata/filedir/c5/9b/c59ba17efa07ba3df075a7cdb160fee4a33f571e ; low). **[NON VÉRIFIÉ]** : ce seuil ne figure ni dans l'Instruction I-A (PDF de janvier 2013), ni dans le Règlement général du 01/07/2022. L'article 37 de ce dernier renvoie les « écarts de cours » propres à chaque compartiment à une Instruction qui n'a pas été trouvée sur brvm.org. Le BOC ne publie pas de données intrajournalières, donc on ne peut pas le tester.
+- **Cours de référence ajusté** : la limite s'applique au cours de référence **ajusté** des dividendes et des fractionnements (voir section 2). Les jours de détachement, la variation publiée dans le BOC de 2018-2022 peut dépasser 7,5 % en valeur absolue. Pour les titres à très faible prix, le pas de 1 FCFA peut aussi produire plus de 7,5 % (ETIT à 13 FCFA en 2021).
 - **Littérature propre à la BRVM** : **aucune étude trouvée** sur l'effet aimant, l'effet de refroidissement, la propagation de la volatilité ou la découverte de prix retardée.
 - **Littérature internationale** : les résultats sont mitigés.
   - Effet aimant mis en évidence à Taïwan : https://www.researchgate.net/publication/222684404.
@@ -164,17 +174,26 @@
 | Ouverture t+1 → clôture t+10 (médiane) | +0,94 % | **+3,26 %** | +0,69 % |
 | Plafond bas, moitié liquide (valeur médiane échangée par jour ≥ ~10 MFCFA) : ouverture t+1 → clôture t+5 | — | +4,84 % / **+3,55 %** / 71 % (91 événements, 72 dates distinctes) | +0,84 % / +0,21 % / 53 % |
 | Plafond bas, moitié liquide, en excluant les dates à 3 événements ou plus | — | médiane +3,09 %, 68 % positifs (78 événements) | — |
+| **Réplication indépendante du vérificateur** (parseur distinct, mêmes BOC) : ouverture t+1 → clôture t+5 | médiane +0,07 % (+0,15 % en chaînant les variations ajustées), 50 % positifs, n = 714 | **médiane +3,09 % (+3,10 % chaîné), 62 % positifs, n = 396** sur 402 événements | médiane +0,06 %, n = 21 122 |
+| Réplication, sous-échantillon liquide (valeur médiane ≥ 10 MFCFA, 26 titres) | — | médiane +4,34 %, 72 % positifs, n = 125 : même sens, mais **le chiffre dépend du seuil de liquidité** | — |
 
 **Autres statistiques de la même vérification :**
 
-- Part des séances-titres à variation nulle : 24,0 % en 2025, 15,0 % en 2026.
-- Part des séances-titres à ±7 % ou plus : 5,2 %.
-- Corrélation d'ordre 1 des rendements journaliers des titres (empilés) : **+0,096**.
+- Part des séances-titres à variation nulle : 24,0 % en 2025, 15,0 % en 2026. La réplication donne 22,9 % et 14,9 %. Ces chiffres incluent les séances « NC » (non coté), affichées à 0,00 %.
+- Part des séances-titres à ±7 % ou plus : 5,2 % (confirmé par la réplication).
+- Corrélation d'ordre 1 des rendements journaliers des titres (empilés) : +0,096. **Corrigé** : la réplication donne +0,071 avec les variations publiées. Le chiffre dépend de la définition (log ou simple, séances NC incluses ou non) ; retenir « environ +0,07 à +0,10 ».
+- Regroupement des plafonds bas : jusqu'à 14 le même jour, le 23/09/2026 (confirmé).
 - BRVM Composite, rendements logarithmiques du 04/11/2024 au 20/11/2026 (n = 503) :
-  - ρ1 = 0,012 ;
-  - **VR(10) = 1,40 (z\* robuste = 2,00)** ;
-  - **VR(20) = 1,77 (z\* = 2,87)** ;
-  - VR(2) = 1,01 (z\* = 0,17).
+  - ρ1 = 0,012 (confirmé) ;
+  - VR(2) = 1,01 (z\* = 0,17 ; réplication : z\* = 0,19) ;
+  - VR(10) = 1,40 (z\* robuste = 2,00). **Corrigé** : la réplication Lo-MacKinlay robuste à l'hétéroscédasticité donne **VR(10) = 1,37, z\* = 1,84, non significatif à 5 %** ;
+  - VR(20) = 1,77 (z\* = 2,87). **Corrigé** : réplication **VR(20) = 1,70, z\* = 2,59** ;
+  - VR(5) = 1,13 (z\* = 0,90) dans la réplication ;
+  - **Sous-périodes (réplication)** :
+    - du 04/11/2024 au 31/12/2025 : VR(10) = 0,84 (z\* = −0,72), VR(20) = 0,76 (z\* = −0,76) ;
+    - du 01/01/2026 au 20/11/2026 : VR(10) = 1,74 (z\* = 2,45), VR(20) = 2,34 (z\* = 3,36).
+  - **La persistance vient entièrement de 2026.**
+  - Avec 4 horizons testés, la valeur critique de Chow-Denning à 5 % est d'environ 2,49 : seul VR(20) la dépasse.
 
 **Interprétation prudente :**
 
@@ -185,8 +204,8 @@
    - ouverture parfois établie sur un **très petit volume**, donc non exécutable en taille ;
    - effets de *bid-ask bounce* ;
    - détachements de dividendes et opérations sur titres mal identifiés ;
-   - **aucun coût déduit** : il faut compter un aller-retour de 1,6 à 3 %.
-3. **Indice.** VR(10) et VR(20) supérieurs à 1 et significatifs indiquent une **persistance (tendance) sur plusieurs semaines** dans le régime 2024-2026. Ce n'est plus la marche aléatoire de N'Dri (2015, période 2002-2004). Les causes possibles : le régime de marché ou une dépendance qui varie dans le temps, comme le prévoit l'hypothèse des marchés adaptatifs. Ce résultat doit être **réestimé en fenêtre glissante**, pas extrapolé.
+   - **aucun coût déduit** : il faut compter un aller-retour d'environ **2,5 % en base** (2,2 à 3 %, valeur corrigée en section 13). La médiane nette tombe donc à environ **+0,6 %**.
+3. **Indice (corrigé après vérification).** Sur 2024-2026, seul VR(20) est significatif (1,70, z\* = 2,59). VR(10) ne l'est pas (z\* = 1,84). Surtout, **toute la persistance vient de 2026** (VR(20) = 2,34), année très haussière : +42,6 % au 20/11. La fin 2024 et 2025 montrent au contraire des VR inférieurs à 1, non significatifs. On ne peut donc pas parler d'un « régime 2024-2026 » de tendance. C'est un épisode de 2026, cohérent avec l'hypothèse des marchés adaptatifs, à **réestimer en fenêtre glissante** et à ne jamais extrapoler.
 
 ---
 
@@ -195,7 +214,7 @@
 | Étude | Période | Méthode | Résultat | Lien | Confiance |
 |---|---|---|---|---|---|
 | N'Dri (2007), *AJBM* 1(5) | 1999-2005, hebdomadaire | GARCH, GJR, EGARCH (lois N, t, GED) | Forte persistance de la volatilité | https://academicjournals.org/article/article1380545342_N%E2%80%99dri.pdf | medium |
-| Djahoué, M. G. (2018), *Journal of Applied Finance & Banking* 8(6), 91-109 | BRVM 10 et Composite, journalier ; janvier 2010 à mai 2016 selon un résumé | 3 GARCH asymétriques, plusieurs lois | Rendements **asymétriques** avec **effet de levier** ; **EGARCH avec loi de Student asymétrique** meilleur pour le BRVM 10 ; EGARCH meilleur que GARCH pour le Composite | http://www.scienpress.com/Upload/JAFB/Vol%208_6_4.pdf | medium |
+| Djahoué, M. G. (2018), *Journal of Applied Finance & Banking* 8(6), 91-109 | BRVM 10 et Composite, journalier ; janvier 2010 à mai 2016 selon un résumé | 3 GARCH asymétriques, plusieurs lois | Rendements **asymétriques** avec **effet de levier** ; **EGARCH avec loi de Student asymétrique** meilleur pour le BRVM 10 ; EGARCH meilleur que GARCH pour le Composite [NON VÉRIFIÉ : texte non lu par le vérificateur] | http://www.scienpress.com/Upload/JAFB/Vol%208_6_4.pdf | low-medium |
 | Djahoué (prépublication, environ 2025-2026), « Investor Sentiment and Stock Market Volatility: Evidence from the West African Regional Stock Exchange » | n.d. | Famille FIGARCH, indice de sentiment | Forte persistance, asymétrie, **mémoire longue** ; l'indice de sentiment **améliore les prévisions de volatilité** | https://www.researchgate.net/publication/404732210 | low-medium |
 | Ouattara, Z. & Koy, A. (2024), *Journal of International Trade, Logistics and Law* 10(1), 149-158 | Mars 2005 à septembre 2023 | GARCH(1,1) avec variables macroéconomiques | Relation inverse entre la volatilité et les taux USD, CNY et le taux moyen des crédits ; **l'inflation a un effet significatif** | https://www.jital.org/index.php/jital/article/view/461 | medium |
 | Gueyie, Diallo & Diallo (2022), *International Journal of Financial Studies* 10(4), 113 | 05/01/2015 au 31/10/2022, indice et volume journaliers | Relation contemporaine, causalité de Granger | Pas de lien contemporain significatif ; **les rendements causent le volume (au sens de Granger)**, pas l'inverse | https://www.mdpi.com/2227-7072/10/4/113 | medium |
@@ -206,14 +225,16 @@
 
 ## 9. Trading peu fréquent et liquidité
 
-- **Hearn (2014)**, *Research in International Business and Finance* 30(1), 91-110 : sur l'échantillon étudié, **plus de 90 % de rendements journaliers nuls** à la BRVM. Mesures utilisées : spread, part de rendements nuls (Lesmond et al. 1999), indicateur de Liu (2006). Source : https://www.sciencedirect.com/science/article/abs/pii/S0275531913000287 (medium).
+- **Hearn (2014)**, *Research in International Business and Finance* 30(1), 91-110 : sur l'échantillon étudié, **plus de 90 % de rendements journaliers nuls** à la BRVM [NON VÉRIFIÉ : texte non lu, période de l'échantillon inconnue. À titre de comparaison, les BOC 2018-2024 donnent 27 à 35 % de variations nulles]. Mesures utilisées : spread, part de rendements nuls (Lesmond et al. 1999), indicateur de Liu (2006). Source : https://www.sciencedirect.com/science/article/abs/pii/S0275531913000287 (medium).
 - **Mlambo & Biekpe (2005)**, *Investment Analysts Journal* 61, 29-40 : le trading peu fréquent fausse les tests d'efficience ; il faut utiliser des rendements d'une transaction à l'autre. Source : https://www.researchgate.net/publication/290792299 (medium).
 - **Ouattara (2016)**, MPRA n°75391 : impact du passage à la cotation en continu sur la liquidité de la BRVM. Résultats chiffrés non lus. Source : https://econpapers.repec.org/RePEc:pra:mprapa:75391 (low).
 - **Hikouatcha et al. (2016)**, cité dans des sources secondaires : sur la BRVM, le **ratio d'illiquidité d'Amihud** décrit mieux la liquidité que la rotation. Source : https://www.researchgate.net/figure/Amihud-2002-illiquidity-ratio_tbl2_309815405 (low).
 - **Situation en 2025-2026 (BOC, high)** :
-  - tous les titres non suspendus ont un volume non nul chaque jour (le 20/11/2026, 46 titres échangés sur 48) ;
-  - la valeur médiane échangée par titre et par jour (médiane des médianes) est d'environ **10 MFCFA** ;
-  - elle va d'environ 155 MFCFA (SNTS) à moins de 0,5 MFCFA (UNLC, SICC).
+  - **Corrigé** : il n'est pas vrai que tous les titres non suspendus ont un volume non nul chaque jour. Sur les 466 séances du 03/01/2025 au 20/11/2026, on compte **166 séances-titres « NC »** (non coté : ouverture et clôture affichées « NC », variation 0,00 %, aucun volume), en plus de 452 séances-titres suspendues (« SP »). Exemple : le 15/01/2025, SICC, NEIC et SAFC sont NC, et 41 titres sont échangés. Le 20/11/2026, 46 titres sont échangés sur 48 (confirmé) ;
+  - la valeur médiane échangée par titre et par jour (médiane des médianes) est d'environ **10 MFCFA** (réplication : 10,24 MFCFA sur 47 titres, avec la valeur estimée par volume × clôture) ;
+  - elle va d'environ 152 à 155 MFCFA (SNTS) à moins de 0,5 MFCFA (UNLC 0,38 ; SICC 0,16).
+  - Note de parsing : la colonne « Valeur » du BOC peut déborder sur la ligne suivante pour les très gros montants (SNTS le 20/11/2026 : « 2 988 573 » puis « 270 » à la ligne). Il faut la contrôler par volume × cours.
+  - Contexte historique (BOC, vérificateur) : part des séances-titres à variation nulle de 26,9 % (2018) à 34,8 % (2020), 30,6 % en 2024, 22,9 % en 2025 et 14,9 % en 2026. **L'amélioration de la liquidité date surtout de 2025-2026, pas de 2013.**
   - Le problème n'est donc plus l'absence de cotation, mais la **profondeur** : de petits volumes suffisent à fixer les cours.
 
 ---
@@ -250,10 +271,10 @@
 
 | Inefficience candidate | Appui dans la littérature | Robustesse | Exploitable après coûts ? | Décision pour la plate-forme |
 |---|---|---|---|---|
-| Retour à la moyenne à court terme (indices) | Gbenro & Moussa 2019 ; Diallo et al. 2021 ; Smith 2008 | Moyenne : la vitesse varie et diminue avec le temps | Difficile au niveau de l'indice (pas de produit indiciel liquide) ; possible au niveau des titres | **Signal candidat n°1**, à valider titre par titre |
-| Rebond après plafond bas (−7,5 %) | Aucune étude publiée ; vérification interne 2025-2026 | Faible : échantillon court, marché haussier, événements regroupés | Avantage brut médian d'environ 3 % sur 5 jours contre environ 2 % de coûts : **marginal** | **Hypothèse à tester** en walk-forward, avec filtres de liquidité |
+| Retour à la moyenne à court terme (indices) | Gbenro & Moussa 2019 [chiffres NON VÉRIFIÉS] ; Diallo et al. 2021 ; Smith 2008 | Moyenne : la vitesse varie et diminue avec le temps. Sur 2024-2026, ρ1 du Composite vaut 0,012, donc pas de retour à la moyenne visible au pas journalier | Difficile au niveau de l'indice (pas de produit indiciel liquide) ; possible au niveau des titres | **Signal candidat n°1**, à valider titre par titre |
+| Rebond après plafond bas (−7,5 %) | Aucune étude publiée ; vérification interne 2025-2026, **répliquée** par le vérificateur (médiane +3,09 %, n = 396) | Faible : échantillon court, marché haussier, événements regroupés (jusqu'à 14 le même jour) | Avantage brut médian d'environ 3,1 % sur 5 jours contre environ **2,5 %** de coûts (valeur corrigée), soit environ +0,6 % net en médiane : **très marginal** | **Hypothèse à tester** en walk-forward, avec filtres de liquidité |
 | Continuation après plafond haut | Aucune étude publiée ; vérification interne | Concentrée dans le gap, qu'on ne peut pas capter | **Non** | Ne pas courir après ; garder comme indicateur d'excès de demande |
-| Tendance de l'indice sur plusieurs semaines (VR(10) et VR(20) > 1) | Vérification interne 2024-2026 ; hypothèse des marchés adaptatifs | Faible à moyenne : dépend du régime | Possible en **allocation tactique** (exposition actions ou liquidités) | Filtre de régime, pas signal de sélection |
+| Tendance de l'indice sur plusieurs semaines (VR(20) > 1) | Vérification interne ; **réplication : significatif seulement en 2026**, VR inférieurs à 1 en 2024-2025 | **Faible** : un seul épisode haussier | Possible en **allocation tactique** (exposition actions ou liquidités), à prouver hors échantillon | Filtre de régime, pas signal de sélection |
 | Effets calendaires (jour, mois, Ramadan) | Tachiwou 2010 ; Ferrouhi et al. 2021 ; RMEEF 2016 | **Faible** : contredits par Obalade et al. 2022 et Djahoué 2025 | **Non** | Variables de contrôle seulement |
 | Sous-évaluation à l'introduction en bourse | *Revue du Chercheur* ; Zenodo 5052654 | Moyenne : significative après 2011 | Oui si l'on obtient une allocation, souvent réduite en cas de sursouscription | Module « IPO » : souscrire, puis gérer la sortie sur plusieurs séances au plafond |
 | Prévisibilité par M1 et M2 (forme semi-forte) | Toe et al. 2023 | Faible à moyenne | À tester, en tenant compte du **délai de publication** BCEAO | Variable macro mensuelle |
@@ -275,17 +296,27 @@ Les règles techniques fréquentes ne sont pas la piste privilégiée. Rien de t
 ```yaml
 # brvm_alpha/config/research_priors.yaml (proposition, issue de la revue 02)
 market_rules:
-  price_limit_pct: 7.5            # Instruction I-A BRVM ; vérifié empiriquement (max |var| = 7.50 %, 2025-2026)
+  price_limit_pct: 7.5            # Instruction I-A BRVM (PDF du 22/01/2013) ; VÉRIFIÉ : 0 dépassement 2023-2026 dans les BOC
+  limit_reference: "adjusted_reference_price"   # VÉRIFIÉ : la limite porte sur le cours de référence ajusté (dividende, split) ;
+                                  # BOC 2018-2022 : la variation publiée les jours de détachement est calculée sur le cours non ajusté (> 7,5 % possible)
+  limit_applies_to_new_listings: true   # VÉRIFIÉ : BBGC 25-29/09/2026, 3 séances à ~+7,45 %
+  tick_rounding_can_exceed_limit: true  # ETIT 13 -> 14 FCFA = +7,69 % (2021)
   limit_hit_threshold_pct: 7.0    # seuil "touché" utilisé dans la vérification (pas de cotation ≈ arrondis)
-  dynamic_band_pct: 2.0           # ±2 % en continu (±3 % si pas de cotation < 5 FCFA), source pédagogique, à confirmer
-  continuous_trading_since: "2013-09-16"
+  dynamic_band_pct: 2.0           # [NON VÉRIFIÉ] ±2 % en continu (±3 % si pas de cotation < 5 FCFA), source pédagogique seule ; absent de l'I-A 2013 et du RG 2022
+  continuous_trading_since: "2013-09-16"   # VÉRIFIÉ brvm.org/fr/historique
+  daily_sessions_since: "2001-11-12"       # brvm.org/fr/historique (l'I-A de 2013 décrit encore lundi, mercredi et vendredi : obsolète)
+  boc_row_flags: ["SP", "NC", "(d)", "(V)", "(Val-T)"]   # suspendu ; non coté ; marqueurs observés autour des dividendes et du split Sonatel
+corporate_actions_verified:
+  - {symbol: SNTS, type: split, ratio: 10, last_pre_split_session: "2026-10-23", first_split_session: "2026-10-26"}   # BOC
+indices:
+  brvm10_last_published: "2022-12-30"      # BOC ; remplacé par BRVM 30 (base 100 le 02/01/2023)
 costs:                            # par côté, en % du montant
-  brvm_fee_pct: 0.20              # brvm.org/fr/node/312
-  dcbr_fee_pct: 0.10              # brvm.org/fr/node/312
-  sgi_commission_pct: 0.80        # hypothèse centrale ; fourchette secondaire 0,2-1,5 % ; à remplacer par le barème réel de la SGI
-  taxes_on_commission_pct: 18.0   # TVA/TAF sur commissions : SOURCE SECONDAIRE, à vérifier
-  round_trip_baseline_pct: 2.0    # ≈ 2 x (0,30 + 0,80 x 1,18)
-  round_trip_stress_pct: 3.0
+  brvm_fee_pct: 0.20              # VÉRIFIÉ brvm.org/fr/node/312 (consulté le 22/11/2026)
+  dcbr_fee_pct: 0.10              # VÉRIFIÉ brvm.org/fr/node/312
+  sgi_commission_pct: 0.80        # [NON VÉRIFIÉ] hypothèse centrale ; fourchette secondaire 0,2-1,5 % ; à remplacer par le barème réel de la SGI
+  taxes_on_commission_pct: 18.0   # [NON VÉRIFIÉ] taux non publié par brvm.org ; la revue 01 utilise 10 % (TAF) : à trancher sur un avis d'opéré réel
+  round_trip_baseline_pct: 2.5    # CORRIGÉ (était 2.0) : 2 x (0,30 + 0,80 x 1,18) = 2,49 % ; 2,36 % si taxe à 10 % ; 2,20 % sans taxe
+  round_trip_stress_pct: 3.0      # ≈ 2 x (0,30 + 1,00 x 1,18) = 2,96 % ; avec un courtage de 1,5 % : 4,14 %
   slippage_bps_per_10pct_adv: 50  # hypothèse à calibrer sur le carnet ; aucune source publiée
 liquidity_filters:
   min_median_daily_value_fcfa: 10_000_000   # ≈ médiane des titres 2025-2026 (BOC)
@@ -301,10 +332,17 @@ efficiency_monitor:               # tests réestimés chaque semaine, fenêtre g
   runs_test: true
   hurst_wavelet_on_sector_indices: true   # Diallo et al. 2021
   alert_abs_z: 1.96
-  current_estimates_2024_2026: {VR10: 1.40, z10: 2.00, VR20: 1.77, z20: 2.87}
+  current_estimates_2024_2026: {VR10: 1.37, z10: 1.84, VR20: 1.70, z20: 2.59}   # CORRIGÉ par réplication (était 1.40/2.00 ; 1.77/2.87)
+  subperiod_estimates:            # réplication du vérificateur, Lo-MacKinlay z* robuste
+    "2024-11-04_2025-12-31": {VR10: 0.84, z10: -0.72, VR20: 0.76, z20: -0.76}
+    "2026-01-01_2026-11-20": {VR10: 1.74, z10: 2.45, VR20: 2.34, z20: 3.36}
+  chow_denning_crit_5pct_4q: 2.49
 mean_reversion:
-  prior_half_life_days: {composite: 7, brvm10_or_30: 2}   # Gbenro & Moussa 2019 (2005-2018)
-  reestimate_window_years: [2, 4]                          # fenêtres de l'article : 2/4/6/8 ans
+  prior_half_life_days: {composite: 7, brvm10: 2}   # [NON VÉRIFIÉ] Gbenro & Moussa 2019 (2005-2018), texte non lu ;
+                                  # ne PAS appliquer au BRVM 30 (indice différent, créé en 2023) ;
+                                  # grandeur modélisée à identifier (incompatible avec un AR(1) des rendements : rho1 = 0,012)
+  use_prior: false                # tant que le texte n'est pas lu : estimer la demi-vie localement
+  reestimate_window_years: [2, 4]                          # fenêtres de l'article : 2/4/6/8 ans [NON VÉRIFIÉ]
   asymmetry_term: true            # asymétrie faible mais modélisée
 signals_candidate:
   limit_down_rebound:
@@ -312,7 +350,9 @@ signals_candidate:
     entry: "open_t+1 (limit order <= open + 1 tick)"
     hold_days: 5
     in_sample_2025_2026: {median_ret_pct: 3.09, hit_rate: 0.62, n: 391, uncond_median_pct: 0.07}
-    in_sample_liquid_half: {median_ret_pct: 3.55, hit_rate: 0.71, n: 91}
+    replication_verifier: {median_ret_pct: 3.09, hit_rate: 0.62, n: 396, uncond_median_pct: 0.06}   # CONFIRMÉ
+    in_sample_liquid_half: {median_ret_pct: 3.55, hit_rate: 0.71, n: 91}   # sensible au seuil : 4.34 / 0.72 / n = 125 avec seuil 10 MFCFA (26 titres)
+    median_net_of_baseline_cost_pct: 0.6   # 3,09 - 2,5 : avantage très marginal
     status: "HYPOTHESE - walk-forward + couts obligatoires avant activation"
   limit_up_chase:
     status: "REJETE - continuation concentree dans le gap overnight (median o->c5 = +0.14 % vs +0.07 %)"
@@ -320,15 +360,15 @@ calendar_effects:
   use_as: "controls_only"         # instables : Obalade et al. 2022 ; Djahoué 2025
   dummies: [weekday, month, ramadan, december]
 volatility_model:
-  default: "EGARCH(1,1)-skewt"    # Djahoué 2018
+  default: "EGARCH(1,1)-skewt"    # Djahoué 2018 [NON VÉRIFIÉ : texte non lu] ; choisir par critère d'information sur nos données
   alternatives: ["GJR-GARCH(1,1)-t", "FIGARCH"]
   exogenous: ["sentiment_index", "inflation_uemoa", "usd_xof", "cny_xof"]   # Djahoué 2025 ; Ouattara & Koy 2024
 factor_model:
-  candidates: ["FF5", "FF6", "FF3+ILLIQ"]   # Hearn et al. 2025 (Afrique frontière)
+  candidates: ["FF5", "FF6", "FF3+ILLIQ"]   # Hearn et al. 2025 (Afrique frontière ; présence de la BRVM NON VÉRIFIÉE)
   rebalance: "monthly"
   min_names_per_leg: 8            # 48 titres seulement : portefeuilles tertiles, pas déciles
 macro_semi_strong:
-  predictors: ["M1", "M2"]        # Toe et al. 2023 (Granger/Johansen)
+  predictors: ["M1", "M2"]        # Toe et al. 2023 (Granger/Johansen) [NON VÉRIFIÉ ; conclusions de l'article jugées fragiles]
   publication_lag_months: 2       # hypothèse prudente, à vérifier sur le calendrier de la BCEAO
 validation:
   min_oos_t_stat: 3.0             # discipline multi-tests (seuil de type Harvey-Liu-Zhu)
@@ -340,8 +380,8 @@ validation:
 
 **Règles d'implémentation :**
 
-1. **Rendements.** Calculer les rendements d'une transaction à l'autre et marquer les jours où la variation est nulle ou le volume quasi nul. Sur l'historique d'avant 2013, ne jamais utiliser les rendements d'indice bruts dans un test d'efficience sans correction du trading non synchrone (Mlambo & Biekpe 2005).
-2. **Ajustement des cours.** Neutraliser les détachements de dividendes et les opérations sur titres (fractionnements comme celui de Sonatel, droits) avant de calculer un signal. Sinon on obtient de faux plafonds bas et de faux rebonds.
+1. **Rendements.** Calculer les rendements d'une transaction à l'autre et marquer les jours où la variation est nulle ou le volume quasi nul. Traiter à part les lignes « NC » (non coté : pas une variation nulle, mais une absence de cotation) et « SP » (suspendu). Utiliser le **cours précédent publié** (ajusté en 2025-2026) plutôt que la clôture de la veille, et contrôler les jours de BOC manquants (fichiers `.missing`). Sur l'historique d'avant 2013, ne jamais utiliser les rendements d'indice bruts dans un test d'efficience sans correction du trading non synchrone (Mlambo & Biekpe 2005).
+2. **Ajustement des cours.** Neutraliser les détachements de dividendes et les opérations sur titres avant de calculer un signal : fractionnements (comme celui de Sonatel, 1 pour 10, effectif le 26/10/2026), droits. Sinon on obtient de faux plafonds bas et de faux rebonds.
 3. **Exécution.** Modéliser la file d'attente au plafond : un ordre au cours limite peut rester non exécuté. Le prix d'entrée simulé après un événement est **l'ouverture de t+1**, jamais la clôture de t.
 4. **Sélection.** Avec 48 titres, utiliser des tertiles ou des rangs et exiger au moins 8 titres par jambe. Ventes à découvert : non disponibles en pratique, donc on construit des stratégies **acheteuses avec surpondérations**.
 5. **Rapport utilisateur.** Afficher en permanence la performance nette des frais face au **Composite Total Return**, l'intervalle de confiance et le message : **« performance passée ≠ garantie »**.
@@ -376,6 +416,9 @@ validation:
 - Règles de négociation, Instruction I-A sur les écarts maximaux : https://www.brvm.org/sites/default/files/regles_negociation_admission_0.pdf
 - Règlement général (1er juillet 2022) : https://www.brvm.org/sites/default/files/rg_brvm_-_apres_approbation_crepmf_sept_2021_01_07_2022_bis.pdf
 - Frais applicables : https://www.brvm.org/fr/node/312
+- Fiscalité (renvoi à la directive 02/2010/CM/UEMOA, sans taux) : https://www.brvm.org/fr/node/313
+- Historique de la BRVM (cotation quotidienne le 12/11/2001, T+3 le 02/07/2007, cotation en continu le 16/09/2013) : https://www.brvm.org/fr/historique
+- BOC utilisés par le vérificateur (copies locales dans `data/boc_text/`) : https://www.brvm.org/sites/default/files/boc_20221230_2.pdf ; https://www.brvm.org/sites/default/files/boc_20230102_2.pdf ; https://www.brvm.org/sites/default/files/boc_20250102_2.pdf ; https://www.brvm.org/sites/default/files/boc_20251231_2.pdf ; https://www.brvm.org/sites/default/files/boc_20260925_2.pdf ; https://www.brvm.org/sites/default/files/boc_20261023_2.pdf ; https://www.brvm.org/sites/default/files/boc_20261026_2.pdf
 - Passage à la cotation en continu : https://www.financialafrik.com/2013/09/17/bourse-afrique-abidjan-bascule-dans-la-cotation-en-continu/ ; https://african-markets.com/fr/bourse/brvm/la-brvm-passe-a-la-cotation-en-continu
 
 **Efficience**
@@ -466,3 +509,60 @@ validation:
 - Nairobi : https://www.researchgate.net/publication/285996873
 - OCDE 2025 : https://www.oecd.org/content/dam/oecd/en/publications/reports/2025/11/africa-capital-markets-report-2025_a973e07d/7d26e1d3-en.pdf
 - Courtage des SGI (secondaire) : https://www.richbourse.com/common/apprendre/ouvrir-compte-titres ; https://www.westbourse.com/comparateur-sgi
+
+---
+
+## Vérification adversariale (2026-11-22)
+
+> **Rôle** : vérificateur sceptique (domaine « brvm-academic »). **But** : essayer de réfuter les affirmations dont une erreur coûterait le plus cher, en priorité les paramètres codés en section 13.
+>
+> **Méthode et limites**
+>
+> - **Sources utilisables.** Seul `www.brvm.org` était joignable : Instruction I-A, Règlement général 2022, pages « frais », « fiscalité » et « historique ». S'y ajoutent les **BOC locaux 2017-2026** (`data/boc_text/`), relus avec un **parseur indépendant**, distinct des scripts du chercheur.
+> - **Sources inaccessibles.** Le budget de recherche web partagé (WebSearch) était épuisé dès la première requête. Les hôtes `www.mdpi.com`, `pubmed.ncbi.nlm.nih.gov`, `redfame.com` et `www.scirp.org` sont refusés par le réseau de la session, et curl n'atteint ni Crossref, ni Wiley, ni Taylor & Francis, ni ScienceDirect, ni Springer. **Aucune étude académique n'a donc pu être revérifiée en ligne.** Elles sont classées « invérifiable », jamais « confirmées ». Aucune n'est déclarée réfutée faute de trace, puisque la recherche elle-même était impossible.
+> - **Scripts du vérificateur** (dossier temporaire) : `/tmp/claude-0/-home-user-documentation/b095b722-74b3-5e89-8589-8e6133bd6c39/scratchpad/verif02/` (`varcheck2.py`, `panel.py`, `stats.py`).
+
+| # | Élément vérifié | Valeur du chercheur | Résultat de la vérification | Verdict | Source |
+|---|---|---|---|---|---|
+| 1 | Limite statique `price_limit_pct` | 7,5 % | Le texte de l'I-A, article 2, dit bien ±7,5 % (actions et obligations). Les BOC 2023-2026 ne montrent aucun dépassement. Le PDF date du 22/01/2013 et non d'une date inconnue | **confirmé** | https://www.brvm.org/sites/default/files/regles_negociation_admission_0.pdf ; BOC locaux |
+| 2 | Base de la limite | « cours de référence » | La limite porte sur le cours de référence **ajusté**. Dans les BOC 2018-2022, on trouve 14 variations publiées au-delà de ±7,5 %. Les 6 examinées s'expliquent toutes : détachements BOABF, SMBC, CABC, SLBC ; fractionnement STBC ; pas de cotation ETIT. Paramètres ajoutés : `limit_reference`, `tick_rounding_can_exceed_limit` | **corrigé** (précision) | BOC du 29/04/2019, 28/08/2019, 28/07/2020, 18/08/2022, 31/07/2018, 20/12/2021 |
+| 3 | Limite dès la 1re séance d'une IPO, gain d'introduction étalé | déduction non testée | BBGC fait +7,44 %, +7,44 % et +7,46 % du 25 au 29/09/2026 ; ECOC fait +7,49 % le 13/12/2017 | **confirmé** | https://www.brvm.org/sites/default/files/boc_20260925_2.pdf |
+| 4 | `dynamic_band_pct` | 2,0 (3,0) | Absent de l'I-A 2013 et du RG 2022. L'article 37 du RG renvoie à une Instruction non trouvée. Pas de données intrajournalières pour le tester | **invérifiable** | https://www.brvm.org/sites/default/files/rg_brvm_-_apres_approbation_crepmf_sept_2021_01_07_2022_bis.pdf |
+| 5 | `continuous_trading_since` | 2013-09-16 | brvm.org indique : « 16 Septembre 2013 : passage à la cotation en continu ». L'article 29 du RG a été modifié par la décision CREPMF 2013-060 du 29/06/2013 | **confirmé** | https://www.brvm.org/fr/historique |
+| 6 | `brvm_fee_pct` / `dcbr_fee_pct` | 0,20 / 0,10 par côté | Texte exact : « actuellement 0.2 % et 0.1 % du montant de la transaction payables par l'Acheteur et par le Vendeur ». La page n'est pas datée | **confirmé** | https://www.brvm.org/fr/node/312 |
+| 7 | `sgi_commission_pct` | 0,80 | brvm.org dit seulement que chaque SGI fixe ses tarifs, homologués par le régulateur. Aucun barème primaire consulté | **invérifiable** | https://www.brvm.org/fr/node/312 |
+| 8 | `taxes_on_commission_pct` | 18 | Taux non publié par brvm.org ; la page Fiscalité renvoie seulement à la directive 02/2010/CM/UEMOA. La revue 01 du projet utilise 10 % (TAF) : **contradiction interne** | **invérifiable** | https://www.brvm.org/fr/node/313 |
+| 9 | `round_trip_baseline_pct` | 2,0, « ≈ 2 × (0,30 + 0,80 × 1,18) » | **Erreur de calcul** : la formule donne 2,49 %. On obtient 2,36 % avec une taxe de 10 % et 2,20 % sans taxe. Le 2,0 % sous-estime les coûts | **réfuté → corrigé à 2,5** | calcul à partir de https://www.brvm.org/fr/node/312 |
+| 10 | Chiffres du BOC du 20/11/2026 | 48 sociétés ; Composite 492,89 (+42,56 %) ; TR 198,63 (+49,19 %) ; PER 15,79 ; rendement 7,12 % ; rotation 0,16 ; 46 titres échangés | Tous identiques dans le BOC n° 222 | **confirmé** | https://www.brvm.org/sites/default/files/boc_20261120_2.pdf |
+| 11 | Indice de référence TR (base 100 au 02/01/2025) et écart d'« environ 7 points par an » | — | Base confirmée. En 2025 : Composite +25,2 % (276,13 → 345,75) contre environ +33,1 % pour le TR. En 2026, au 20/11 : +42,56 % contre +49,19 %. Écart de 6,6 à 7,9 points | **confirmé** | BOC du 02/01/2025, du 31/12/2025 et du 20/11/2026 |
+| 12 | `current_estimates_2024_2026` (VR) | VR(10) = 1,40, z\* = 2,00 ; VR(20) = 1,77, z\* = 2,87 | Réplication Lo-MacKinlay robuste (n = 503) : VR(10) = 1,37, **z\* = 1,84, non significatif** ; VR(20) = 1,70, z\* = 2,59. **La persistance vient entièrement de 2026** : VR(20) = 2,34 en 2026, contre 0,76 sur fin 2024-2025 | **corrigé** | BOC locaux, du 04/11/2024 au 20/11/2026 |
+| 13 | Rebond après plafond bas `limit_down_rebound` | médiane +3,09 %, 62 % positifs, n = 391 | Réplication : médiane +3,09 % (+3,10 % chaîné), 62 % positifs, n = 396 sur 402 événements. Seuls 5 événements tombent un jour d'ajustement de cours. Sous-échantillon liquide : même sens, mais le chiffre dépend du seuil (+4,34 %, n = 125 avec un seuil de 10 MFCFA, contre +3,55 %, n = 91). **Net d'un coût de 2,5 %, la médiane tombe à environ +0,6 %** | **confirmé** (chiffres bruts) | BOC locaux 2025-2026 |
+| 14 | Rejet de la poursuite des plafonds hauts `limit_up_chase` | médiane o→c5 +0,14 % contre +0,07 % | Réplication : +0,07 % (+0,15 % chaîné) contre +0,06 % sans condition, n = 714 | **confirmé** | BOC locaux 2025-2026 |
+| 15 | « Chaque titre non suspendu a un volume non nul chaque jour » (2025-2026) | affirmation high | **Faux** : 166 séances-titres « NC » (non coté) hors suspensions sur 466 séances, par exemple SICC, NEIC et SAFC le 15/01/2025 | **réfuté** | https://www.brvm.org/sites/default/files/boc_20250115_2.pdf (copie locale) |
+| 16 | Parts de variations nulles et datation du changement de liquidité | 19,7 % ; 24,0 % (2025) ; 15,0 % (2026) ; « régime changé depuis 2013 » | Réplication : 19,1 %, 22,9 % et 14,9 %, confirmés à l'arrondi près. Mais la part était de **27 à 35 % chaque année de 2018 à 2024** : le changement est récent (2025-2026) | **corrigé** (interprétation) | BOC locaux 2018-2026 |
+| 17 | Autocorrélation d'ordre 1 empilée des titres | +0,096 | Réplication : +0,071, chiffre qui dépend de la définition | **corrigé** | BOC locaux 2025-2026 |
+| 18 | `min_median_daily_value_fcfa` (médiane des médianes) | ≈ 10,2 MFCFA ; SNTS ≈ 155 ; UNLC et SICC < 0,5 | 10,24 MFCFA sur 47 titres ; SNTS 152 ; UNLC 0,38 ; SICC 0,16 | **confirmé** | BOC locaux 2025-2026 |
+| 19 | Anecdote Tractafric : −11,42 % sur la semaine du détachement | −11,42 % | 4 290 le 16/10/2026, puis 3 800 le 23/10/2026, soit −11,42 %. Mais le dividende net de 183,92 FCFA représente environ 4,3 points : net, la baisse est d'environ −7,1 % | **confirmé** (avec réserve) | BOC du 16/10/2026 au 23/10/2026 |
+| 20 | Fractionnement Sonatel (non chiffré dans la revue) | — | 1 pour 10 ; 43 850 le 23/10/2026, référence 4 385 ; 1re séance le 26/10/2026 ; dividende retraité de 1 740 à 174 | **confirmé** (fait ajouté) | https://www.brvm.org/sites/default/files/boc_20261026_2.pdf |
+| 21 | Clé YAML `prior_half_life_days.brvm10_or_30` | demi-vie de 2 jours transposée au BRVM 30 | Le BRVM 10 est publié pour la dernière fois le 30/12/2022, puis remplacé par le BRVM 30 (base 100 le 02/01/2023). Rien ne justifie de transposer la demi-vie au BRVM 30 | **réfuté → clé renommée `brvm10`** | https://www.brvm.org/sites/default/files/boc_20230102_2.pdf |
+| 22 | Demi-vies de Gbenro & Moussa (2019) : 7 jours (Composite) et 2 jours (BRVM 10) | medium | Texte inaccessible (hôte mdpi.com bloqué). Une demi-vie de 7 jours est incompatible avec un AR(1) des rendements (ρ1 = 0,012), donc la grandeur modélisée est à identifier. `use_prior: false` ajouté | **invérifiable** | https://doi.org/10.3390/jrfm12010038 (non consulté) |
+| 23 | Djahoué (2018) : EGARCH avec Student asymétrique comme modèle par défaut | medium | Hôte non joignable | **invérifiable** | http://www.scienpress.com/Upload/JAFB/Vol%208_6_4.pdf (non consulté) |
+| 24 | *Applied Financial Economics* 2013 : R² moyen de 20,40 % | medium | Hôte non joignable, auteur inconnu. Incohérence apparente : 20,4 % de R² laisse environ 80 % inexpliqué, pas « au moins 60 % » | **invérifiable** | https://www.tandfonline.com/doi/abs/10.1080/09603107.2012.718062 (non consulté) |
+| 25 | Hearn (2014) : plus de 90 % de rendements journaliers nuls | medium | Hôte non joignable ; période de l'échantillon inconnue | **invérifiable** | https://www.sciencedirect.com/science/article/abs/pii/S0275531913000287 (non consulté) |
+| 26 | Existence et détails des autres études citées : Appiah-Kusi & Menyah 2003, Smith 2008, Mlambo & Biekpe 2007, N'Dri 2015, Diallo et al. 2021, Toe et al. 2023, Hearn et al. 2025, Obalade et al. 2022, Ferrouhi et al. 2021, Djahoué 2025 | medium | Aucune ne peut être consultée ce jour. Les références restent celles du chercheur ; aucune n'est confirmée par le vérificateur | **invérifiable** | voir section 15 |
+
+**Bilan** : 26 éléments contrôlés.
+
+- **11 confirmés**, dont 8 sur sources primaires brvm.org ou BOC (n° 1, 3, 5, 6, 10, 11, 19, 20) et 3 par réplication indépendante (n° 13, 14, 18).
+- **4 corrigés** : base de la limite (n° 2), interprétation et chiffres des ratios de variance (n° 12), datation du changement de liquidité (n° 16), autocorrélation (n° 17).
+- **3 réfutés et corrigés dans le fichier** : coût aller-retour de 2,0 % porté à 2,5 % (n° 9), « cotation quotidienne de tous les titres » (n° 15), clé `brvm10_or_30` (n° 21).
+- **8 invérifiables** :
+  - 3 paramètres de marché ou de coût sans source primaire : seuil dynamique, courtage SGI, taxe (n° 4, 7, 8) ;
+  - 5 groupes de résultats académiques (n° 22 à 26).
+
+**Actions restantes avant de coder** :
+
+1. Autoriser l'accès réseau à `doi.org`, `www.mdpi.com`, `www.tandfonline.com`, `www.sciencedirect.com`, `onlinelibrary.wiley.com`, `link.springer.com`, `www.scirp.org`, `redfame.com` et `pubmed.ncbi.nlm.nih.gov`, puis relire Gbenro & Moussa (2019), Djahoué (2018) et l'article d'*Applied Financial Economics* (2013).
+2. Obtenir un avis d'opéré réel d'une SGI pour fixer le courtage et le taux de taxe, et aligner les revues 01 et 02.
+3. Trouver l'Instruction BRVM en vigueur sur les écarts de cours par compartiment (seuil dynamique).
+4. Déterminer à partir de quelle date le BOC publie un « cours précédent » ajusté les jours de détachement : non ajusté en 2018-2022, ajusté en 2025-2026, 2023-2024 non examinés.

@@ -4,6 +4,15 @@
 > **Date de rédaction** : 22/11/2026.
 > **Données locales** : 1 354 séances de BOC (11/01/2021 → 20/11/2026) passées dans le parseur du projet (`brvm_alpha.data.store.build_panel`). Tous les calculs de ce document sont reproductibles à partir de `data/boc_text/`.
 > **Avertissement** : aucun modèle, aucun analyste et aucune information macroéconomique ne permettent de **garantir** un gain. Le risque politique de la zone (coups d'État, sanctions, crise budgétaire) produit précisément des pertes brutales et imprévisibles. Ce document sert à **mesurer et limiter** ce risque, pas à le faire disparaître.
+>
+> **Après vérification adversariale (22/11/2026, dernière section)** : 27 éléments ont été contrôlés à nouveau sur les BOC locaux et sur les PDF de brvm.org. Les faits tirés des BOC (capitalisations, formule et niveau de la prime, taux de référence 5,75 %, coupons et dates de cotation des emprunts d'État, trajectoire de BOA Niger, limite de ±7,5 %) et des fiches de notation sont **confirmés**. Six paramètres codés sont **corrigés** :
+> (1) `jump_loss.severe` passe de 0,25 à **0,21** (0,26 en stress). Le chercheur n'avait calibré que sur le Niger 2023 et avait oublié les sanctions UEMOA contre le Mali en janvier 2022 (creux de −16,9 %).
+> (2) Le « délai de 6 séances » **n'est pas une règle** : au Mali en 2022, la baisse au plafond a commencé dès la première séance (t+1).
+> (3) Les spreads locaux du YAML sont remplacés par les valeurs calculées, et non plus arrondies.
+> (4) L'exposition λ de Sonatel reçoit une variante pondérée par le taux de détention des filiales (Mali 69,40 %).
+> (5) Le déclencheur « décote obligataire » exige au moins 5 transactions : au Niger en 2026, la médiane repose sur 3 ou 4 transactions.
+> (6) La confiance d'EUR/USD 1,164 passe de H à M (±0,006, valeur dérivée de chiffres arrondis).
+> **Restent non vérifiés**, parce que WebSearch était épuisé et que bceao.int et pages.stern.nyu.edu ne se résolvent pas : les taux de la BCEAO, l'inflation, les notes souveraines, les chiffres de la Cour des comptes du Sénégal, les dates d'événements politiques et le multiplicateur de Damodaran. Ils sont marqués **[NON VÉRIFIÉ]**.
 
 ### Conditions de la recherche : à lire avant tout
 
@@ -27,20 +36,20 @@
 | 2 | Poids des pays dans la capitalisation (pays du siège) | **CI 57,8 %**, SN 22,9 %, BF 7,3 %, TG 6,2 %, BJ 4,6 %, ML 0,7 %, NE 0,5 %, GW 0 % | 20/11/2026 | H (calcul) | BOC + nombre de titres (doc 01, §11) |
 | 3 | Poids « économique » (Sonatel réparti par pays de clientèle, ETIT isolé) | CI 57,8 %, SN 9,1 %, BF 7,3 %, **ML 6,8 %**, Guinée 5,4 %, panafricain (ETIT) 5,3 %, BJ 4,6 % … | 2025-2026 | H/M | §11 |
 | 4 | PIB nominal UEMOA implicite | **≈ 134 900 Md FCFA** (2025) | 31/12/2025 | H (dérivé) | BRVM : capitalisation totale 24 781,32 Md = 18,37 % du PIB |
-| 5 | Taux de référence des emprunts d'État utilisé par la BRVM dans le BOC | **5,75 %** depuis le 05/01/2024 (5,90 % du 22/02/2021 à fin 2023) | 20/11/2026 | H (déduit de la formule BOC) | BOC : « Prime de risque = 1/PER − taux de référence des emprunts d'État » |
+| 5 | Taux de référence des emprunts d'État utilisé par la BRVM dans le BOC | **5,75 %** depuis le 05/01/2024 (5,90 % du 22/02/2021 au 29/12/2023 ; ≈ 5,98 % du 02 au 04/01/2024, transition) | 20/11/2026 | H (déduit de la formule BOC, revérifié le 22/11) | BOC du 22/02/2021, légende : « Prime de risque du marché = (1 / le PER moyen du marché) − le taux de référence actuel des emprunts d'Etat » |
 | 6 | Prime de risque du marché publiée par le BOC | **0,58 %** (minimum 2026 : **−0,33 %** le 14/09/2026) contre **4,11 %** en moyenne 2021-2025 | 20/11/2026 | H | BOC |
 | 7 | Assouplissement monétaire de la BCEAO en 2025 | Sens confirmé par 4 sources primaires (BRVM, 2 fiches Bloomfield, et BOA Niger de façon indirecte par la « baisse du coût des ressources ») | 2025-2026 | H | §2 |
-| 8 | Dernière baisse de taux BCEAO connue | −25 pb, effet au 16/06/2025 (taux minimum de soumission 3,25 %, guichet de prêt marginal 5,25 %) | 06/2025 | M | bceao.int (non joignable) |
+| 8 | Dernière baisse de taux BCEAO connue | −25 pb, effet au 16/06/2025 (taux minimum de soumission 3,25 %, guichet de prêt marginal 5,25 %) **[NON VÉRIFIÉ]** (niveaux) | 06/2025 | M | bceao.int (non joignable) ; le sens est confirmé par le communiqué BRVM du 20/06/2025 |
 | 9 | Décisions BCEAO entre septembre 2025 et novembre 2026 | **non vérifiées** | — | — | bceao.int bloqué |
 | 10 | Spread local des emprunts d'État (APE 2026, 7-8 ans) par rapport à la Côte d'Ivoire | ML +0,57 pt ; TG +0,92 ; SN +0,97 ; BF +1,07 ; (2025 : NE +0,95 ; BJ +0,05) | 2025-2026 | H (calcul) | BOC |
 | 11 | Coupons 2026 de la Côte d'Ivoire sur le marché régional | 5,45 % (5 ans), 5,70-5,85 % (7 ans), 6,00 % (10 ans) | 2026 | H | BOC |
 | 12 | Emprunts du Sénégal sur la BRVM | Record de **405 Md FCFA** (juillet 2025) ; 4 tranches de 6,40 % à 6,95 % reconduites à l'identique en 12/2025, 06/2026 et 09/2026 ; décote de 2 à 15 % sur le secondaire en 2026 | 2025-2026 | H | brvm.org, BOC |
 | 13 | Marché obligataire régional segmenté | Le Sénégal emprunte localement à moins de 7 % alors que ses notes ont été fortement dégradées (M) : le spread local ne mesure pas le risque de défaut | 2025-2026 | H/M | §6 |
-| 14 | Choc politique le plus fort mesuré | Coup d'État et sanctions au Niger (07/2023) : BOA Niger **−26 %** en 9 séances, dont 3 séances à −7,5 % ; la réaction a commencé **6 séances après** le coup | 2023 | H (calcul) / M (dates) | BOC |
+| 14 | Chocs politiques les plus forts mesurés | Coup d'État et sanctions au Niger (07/2023) : BOA Niger **−26 %** en 9 séances, dont 3 séances à −7,5 % ; la réaction a commencé **6 séances après** le coup. **Ajout de la vérification** : sanctions CEDEAO/UEMOA contre le Mali (09/01/2022) : BOA Mali −7,47 % **dès t+1**, puis −16,9 % au creux en 3 séances, et −8,4 % à 20 séances. Levée de ces sanctions (07/2022) : **+35,7 % en 5 séances**. Le délai n'est donc **pas** systématique | 2022-2023 | H (calcul) / M (dates) | BOC |
 | 15 | Corrélations hebdomadaires entre pays | 0,03 à 0,33 : la diversification géographique est réelle | 2021-2026 | H (calcul) | BOC |
 | 16 | Caoutchouc naturel (TSR20 SICOM) | moyenne **2,13 USD/kg** (1,83 EUR/kg) à fin septembre 2026, +20 % sur un an ; mais résultat net SAPH −58 % (achats de matière première plus chers) | 30/09/2026 | H | rapport SAPH T3 2026 |
 | 17 | Sociétés agro-industrielles cotées en 2026 | Résultats en baisse (SAPH −58 %, SOGB −34 %, PALM CI −12 % sur 9 mois) ; cours 2026 : PALC −8,2 %, SOGC −3,8 %, SPHC −3,2 % alors que le marché fait +42,6 % | 09-11/2026 | H | rapports T3 2026, BOC |
-| 18 | Parité | 1 EUR = 655,957 FCFA (fixe) ; EUR/USD moyen ≈ 1,164 sur janvier-septembre 2026 (déduit du rapport SAPH) | 2026 | M / H (dérivé) | §7 |
+| 18 | Parité | 1 EUR = 655,957 FCFA (fixe) ; EUR/USD moyen ≈ 1,164 (intervalle 1,158-1,170, car le rapport SAPH donne des prix arrondis) sur janvier-septembre 2026 | 2026 | M / M (dérivé) | §7 |
 
 **Lecture d'ensemble.** La BRVM est un marché **ivoiro-sénégalais** (80,7 % de la capitalisation), avec une queue AES (Burkina, Mali, Niger) de 8,5 % par pays de siège, mais d'environ **15 %** en exposition économique, parce que Sonatel tire près de 29 % de sa clientèle mobile du Mali. Le marché vient de connaître deux années exceptionnelles (+25,3 % en 2025, +42,6 % en 2026 au 20/11), en partie portées par l'assouplissement monétaire. Le **rendement bénéficiaire du marché (6,33 %) ne dépasse plus le taux de référence des emprunts d'État (5,75 %) que de 0,58 point**, contre 4 points en moyenne entre 2021 et 2025. Le risque politique est concentré, brutal, et mal reflété dans les taux locaux. Il doit être modélisé par des **règles d'événements** plutôt que par une simple prime lissée.
 
@@ -68,9 +77,13 @@ Le BOC publie chaque jour une « **Prime de risque du marché** », définie dan
 
 | Période | Taux de référence implicite | Remarque |
 |---|---|---|
-| 2019 → début 2020 | 6,50 % | Avant 2021, le BOC semble utiliser une autre définition (valeurs incohérentes en 2020) : période exclue |
-| 22/02/2021 → 02/01/2024 | **5,90 %** | |
+| 08/01/2018 → 02/07/2019 | ≈ 6,00 % | *Corrigé par la vérification* : le chercheur indiquait 6,50 % pour toute l'année 2019. Valeurs aberrantes autour des fins d'année 2017 et 2018 |
+| 03/07/2019 → 28/04/2020 | 6,50 % | |
+| 29/04/2020 → 19/02/2021 | incohérent (10,3 à 11,7 %) | Autre définition ou erreurs de saisie : période exclue |
+| 22/02/2021 → 29/12/2023 | **5,90 %** | Le 02, le 03 et le 04/01/2024, le taux implicite vaut ≈ 5,98 % (transition) |
 | 05/01/2024 → 20/11/2026 | **5,75 %** | Inchangé malgré la baisse de taux de la BCEAO en 2025 : taux administré « collant » |
+
+**Impressions erronées de la prime dans le BOC (vérification du 22/11/2026)** : certains jours, la prime publiée vaut 0,00 ou 0,01 alors que le PER implique environ 0,1 à 0,5 point. C'est le cas le 19/10/2026 (PER 16,90), le 23/10/2026 (PER 17,04) et le 17/11/2026 (PER 15,98, prime 0,01, donc un taux implicite de 6,25 %). D'autres écarts ponctuels existent, par exemple 5,27 % le 13/07/2026. **Règle de code** : `ref_govt_rate` = médiane glissante sur 20 séances de `100/PER − prime`. Un jour isolé qui s'écarte de plus de 0,10 point de cette médiane est ignoré, et le taux n'est déclaré « changé » qu'après au moins 5 séances consécutives au nouveau niveau.
 
 | Année | PER moyen | Prime BOC moyenne | Rendement net moyen des dividendes |
 |---|---:|---:|---:|
@@ -83,7 +96,7 @@ Le BOC publie chaque jour une « **Prime de risque du marché** », définie dan
 
 Sur 2021-2025, la prime moyenne est de **4,11 %** (médiane 3,91 %, 10e centile 1,58 %, 90e centile 6,76 %). Elle n'a été sous 1 % que **2,9 %** des jours. En 2026, elle est passée sous zéro. Le marché est donc, selon sa propre mesure, au **plus cher de la période observée**.
 
-**Test de pouvoir prédictif (H, calcul)** : sur 2021-2026, la corrélation entre cette prime en fin de mois et le rendement total du marché à 6 et 12 mois est **négative** (−0,34 et −0,33 ; 64 et 58 observations qui se chevauchent). Les périodes de prime élevée (2022-2024) ont été suivies de rendements plus faibles que les périodes de prime basse. Cela contredit la théorie, mais l'échantillon est court et en tendance haussière. **Conclusion : la prime BOC est un indicateur de valorisation et de risque, pas un signal de market timing démontré.** Il faut la tester sur un historique plus long (les BOC remontent au moins à 2019-2020) avant tout usage tactique.
+**Test de pouvoir prédictif (H, calcul)** : sur 2021-2026, la corrélation entre cette prime en fin de mois et le rendement total du marché à 6 et 12 mois est **négative** (−0,34 et −0,33 ; 64 et 58 observations qui se chevauchent). *Vérification* : avec l'indice de prix BRVM Composite au lieu du rendement total, et sur moins d'observations (41 et 35, à cause de mois manquants dans le téléchargement local), on obtient −0,39 et −0,65. Le **signe** est confirmé, la magnitude ne l'est pas. Les périodes de prime élevée (2022-2024) ont été suivies de rendements plus faibles que les périodes de prime basse. Cela contredit la théorie, mais l'échantillon est court et en tendance haussière. **Conclusion : la prime BOC est un indicateur de valorisation et de risque, pas un signal de market timing démontré.** Il faut la tester sur un historique plus long (les BOC remontent au moins à 2019-2020) avant tout usage tactique.
 
 ### 1.3 Ce que disent les notations et rapports 2026 des émetteurs (H, qualitatif)
 
@@ -100,7 +113,7 @@ Sur 2021-2025, la prime moyenne est de **4,11 %** (médiane 3,91 %, 10e centile 
 | Sonatel, états financiers 2025 | ML | Clients au Mali **−13,7 %** en 2025 (11,6 M contre 13,5 M) ; nouvelles taxes au Mali (+2 % sur l'accès au réseau, 10 % sur les recharges, 1 % sur les retraits, 0,5 % sur le chiffre d'affaires : « Contribution spéciale de solidarité ») |
 | ONATEL, rapport de gestion 2025 | BF | « contexte sécuritaire difficile » ; signature d'un **protocole de « free roaming » AES** (Mali, Niger, Burkina) |
 
-**Lien banques–souverain (H)** : les banques détiennent beaucoup de dette de leur propre État. Fin 2025, les effets publics représentent **31,3 %** du bilan de BOA Mali (185,7 Md sur 593,5 Md) et les obligations et effets publics **35,7 %** de celui de Coris Bank (1 070,4 Md sur 2 997,8 Md), selon les fiches Bloomfield. Or les banques font 17 des 48 sociétés cotées et environ 44 % de la capitalisation. **Un stress souverain se transmet donc directement aux actions bancaires du pays.** C'est le canal principal de risque pays à la BRVM.
+**Lien banques–souverain (H)** : les banques détiennent beaucoup de dette de leur propre État. Fin 2025, les effets publics représentent **31,3 %** du bilan de BOA Mali (185,7 Md sur 593,5 Md) et les obligations et effets publics **35,7 %** de celui de Coris Bank (1 070,4 Md sur 2 997,8 Md), selon les fiches Bloomfield (ratios revérifiés le 22/11/2026 : 185 699 / 593 455 = 31,3 % ; 1 070 425 / 2 997 779 = 35,7 %). Or le secteur « services financiers » compte 17 des 48 sociétés cotées et pèse environ 44 % de la capitalisation (44,16 % au 20/08/2026). *Correction* : ces 17 sociétés comprennent 14 banques, 2 holdings bancaires (ETIT, ORGT) et une société de crédit-bail et de crédit à la consommation (SAFCA), qui n'est pas une banque. **Un stress souverain se transmet donc directement aux actions bancaires du pays.** C'est le canal principal de risque pays à la BRVM.
 
 ---
 
@@ -124,9 +137,10 @@ Sur 2021-2025, la prime moyenne est de **4,11 %** (médiane 3,91 %, 10e centile 
 | 16/06/2023 | 3,25 % | 5,25 % | +25 pb | M | idem |
 | 16/12/2023 | **3,50 %** | **5,50 %** | +25 pb (sommet du cycle) | M | idem |
 | 2024 | inchangés | inchangés | pause | M | idem |
-| 16/06/2025 | **3,25 %** | **5,25 %** | −25 pb | M (le **sens** est H) | idem ; le sens est confirmé par BRVM 20/06/2025 et 15/10/2025, Bloomfield (BOA Mali, Ecobank CI) |
+| 16/06/2025 | **3,25 %** | **5,25 %** | −25 pb | M (le **sens** est H) **[NON VÉRIFIÉ]** (niveaux et date) | idem ; le sens est confirmé par BRVM 20/06/2025 et 15/10/2025, Bloomfield (BOA Mali, Ecobank CI) |
 | 09/2025 → 11/2026 | **non vérifié** | **non vérifié** | La fiche Bloomfield de BOA Mali (2026) cite « un allègement des taux directeurs », sans date ni niveau (le pluriel désigne simplement les deux taux du corridor). D'autres baisses après juin 2025 sont **possibles mais non confirmées** | — | bceao.int (bloqué) |
 
+**Vérification du 22/11/2026** : tout le tableau 2022-2025 est **[NON VÉRIFIÉ]** en source primaire. bceao.int ne se résout pas, et le budget WebSearch était épuisé pour le vérificateur aussi. Les valeurs concordent avec la connaissance antérieure du vérificateur, mais cela ne vaut pas preuve. Elles ne doivent pas être codées sans contrôle.
 **Introuvable dans cette session** : le niveau exact des taux directeurs au 22/11/2026, le calendrier des CPM de 2026 et les volumes d'injection de liquidité. **Action** : autoriser `www.bceao.int` puis remplir `config/macro_uemoa.yaml` (§14).
 
 ### 2.3 Transmission vers la BRVM : ce que montrent les données (H, calcul)
@@ -154,6 +168,20 @@ Pas de réaction immédiate : les décisions sont attendues, et elles agissent p
 | 2025 | nettement plus basse, de l'ordre de 0 à 1,5 % selon les relevés trimestriels | L | idem |
 | 2026 | **introuvable dans cette session** (Bloomfield parle d'« inflation maîtrisée » au Niger, H) | — | idem |
 
+Les chiffres 2022-2024 ci-dessus sont **[NON VÉRIFIÉ]** : aucune source primaire n'était accessible au vérificateur.
+
+**Ajout de la vérification (source secondaire datée)** : les états financiers 2025 de Sonatel (p. 5, « Données économiques : source FMI DEC 2025 ») donnent, pour l'année 2025 probablement :
+
+| Pays | Croissance du PIB | Inflation |
+|---|---:|---:|
+| Sénégal | 8,4 % | +2 % |
+| Mali | 4,9 % | +3 % |
+| Guinée | 7 % | +3,7 % |
+| Guinée-Bissau | 5,0 % | +2 % |
+| Sierra Leone | 4,6 % | +13 % |
+
+Confiance M : c'est le FMI cité par un émetteur, l'année n'est pas précisée, et le chiffre de la Sierra Leone semble élevé. URL : https://www.brvm.org/sites/default/files/20260216_-_etats_financiers_2025_et_attestation_des_cac_-_sonatel_sn.pdf
+
 ### 3.2 Croissance du PIB réel
 
 | Zone / pays | Ordre de grandeur 2024 | Moteur ou frein principal | Conf. |
@@ -174,7 +202,7 @@ Pas de réaction immédiate : les décisions sont attendues, et elles agissent p
 
 ## 4. Notations souveraines et eurobonds
 
-### 4.1 Notations des grandes agences (non revérifiées)
+### 4.1 Notations des grandes agences (non revérifiées) [NON VÉRIFIÉ]
 
 | Pays | Situation connue (mi-2026) | Tendance 2024-2026 | Conf. |
 |---|---|---|---|
@@ -187,7 +215,7 @@ Pas de réaction immédiate : les décisions sont attendues, et elles agissent p
 
 **Notations régionales (H)** : les agences agréées citées par la BRVM sont **Bloomfield Investment Corporation** et **EMR–WARA** ; GCR note aussi des émetteurs de l'Union (Sonatel, Senelec). Leurs échelles sont **régionales** : un AAA(WU) n'est pas un AAA mondial. Aucune note souveraine régionale n'a été trouvée dans la rubrique « notations financières » de brvm.org pour 2025-2026 : les pages TPCI, TPBF et TPBJ existent mais sont vides.
 
-### 4.2 Eurobonds (non revérifiés)
+### 4.2 Eurobonds (non revérifiés) [NON VÉRIFIÉ]
 
 | Émetteur | Opérations connues | Conf. |
 |---|---|---|
@@ -206,7 +234,7 @@ Pas de réaction immédiate : les décisions sont attendues, et elles agissent p
 | Critères de convergence de l'UEMOA (1er rang) | solde budgétaire global dons compris ≥ −3 % du PIB ; inflation ≤ 3 % ; dette ≤ 70 % du PIB | M | uemoa.int |
 | Suspension puis retour des critères | suspendus après le COVID ; retour visé en 2025 | M/L | uemoa.int |
 | Sénégal : audit publié le 26/09/2024 | déficit et dette 2019-2023 sous-déclarés | M | gouvernement du Sénégal |
-| Sénégal : Cour des comptes (12/02/2025) | dette fin 2023 ≈ **99,7 % du PIB** (contre ≈ 74 % publié) ; déficit 2023 ≈ **12,3 %** (contre 4,9 %) | M | courdescomptes.sn |
+| Sénégal : Cour des comptes (12/02/2025) | dette fin 2023 ≈ **99,7 % du PIB** (contre ≈ 74 % publié) ; déficit 2023 ≈ **12,3 %** (contre 4,9 %) **[NON VÉRIFIÉ]** (concorde avec la connaissance du vérificateur ; aucune URL consultable) | M | courdescomptes.sn |
 | Sénégal : FMI | programme d'environ 1,8 Md USD (2023) suspendu après la fausse déclaration ; nouveau programme négocié en 2025-2026, **état au 22/11/2026 non vérifié** | M / L | imf.org/en/Countries/SEN |
 | Sénégal : situation 2026 | « dégradation de la situation des finances publiques » (Bloomfield, 10/2026) ; endettement « préoccupant » (GCR, 06/2026) | **H** | fiches BOA SN et Sonatel sur brvm.org |
 | Côte d'Ivoire | dette autour de 55-60 % du PIB ; programme FMI 2023-2026 | L | imf.org/en/Countries/CIV |
@@ -260,6 +288,8 @@ Médiane trimestrielle de (cours traité / valeur nominale restante) des lignes 
 | 2026 T3 | 1,000 | 1,000 | 1,000 | 1,000 | **0,950** | **0,980** | 1,000 |
 | 2026 T4 (au 20/11) | 1,000 | 1,000 | 1,000 | 1,000 | 0,975 | **0,980** | 1,000 |
 
+**Vérification (22/11/2026)** : un recalcul indépendant (première transaction de chaque ligne par séance) reproduit ces médianes : SN 0,985 au T3 et 0,980 au T4 2026 ; NE 0,980 au T4 2025, 0,95 au T3 et 0,975 au T4 2026. **Mais** les médianes du Niger reposent sur **3 à 4 transactions par trimestre** en 2026, contre 64 à 84 pour le Sénégal. Un déclencheur fondé sur la médiane doit donc exiger un nombre minimal de transactions (§13.4).
+
 Exemples au 20/11/2026 (BOC) : **EOS.O27** (Sénégal 6,60 % 2025-2030) traité à **9 400** pour 10 000 de nominal ; **EOS.O19** (6,60 % 2025) à 8 255,63 pour 8 750 de nominal (94,4 %) ; **EOS.O24** (6,75 % 2025-2032) avec un cours de référence de **8 500**, soit 85 %. Les lignes ivoiriennes, maliennes et burkinabè restent au pair.
 
 ### 6.4 Interprétation
@@ -283,8 +313,8 @@ Exemples au 20/11/2026 (BOC) : **EOS.O27** (Sénégal 6,60 % 2025-2030) traité 
 | Réforme annoncée le 21/12/2019 | fin du dépôt de 50 % des réserves au compte d'opérations du Trésor français ; retrait de la France des instances de la BCEAO ; garantie maintenue ; changement de nom en « ECO » prévu mais **non réalisé** | M | idem |
 | ECO de la CEDEAO (15 pays) | lancement plusieurs fois reporté ; horizon 2027 évoqué | M/L | ecowas.int |
 | Monnaie de l'AES | discours politiques sur une monnaie commune ; **aucune sortie de l'UEMOA ou de la BCEAO constatée** au 20/11/2026 (H indirect, voir §8.1) | L (projet) / H (pas de sortie) | §8.1 |
-| EUR/USD moyen sur janvier-septembre 2026 | **≈ 1,164** (rapport des prix SICOM publiés par SAPH : 2,13 USD/kg = 1,83 EUR/kg) | H (dérivé) | rapport SAPH T3 2026 |
-| USD/FCFA moyen sur janvier-septembre 2026 | ≈ 655,957 / 1,164 ≈ **563,5** | H (dérivé) | idem |
+| EUR/USD moyen sur janvier-septembre 2026 | **≈ 1,164** (rapport des prix SICOM publiés par SAPH : 2,13 USD/kg = 1,83 EUR/kg). Texte revérifié par OCR le 22/11/2026. Les deux prix étant arrondis au centime, l'intervalle est **1,158 à 1,170**. C'est en outre une moyenne pondérée par les prix du caoutchouc, pas un fixing BCE | **M** (dérivé ; corrigé de H à M) | rapport SAPH T3 2026 |
+| USD/FCFA moyen sur janvier-septembre 2026 | ≈ 655,957 / 1,164 ≈ **563,5** (intervalle 560,6 à 566,5) | M (dérivé) | idem |
 
 **Mécanisme clé (H)** : les matières premières sont cotées en dollars, mais les sociétés cotées comptent en FCFA, donc en euros. SAPH l'écrit explicitement : TSR20 « *en progression de près de 20 % … Exprimée en monnaie locale, cette progression est ramenée à +16 % en raison du repli du dollar US face à l'euro* ». La plate-forme doit convertir tout prix de matière première en FCFA via EUR/USD.
 
@@ -310,11 +340,13 @@ Exemples au 20/11/2026 (BOC) : **EOS.O27** (Sénégal 6,60 % 2025-2030) traité 
 | 2025 | Niger : la BOAD cède sa participation dans BOA Niger à la SONIMEX | **H** (Bloomfield) |
 | 2025-2026 | Protocole de « free roaming » AES | **H** (ONATEL) |
 
+Les dates M de ce tableau sont **[NON VÉRIFIÉ]** en source primaire dans cette session. Elles concordent avec la connaissance du vérificateur, mais aucune URL n'a pu être consultée. Ajouts de la vérification, dates M également **[NON VÉRIFIÉ]**, réactions H calculées sur les BOC (§9) : coup d'État au Mali le 18/08/2020 ; sanctions CEDEAO et UEMOA contre le Mali, avec gel des opérations avec la BCEAO, annoncées le dimanche 09/01/2022 et levées début juillet 2022 ; coups d'État au Burkina Faso les 24/01/2022 et 30/09/2022, sans sanctions économiques UEMOA.
+
 **Maintien dans l'UEMOA (H, preuves indirectes)** : les trois pays continuent d'émettre sur le marché régional en FCFA (Mali en avril et août 2026 ; Burkina en mars et septembre 2026 ; Niger en avril et juillet 2025). Leurs banques cotées citent « l'allègement des taux directeurs de la Banque centrale » (BOA Mali, 2026). **Rien dans les sources consultées n'indique une sortie de l'UEMOA ou de la BCEAO au 20/11/2026.** Le projet de monnaie AES reste un risque de queue (L).
 
 ### 8.2 Côte d'Ivoire
 
-- Élection présidentielle du 25/10/2025 : réélection d'Alassane Ouattara ; plusieurs opposants majeurs exclus (M). Réaction du marché ivoirien : **+1,5 %** sur [0 ; +5] et **+3,7 %** sur [0 ; +20] séances (H, calcul). Le scénario de crise post-électorale (souvenir de 2010-2011) ne s'est pas produit.
+- Élection présidentielle du 25/10/2025 : réélection d'Alassane Ouattara ; plusieurs opposants majeurs exclus (M, **[NON VÉRIFIÉ]**). Réaction du marché ivoirien : **+1,5 %** sur [0 ; +5] et **+3,7 %** sur [0 ; +20] séances (H, calcul). Le scénario de crise post-électorale (souvenir de 2010-2011) ne s'est pas produit.
 - La Côte d'Ivoire est le « pays ancre » : meilleure signature régionale, 57,8 % de la capitalisation, coupons les plus bas (5,45-6,00 %, H).
 - Agriculture : la BMPA-CI (bourse des matières premières agricoles) a démarré le 28/05/2025 avec la noix de cajou (440 FCFA/kg en moyenne), la noix de cola et le maïs (H). La Côte d'Ivoire est le 1er producteur mondial de cajou (≈ 1,05 Mt par an en moyenne sur 5 ans) et de cola (≈ 250 kt) (H, BRVM/ARRE).
 
@@ -360,13 +392,26 @@ Méthode : indice pays pondéré par la capitalisation (nombre de titres au 31/1
 | 12/02/2025 | Sénégal : rapport de la Cour des comptes | SN | +1,7 | −2,9 | −2,7 | +0,2 |
 | 27/10/2025 | Présidentielle ivoirienne (25/10) | CI (brut) | +1,9 | +1,5 | +3,7 | +6,7 |
 
+**Cas ajoutés par la vérification (prix bruts de clôture tirés des BOC locaux, pas des rendements anormaux ; dates M [NON VÉRIFIÉ])**
+
+| Séance de référence | Événement | Titre | Trajectoire observée (BOC) | Classe |
+|---|---|---|---|---|
+| 18/08/2020 | Coup d'État au Mali (sanctions CEDEAO, sans gel BCEAO) | BOAM | 975 → plus bas 960 (−1,5 %) sur 10 séances | modéré, faible |
+| 10/01/2022 | Sanctions CEDEAO et UEMOA contre le Mali, gel BCEAO (sommet du 09/01) | BOAM | 1 540 → 1 425 (**−7,47 % dès t+1**) → 1 320 (−7,37 %) → plus bas 1 280 (**−16,9 %** en 3 séances) ; 1 410 à 20 séances (−8,4 %) | **sévère** |
+| 24/01/2022 | Coup d'État au Burkina (pas de sanctions UEMOA) | BOABF / CBIBF / ONTBF | BOABF 6 500 → 5 950 (−8,5 %) ; CBIBF −8 % puis rattrapage ; ONTBF stable | modéré |
+| 30/09/2022 | 2e coup d'État au Burkina | BOABF / CBIBF / ONTBF | CBIBF −7,14 % à t+1 ; ONTBF 4 100 → 3 565 (−13 %) en 10 séances ; BOABF −4 à −6 % | modéré |
+| 04/07/2022 | Levée des sanctions contre le Mali (début juillet 2022) | BOAM | 1 400 (01/07) → 1 900 (08/07) : **+35,7 % en 5 séances** (3 séances au plafond de +7,5 %) | soulagement |
+
+Remarque sur la ligne « Levée des sanctions contre le Niger » ci-dessus : le +14,5 % est un rendement **anormal** par rapport à la CI. Le prix brut de BOAN passe de 5 190 (clôture du 27/02/2024) à 5 790 (06/03/2024), soit **+11,6 %**. Les BOC des 26 et 27/02/2024 manquent dans le téléchargement local.
+
 **Trajectoire de BOA Niger après le coup d'État (H, BOC)** : 5 900 FCFA le 26/07/2023 ; −1,78 % le 27/07 ; puis **−7,46 %, −7,47 %, −7,44 %** les 03, 04 et 08/08 (plafond de baisse) ; plus bas à 4 355 (−26 %) ; rebond à 4 915 (+12,9 %) en 2 séances ; stabilisation vers 4 700 (−20 %).
 
-**Enseignements quantitatifs (H)**
-1. **Choc « sévère »** (coup d'État avec sanctions) : −20 à −32 % en 1 à 3 mois sur les titres du pays.
-2. **Choc « modéré »** (rupture diplomatique, révélation budgétaire) : −5 à −11 % à 5-20 séances, souvent **rattrapé en 60 séances**.
-3. **Réaction lente** : la limite de ±7,5 % par jour et la faible liquidité étalent l'ajustement sur plusieurs séances. Après le coup d'État au Niger, la vraie baisse a commencé **6 séances** plus tard. Un système qui lit l'actualité peut donc **réduire l'exposition avant l'essentiel de la baisse**, à condition de pouvoir vendre : en séance de plafond de baisse, les vendeurs ne sont souvent pas servis (doc 01).
-4. Les **bonnes nouvelles** sont aussi lentes à être intégrées (levée des sanctions : +14,5 % en 5 séances, +16,5 % en 20 séances).
+**Enseignements quantitatifs (H ; corrigés par la vérification du 22/11/2026)**
+1. **Choc « sévère »** : un coup d'État ou une crise suivis de **sanctions financières UEMOA, avec gel des opérations avec la BCEAO**. Deux cas seulement : Niger 2023 (creux −26,2 %, encore −20 % après un mois) et Mali 2022 (creux −16,9 %, −8,4 % à 20 séances). La moyenne des creux est de **≈ −21 %**. Le chercheur avait retenu −20 à −32 % en se fondant sur le seul cas nigérien.
+2. **Choc « modéré »** : coup d'État **sans** sanctions UEMOA (Mali 2020, Burkina 01/2022 et 09/2022 : de −1,5 à −13 %), rupture diplomatique ou révélation budgétaire (−5 à −11 % à 5-20 séances). Ces baisses sont souvent **rattrapées en 60 séances**.
+3. **Vitesse de réaction variable.** La limite de ±7,5 % par jour et la faible liquidité étalent l'ajustement sur plusieurs séances. Au Niger en 2023, la vraie baisse n'a commencé que **6 séances** après le coup. **Mais** au Mali en 2022, le titre a touché le plafond de baisse **dès la première séance** suivant l'annonce des sanctions. On ne peut donc **pas** compter sur un délai pour sortir avant la baisse. Le seul avantage robuste est d'étaler les ventes sur plusieurs séances, sachant qu'en séance de plafond de baisse les vendeurs ne sont souvent pas servis (doc 01).
+4. Les **bonnes nouvelles** aussi peuvent être intégrées sur plusieurs séances : levée des sanctions contre le Niger, +14,5 % anormal en 5 séances ; levée de celles contre le Mali, **+35,7 % brut en 5 séances**.
+5. Avec **2 chocs sévères et 3 coups « modérés »** observés, les paramètres de saut sont des **ordres de grandeur**, pas des estimations statistiques.
 
 ### 9.1 Performance et risque par pays, 11/01/2021 → 20/11/2026 (H, calcul)
 
@@ -472,7 +517,9 @@ Sonatel (20,9 % du marché à elle seule) est répartie selon sa base de clients
 | Guinée-Bissau | 160 | 0,8 % |
 | Niger | 92 | 0,5 % |
 
-**Conséquences** : (1) l'exposition réelle au risque malien est environ **9 fois** plus élevée que ne le suggère la cotation (6,8 % contre 0,7 %) ; (2) environ **12 %** du marché est exposé à des pays **hors zone FCFA** (Guinée, Sierra Leone, et une grande partie d'ETIT), donc à un vrai risque de change ; (3) les holdings régionales (ETIT, ORGT) et Orange CI (filiales hors CI possibles, **non vérifié**) devraient aussi être ventilées dès que leurs données par pays seront disponibles.
+**Vérification (22/11/2026)** : le tableau des clients mobiles 2025 de Sonatel est confirmé, à l'unité près, dans les états financiers 2025 (p. 9). Sénégal 13 615 100, Mali 11 647 625, Guinée 10 450 947, Bissau 1 599 922, Sierra Leone 3 027 600 ; total 40 341 194. Mais la même publication (périmètre de consolidation) montre que Sonatel ne détient que **69,40 % d'Orange Mali**, 88,92 % d'Orange Guinée, 89,85 % d'Orange Bissau et **50 % d'Orange Sierra Leone** (consolidée en intégration globale). Pour l'actionnaire de Sonatel, la part attribuable des résultats de chaque filiale est plus pertinente. **Variante λ pondérée par la détention** (clients × taux de détention) : SN 0,401 ; ML 0,238 ; GN 0,274 ; GW 0,042 ; SL 0,045. L'exposition économique au Mali passe alors à **≈ 5,7 %** du marché (contre 6,8 %) et celle du Sénégal à ≈ 10,4 %. Les deux variantes restent des proxys (ni chiffre d'affaires ni résultat par pays) : confiance M.
+
+**Conséquences** : (1) l'exposition réelle au risque malien est environ **8 à 9 fois** plus élevée que ne le suggère la cotation (6,8 % contre 0,7 %) ; (2) environ **12 %** du marché est exposé à des pays **hors zone FCFA** (Guinée, Sierra Leone, et une grande partie d'ETIT), donc à un vrai risque de change ; (3) les holdings régionales (ETIT, ORGT) et Orange CI (filiales hors CI possibles, **non vérifié**) devraient aussi être ventilées dès que leurs données par pays seront disponibles.
 
 ---
 
@@ -488,29 +535,34 @@ k_i   = rf_local + β_i × ERP_BRVM + Σ_c λ_ic × CRP_c
 ```
 
 - `LS_c` : spread local par rapport à la courbe ivoirienne de même maturité, calculé automatiquement sur les nouvelles émissions du BOC (§6.2). **H.**
-- `m` : rapport entre la volatilité des actions et celle des obligations, qui sert à passer d'un spread obligataire à une prime action. C'est la convention de Damodaran (méthode publiée sur son site, multiplicateur souvent proche de 1,5 historiquement). Nous retenons **m = 1,5** (hypothèse M, à calibrer). Le marché obligataire régional est trop illiquide pour mesurer directement la volatilité des obligations.
+- `m` : rapport entre la volatilité des actions et celle des obligations, qui sert à passer d'un spread obligataire à une prime action. C'est la convention de Damodaran (méthode publiée sur son site, multiplicateur souvent proche de 1,5 historiquement). Nous retenons **m = 1,5** (hypothèse M, à calibrer). **[NON VÉRIFIÉ]** : la valeur actuelle du multiplicateur de Damodaran n'a pas pu être relue (pages.stern.nyu.edu ne se résout pas). Il la recalcule à chaque mise à jour, et elle a varié selon les années. Il faut la charger depuis sa page datée. Le marché obligataire régional est trop illiquide pour mesurer directement la volatilité des obligations.
 - `PJ_c` : **surcote de saut politique** = p_sév × L_sév + p_mod × L_mod. Elle corrige la segmentation du §6.4 : les spreads locaux sous-estiment le risque de coup d'État et de sanctions.
-  - L_sév = **25 %** (calibré sur le Niger 2023 : −26 % au plus bas, −20 à −32 % à 20-60 séances, H).
-  - L_mod = **8 %** (calibré sur le retrait de l'AES et l'audit sénégalais : −5 à −11 %, H).
+  - L_sév = **21 %** (*corrigé par la vérification* ; le chercheur avait mis 25 %). C'est la moyenne des creux des deux chocs avec sanctions UEMOA : Niger 2023, −26,2 %, et Mali 2022, −16,9 % (H, §9). **Stress : 26 %.**
+  - L_mod = **8 %** (calibré sur le retrait de l'AES, l'audit sénégalais et les coups d'État burkinabè de 2022 sans sanctions : −1,5 à −13 %, H).
+  - `ERP_BRVM` est mesurée par l'écart E/P − r_f, qui ne contient pas de croissance. Avec une croissance nominale positive des bénéfices, cet écart **sous-estime** la prime implicite de Gordon (D/P × (1 + g) + g − r_f). D'où la plage de sensibilité de 3 à 6 %.
   - p_sév et p_mod : probabilités annuelles choisies **à dire d'expert** (hypothèses de modélisation, pas des faits). Elles reflètent la fréquence des coups d'État réussis dans la région depuis 2020 (Mali 2020 et 2021, Burkina 2022 deux fois, Niger 2023 : M).
 - `λ_ic` : poids du pays c dans l'activité de la société i (§11.2). Par défaut, 1 pour le pays du siège.
 - `ERP_BRVM` : prime de risque actions du marché. Par défaut **4,0 %**, soit environ la moyenne 2021-2025 de la prime publiée par le BOC (4,11 %, H). Sensibilité à tester : 3 % à 6 %.
 
 ### 12.2 Calibration par défaut (novembre 2026)
 
-| Pays | LS_c (H) | p_sév (hyp.) | p_mod (hyp.) | PJ absolu | PJ relatif CI | **CRP_c relatif CI** |
+*Tableau recalculé par la vérification du 22/11/2026* : L_sév passe de 25 à 21 %, et les LS_c sont les valeurs calculées du §6.2 et non plus arrondies. L'ancienne valeur figure entre crochets.
+
+| Pays | LS_c (H, calcul) | p_sév (hyp.) | p_mod (hyp.) | PJ absolu | PJ relatif CI | **CRP_c relatif CI** |
 |---|---:|---:|---:|---:|---:|---:|
-| Côte d'Ivoire | 0,00 | 2 % | 10 % | 1,3 % | 0,0 % | **0,0 %** |
-| Bénin | 0,10 | 4 % | 15 % | 2,2 % | 0,9 % | **1,0 %** |
-| Togo | 0,90 | 4 % | 15 % | 2,2 % | 0,9 % | **2,25 %** |
-| Sénégal | 1,00 | 2 % | 30 % | 2,9 % | 1,6 % | **3,1 %** |
-| Mali | 0,55 | 10 % | 30 % | 4,9 % | 3,6 % | **4,4 %** |
-| Niger | 0,90 | 12 % | 30 % | 5,4 % | 4,1 % | **5,45 %** |
-| Burkina Faso | 1,00 | 12 % | 30 % | 5,4 % | 4,1 % | **5,6 %** |
-| Guinée-Bissau | n. d. | 15 % | 30 % | — | — | 6,0 % (si une société est cotée un jour) |
+| Côte d'Ivoire | 0,00 | 2 % | 10 % | 1,22 % | 0,00 % | **0,0 %** |
+| Bénin | 0,05 (2025) | 4 % | 15 % | 2,04 % | 0,82 % | **0,9 %** [1,0] |
+| Togo | 0,92 | 4 % | 15 % | 2,04 % | 0,82 % | **2,2 %** [2,25] |
+| Sénégal | 0,97 | 2 % | 30 % | 2,82 % | 1,60 % | **3,05 %** [3,1] |
+| Mali | 0,57 | 10 % | 30 % | 4,50 % | 3,28 % | **4,1 %** [4,4] |
+| Niger | 0,95 (2025) | 12 % | 30 % | 4,92 % | 3,70 % | **5,1 %** [5,45] |
+| Burkina Faso | 1,07 | 12 % | 30 % | 4,92 % | 3,70 % | **5,3 %** [5,6] |
+| Guinée-Bissau | n. d. (1,0 supposé) | 15 % | 30 % | 5,55 % | 4,33 % | ≈ 5,8 % [6,0] (si une société est cotée un jour) |
 | Hors UEMOA (Guinée, Sierra Leone, ETIT) | — | — | — | — | — | **4,0 %** (hypothèse, risque de change compris) |
 
-Exemple (Sonatel) : CRP = 0,337 × 3,1 + 0,289 × 4,4 + 0,259 × 4,0 + 0,075 × 4,0 + 0,040 × 6,0 ≈ **3,9 %**. Avec β ≈ 1, le coût des fonds propres vaut 5,75 + 4,0 + 3,9 ≈ **13,6 %**. Le rendement net de dividende de Sonatel au 20/11/2026 est de 4,31 % (BOC). Il faut donc une croissance du dividende d'au moins 9 % par an pour justifier le cours. C'est un ordre de grandeur, pas une recommandation.
+Les p_sév et p_mod restent des **hypothèses d'expert** non vérifiables. Repère empirique : 2 chocs « sévères » (sanctions UEMOA) en environ 21 pays-années pour les trois pays de l'AES entre 2020 et 2026, soit ≈ 10 % par pays et par an. C'est cohérent avec les 10 à 12 % retenus pour ML, NE et BF.
+
+Exemple (Sonatel) : CRP = 0,337 × 3,05 + 0,289 × 4,1 + 0,259 × 4,0 + 0,075 × 4,0 + 0,040 × 5,8 ≈ **3,8 %** ; ≈ **3,7 %** avec la variante λ pondérée par la détention (§11.2). Avec β ≈ 1, le coût des fonds propres vaut 5,75 + 4,0 + 3,75 ≈ **13,5 %**. Le rendement net de dividende de Sonatel au 20/11/2026 est de 4,31 % (BOC, revérifié). Il faut donc une croissance du dividende d'environ 8,8 % par an pour justifier le cours. C'est un ordre de grandeur, pas une recommandation.
 
 ### 12.3 Variante « notation » (à activer quand les données seront disponibles)
 
@@ -518,7 +570,7 @@ Exemple (Sonatel) : CRP = 0,337 × 3,1 + 0,289 × 4,4 + 0,259 × 4,0 + 0,075 × 
 
 ### 12.4 Sensibilité et limites
 
-- La prime est dominée par la surcote politique pour les pays de l'AES : un p_sév de 5 % au lieu de 12 % abaisse la CRP du Burkina de 5,6 % à 3,85 %. **C'est le paramètre le plus incertain du modèle.** Il doit être revu chaque trimestre et testé en walk-forward (gain d'information mesuré, pas supposé).
+- La prime est dominée par la surcote politique pour les pays de l'AES : un p_sév de 5 % au lieu de 12 % abaisse la CRP du Burkina de 5,3 % à 3,8 % (avec L_sév = 21 % ; c'était 5,6 % → 3,85 % avec 25 %). **C'est le paramètre le plus incertain du modèle.** Il doit être revu chaque trimestre et testé en walk-forward (gain d'information mesuré, pas supposé).
 - Les primes ne sont **pas additives avec un signal de valorisation** déjà calculé sur des multiples sectoriels régionaux (double comptage possible).
 - BOA Mali a fait le meilleur parcours du marché (TCAC de 49,8 % depuis 2021) **malgré** le risque malien : une prime élevée n'implique pas une mauvaise performance. Elle signifie qu'il faut **exiger** davantage et **dimensionner** plus petit.
 
@@ -543,7 +595,7 @@ S_c = 0,35·z(V_c) + 0,25·z(M_c) + 0,20·z(−ΔLS_c) + 0,20·z(P_c)
 | `ΔLS_c` stress souverain | variation sur 12 mois du spread local (§6.2), plus 0,5 point par tranche de 1 % de décote médiane sur le secondaire sous 0,99 (§6.3) | BOC | à chaque nouvelle émission ou séance |
 | `P_c` état politique | 0 normal ; −1 fenêtre électorale (J−30 à J+10), tensions signalées par une agence, ou sanctions passées encore actives ; −2 crise budgétaire ou de dette déclarée, programme FMI suspendu, ou crise sécuritaire ou énergétique déclarée ; −3 coup d'État, sanctions en cours, défaut ou annonce de sortie de l'UEMOA | calendrier et flux d'actualité (`data/news.py`), fiches de notation (brvm.org) | J+0 à J+1 |
 
-`z(·)` : score z transversal sur les 7 pays, borné à ±2 (valeur manquante = 0). Pondérations initiales à **re-estimer** par l'IC (coefficient d'information) en walk-forward (doc 03). Le momentum pays est documenté sur les marchés frontières (de Groot et al., cité au doc 03).
+`z(·)` : score z transversal sur les 7 pays, borné à ±2 (valeur manquante = 0). Pondérations initiales à **re-estimer** par l'IC (coefficient d'information) en walk-forward (doc 03). *Nuance de la vérification* : de Groot, Pang & Swinkels (2012, *Journal of Empirical Finance* 19(5)) étudient le momentum **au niveau des titres** dans 24 marchés frontières. Le doc 03 rapporte qu'une partie de ce momentum disparaît quand on neutralise l'effet pays, ce qui ne constitue qu'une indication **indirecte** de momentum pays. Le momentum d'**indices pays** frontières est **[NON VÉRIFIÉ]** dans cette session. Avec seulement 7 pays, dont 6 n'ont que 1 à 3 titres, le signal M_c est surtout du bruit idiosyncratique. Son poids de 0,25 doit être justifié par l'IC hors échantillon, sinon ramené à 0.
 
 ### 13.3 Des scores aux poids
 
@@ -567,17 +619,18 @@ puis renormalisation à 100 % par itérations de projection
 | BF | 7,29 | −3,91 | −0,49 | 5,58 | −1,71 |
 | SN | 22,94 | −0,94 | −0,47 | 17,94 | **−5,00** |
 
-Hypothèses de l'exemple : P = −2 pour SN, ML et BF ; −1 pour NE ; 0 pour les autres. Bloc AES par pays du siège : 6,7 % (limite de 10,6 % non atteinte). Remarque : le score du Togo dépend fortement du PER d'ETIT (2,98), à vérifier avant usage.
+Hypothèses de l'exemple : P = −2 pour SN, ML et BF ; −1 pour NE ; 0 pour les autres. Bloc AES par pays du siège : 6,7 % (limite de 10,6 % non atteinte). Remarque : le score du Togo dépend fortement du PER d'ETIT (2,98, valeur confirmée dans le BOC du 20/11/2026), à vérifier avant usage. *Vérification* : l'arithmétique de l'exemple est cohérente (poids qui somment à 99,99 %, bande de ±5 points saturée pour CI et SN). Mais l'exemple a été calculé avec l'**ancienne** calibration de la CRP (L_sév 25 %, LS arrondis). Les V_c changent de 0,05 à 0,35 point avec la nouvelle : l'exemple reste **illustratif** et doit être recalculé par le code.
 
 ### 13.4 Règles d'événements (prioritaires sur le score)
 
 | Déclencheur | Action | Durée | Justification (H) |
 |---|---|---|---|
-| Coup d'État, sanctions régionales, défaut souverain, annonce de sortie de l'UEMOA/BCEAO | poids du pays plafonné à **0,25 × b_c** ; aucun nouvel achat ; ventes à partir de l'ouverture **t+1** en ordres limités échelonnés (la limite de ±7,5 % empêche de tout vendre en un jour) | 60 séances, puis retour progressif sur 20 séances si le prix est stabilisé (volatilité sur 20 jours < 1,5 × la normale) | Niger 2023 : −26 % en 9 séances, avec 6 séances de délai |
-| Levée de sanctions ou accord avec le FMI | P_c relevé de 2 crans ; achats autorisés jusqu'à b_c | 20 séances | Niger 02/2024 : +14,5 % en 5 séances |
+| Sanctions financières UEMOA/BCEAO (gel), défaut souverain, annonce de sortie de l'UEMOA/BCEAO, ou coup d'État suivi de telles sanctions | poids du pays plafonné à **0,25 × b_c** ; aucun nouvel achat ; ventes à partir de l'ouverture **t+1** en ordres limités échelonnés (la limite de ±7,5 % empêche de tout vendre en un jour) | 60 séances, puis retour progressif sur 20 séances si le prix est stabilisé (volatilité sur 20 jours < 1,5 × la normale) | Niger 2023 : −26 % en 9 séances, avec 6 séances de délai ; **Mali 2022 : −7,47 % dès t+1, −16,9 % en 3 séances, sans délai** (vérification). Le backtest doit supposer que la 1re séance peut être au plafond de baisse, sans vendeur servi |
+| Coup d'État **sans** sanctions UEMOA (ajout de la vérification) | P_c = −2 ; aucun nouvel achat ; poids ≤ b_c | 20 séances | Burkina 01/2022 et 09/2022 : −4 à −13 % ; Mali 08/2020 : −1,5 % |
+| Levée de sanctions ou accord avec le FMI | P_c relevé de 2 crans ; achats autorisés jusqu'à b_c | 20 séances | Niger 02/2024 : +14,5 % anormal (+11,6 % brut) en 5 séances ; **Mali 07/2022 : +35,7 % brut en 5 séances** (vérification). Un retour progressif sur 20 séances rate une grande partie du rebond : à tester en walk-forward |
 | Élection présidentielle | P_c = −1 de J−30 à J+10 ; aucune surpondération du pays | 40 séances | CI 2025, SN 2024 : pas de crise, mais risque extrême non nul |
 | Dégradation souveraine de 2 crans ou plus, ou révélation budgétaire | ΔLS_c majoré de 0,5 point | 120 séances | Sénégal 09/2024 : −8,9 % en 60 séances |
-| Décote médiane des obligations du pays < 0,97 sur 20 séances | P_c −1 | tant que la condition dure | Sénégal et Niger 2026 |
+| Décote médiane des obligations du pays < 0,97 sur 20 séances, **calculée sur au moins 5 transactions** (sinon, la règle est inactive) | P_c −1 | tant que la condition dure | Sénégal 2026 (64 à 84 transactions par trimestre) ; Niger 2026 (seulement 3 à 4 transactions par trimestre : non concluant) |
 
 ---
 
@@ -590,30 +643,34 @@ Hypothèses de l'exemple : P = −2 pour SN, ML et BF ; −1 pour NE ; 0 pour le
 as_of: "2026-11-22"
 fx:
   eur_xof: {value: 655.957, conf: M, source: "parité légale BCEAO/zone franc"}
-  eurusd_avg_2026_9m: {value: 1.164, conf: H, source: "SAPH T3 2026: 2,13 USD/kg = 1,83 EUR/kg"}
+  eurusd_avg_2026_9m: {value: 1.164, range: [1.158, 1.170], conf: M, source: "SAPH T3 2026: 2,13 USD/kg = 1,83 EUR/kg (arrondis) ; vérif. 22/11: H->M"}
 rates:
   brvm_reference_govt_rate:            # déduit chaque jour du BOC : 100/PER - prime
-    - {from: "2021-02-22", to: "2024-01-02", value: 0.0590, conf: H}
-    - {from: "2024-01-05", to: null,         value: 0.0575, conf: H}
-  ci_curve_2026: {5y: 0.0545, 7y: 0.0570, 7y_bis: 0.0585, 10y: 0.0600, conf: H, source: "BOC: TPCI.O101-O104"}
-  bceao_policy:                        # À COMPLÉTER depuis bceao.int (bloqué dans cette session)
-    - {effective: "2023-12-16", tms: 0.0350, gpm: 0.0550, conf: M}
-    - {effective: "2025-06-16", tms: 0.0325, gpm: 0.0525, conf: M}
+    method: "médiane glissante 20 séances ; jour isolé écarté si |écart| > 0,10 pt ; changement validé après 5 séances"   # vérif. 22/11 : primes erronées (0,00/0,01) les 19/10, 23/10 et 17/11/2026
+    regimes:
+      - {from: "2018-01-08", to: "2019-07-02", value: 0.0600, conf: H, note: "ajout vérif."}
+      - {from: "2019-07-03", to: "2020-04-28", value: 0.0650, conf: H}
+      - {from: "2021-02-22", to: "2023-12-29", value: 0.0590, conf: H}   # 02-04/01/2024 ≈ 5,98 % (transition)
+      - {from: "2024-01-05", to: null,         value: 0.0575, conf: H}
+  ci_curve_2026: {5y: 0.0545, 7y: 0.0570, 7y_bis: 0.0585, 10y: 0.0600, conf: H, source: "BOC: TPCI.O101-O104 (revérifié 22/11)"}
+  bceao_policy:                        # [NON VÉRIFIÉ] À COMPLÉTER depuis bceao.int (bloqué pour le chercheur ET le vérificateur)
+    - {effective: "2023-12-16", tms: 0.0350, gpm: 0.0550, conf: M, verified: false}
+    - {effective: "2025-06-16", tms: 0.0325, gpm: 0.0525, conf: M, verified: false}
     - {effective: null, tms: null, gpm: null, conf: "TODO: décisions 09/2025 -> 11/2026"}
-  reserve_ratio: {value: 0.03, conf: M}
-  inflation_target_band: [0.01, 0.03]
-local_spread_vs_ci_pp:                 # recalculé automatiquement à chaque nouvelle émission APE
+  reserve_ratio: {value: 0.03, conf: M, verified: false}
+  inflation_target_band: [0.01, 0.03]   # [NON VÉRIFIÉ]
+local_spread_vs_ci_pp:                 # recalculé automatiquement à chaque nouvelle émission APE ; vérif. 22/11 : valeurs calculées (et non arrondies)
   CI: 0.00
-  BJ: 0.10
-  ML: 0.55
-  TG: 0.90
-  NE: 0.90
-  SN: 1.00
-  BF: 1.00
+  BJ: 0.05      # 2025 (TPBJ 6,00 % 2025-2032 vs CI 5,95)
+  ML: 0.57      # 2026
+  TG: 0.92      # 2026
+  NE: 0.95      # 2025
+  SN: 0.97      # 2026
+  BF: 1.07      # 2026
 crp:
-  equity_bond_vol_ratio_m: 1.5         # hypothèse (Damodaran), à calibrer
-  erp_brvm: 0.040                      # ≈ moyenne 2021-2025 de la prime BOC (4,11 %)
-  jump_loss: {severe: 0.25, moderate: 0.08}          # calibré sur les BOC (§9)
+  equity_bond_vol_ratio_m: 1.5         # hypothèse (Damodaran), à calibrer ; valeur actuelle de Damodaran [NON VÉRIFIÉ]
+  erp_brvm: 0.040                      # ≈ moyenne 2021-2025 de la prime BOC (4,107 %, revérifiée) ; E/P - rf : borne basse
+  jump_loss: {severe: 0.21, severe_stress: 0.26, moderate: 0.08}   # vérif. 22/11 : 0,25 -> 0,21 (creux Niger 2023 -26,2 % et Mali 2022 -16,9 %)
   jump_prob:                           # HYPOTHÈSES à dire d'expert, revue trimestrielle
     CI: {severe: 0.02, moderate: 0.10}
     BJ: {severe: 0.04, moderate: 0.15}
@@ -626,7 +683,8 @@ crp:
   non_uemoa_crp: 0.040                 # GN, SL, panafricain (change compris), hypothèse
   rating_overlay: {enabled: false, alpha: 0.5, source: "Damodaran ctryprem (à charger)"}
 exposure:                              # λ_ic ; défaut : 1.0 pour le pays du siège
-  SNTS: {SN: 0.337, ML: 0.289, GN: 0.259, SL: 0.075, GW: 0.040}   # clients mobiles 2025 (H), proxy du CA
+  SNTS: {SN: 0.337, ML: 0.289, GN: 0.259, SL: 0.075, GW: 0.040}   # clients mobiles 2025 (H, revérifié), proxy du CA
+  SNTS_ownership_adj: {SN: 0.401, ML: 0.238, GN: 0.274, SL: 0.045, GW: 0.042}   # ajout vérif. : clients × détention (ML 69,40 %, GN 88,92 %, GW 89,85 %, SL 50 %) ; recommandé pour la CRP actionnaire (M)
   ETIT: {PAN: 1.0}                     # ventilation par pays à chercher dans le rapport annuel ETI
   ORGT: {TG: 0.2, UEMOA_OTHER: 0.5, CEMAC_GN: 0.3}                # HYPOTHÈSE L, à remplacer
 geo_tilt:
@@ -641,13 +699,15 @@ geo_tilt:
   aes_bloc_cap_multiple: 1.25         # appliqué deux fois : poids par siège (≈10,6 %) et exposition λ (≈18 %)
   rebalance: monthly
 event_rules:
-  severe:   {weight_cap_x_bench: 0.25, freeze_buys: true, hold_sessions: 60, rampback_sessions: 20, execute: "t+1 open, limit orders, ladder over sessions"}
+  severe:   {trigger: "sanctions financières UEMOA/BCEAO, défaut, annonce de sortie UEMOA", weight_cap_x_bench: 0.25, freeze_buys: true, hold_sessions: 60, rampback_sessions: 20, execute: "t+1 open, limit orders, ladder over sessions", backtest_assume_first_session_limit_down: true}   # vérif. : Mali 2022 sans délai
+  coup_no_sanctions: {political_step: -2, freeze_buys: true, max_weight_x_bench: 1.0, sessions: 20}   # ajout vérif. : BF 2022, ML 2020 (-1,5 à -13 %)
+  relief:   {political_step: +2, max_weight_x_bench: 1.0, sessions: 20}   # Mali 07/2022 +35,7 % brut en 5 séances ; Niger 02/2024 +11,6 % brut
   election: {window: [-30, 10], max_weight_x_bench: 1.0}
   downgrade_2notches_or_fiscal_revelation: {spread_addon_pp: 0.5, sessions: 120}
-  bond_discount_trigger: {median_price_ratio_lt: 0.97, lookback_sessions: 20, political_step: -1}
-valuation_regime:                      # information/risque, PAS un signal de timing (corrélation négative en échantillon)
+  bond_discount_trigger: {median_price_ratio_lt: 0.97, lookback_sessions: 20, min_trades: 5, political_step: -1}   # vérif. : NE 2026 = 3-4 transactions par trimestre
+valuation_regime:                      # information/risque, PAS un signal de timing (corrélation négative en échantillon, signe revérifié)
   boc_equity_risk_premium_bands: {expensive_lt: 1.0, neutral: [1.0, 4.0], cheap_gt: 4.0}
-  stress_test_on_expensive: "chocs -15 % marché et -25 % pays AES appliqués au portefeuille"
+  stress_test_on_expensive: "chocs -15 % marché et -26 % pays AES appliqués au portefeuille"   # -26 % = creux Niger 2023
 ```
 
 ### 14.2 Fonctions à ajouter (contrats proposés)
@@ -670,6 +730,9 @@ valuation_regime:                      # information/risque, PAS un signal de ti
 4. `country_crp` renvoie 0 pour CI et augmente avec p_sév.
 5. Les poids géographiques somment à 100 %, respectent les bandes, et le bloc AES respecte son plafond.
 6. Règle « severe » : aucun achat sur le pays pendant 60 séances ; les ventes sont réparties sur plusieurs séances.
+7. (Vérification) `ref_govt_rate` robuste vaut 5,75 % le 17/11/2026, alors que le calcul naïf donne 6,25 % (prime imprimée 0,01, PER 15,98). Il vaut 5,90 % le 29/12/2023 et 5,75 % le 08/01/2024.
+8. (Vérification) `bond_price_stress` renvoie « inactif » pour le Niger au T4 2026 (3 transactions, moins que `min_trades` = 5) et 0,98 pour le Sénégal.
+9. (Vérification) Sur les BOC, BOAM perd 7,47 % le 10/01/2022 et 7,37 % le 11/01/2022 ; BOAN perd 7,46 %, 7,47 % et 7,44 % les 03, 04 et 08/08/2023. Ces cas servent de tests de non-régression du simulateur d'exécution (plafond de baisse, vendeurs non servis).
 
 ### 14.4 Flux de données à brancher (ordre de priorité)
 
@@ -762,3 +825,64 @@ valuation_regime:                      # information/risque, PAS un signal de ti
 - A. Damodaran, primes de risque pays (mise à jour annuelle) : https://pages.stern.nyu.edu/~adamodar/New_Home_Page/datafile/ctryprem.html
 - Banque mondiale, prix des matières premières (« Pink Sheet ») : https://www.worldbank.org/en/research/commodity-markets
 - ICCO (cacao) : https://www.icco.org
+
+---
+
+## Vérification adversariale (2026-11-22)
+
+**Rôle** : vérificateur sceptique du domaine macro-géo. **Moyens** : 2 089 BOC locaux (`data/boc_text/`, 19/12/2017 → 20/11/2026), reparsés avec des scripts indépendants du parseur du projet ; PDF et pages de brvm.org lus avec curl, pdftotext et OCR (tesseract). **Limites** : le budget WebSearch de la session était épuisé dès le premier appel, et `www.bceao.int` et `pages.stern.nyu.edu` ne se résolvent pas (domaines à autoriser dans les paramètres réseau). Aucune source hors brvm.org n'a donc pu être consultée. Les faits non BRVM restent « unverifiable ».
+
+| # | Élément vérifié | Valeur du chercheur | Résultat de la vérification | Verdict | Preuve |
+|---|---|---|---|---|---|
+| 1 | Capitalisations, sociétés et lignes au 20/11/2026 | 19 328,8 / 13 425,0 Md ; 48 ; 210 | 19 328 818 938 929 / 13 424 990 989 851 FCFA ; 48 ; 210 | **confirmé** | BOC 20/11/2026 |
+| 2 | Définition de la prime BOC | 1/PER − taux de référence des emprunts d'État | Légende du BOC du 22/02/2021 : « (1 / le PER moyen du marché) − le taux de référence actuel des emprunts d'Etat » | **confirmé** | boc_20210222 |
+| 3 | `rf_local` = taux de référence implicite | 5,75 % depuis le 05/01/2024 ; 5,90 % du 22/02/2021 au 02/01/2024 | 5,75 % depuis le 05/01/2024 (20/11/2026 : 100/15,79 − 0,58 = 5,753) ; 5,90 % jusqu'au **29/12/2023** ; ≈ 5,98 % du 02 au 04/01/2024 | **corrigé** (bornes) | BOC 2021-2026 |
+| 4 | Régime d'avant 2021 | 6,50 % de 2019 à début 2020 | 6,00 % du 08/01/2018 au 02/07/2019, puis 6,50 % du 03/07/2019 au 28/04/2020 | **corrigé** | BOC 2018-2020 |
+| 5 | Statistiques de la prime | moyenne 2021-2025 4,11 % ; médiane 3,91 ; p10 1,58 ; p90 6,76 ; < 1 % : 2,9 % des jours ; 2026 : 1,13 % ; min −0,33 % le 14/09/2026 | 4,107 ; 3,91 ; 1,58 ; 6,76 ; 2,93 % ; 1,135 ; −0,33 le 14/09/2026 (PER 18,43) | **confirmé**. Ajout : primes erronées imprimées les 19/10, 23/10 et 17/11/2026, d'où une règle de médiane robuste | BOC |
+| 6 | `erp_brvm` = 4,0 % | moyenne de la prime BOC | moyenne recalculée à 4,107 %. Mais E/P − r_f est une borne basse de la prime implicite (pas de croissance) | **confirmé** (chiffre), réserve méthodologique ajoutée | BOC |
+| 7 | Limite de variation quotidienne | ±7,5 % | Maximum de \|variation\| par an sur 2021-2026 : 7,50 %, hors opérations sur titres et pas minimal d'ETIT | **confirmé** | BOC 2021-2026 |
+| 8 | Trajectoire de BOA Niger après le coup d'État | 5 900 le 26/07/2023 ; −1,78 % ; −7,46/−7,47/−7,44 % les 03, 04 et 08/08 ; plus bas 4 355 (−26 %) ; 4 915 (+12,9 %) | identique au FCFA près | **confirmé** | BOC 07-08/2023 |
+| 9 | « La réaction commence ~6 séances après » (justification de la règle severe) | présenté comme enseignement général | vrai pour le Niger 2023. **Faux pour le Mali 2022** : sanctions annoncées le 09/01/2022, BOAM −7,47 % dès le 10/01 et −7,37 % le 11/01 | **réfuté** comme règle générale (supprimé des enseignements) | BOC 01/2022 |
+| 10 | `jump_loss.severe` = 0,25 | calibré sur le seul Niger 2023 | Mali 2022 (sanctions UEMOA) : creux −16,9 % ; moyenne des deux cas ≈ −21,5 % | **corrigé** → 0,21 (stress 0,26) | BOC |
+| 11 | `jump_loss.moderate` = 0,08 | AES 2024, audit Sénégal | Confirmé et élargi : coups d'État sans sanctions UEMOA, BF 01/2022 (−8,5 %), BF 09/2022 (−4 à −13 %), ML 08/2020 (−1,5 %) | **confirmé** | BOC |
+| 12 | Règle de soulagement (+14,5 % en 5 séances, Niger 02/2024) | rendement non qualifié | +14,5 % est un rendement **anormal** ; brut +11,6 % (5 190 → 5 790). Cas oublié : levée des sanctions contre le Mali, 07/2022, **+35,7 % brut en 5 séances** | **corrigé** (précisé et complété) | BOC 02-03/2024, 07/2022 |
+| 13 | Coupons 2026 de la CI (`ci_curve_2026`) | 5,45 / 5,70 / 5,85 / 6,00 % | TPCI.O103 5,45 % 2026-2031 et O104 5,70 % 2026-2033, cotées le 25/09/2026 ; O101 5,85 % 2026-2033 et O102 6,00 % 2026-2036, cotées le 11/06/2026 | **confirmé** | BOC |
+| 14 | Coupons et dates de cotation des autres États | SN 22/09/2026, ML 27/08/2026, BF 03/09/2026, TG 23/04/2026, BJ 30/01/2026, NE 22/04 et 22/07/2025 | identiques (première apparition dans les BOC) ; Sénégal : tranches identiques cotées les 09 et 12/12/2025, le 10/06/2026 et le 22/09/2026 | **confirmé** | BOC |
+| 15 | `local_spread_vs_ci_pp` (YAML) | BJ 0,10 ; ML 0,55 ; TG 0,90 ; NE 0,90 ; SN 1,00 ; BF 1,00 | valeurs calculées : 0,05 ; 0,57 ; 0,92 ; 0,95 ; 0,97 ; 1,07 (le YAML arrondissait jusqu'à 0,07 point) | **corrigé** | BOC |
+| 16 | Prix secondaires des obligations sénégalaises | EOS.O27 à 9 400 ; EOS.O19 à 8 255,63 / 8 750 ; EOS.O24 référence 8 500 | identiques | **confirmé** | BOC 20/11/2026 |
+| 17 | `bond_discount_trigger` (médianes SN 0,98, NE 0,95-0,975) | médianes trimestrielles | reproduites (SN 0,985 au T3 et 0,98 au T4 ; NE 0,95 et 0,975), mais le Niger repose sur **3 à 4 transactions par trimestre** | **corrigé** (ajout de `min_trades: 5`) | BOC 2025-2026 |
+| 18 | Lien banques–souverain | 31,3 % (BOA Mali) ; 35,7 % (Coris) ; « les banques font 17 des 48 sociétés » | 185 699 / 593 455 = 31,3 % ; 1 070 425 / 2 997 779 = 35,7 %. Les 17 sont des **services financiers** : 14 banques, ETIT et ORGT (holdings), SAFCA (non bancaire) | **corrigé** (libellé) | fiches Bloomfield ; BOC |
+| 19 | Citations des fiches de notation (allègement des taux, tensions au SN, sanctions au NE, BOAD et SONIMEX) | extraits | tous retrouvés mot pour mot | **confirmé** | PDF brvm.org |
+| 20 | λ Sonatel (clients mobiles 2025) | SN 0,337 ; ML 0,289 ; GN 0,259 ; SL 0,075 ; GW 0,040 ; Mali −13,7 % ; taxes maliennes | clients identiques à l'unité près. **Omission** : Sonatel ne détient que 69,40 % d'Orange Mali et 50 % d'Orange SL. Variante pondérée par la détention : SN 0,401 ; ML 0,238 ; GN 0,274 ; GW 0,042 ; SL 0,045 | **confirmé** (chiffres), variante ajoutée | états financiers Sonatel 2025 |
+| 21 | `eurusd_avg_2026_9m` = 1,164, conf H | 2,13 USD/kg = 1,83 EUR/kg | texte SAPH confirmé par OCR. Les arrondis donnent l'intervalle 1,158-1,170, pour une moyenne pondérée par les prix | **corrigé** (H → M, intervalle ajouté) | rapport SAPH T3 2026 |
+| 22 | Agrégats BRVM (PIB implicite, 2025, 20/08/2026) | 24 781,32 Md = 18,37 % ; 4 204,7 Md levés ; 405 Md SN ; 20 036,18 Md (+50,30 %) ; services financiers 44,16 % ; top 5 49,16 % | tous retrouvés dans les communiqués. Nuance : le communiqué du 20/08/2026 compte 47 sociétés, contre 48 au 20/11 (BBGC cotée entre-temps) | **confirmé** | communiqués brvm.org |
+| 23 | BMPA-CI (28/05/2025 ; cajou 440 FCFA/kg ; 1,05 Mt ; cola 250 kt ; pilote de 24 mois) | — | retrouvé | **confirmé** | brvm.org, 28/05/2025 et 24/02/2025 |
+| 24 | Prime BOC et rendements futurs : corrélation négative | −0,34 / −0,33 (rendement total) | indice de prix, échantillon partiel : −0,39 / −0,65. Signe confirmé, magnitude non | **confirmé** (signe) | BOC |
+| 25 | Taux directeurs BCEAO 2022-2025 (3,50/5,50 puis 3,25/5,25 au 16/06/2025) ; réserves obligatoires 3 % ; cible 1-3 % | M | concorde avec la connaissance du vérificateur ; **aucune URL primaire consultable**. Le sens « assouplissement 2025 » est confirmé par le communiqué BRVM du 20/06/2025 | **unverifiable** | bceao.int bloqué |
+| 26 | Inflation UEMOA 2022-2024 ; croissance par pays | M/L | non vérifiable en source primaire. Ajout d'une source secondaire datée : FMI (déc. 2025) cité par Sonatel : SN 8,4 %, ML 4,9 %, GW 5,0 % de croissance ; inflation SN +2 %, ML +3 % | **unverifiable** (complété) | états financiers Sonatel 2025, p. 5 |
+| 27 | Faits non BRVM : Cour des comptes SN (99,7 % ; 12,3 %), dates AES, élections CI/SN/BJ, coup d'État en GW, notes S&P/Moody's/Fitch, eurobonds, multiplicateur de Damodaran m = 1,5, momentum pays frontières (de Groot et al.) | M/L | aucune source consultable. de Groot et al. (2012) porte sur le momentum **des titres** et n'apporte qu'une indication indirecte de momentum pays | **unverifiable** (marqués [NON VÉRIFIÉ]) | — |
+
+**Paramètres codés modifiés** : `jump_loss.severe` 0,25 → 0,21 (+ `severe_stress` 0,26) ; `local_spread_vs_ci_pp` (6 valeurs) ; `eurusd_avg_2026_9m.conf` H → M ; `brvm_reference_govt_rate` (bornes, régimes d'avant 2021, méthode robuste) ; `bond_discount_trigger.min_trades` = 5 ; nouvelles règles `coup_no_sanctions` et `relief` ; nouvelle exposition `SNTS_ownership_adj` ; stress AES −25 % → −26 %. Le tableau des CRP du §12.2 a été recalculé : CI 0 ; BJ 0,9 ; TG 2,2 ; SN 3,05 ; ML 4,1 ; NE 5,1 ; BF 5,3 ; GW ≈ 5,8 ; hors UEMOA 4,0 %.
+
+**Rien n'a été supprimé** : aucune affirmation tirée des BOC ou de brvm.org n'a été réfutée sur le fond. Le seul élément réfuté, le délai de réaction de 6 séances présenté comme règle générale, a été reformulé.
+
+**Ce qui reste à faire** pour lever les marques [NON VÉRIFIÉ] : autoriser `www.bceao.int`, `pages.stern.nyu.edu`, `www.imf.org` et `www.courdescomptes.sn` dans les paramètres réseau, ou relancer la recherche web avec un budget disponible.
+
+**Sources de la vérification** (en plus de celles listées plus haut) :
+- BOC locaux : https://www.brvm.org/fr/bulletins-officiels-de-la-cote (BOC du 22/02/2021 pour la légende ; 09-13/01/2022, 01-08/07/2022, 26/07-18/08/2023, 20/02-08/03/2024, 20/11/2026)
+- https://www.brvm.org/sites/default/files/boc_20261120_2.pdf
+- https://www.brvm.org/sites/default/files/20260216_-_etats_financiers_2025_et_attestation_des_cac_-_sonatel_sn.pdf (p. 5 : indicateurs FMI ; p. 9 : clients ; périmètre de consolidation)
+- https://www.brvm.org/sites/default/files/20261013_-_rapport_dactivites_-_3e_trimestre_2026_-_saph_ci.pdf (lu par OCR)
+- https://www.brvm.org/sites/default/files/20261026_-_rapport_dactivites_-_3e_trimestre_2026_-_boa_ng.pdf (lu par OCR : PNB +7,92 %)
+- https://www.brvm.org/sites/default/files/20260818_-_notation_financiere_-_boa_ml.pdf
+- https://www.brvm.org/sites/default/files/20260826_-_notation_financiere_-_coris_bank_international_bf.pdf
+- https://www.brvm.org/sites/default/files/20261006_-_notation_financiere_-_boa_sn.pdf
+- https://www.brvm.org/sites/default/files/20261014_-_notation_financiere_-_boa_ng.pdf
+- https://www.brvm.org/sites/default/files/20261022_-_notation_financiere_-_ecobank_ci.pdf
+- https://www.brvm.org/fr/mediacentre/actualites/la-capitalisation-boursiere-de-la-brvm-progresse-de-2000-milliards-fcfa-en-6
+- https://www.brvm.org/fr/mediacentre/actualites/la-capitalisation-boursiere-de-la-brvm-progresse-de-1000-milliards-fcfa-en-4
+- https://www.brvm.org/fr/mediacentre/actualites/des-nouveaux-emprunts-obligataires-de-letat-du-senegal-admis-la-cote-de-la
+- https://www.brvm.org/fr/mediacentre/actualites/la-brvm-franchit-le-cap-des-20-000-milliards-de-fcfa
+- https://www.brvm.org/fr/mediacentre/actualites/bilan-2025-de-la-brvm-des-performances-consolidees-et-une-vision-strategique
+- https://www.brvm.org/fr/mediacentre/actualites/2025-la-consolidation-quinquennale-9915-de-progression-en-5-ans
+- https://www.brvm.org/fr/mediacentre/actualites/premiere-cotation-sur-la-bmpa-ci-un-demarrage-prometteur-pour-le-marche

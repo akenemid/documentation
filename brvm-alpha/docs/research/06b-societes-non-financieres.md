@@ -66,7 +66,7 @@ Capitalisation = cours × nombre de titres de l'avis 303-2026. Pour SNTS, le nom
 | SIVC | Erium CI (ex Air Liquide CI) | CI | Industriels | Principal | 1 600 | 14,0 | 77,94 | — | +1,27 % | 9,8 | 27,9 % | — | coté |
 | STAC | SETAO | CI | Industriels | Principal | 2 180 | 29,3 | — (perte) | 3,03 % ⚠ (2022) | +64,53 % | 9,3 | 20,8 % | — | coté |
 
-\* Payout FY25 = dividende brut de l'exercice 2025 × nombre de titres / RN 2025. Les montants viennent des calendriers et des états financiers (calcul propre, confiance medium). Pour les sociétés non ivoiriennes, le brut est déduit du net : IRVM de 10 % au Sénégal, de 12,5 % au Burkina Faso et d'environ 5 % au Bénin (`01-structure-marche.md` §6.1). « PdG » : payout calculé sur le RN part du groupe.
+\* Payout FY25 = dividende brut de l'exercice 2025 × nombre de titres / RN 2025. Les montants viennent des calendriers et des états financiers (calcul propre, confiance medium). Pour les sociétés non ivoiriennes, le brut est déduit du net : IRVM de 10 % au Sénégal (confirmé : résolution d'affectation Sonatel, 1 933 brut → 1 740 net), de 12,5 % au Burkina Faso (confirmé : rapport de gestion Onatel, 166,0816 brut → 145,3214 net « net de l'IRCM ») et d'environ 5 % au Bénin **[NON VÉRIFIÉ : aucune source primaire trouvée pour le taux béninois ; le payout LNBB passerait de ≈75 % à ≈79 % avec un taux de 10 %]** (`01-structure-marche.md` §6.1). Pour la Côte d'Ivoire, les calendriers CAL24 et CAL25 indiquent : IRVM de 12 % (personnes physiques) et 10 % (personnes morales) sur le dividende ordinaire, 17 % et 15 % sur la part exceptionnelle. « PdG » : payout calculé sur le RN part du groupe.
 
 **Contexte marché (BOC 20/11/2026)** :
 - BRVM Composite à 492,89, soit +42,56 % depuis le début de 2026. PER moyen du marché : 15,79, calculé hors Unilever.
@@ -79,8 +79,8 @@ Confiance : high.
 
 | Drapeau | Titres | Preuve |
 |---|---|---|
-| Suspendu, non-respect de l'information périodique | SICC, SEMC (depuis le 16/09/2026) | Avis 268 et 270-2026. Sucrivoire, suspendue le même jour (avis 269), a été réadmise le 21/09/2026 (avis 276). |
-| Flottant sous le seuil réglementaire | UNLC 0,2 %, CFAC 4,2 %, SEMC 10,3 %, SICC 12,3 % | Avis 303-2026, repris dans `01-structure-marche.md` |
+| Suspendu, non-respect de l'information périodique | SICC, SEMC (depuis le 16/09/2026) | Avis 268 et 270-2026. Sucrivoire, suspendue le même jour (avis 269), a repris sa cotation le **mardi 22/09/2026** (avis 276 daté du 21/09, après publication de son rapport du **1er trimestre** 2026 ; le BOC du 21/09 la montre encore « SP »). *(Corrigé le 22/11/2026 : la v1 indiquait une réadmission le 21/09.)* |
+| Flottant sous le seuil réglementaire de **15 %** (colonne « Diffusion de 15 % du capital dans le public » de l'avis 303) | UNLC 0,22 %, CFAC 4,15 %, SEMC 10,29 %, SICC 12,26 % (les quatre marqués « Non respectée ») | Avis 303-2026 (données au 31/12/2025), repris dans `01-structure-marche.md` |
 | Rendement BOC périmé ou exceptionnel | FTSC (107,91 % : dividende exceptionnel 2025), BNBC (2023), SCRC (2021), UNXC (2022), STAC (2022), SEMC (2021) | Colonne « date du dernier dividende » du BOC |
 | PER BOC calculé sur un exercice ancien | UNLC (exercice 2023), SEMC (exercice 2023) | Derniers états financiers publiés |
 | Données d'un trimestre isolé, pas d'un cumul | STBC (rapport « T3 2026 » = 3e trimestre seul) | STBC-9M26 contre STBC-S126 |
@@ -97,13 +97,13 @@ Source : colonne « Dernier dividende payé, montant net » des BOC 2021-2026, r
 | Symb. | 2021 | 2022 | 2023 | 2024 | 2025 | 2026 | Brut exercice 2024 (CAL24) | Brut exercice 2025 (CAL25) |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | SNTS (avant split ; ÷10 après le 26/10/2026) | 1 225 | 1 400 | 1 500 | 1 575 | 1 655 | 1 740 (= 174 ajusté) | net 1 655 | net 1 740 |
-| ORAC | — | — | — | 780 | 660 | 704 | 750 | 800 |
-| ONTBF | 399,56 | 416,58 | 287,88 | 226,45 | 189,53 | 145,32 | net 189,53 | net 145,32 |
+| ORAC | — | — | 752,76 | 780 | 660 | 704 | 750 | 800 |
+| ONTBF | 399,56 | 416,58 | 287,88 | 266,45 | 189,53 | 145,32 | net 189,53 | net 145,32 |
 | TTLC | 109,31 | 159,29 | 175,53 | 199,54 | 195,67 | 139,77 | 222,36 | 158,83 |
 | TTLS | 223,60 | 187,30 | 241,01 | 207,58 | 222,40 | 176,65 | net 222,40 | net 176,65 |
 | SMBC | 810 | 720 | 720 | 1 080 | 616 | 704 | 700 | 800 |
 | SHEC | — | 29,00 | 53,00 | 57,00 | 75,29 | 85,07 | 85,56 | 96,67 |
-| CIEC | 176,14 | 153,16 | 157,50 | 171,00 | 158,40 | 205,92 | 180 | 234 |
+| CIEC | 167,14 | 153,16 | 157,50 | 171,00 | 158,40 | 205,92 | 180 | 234 |
 | SDCC | 337,50 | 432,00 | 450,00 | 481,50 | 352,00 | 462,00 | 400 | 525 |
 | NTLC | 363,67 | 856,80 | 728,10 | 675,00 | 721,60 | 369,60 | 820 | 420 |
 | PALC | 102,51 | 1 236,34 | 1 213,63 | 563,31 | 451,45 | 441,04 | 513,01 | 501,60 |
@@ -124,9 +124,11 @@ Source : colonne « Dernier dividende payé, montant net » des BOC 2021-2026, r
 | FTSC | 235 | — | — | 143,10 | **1 726,56** | — | **1 320 + 680,67 exceptionnel** | — |
 | SDSC | 100 | 130 | 92 | 92 | 92 | 92 (payé le 27/10/2026) | net 92 | (5,008 Md, état financier 2025) |
 | SEMC | 14,40 | — | — | — | — | — | — | — |
-| STAC | — | 66,15 | — | — | — | — | — | — |
+| STAC | 66,15 | 66,15 | — | — | — | — | — | — |
 
 Sources : BOC 2021-2026 ; [CAL24] ; [CAL25] ; [SDSC-FY25] pour l'affectation 2025 d'AGL.
+
+*Corrigé le 22/11/2026 (vérification adversariale) : ORAC 2023 = 752,76 payé le 15/06/2023 (BOC 29/12/2023), et non « — » ; ONTBF 2024 = 266,45 payé le 31/07/2024 (BOC 31/12/2024 et fiche émetteur : 266,44625), et non 226,45 ; CIEC 2021 = 167,14 payé le 14/07/2021 (BOC 30/12/2021), et non 176,14 ; STAC 2021 = 66,15 payé le 16/07/2021 (BOC 30/12/2021), et non « — ». Les compteurs « années avec dividende » du score qualité (§5.1) d'ORAC (4/6 au lieu de 3/6) et de STAC (2/6 au lieu de 1/6) sont donc sous-estimés dans le classement du §5.2 ; l'impact n'a pas été recalculé. Pour SLBC, les montants 2021-2024 sont **avant** fractionnement (le paiement du 14/08/2024 apparaît à 270 dans les BOC postérieurs au 30/09/2024) ; 2025-2026 sont **après**. Sonatel : dividende brut de l'exercice 2025 = **1 933 FCFA** avant split (IRVM 10 %, résolution d'affectation [SNTS-FY25]).*
 
 **Enseignements** :
 - **Dividendes en hausse continue sur 6 ans** : SNTS (+42 % de 2021 à 2026, sans interruption), PRSC (stable à environ 180 net), SHEC (en hausse depuis 2022), CIEC.
@@ -194,7 +196,7 @@ Format : identité, actionnaire de référence, marché, résultats, dividende, 
 - **Événements** : fractionnement 10 pour 1 adopté par l'AGE du 08/10/2026, effectif le 26/10/2026 (réf. théorique 4 385 FCFA) [SNTS-9M26 ; `01-structure-marche.md` §8.1]. Licence unique de 10 ans en Guinée-Bissau (fibre et 5G). Licence IGW de 10 ans en Sierra Leone. [SNTS-9M26]
 - **Moteurs** : data, Orange Money, fibre et haut débit fixe.
 - **Risques** (cités par la société) : taxe sur la monnaie électronique au Sénégal ; gratuité de l'interopérabilité BCEAO pour les transferts de 0 à 8 000 FCFA, avec un plafond de 0,8 % au-delà ; dépréciation du franc guinéen ; coût de l'énergie ; concurrence. Il faut y ajouter le risque souverain sénégalais (voir `05-macro-geopolitique-uemoa.md`). [SNTS-9M26]
-- **Verdict** : **n° 1 du classement**. Il cumule qualité (ROE part du groupe ≈ 29 %, trésorerie nette), valeur (rendement bénéficiaire ≈ 10 %) et croissance (+12,9 % de RN sur 9 mois). Sa liquidité est sans égale. Principal risque : la concentration sur le risque Sénégal-Mali.
+- **Verdict** : **n° 1 du classement**, mais **à égalité de fait avec STBC** (0,911 contre 0,910) si l'on calcule le PER sur le RN part du groupe, voir §5.2. Il cumule qualité (ROE part du groupe ≈ 29 %, trésorerie nette), valeur (rendement bénéficiaire ≈ 10 %) et croissance (+12,9 % de RN sur 9 mois). Sa liquidité est sans égale. Principal risque : la concentration sur le risque Sénégal-Mali.
 
 #### ORAC — Orange Côte d'Ivoire (CI ; consolide Orange Burkina et Orange Liberia)
 - **Actionnariat** : groupe Orange (pourcentage exact non vérifié dans les sources lues). Flottant 20,2 % (avis 303). Introduction en bourse en décembre 2022.
@@ -203,10 +205,10 @@ Format : identité, actionnaire de référence, marché, résultats, dividende, 
 - **Dividende** : 800 FCFA brut pour l'exercice 2025 (704 net), payé le 08/06/2026. Il représente environ 93 % du RN part du groupe. [CAL25]
 - **Bilan** : dette nette ≈ 110 Md, soit 0,16 fois les capitaux propres.
 - **Risques** : intérêts minoritaires importants au Burkina et au Liberia, risque sécuritaire au Burkina Faso, fiscalité, énergie. Payout proche de 100 % du RN part du groupe.
-- **Verdict** : n° 7. Croissance supérieure à celle de Sonatel en 2026, mais valorisation plus chère (P/E part du groupe ≈ 22,5 contre 11,8) et rendement plus faible (3,7 %).
+- **Verdict** : n° 7 (n° 9 si le PER est calculé sur le RN part du groupe, voir §5.2). Croissance supérieure à celle de Sonatel en 2026, mais valorisation plus chère (P/E part du groupe ≈ 22,5 contre 11,8) et rendement plus faible (3,7 %).
 
 #### ONTBF — Onatel / Moov Africa Burkina Faso (BF)
-- **Actionnariat** (fiche BRVM au 31/12/2025) : Maroc Telecom 61 %, État burkinabè 26 %, flottant 23 %. **Incohérence dans la source** : le total fait 110 %. À vérifier. [ISS-ONTBF] Confiance low sur la part de l'État.
+- **Actionnariat au 31/12/2025** : Maroc Telecom 61 %, **État burkinabè 16 %**, public 23 % (total 100 %), selon la « Composition du capital ONATEL-SA au 31-12-2025 » du rapport de gestion 2025 [ONTBF-RG25]. La fiche émetteur BRVM [ISS-ONTBF] affiche 26 % pour l'État (total 110 %) : c'est une **erreur de la fiche**. *(Corrigé le 22/11/2026.)* Confiance high.
 - **Résultats** : CA de 139,2 Md (2023) à 141,8 Md puis 146,2 Md (2025) ; RN de 21,1 à 21,5 puis **15,9 Md (−26 %)**. Le résultat d'exploitation baisse de 24 % en 2025 : indemnités de fin d'engagement, location des poteaux de la SONABEL pour la fibre, énergie, maintenance dans les zones à défi sécuritaire. Sur 9 mois 2026 : CA 114,0 Md (+4,1 %), RN 10,5 Md (contre 11,0). [ONTBF-RG25 ; ONTBF-FY25 ; ONTBF-9M26]
 - **Dividende** : payout de 70 % ; 166,08 FCFA brut, 145,32 net, payé le 15/06/2026. **En baisse continue depuis 2022.** [ONTBF-RG25 ; CAL25]
 - **Risques** : environnement sécuritaire, sanction ARCEP de 1,543 Md (2023, en recours devant le Conseil d'État), endettement net d'environ 1 fois les capitaux propres, baisse des dividendes. [ONTBF-RG25]
@@ -295,7 +297,7 @@ La distribution pétrolière (TTLC, TTLS, SHEC) travaille avec des **marges nett
 - **Actionnariat** : non vérifié dans les sources lues.
 - **Résultats** : CA 2024 de 87,2 Md, puis 80,6 Md en 2025 ; RN 2025 de **−6,13 Md en SYSCOHADA et −7,95 Md en IFRS**. Au S1 2026 : CA 42,3 Md, EBE 7,08 Md (+77 %), RN −4,79 Md (contre −6,71). Campagne 2025/26 : 91 626 t produites (+16 %). [SCRC-S126 ; SCRC-FY25]
 - **Bilan** : emprunts portés à 67,2 Md (contre 30,3 Md), pour des capitaux propres de 17,2 Md, soit environ 3,9 fois. Charges financières d'environ 7,6 Md par an. Une obligation SCRC.O1 au taux de 8,55 % (2024-2031) est cotée.
-- **Événements** : suspendue le 16/09/2026 pour défaut d'information périodique, réadmise le 21/09/2026. [AVIS-269-2026 ; AVIS-276-2026]
+- **Événements** : suspendue le 16/09/2026 pour défaut d'information périodique ; levée de suspension annoncée le 21/09/2026 (avis 276), effective le **22/09/2026**, après publication du rapport du 1er trimestre 2026. Le cours est passé de 3 085 FCFA (15/09, +191 % depuis janvier) à 1 230 FCFA (20/11). [AVIS-269-2026 ; AVIS-276-2026 ; BOC]
 - **Verdict** : n° 26. Redressement opérationnel réel, mais pertes et levier élevé. À considérer comme une option, pas comme un placement.
 
 #### SLBC — Solibra (bières et boissons)
@@ -382,10 +384,10 @@ La distribution pétrolière (TTLC, TTLS, SHEC) travaille avec des **marges nett
 #### SDSC — Africa Global Logistics Côte d'Ivoire (ex Bolloré Transport & Logistics CI)
 - **Actionnariat** (fiche BRVM, 2022) : Africa Global Logistics (France) 74,80 %. Flottant 25 %. Le contrôle ultime du groupe AGL n'est pas vérifié dans les sources lues.
 - **Résultats** : CA de 85,6 Md (2024) à 92,0 Md (2025) ; RN de **21,07 Md à 0,79 Md**. Le résultat d'exploitation passe à −2,27 Md, et le résultat financier tombe de 20,9 à 7,1 Md parce que les filiales ont versé moins de dividendes. Sur 9 mois 2025 : RN −77 %. [SDSC-FY25 ; SDSC-9M25]
-- **Bilan** : trésorerie de 76,8 Md, capitaux propres de 72,9 Md.
+- **Bilan** : trésorerie de 76,8 Md, capitaux propres de 72,9 Md. **Attention (vérification du 22/11/2026)** : la trésorerie a été multipliée par 3,6 en un an (21,2 → 76,8 Md) surtout parce que les **dettes d'exploitation** sont passées de 96,4 à 175,7 Md (« variation du passif circulant » de +79,8 Md dans le tableau des flux). La CAF n'est que de 7,5 Md. Cette trésorerie n'est donc pas un excédent disponible : le bonus « trésorerie nette » du score qualité est **trompeur** pour SDSC. Il faut le neutraliser quand la variation du passif circulant dépasse la trésorerie nette. [SDSC-FY25]
 - **Dividende** : 92 par action maintenu (5,0 Md), payé le 27/10/2026 sur le report à nouveau.
 - **Information** : aucun rapport trimestriel 2026 trouvé sur brvm.org. États 2025 certifiés publiés le 17/09/2026.
-- **Verdict** : n° 18. Le titre a gagné 77 % en 2026 alors que le RN 2025 est quasi nul. Le marché parie peut-être sur une opération sur le capital ou sur les actifs (hypothèse non vérifiée). Bilan riche en liquidités.
+- **Verdict** : n° 18. Le titre a gagné 77 % en 2026 alors que le RN 2025 est quasi nul. Le marché parie peut-être sur une opération sur le capital ou sur les actifs (hypothèse non vérifiée). La trésorerie affichée vient surtout de la hausse des dettes d'exploitation (voir Bilan) : ce n'est pas un excédent de cash.
 
 #### SEMC — Sonoco Metal Packaging SIEM (ex Eviosys, ex Crown SIEM ; emballages métalliques)
 - Derniers comptes publiés : exercice 2023 (CA 27,9 Md, RN 1,01 Md), approuvés par l'AGO du 30/12/2024. Suspendue du 29/07/2025 au 02/01/2026, puis **de nouveau depuis le 16/09/2026** pour défaut d'information périodique. Flottant de 10,3 %. Actionnaire en 2014 : Crown European Holdings, 85,24 %. [SEMC-FY23 ; AVIS-179-2025 ; AVIS-004-2026 ; AVIS-270-2026 ; ISS-SEMC]
@@ -456,6 +458,8 @@ La performance sur 12 mois est calculée du 20/11/2025 au 20/11/2026, en prix se
 
 **Robustesse** : la corrélation de rang de Spearman entre ce classement et quatre variantes reste **≥ 0,986**. Variantes testées : poids égaux (0,991), score additif au lieu de géométrique (0,992), valeur surpondérée à 45 % (0,989), sans liquidité (0,986). Le trio de tête (SNTS, STBC, SMBC) ne change dans aucune variante : sans la liquidité, SMBC passe premier.
 
+**Limite de ce test et sensibilité à la définition du PER (vérification du 22/11/2026).** Le vérificateur a recalculé les variantes à partir des rangs percentiles publiés ci-dessus et retrouve 0,990, 0,993, 0,991 et 0,986. Mais ces variantes ne font que **repondérer les mêmes rangs** : une corrélation élevée est presque mécanique et ne dit rien du pouvoir prédictif. Le classement est plus sensible à la **définition des entrées**. Le PER BOC de SNTS (9,77) et d'ORAC (17,28) porte sur le RN **total**, intérêts minoritaires compris (anomalie A1). Avec le RN **part du groupe**, comme le recommande A1, l'EY prospectif tombe à 9,6 % pour SNTS (au lieu de 11,6 %) et à 5,3 % pour ORAC (au lieu de 6,8 %). Les scores deviennent alors : **SNTS 0,911 et STBC 0,910 (égalité de fait)**, SMBC 0,884, et ORAC recule du 7e au 9e rang (0,671). Le rang n° 1 de SNTS n'est donc **pas robuste** à la définition du PER. Calcul du vérificateur, avec les autres entrées inchangées.
+
 ### 5.3 Justification du haut de classement, et pourquoi il ne faut pas acheter aveuglément
 
 1. **SNTS** : la seule valeur qui est à la fois de grande qualité, peu chère (PER 9,8) et en croissance à deux chiffres, avec une liquidité institutionnelle. Le risque est concentré sur la dette souveraine du Sénégal et sur la réglementation du mobile money.
@@ -472,7 +476,7 @@ La performance sur 12 mois est calculée du 20/11/2025 au 20/11/2026, en prix se
 | # | Anomalie | Impact | Traitement proposé |
 |---|---|---|---|
 | A1 | Le **PER du BOC** utilise le RN total consolidé (SNTS, ORAC), mais parfois un autre agrégat : ONTBF affiche 13,14 alors que le calcul sur le RN 2025 donne 12,0 ; CABC affiche 11,19 contre 9,5 calculé | Biais de valeur de ±15 % | Recalculer P/E = capitalisation / RN (part du groupe si disponible) à partir de la table des fondamentaux ; garder le PER BOC comme contrôle |
-| A2 | **Rendement BOC** = dernier dividende payé / cours, quelle que soit sa date (FTSC 107,9 %, BNBC 8,6 % de 2023) | Faux signaux « haut rendement » | N'utiliser que le dividende de l'exercice N−1 s'il a été payé dans les 15 derniers mois ; sinon DY = 0 |
+| A2 | **Rendement BOC** = dernier dividende payé / cours, quelle que soit sa date (FTSC 107,9 %, BNBC 8,6 % de 2023) | Faux signaux « haut rendement » | **Corrigé le 22/11/2026.** DY_t = DPS net ordinaire de l'exercice k / cours, où k est le **dernier exercice dont l'AGO (affectation du résultat) est connue à la date t**. Si cette AGO n'a voté aucun dividende, DY = 0. Le plafond de 15 mois ne sert que de garde-fou contre les données périmées. **Un critère « dernier dividende ordinaire payé dans les 15 mois » seul ne suffit pas.** Filtisac a payé 1 320 FCFA brut ordinaires le 30/09/2025, soit 13,7 mois avant le 20/11/2026 : ce critère seul donnerait DY ≈ 72,6 % (1 161,6 net / 1 600), alors que l'exercice 2025 ne verse rien. Ajouter aussi un drapeau si DY > 15 %. |
 | A3 | **Dividende exceptionnel** : Filtisac, part exceptionnelle de 680,67 brut taxée à 17 % | Rendement surestimé | Champ `div_type ∈ {ordinaire, exceptionnel}` alimenté par le calendrier (marque « # ») |
 | A4 | **Fractionnements** : SNTS 10:1 au 26/10/2026, SLBC 10:1 au 30/09/2024 | Ruptures de série des dividendes et des cours | Ajuster les DPS historiques avec le facteur de split (le panel `corporate_actions.parquet` les détecte) |
 | A5 | Rapport « trimestriel » qui couvre **le trimestre seul** (SITAB, « Trimestre 3 ») et non le cumul | Croissance faussée (−33 % au lieu de −14 %) | Normaliser en cumul depuis le début d'année (S1 + T3) ; contrôler que le CA cumulé est ≥ au CA du S1 |
@@ -482,6 +486,9 @@ La performance sur 12 mois est calculée du 20/11/2025 au 20/11/2026, en prix se
 | A9 | Flottant déclaré de 100 % pour PRSC contre 14 % selon la fiche 2019 | Filtre de flottant faussé | Prendre le minimum des deux sources, avec un drapeau |
 | A10 | Servair : dividende proposé de 1,5 Md dans les états provisoires contre 2,5 Md publiés (229 brut × 10,9 M titres) | Calcul de payout | Toujours prendre le montant de l'avis BRVM et du calendrier, qui fait foi |
 | A11 | Rapports scannés sans texte (environ 25 sur 98) | L'extraction automatique échoue | Prévoir l'OCR (tesseract n'est pas installé dans l'environnement actuel) ou une saisie manuelle validée |
+| A12 | *(Ajouté le 22/11/2026.)* La colonne « Dernier dividende payé » du BOC est mise à jour dès la ligne **(d)**, c'est-à-dire le **dernier jour avec dividende** (exemple : SNTS au BOC du 21/05/2026, alors que le titre cote ex-dividende le 22/05). La ligne (d) donne aussi la référence ajustée dans « Cours référence » (27 160 = 28 900 − 1 740) | Prendre la date de changement de cette colonne comme date ex décale tout d'un jour | Date ex = séance qui suit la ligne (d), ou la colonne « Ex-dividende » du calendrier officiel |
+| A13 | *(Ajouté le 22/11/2026.)* Calendrier CAL25 : Tractafric Motors affiche une date ex (23/10/2026) **postérieure** à la date de paiement (22/10/2026) | Erreur de saisie dans la source officielle | Contrôle de cohérence `ex_date < payment_date`. En cas d'écart, la date du BOC fait foi (BOC du 20/11 : dernier dividende daté du 23/10/2026) |
+| A14 | *(Ajouté le 22/11/2026.)* Après le fractionnement de SLBC, le BOC n'a pas ajusté le dividende de 4 050 FCFA : il affiche un rendement de 36,9 % le 30/09/2024. Pour SNTS en 2026, le BOC l'a ajusté (174) | Rendement BOC faux juste après un fractionnement | Toujours recalculer le DPS avec le facteur de split |
 
 ---
 
@@ -496,11 +503,14 @@ universe_nonfin:
             SCRC, SLBC, STBC, UNLC, SICC, ABJC, BNBC, CFAC, LNBB, NEIC, PRSC, UNXC,
             CABC, FTSC, SDSC, SEMC, SIVC, STAC]
   exclude_if:
-    status_in: [suspended]                 # SICC, SEMC au 20/11/2026
-    free_float_pct_lt: 5.0                 # UNLC 0,2 % ; CFAC 4,2 % (ou poids plafonné à 1 %)
-    last_financials_age_days_gt: 400       # UNLC (exercice 2023), SEMC (exercice 2023)
-    median_daily_value_mfcfa_lt: 2.0       # BNBC 2,7 est juste au-dessus du seuil
+    status_in: [suspended]                 # SICC, SEMC au 20/11/2026 (BOC : « SP »)
+    free_float_pct_lt: 5.0                 # choix du projet : UNLC 0,22 % ; CFAC 4,15 % (ou poids plafonné à 1 %)
+    # CORRIGÉ 22/11/2026 : « 400 jours » était ambigu. Mesuré depuis la clôture de l'exercice,
+    # il excluait TOUTE la cote du 04/02 jusqu'à la publication des comptes N-1 (mars-juin).
+    last_annual_fs_period_end_age_days_gt: 546   # = 30/06 de N+1 pour l'exercice N-1 ; UNLC, SEMC (exercice 2023) exclus
+    median_daily_value_mfcfa_lt: 2.0       # BNBC 2,7 est juste au-dessus du seuil (médianes 2026 recalculées : conformes)
   flags:
+    free_float_below_regulatory_15pct: [UNLC, CFAC, SEMC, SICC]   # avis 303-2026 : seuil réglementaire de diffusion = 15 %
     payout_gt_100pct_2y: [TTLC, SHEC, SDCC, ABJC, CFAC, SDSC]
     regulatory_event: {SDCC: "contrat d'affermage en attente", STBC: "paquet neutre", SNTS: "taxe e-money / interopérabilité BCEAO"}
     nonrecurring_earnings: [NEIC, FTSC]
@@ -523,15 +533,24 @@ fundamental_score:
     margin_weight: 4.0               # × min(max(marge, 0), 0.25)
     risk_flag_penalty: -0.5          # par drapeau (contrat, réglementation, info, non récurrent, flottant)
   value:
-    ey_forward: "(1/PER) * (1 + yoy_ytd_net_income)"   # borné à >= 0
+    # CORRIGÉ 22/11/2026 : PER = capitalisation / RN PART DU GROUPE (anomalie A1), pas le PER BOC
+    # (calculé sur le RN total pour SNTS et ORAC). Sensibilité : SNTS et STBC à égalité (§5.2).
+    ey_forward: "(net_income_group / market_cap) * (1 + yoy_ytd_net_income)"   # borné à >= 0
     w_ey_forward: 0.6
-    w_div_yield: 0.4                 # dividende net de l'exercice N-1 / cours ; 0 si plus de 15 mois
+    w_div_yield: 0.4
+    # CORRIGÉ 22/11/2026 : exercice k = dernier exercice dont l'AGO est connue à t ; DY = 0 si
+    # elle n'a voté aucun dividende ; garde-fou : DY = 0 si le paiement a plus de 15 mois.
+    # Seul, le critère « dernier dividende ordinaire < 15 mois » donne FTSC ≈ 72,6 % au 20/11/2026.
+    div_yield: "dps_net_ordinary(last_fy_with_known_AGM(t)) / price"
+    div_yield_max_age_months: 15
+    div_yield_flag_gt: 0.15
   growth:
     w_cagr_ni_3y: 0.5                # TCAM du RN N-2 -> N, borné à [-0.5, 0.6]
     w_yoy_ytd_ni: 0.5                # cumul de l'année en cours, borné à [-0.6, 0.8]
   liquidity: "log1p(median_daily_value_mfcfa_current_year)"
-  robustness_check: {min_spearman_vs_variants: 0.95}   # observé : 0.986-0.992
-  rebalance: quarterly_after_reporting   # voir 7.4
+  robustness_check: {min_spearman_vs_variants: 0.95}   # observé : 0.986-0.992 (recalculé par le vérificateur : 0.986-0.993)
+  rebalance: event_driven_fundamentals_plus_fixed_review   # CORRIGÉ 22/11/2026, voir 7.4
+  quality_net_cash_guard: "net_cash bonus = 0 si Δ passif circulant > trésorerie nette"   # ajouté 22/11/2026 (cas SDSC)
 ```
 
 ### 7.3 Table de fondamentaux : schéma et données de départ (Md FCFA)
@@ -570,17 +589,17 @@ SIVC,,0.377,0.179,10.07,,,,,0,
 STAC,-1.12,-0.35,-0.10,3.88,9M,,,0.45,0,
 ```
 
-Une dette nette négative signifie une trésorerie nette. Pour ONTBF, TTLS, LNBB et CABC, le brut est déduit du net (IRVM de 12,5 %, 10 %, ≈5 % et 12 %).
+Une dette nette négative signifie une trésorerie nette. Pour ONTBF, TTLS, LNBB et CABC, le brut est déduit du net (IRVM de 12,5 %, 10 %, ≈5 % **[NON VÉRIFIÉ pour le Bénin]** et 12 %). Pour SNTS, le brut 2025 de 193,3 (après split) est confirmé par la résolution d'affectation (1 933 avant split).
 
 ### 7.4 Calendrier de mise à jour (observé en 2026)
 
 | Événement | Fenêtre observée en 2026 | Paramètre |
 |---|---|---|
-| États financiers annuels N−1 | 16/02 (Sonatel) au 17/09 (AGL certifiés) ; la majorité entre mars et mai | `fy_refresh: [Feb-15, Jun-30]`, alerte de retard après le 30/06 |
-| Rapports S1 | 24/07 (Sonatel) au 02/11 (Sucrivoire) | `h1_refresh: [Jul-20, Nov-05]` |
-| Rapports 9 mois | 13/10 (SAPH) au 17/11 (Vivo) | `q3_refresh: [Oct-10, Nov-20]` ; drapeau `reporting_delay` si absent au 30/11 |
-| Dividendes | Paiements du 26/05 (SNTS) au 30/10 ; ex-dividende = jour ouvré précédant la date de paiement | `ex_div_offset_bd: -1` (voir `01-structure-marche.md` §7) |
-| Révision du score | 15 jours ouvrés après chaque vague de publication (fin février, fin mai, mi-août, fin novembre) | `rebalance_dates: ["03-15","06-15","08-31","11-30"]` |
+| États financiers annuels N−1 | 16/02 (Sonatel) au 17/09 (AGL certifiés ; attestation des CAC le 05/10). Sur les 28 émetteurs non financiers dont la page a été relevée : 2 en février (SNTS, ORAC), **18 au 30/04 au plus tard** (7 fichiers datés du 30/04), 10 entre mai et août (dont AGL le 03/08) | `fy_refresh: [Feb-15, Jun-30]`, alerte de retard après le 30/06 |
+| Rapports S1 | 13/07 (Uniwax) au 02/11 (Filtisac, Sucrivoire). Sur 25 rapports S1 relevés : **seulement 3 en juillet** (UNXC, SNTS, LNBB) et 1 en septembre (SAPH). **21** sont publiés entre le 01/10 et le 02/11, dont 15 fichiers datés du 30/10 | `h1_refresh: [Jul-10, Nov-05]` |
+| Rapports 9 mois | 13/10 (SAPH) au 17/11 (Vivo). La plupart le **même jour que le S1** (27-30/10) | `q3_refresh: [Oct-10, Nov-20]` ; drapeau `reporting_delay` si absent au 30/11 |
+| Dividendes | Paiements des sociétés non financières pour l'exercice 2025 : du 26/05 (SNTS) au 27/10 (SDSC, selon le BOC). Date ex = **1 jour ouvré** avant la date de paiement depuis le passage au règlement J+2 (04/12/2025 ; CAL25, colonne « T-1 »). C'était **2 jours ouvrés** avant sous J+3 (CAL24, colonne « T-2 » : SNTS ex le 20/05/2025, paiement le 22/05/2025) | **Corrigé le 22/11/2026** : `ex_div_offset_bd: {until_2025-12-03: -2, from_2025-12-04: -1}`. Préférer la séance qui suit la ligne (d) du BOC (A12) |
+| Révision du score | **Corrigé le 22/11/2026.** La v1 visait « 15 jours ouvrés après chaque vague » (fin février, fin mai, mi-août, fin novembre). Les vagues de février et de mi-août **n'existent pas** dans les publications 2026 : au 15/03, seuls 3 comptes annuels étaient publiés (SNTS, ORAC, CABC) ; au 31/08, seulement 3 S1 sur 25 | Proposition du vérificateur, **non testée en walk-forward** : mise à jour **événementielle** des fondamentaux au jour de publication + 1 séance (point-in-time), et révision du score à dates fixes `["05-15","07-15","11-20"]` (après la vague du 30/04, après les AGO et paiements de juin, après la vague S1 + 9 mois de fin octobre) |
 
 ### 7.5 Exposition aux facteurs exogènes (signe à coder ; magnitude à estimer par régression)
 
@@ -600,7 +619,8 @@ Une dette nette négative signifie une trésorerie nette. Pour ONTBF, TTLS, LNBB
 
 ### 7.6 Règles anti-pièges (tests unitaires suggérés)
 
-1. `assert dy_used(FTSC, 2026-11-20) == 0` : le dividende exceptionnel est hors fenêtre.
+1. `assert dy_used(FTSC, 2026-11-20) == 0` : l'AGO de l'exercice 2025 n'a voté **aucun dividende** (projet d'affectation [FTSC-FY25]). *(Corrigé le 22/11/2026 : la v1 attribuait ce zéro à la fenêtre de 15 mois. Or le dividende ordinaire de 1 320 FCFA brut a été payé le 30/09/2025, soit 13,7 mois plus tôt : il est **dans** la fenêtre.)* Test complémentaire : `assert dy_used(FTSC, 2026-03-31) > 0`, car l'AGO 2025 n'est pas encore connue ce jour-là. Ce rendement doit déclencher le drapeau `div_yield_flag_gt`.
+1b. `assert ex_date(SNTS, paiement 2026-05-26) == 2026-05-22` (J+2, le 25/05 étant férié) et `assert ex_date(SNTS, paiement 2025-05-22) == 2025-05-20` (J+3 : 2 jours ouvrés avant).
 2. `assert ey_forward(SPHC) < ey_trailing(SPHC)` : le RN cumulé 2026 baisse de 58 %.
 3. `assert eligible(UNLC) is False and eligible(SICC) is False and eligible(SEMC) is False`.
 4. `assert split_adjust(SNTS dividende 2026-05-26) == 174.0`.
@@ -741,6 +761,64 @@ Industriels
 3. SODECI : termes du nouveau contrat d'affermage et ampleur du « besoin de financement » annoncé (augmentation de capital possible).
 4. SITAB : date d'entrée en vigueur du paquet neutre et effet sur les marges 2027.
 5. AGL CI : pourquoi aucun rapport trimestriel 2026 n'a été publié, et cause de la hausse de 77 % du cours en 2026 malgré un RN 2025 de 0,79 Md.
-6. Onatel : part de l'État (26 % selon la fiche, ce qui donne un total de 110 %).
+6. ~~Onatel : part de l'État (26 % selon la fiche, ce qui donne un total de 110 %).~~ **Résolu le 22/11/2026** : 16 % selon le rapport de gestion 2025.
 7. Données 2023 non extraites (ABJC, NEIC, UNXC, SDSC, SIVC, STAC) et données 2024 de NEIC : documents scannés. Il faut un OCR ou une saisie manuelle.
 8. Le score n'a **pas encore été testé historiquement**. Il faut reconstituer les fondamentaux point-in-time 2018-2025 (dates de publication réelles) pour éviter le biais d'anticipation, puis appliquer la validation walk-forward de `04-rigueur-quantitative.md`.
+
+---
+
+## Vérification adversariale (2026-11-22)
+
+**Méthode.** Un vérificateur indépendant a tenté de réfuter les affirmations les plus coûteuses en cas d'erreur, en priorité les **paramètres codés**. Il s'est appuyé sur trois sources : les documents primaires re-téléchargés sur brvm.org (curl GET simple, lecture visuelle des scans), les BOC locaux (`data/boc_text/`) et le panel `data/panel/`. **Limite** : le quota de recherche web de la session était épuisé quand la vérification a commencé, donc aucune source secondaire ni réglementaire hors brvm.org n'a pu être consultée. Le document ne cite **aucune étude académique**, donc aucune étude n'est à authentifier.
+
+| # | Élément vérifié | Verdict | Valeur correcte / commentaire | Preuve |
+|---|---|---|---|---|
+| 1 | Contexte BOC 20/11/2026 : 48 sociétés (secteurs 3/4/2/9/7/6 + 17 financières), Composite 492,89 (+42,56 %), PER moyen 15,79 hors Unilever, BOC n° 222 | **Confirmé** | — | BOC local `boc_20261120.txt.gz` (https://www.brvm.org/sites/default/files/boc_20261120_2.pdf) |
+| 2 | `split_factors` SNTS 0,1 au 26/10/2026 | **Confirmé** | Référence théorique de 4 385 au BOC du 23/10 (43 850 / 10), première cotation divisée le 26/10 ; AGE du 08/10/2026 | BOC 23/10 et 26/10/2026 ; [SNTS-9M26] |
+| 3 | `split_factors` SLBC 0,1 au 30/09/2024 | **Confirmé** | Avis 242-2024. Le BOC n'a pas ajusté le dividende (rendement affiché de 36,9 %) : anomalie A14 | BOC 27/09 et 30/09/2024 |
+| 4 | `ex_div_offset_bd: -1` | **Corrigé** | −1 jour ouvré seulement depuis le passage au règlement J+2 (04/12/2025) ; **−2 avant** (colonne « T-2 » de CAL24 ; SNTS ex le 20/05/2025 pour un paiement le 22/05/2025 ; STBC et SDSC ex le 27/08/2025 pour le 29/08/2025). Le paramètre fixe faussait toute l'histoire 2017-2025 | [CAL24], [CAL25], BOC 19-22/05/2025, 26-29/08/2025, 21-26/05/2026 |
+| 5 | `irvm_gross_up` CI 12 % (personnes physiques) / 10 % (personnes morales), part exceptionnelle 17 % | **Confirmé** (et précisé : 15 % pour les personnes morales sur l'exceptionnel) | Notes (*) et (#) des calendriers | [CAL24], [CAL25] |
+| 6 | `irvm_gross_up` SN 10 % ; BF 12,5 % | **Confirmé** | Sonatel : 1 933 brut → 1 740 net « retenue de 10 % » ; Onatel : 166,0816 → 145,3214 « net de l'IRCM » | [SNTS-FY25] p. 25 ; [ONTBF-RG25] |
+| 7 | `irvm_gross_up` BJ ≈ 5 % | **Invérifiable** | Aucune source primaire trouvée (recherche web épuisée). Marqué [NON VÉRIFIÉ] | — |
+| 8 | Flottants UNLC 0,2 % et CFAC 4,2 % (`free_float_pct_lt: 5.0`) | **Confirmé** | Valeurs exactes de l'avis : 0,22 % et 4,15 % ; SEMC 10,29 % ; SICC 12,26 % ; PRSC 100,00 %. **Ajout** : le seuil **réglementaire** est de **15 %** (colonne « Diffusion de 15 % du capital dans le public » ; 4 sociétés en défaut). Le seuil de 5 % reste un choix du projet | [AV303] (scan lu visuellement) |
+| 9 | Suspension de SICC et SEMC depuis le 16/09/2026 (`universe.exclude.status`) | **Confirmé** | Avis 268 : article 1511 des règles, « jusqu'à la régularisation » ; BOC « SP » jusqu'au 20/11 | [AVIS-268-2026] ; BOC 16/09-20/11/2026 |
+| 10 | Sucrivoire « réadmise le 21/09/2026 » | **Corrigé** | Avis daté du 21/09, **reprise de cotation le 22/09/2026** (BOC du 21/09 encore « SP »), après publication du rapport du **T1** 2026 | [AVIS-276-2026] ; BOC 21-22/09/2026 |
+| 11 | `div_yield_window_months: 15` (« DY = 0 si le dernier dividende ordinaire a plus de 15 mois ») et test FTSC | **Réfuté tel que formulé, corrigé** | Le dividende ordinaire de FTSC (1 320 brut) a été payé le 30/09/2025, 13,7 mois avant le 20/11/2026. La règle seule donnerait DY ≈ 72,6 %. La bonne règle porte sur le **dernier exercice dont l'AGO est connue** (FTSC exercice 2025 : aucun dividende), avec 15 mois comme simple garde-fou | [CAL24] ; [FTSC-FY25] (projet d'affectation : dividendes « - ») |
+| 12 | FTSC : 2 000,67 brut (1 320 + 680,67 exceptionnel), net de 1 726,56 payé le 30/09/2025 ; aucun dividende pour 2025 ; RN 9 mois 2026 de −0,354 Md | **Confirmé** | Arithmétique exacte : 1 320 × 0,88 + 680,67 × 0,83 = 1 726,56 | [CAL24], [FTSC-FY25], [FTSC-9M26] |
+| 13 | Sonatel : RN 2025 de 413,6 Md (342,0 part du groupe), CA 1 923,1, capitaux propres 1 399,3 ; 9 mois 2026 : CA 1 583 (+10,5 %), EBITDAaL 769, RN 354 (+12,9 %) | **Confirmé** | — | [SNTS-FY25], [SNTS-9M26] |
+| 14 | SITAB : RN 9 mois = S1 + T3 = 17,906 + 8,667 = 26,57 Md (−14,3 %) ; le rapport « T3 » couvre le trimestre seul | **Confirmé** | CA 9 mois de 216,3 Md (+10,5 %). T3 2025 = 12,94 Md, comparable | [STBC-S126], [STBC-9M26] (scans) |
+| 15 | SMB : RN 9 mois de 8,904 Md (+57 %), CA de 179,2 Md (+15 %) ; EY prospectif de 14,6 % | **Confirmé** | (1/10,73) × 1,57 = 14,6 % | [SMBC-9M26] (scan) |
+| 16 | AGL CI : RN 2025 de 0,785 Md contre 21,07 ; dividende de 5,008 Md ; payout de 638 % ; trésorerie nette de +66,6 | **Confirmé (chiffres)**, interprétation **corrigée** | La trésorerie (76,8 Md) vient d'une hausse de +79,8 Md du passif circulant, pour une CAF de 7,5 Md. Elle n'est **pas** excédentaire : ajout du garde-fou `quality_net_cash_guard` | [SDSC-FY25] (scan) |
+| 17 | Onatel : RN 2025 de 15,89 Md, payout de 70 %, dividende net de 145,32 | **Confirmé** | — | [ONTBF-RG25] |
+| 18 | Onatel : actionnariat État 26 % (total de 110 %) | **Corrigé** | **État 16 %** (Maroc Telecom 61 %, public 23 %). La fiche BRVM est erronée | [ONTBF-RG25], « Composition du capital au 31-12-2025 » |
+| 19 | Table des dividendes 2021-2026 (§2.1) | **Corrigé (4 cellules)** | ORAC 2023 : 752,76 (et non « — ») ; ONTBF 2024 : 266,45 (et non 226,45) ; CIEC 2021 : 167,14 (et non 176,14) ; STAC 2021 : 66,15 (et non « — »). Les autres cellules sont conformes au panel `dividends.parquet` | BOC 30/12/2021, 29/12/2023, 31/12/2024 |
+| 20 | Orange CI : BPA part du groupe 2025 de 857,2 FCFA, P/E part du groupe ≈ 22,5 ; 9 mois 2026 : CA 1 012 (+15,5 %), RN 141 (+18,3 %) ; payout ≈ 93 % | **Confirmé** | 800 × 150,66 M titres = 120,5 Md / 129,1 = 93 % | [ORAC-FY25], [ORAC-9M26], [AV303] |
+| 21 | Valeur médiane par séance en 2026 (SNTS 252,3 ; STBC 47,6 ; ORAC 27,4 ; BNBC 2,7 ; PRSC 3,3) et seuil de 2,0 M | **Confirmé** | Recalculé sur 220 séances. Contrôle du parsing des valeurs SNTS après le split (valeur ≈ volume × cours) | `data/panel/equities.parquet` |
+| 22 | Robustesse : Spearman de 0,986 à 0,992 ; top 3 stable | **Confirmé (cohérence interne)**, portée **limitée** | Recalcul : 0,990 / 0,993 / 0,991 / 0,986. Mais avec le PER part du groupe (anomalie A1), SNTS (0,911) et STBC (0,910) sont à égalité et ORAC passe du 7e au 9e rang. Le n° 1 n'est pas robuste à la définition des entrées | calcul du vérificateur, à partir des tableaux §5.2 et §3.1 |
+| 23 | `rebalance_dates` 03-15 / 06-15 / 08-31 / 11-30 (« vagues fin février, fin mai, mi-août, fin novembre ») | **Réfuté (justification), corrigé** | En 2026 : 3 comptes annuels au 15/03 ; 18 au 30/04 ; 3 S1 sur 25 au 31/08 ; 21 S1 et la plupart des 9 mois entre le 01/10 et le 02/11. Proposition : mise à jour événementielle + revues les `05-15`, `07-15` et `11-20` (non testée) | pages `brvm.org/fr/rapports-societe-cotes/<société>` (dates des fichiers) |
+| 24 | `last_financials_age_days_gt: 400` | **Corrigé (ambigu)** | Mesuré depuis la clôture, ce seuil excluait toute la cote du 04/02 jusqu'à la publication des comptes N−1. Remplacé par `last_annual_fs_period_end_age_days_gt: 546`. UNLC et SEMC n'ont toujours pas publié après l'exercice 2023 (confirmé sur leurs pages) | pages `unilever-ci` et `crown-siem-ci` sur brvm.org |
+| 25 | SODECI : contrat d'affermage en attente de notification, « besoins de financement », RN 9 mois de 2,133 Md (+12,1 %), résultat d'exploitation T3 de −0,677 Md | **Confirmé** | — | [SDCC-9M26] |
+| 26 | SAPH : RN 9 mois de 9,703 Md (−58 %), CA de 232,5 Md (−8 %) | **Confirmé** | P/E prospectif ≈ 7,82 / 0,42 ≈ 18,6 | [SPHC-9M26] (scan) |
+
+**Non vérifié par manque de temps ou de source** (inchangé, à traiter) : la décomposition de la dette de SHEC, CIEC et ORAC ; le RN 2025 et la trésorerie de SITAB (scan non relu) ; les chiffres de Solibra (ordre des colonnes ambigu, déjà signalé en medium) ; les poids du score (choix de conception, non réfutables, sans validation historique) ; le taux IRVM béninois.
+
+**Conclusion du vérificateur.** Les chiffres financiers lus dans les documents primaires sont **fiables** : les 9 sociétés re-contrôlées (items 12 à 17, 20, 25 et 26) sont confirmées à la décimale près. Les erreurs portent sur les **règles à coder** :
+- la date ex dépend de la période ;
+- la règle du rendement en dividende échoue sur FTSC ;
+- les dates de révision ne correspondent pas au calendrier réel ;
+- l'âge des comptes est ambigu.
+
+S'y ajoutent quatre cellules de la table des dividendes, l'actionnariat d'Onatel et la date de reprise de Sucrivoire. Le classement n'est qu'un **filtre de départ** : SNTS et STBC sont à égalité quand le PER est défini proprement. **Aucun gain n'est garanti**, et le score reste à valider en walk-forward avec des fondamentaux point-in-time.
+
+Sources supplémentaires consultées par le vérificateur le 22/11/2026 :
+- https://www.brvm.org/sites/default/files/20261006_-_calendrier_de_paiement_des_dividendes_-_exercice_2025.pdf
+- https://www.brvm.org/sites/default/files/20251224_-_calendrier_de_paiement_des_dividendes_-_exercice_2024.pdf
+- https://www.brvm.org/sites/default/files/20261012_-_avis_ndeg303_brvmdg_-_flottant_des_societes_cotees_a_la_brvm.pdf
+- https://www.brvm.org/sites/default/files/20260921_-_avis_ndeg276_brvmdg_-_levee_de_la_suspension_sucrivoire_s.a.pdf
+- https://www.brvm.org/sites/default/files/20260916_-_avis_ndeg268_brvmdg_-_suspension_-_sicor_ci.pdf
+- https://www.brvm.org/sites/default/files/20260611_-_rapport_de_gestion_-_exercice_2025_-_onatel_bf.pdf
+- https://www.brvm.org/sites/default/files/20260917_-_etats_financiers_certifies_-_exercice_2025_-_africa_global_logistics_ci.pdf
+- https://www.brvm.org/sites/default/files/20260610_-_etats_financiers_-_exercice_2025_-_filtisac_ci.pdf
+- https://www.brvm.org/fr/emetteurs/societes-cotees/moov-africa-burkina-faso (fiche émetteur : État à 26 %, erroné)
+- https://www.brvm.org/fr/rapports-societes-cotees et les pages `https://www.brvm.org/fr/rapports-societe-cotes/<société>` (dates de publication 2026)
+- BOC locaux : 2021-12-30, 2023-12-29, 2024-09-25 → 2024-10-02, 2024-12-31, 2025-05-16 → 2025-05-22, 2025-08-25 → 2025-08-29, 2026-05-20 → 2026-05-26, 2026-09-15 → 2026-09-22, 2026-10-21 → 2026-10-27, 2026-11-20

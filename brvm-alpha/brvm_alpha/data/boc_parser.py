@@ -34,10 +34,14 @@ Principes de robustesse
    volume x cours) sont rattachés à la ligne précédente.
 5. **Contrôles internes.** variation vs cours, valeur vs volume x cours,
    rendement vs dividende / cours, sommes des volumes/valeurs vs lignes TOTAL,
-   nombre de lignes vs nombre de sociétés cotées.
+   volume / valeur de la page 1 vs TOTAL actions + droits, nombre de lignes vs
+   nombre de sociétés cotées.
 6. **Bulletins en anglais.** Quelques BOC (ex. 02/01/2025) sont publiés en
    anglais (virgule des milliers, point décimal, « 12 Sep 24 », rendement en
    fraction) : la langue est détectée et la tokenisation adaptée.
+7. **Colonnes de la page 1.** Les indicateurs présents à la fois côté Actions et
+   côté Obligations sont affectés d'après leur colonne (en-tête « Actions ...
+   Obligations »), jamais d'après leur ordre sur la ligne.
 
 Règle du cours de clôture (colonne ``close``)
 ---------------------------------------------
@@ -50,6 +54,11 @@ Règle du cours de clôture (colonne ``close``)
 * exception : titre non coté dont la bourse a déplacé la référence avec une
   variation publiée non nulle et cohérente (``réf / préc. - 1 = variation``) :
   ``close`` = cours de référence (la valorisation du jour a réellement changé).
+
+Cette règle est celle du BOC, séance par séance. Le cours de *valorisation* utilisé
+pour les rendements (``store.adjusted_table``) neutralise en plus les remises à
+niveau pendant une suspension et valorise un jour de détachement non coté à la
+référence ex-dividende.
 
 Statut (colonne ``status``) : ``"suspended"`` si ``SP``, ``"not_traded"`` si
 ``NC`` (ou cours sans volume), ``"traded"`` sinon.
@@ -1065,9 +1074,9 @@ def _parse_equities(
             continue
         t = _TOTAL_LINE_RE.match(line)
         if t or re.match(r"^\s*TOTAL\s*$", line):
-            nums, i = _read_group_total(lines, i, end, lang)
-            group_totals.append((group, nums[0] if nums else None,
-                                 nums[1] if len(nums) > 1 else None, list(group_rows)))
+            tvals, i = _read_group_total(lines, i, end, lang)
+            group_totals.append((group, tvals[0] if tvals else None,
+                                 tvals[1] if len(tvals) > 1 else None, list(group_rows)))
             group_rows = []
             continue
         m = _is_row_line(line, lang)
@@ -1577,6 +1586,7 @@ def _parse_market(head: list[str], lang: str, warnings: list[str]) -> dict[str, 
         for n, m in enumerate(matches):
             k = int((m.lastgroup or "m0")[1:])
             _, key1, key2 = labels[k]
+            key: str | None
             if key2 is not None and bond_col is not None:
                 key = key2 if m.start() >= bond_col - 8 else key1
             else:
@@ -1612,8 +1622,27 @@ _OB_ROW_RE = re.compile(r"^\s*(?P<sym>[A-Z][A-Z0-9]{2,6})\s{2,}(?P<rest>\S.*?/.*
 _OB_EMPTY_ROW_RE = re.compile(
     r"^\s*(?P<sym>[A-Z][A-Z0-9]{2,6})\s{2,}(?P<name>\S.*?)(?P<dashes>(?:\s{2,}-){2,})\s{2,}"
     r"(?P<ref>\d{1,3}(?: \d{3})*|\d+)(?:\s+(?P<mark>\S.*?))?\s*$")
-_OB_START_RE = re.compile(r"^\s*(MARCH[EÉ] DES ACTIONS|EQUITIES MARKET)\s*$", re.IGNORECASE)
-_OB_END_RE = re.compile(r"^\s*(MARCH[EÉ] DES|TROISIEME COMPARTIMENT|RIGHTS MARKET|BONDS MARKET)", re.IGNORECASE)
+#: Titre de la section carnet : « MARCHE DES ACTIONS », ou en anglais « EQUITIES MARKET »
+#: (2017-12, 2025) comme « EQUITY MARKET » (singulier : 09/03, 11/10, 13/10 et 16/10/2017).
+_OB_START_RE = re.compile(r"^\s*(MARCH[EÉ] DES ACTIONS|EQUIT(?:Y|IES) MARKET)\s*$", re.IGNORECASE)
+_OB_END_RE = re.compile(r"^\s*(MARCH[EÉ] DES|TROISIEME COMPARTIMENT|RIGHTS? MARKET|BONDS? MARKET)", re.IGNORECASE)
+#: En-tête de colonnes d'un tableau de meilleures limites (actions, droits ou obligations).
+_OB_HEADER_RE = re.compile(r"r[ée]siduelle|Achat\s*/\s*Vente|Remaining", re.IGNORECASE)
+#: Séance du carnet imprimée près du titre (pages anglaises 2017 : « Trading session of
+#: October 13, 2017 », parfois celle de la veille : BOC du 16/10/2017).
+_OB_SESSION_RE = re.compile(r"(?:Trading\s+session\s+of|S[ée]ance\s+du)\s+(?P<when>.{6,40}?\d{4})", re.IGNORECASE)
+
+
+def _order_book_session(lines: list[str], start: int) -> dt.date | None:
+    """Date de séance annoncée autour du titre de la section carnet (``None`` si absente)."""
+    for ln in lines[max(0, start - 6):start + 8]:
+        m = _OB_SESSION_RE.search(ln)
+        if m:
+            w = m.group("when")
+            m2 = _LONG_DATE_EN_RE.search(w) or _LONG_DATE_RE.search(w)
+            if m2 is not None:
+                return parse_french_date(m2.group(0))
+    return None
 
 
 def _parse_order_book(lines: list[str], day: dt.date | None, warnings: list[str], lang: str = "fr") -> pd.DataFrame:
@@ -1626,10 +1655,22 @@ def _parse_order_book(lines: list[str], day: dt.date | None, warnings: list[str]
     # Le titre « MARCHE DES ACTIONS » sert aussi à la cote (BOC historiques) : on retient
     # celui suivi de l'en-tête « résiduelle / Achat / Vente ».
     start = next((i + 1 for i, ln in enumerate(lines) if _OB_START_RE.match(ln.replace("\f", ""))
-                  and re.search(r"r[ée]siduelle|Achat\s*/\s*Vente|Remaining", "\n".join(lines[i + 1:i + 8]),
-                                re.IGNORECASE)), None)
+                  and _OB_HEADER_RE.search("\n".join(lines[i + 1:i + 8]))), None)
     ts = pd.Timestamp(day) if day else pd.NaT
     if start is None:
+        if any(_OB_HEADER_RE.search(ln) for ln in lines):
+            # Tableaux de meilleures limites présents mais titre de section actions non
+            # reconnu : ne jamais perdre le carnet en silence.
+            warnings.append("order_book_missing: en-tête de meilleures limites présent, section actions non reconnue")
+        else:
+            warnings.append("order_book_absent: pas de page carnet d'ordres dans ce BOC")
+        return pd.DataFrame(columns=ORDER_BOOK_COLUMNS)
+    session = _order_book_session(lines, start)
+    if day is not None and session is not None and session != day:
+        # Page carnet d'une autre séance reprise telle quelle : l'attribuer au BOC du jour
+        # ferait passer des ordres périmés pour ceux de la séance.
+        warnings.append(f"order_book_stale: page carnet de la séance du {session:%d/%m/%Y} "
+                        f"(BOC du {day:%d/%m/%Y}) ignorée")
         return pd.DataFrame(columns=ORDER_BOOK_COLUMNS)
     recs: list[dict[str, Any]] = []
     for ln in lines[start:]:
@@ -1699,6 +1740,8 @@ def _parse_order_book(lines: list[str], day: dt.date | None, warnings: list[str]
         if rec["bid"] is not None and rec["ask"] is not None and rec["bid"] > rec["ask"] * 1.0001:
             warnings.append(f"order_book_crossed: {rec['symbol']}: achat {rec['bid']:g} > vente {rec['ask']:g}")
         recs.append(rec)
+    if not recs:
+        warnings.append("order_book_empty: section carnet d'ordres des actions sans aucune ligne")
     return pd.DataFrame.from_records(recs, columns=ORDER_BOOK_COLUMNS)
 
 
@@ -1717,6 +1760,34 @@ def _header_date(lines: Iterable[str]) -> dt.date | None:
             except (KeyError, ValueError):
                 continue
     return found.most_common(1)[0][0] if found else None
+
+
+#: Numéro du bulletin (« N° 186 ») ; les numéros sont remis à 1 chaque année et se suivent
+#: d'une séance à l'autre. Exclut les références d'avis (« AVIS N°263 - 2017 »,
+#: « N°001/2018/DC/BR », « CREPMF N°58/CREPMF/2019 »).
+_ISSUE_RE = re.compile(r"(?<![A-Za-z])N\s?[°º]\s*(\d{1,3})(?!\d)(?!\s*[-/])")
+_ANY_WEEKDAY_RE = re.compile(rf"\b(?:{_WEEKDAYS}|monday|tuesday|wednesday|thursday|friday)\b", re.IGNORECASE)
+
+
+def _issue_number(lines: Iterable[str]) -> int | None:
+    """Numéro du BOC dans l'année (« N° 186 »), lu de préférence sur la ligne de la date d'en-tête.
+
+    Le numéro est imprimé sur la ligne de la date (« N° 186 ... jeudi 1 octobre 2026 »),
+    parfois sur la ligne voisine ; quelques bulletins commencent par la page OPCVM et
+    le numéro n'apparaît qu'en page suivante. À défaut de ligne datée, le premier
+    numéro trouvé est retenu.
+    """
+    first: int | None = None
+    for ln in lines:
+        for m in _ISSUE_RE.finditer(ln):
+            n = int(m.group(1))
+            if not 1 <= n <= 300:
+                continue
+            if _ANY_WEEKDAY_RE.search(ln):
+                return n
+            if first is None:
+                first = n
+    return first
 
 
 def _detect_lang(lines: list[str]) -> str:
@@ -1757,6 +1828,9 @@ def parse_boc_text(text: str, date: dt.date | str | None = None) -> BocDay:
         warnings.append(f"lang_{lang}: bulletin publié en anglais")
     hdate = _header_date(lines[:400])
     meta["header_date"] = hdate
+    meta["issue_no"] = _issue_number(lines[:400])
+    if meta["issue_no"] is None:
+        warnings.append("no_issue_number: numéro du bulletin (N°) introuvable")
     if date is not None and hdate is not None and hdate != date:
         warnings.append(f"date_mismatch: en-tête {hdate.isoformat()} vs attendu {date.isoformat()}")
     day = date or hdate

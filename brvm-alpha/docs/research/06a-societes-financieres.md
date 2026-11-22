@@ -6,6 +6,8 @@
 > **Limites de cette recherche (à lire)** : (1) le quota de recherche web de la session était **épuisé** au moment de cette tâche. Aucune source secondaire (presse, notes d'analystes) n'a donc pu être consultée. (2) Le réseau de la session ne résout que `www.brvm.org` : african-markets.com et capmad.com sont **inaccessibles**. (3) Quand un chiffre n'a pas été trouvé dans les documents lus, c'est écrit « n.d. » ou « introuvable ». **Aucun chiffre n'a été inventé.**
 > **Avertissement** : un classement fondamental n'est **pas** une prévision de rendement. Aucune méthode ne « garantit » un gain. Le secteur financier a déjà monté de **+52,06 % depuis le 1er janvier 2026** (BOC 20/11/2026), et une partie de la valeur décrite ici est donc déjà dans les cours. L'efficacité de ce score sur la BRVM **n'est pas démontrée** : elle doit être testée hors échantillon avec des données « point-in-time » (voir §9 et le document 04).
 
+> **Vérification adversariale du 22/11/2026** : 28 éléments ont été revérifiés de façon indépendante (BOC locaux, PDF primaires de brvm.org relus, en-têtes HTTP `Last-Modified`, OCR). Les corrections sont intégrées dans le texte et signalées par « *(corrigé le 22/11/2026)* ». Ce qui reste incertain est marqué **[NON VÉRIFIÉ]**. Le détail figure dans la section finale « Vérification adversariale (2026-11-22) ». Principales corrections : délai de disponibilité des PDF porté à **2 séances**, dividende BOAC de **594,53** (et non 597,53), payout à calculer sur le **brut** (BOABF dépasse alors aussi 100 %), RN part du groupe 2025 d'Oragroup de **18,36 Md** (BPA de base 264, BPA dilué 241), flottant BICC expliqué.
+
 Légende de confiance : **H** = document primaire lu (BOC, rapport ou états financiers de l'émetteur) ; **M** = calcul ou inférence à partir de documents primaires (formule indiquée) ; **B** = information partielle, ancienne ou non revérifiée.
 
 Abréviations : RN = résultat net ; 9M = neuf premiers mois (au 30/09) ; S1 = premier semestre ; TTM = douze derniers mois ; CP = capitaux propres ; Md = milliard de FCFA ; PER = cours / bénéfice par action ; P/B = capitalisation / capitaux propres ; NPL = créances en souffrance ; CoR = coût du risque.
@@ -24,9 +26,9 @@ Abréviations : RN = résultat net ; 9M = neuf premiers mois (au 30/09) ; S1 = p
 | 6 | Meilleures croissances du RN sur 9M 2026 | BOAN +122 %, BICB +64 %, BBGC +41 %, BOABF +34 %, CBIBF +18 %, BICC +15 % | 30/09/2026 | H | rapports T3 2026 |
 | 7 | RN 9M 2026 en recul | NSBC **−27 %**, ECOC **−12 %**, SGBC −3,5 %, BOAB −3 % | 30/09/2026 | H | rapports T3 2026 |
 | 8 | ROE 2025 les plus élevés | BICC ≈33 % (M), BOAC ≈30 % (M), ECOC 29,0 % (H), SIBC 27,2 % (H), BICB 26,8 % (H) | 2025 | H/M | rapports annuels |
-| 9 | Taux de distribution (payout) > 100 % | **BOAB** : dividende net 2026 ≈ 23,7 Md pour un RN 2025 de 20,1 Md, soit ≈118 % | 2026 | M | BOC + états financiers |
+| 9 | Taux de distribution (payout) > 100 % | **BOAB** : dividende net 2026 ≈ 23,7 Md pour un RN 2025 de 20,1 Md, soit ≈118 % en net et **≈131 % en brut** (brut 650 déduit d'un IRVM béninois de 10 %, inférence). **BOABF** : 91 % en net, mais **≈104 % en brut** si l'IRVM burkinabè est de 12,5 % [NON VÉRIFIÉ] *(corrigé le 22/11/2026)* | 2026 | M | BOC + états financiers ; doc 01 §6.1 |
 | 10 | Exercice 2025 sans dividende | **BOAN** (RN −92 %) ; **ORGT** (dernier dividende en 2020) ; **SAFC** (dernier dividende en 2011) | 2026 | H | communiqué BOA-NG ; BOC |
-| 11 | Changements réglementaires | Capital minimum des banques de l'UMOA porté à **20 Md FCFA**, avec mise en conformité avant fin 2026. C'est la raison des attributions gratuites BOA/SIB de 2024 et de la hausse du nominal de SGCI | 2024-2026 | H | communiqué SGCI 21/02/2025 (cite l'avis BCEAO n°001-01-2024) |
+| 11 | Changements réglementaires | Capital minimum des banques de l'UMOA porté à **20 Md FCFA** (avis BCEAO n°001-01-2024 du **05/01/2024**), avec un délai de 3 ans à compter du 01/01/2024, donc jusqu'au **31/12/2026**. C'est la raison explicite de la hausse du nominal de SGCI. Pour les attributions gratuites BOA/SIB de 2024, le lien est une **inférence** (M) : aucun communiqué BOA/SIB ne l'affirme dans les documents lus | 2024-2026 | H (SGCI) / M (BOA, SIB) | communiqué SGCI 21/02/2025 |
 | 12 | Gouvernance | ETI : l'AGO du 26/10/2026 a été **annulée sur instruction de la Commission Bancaire de l'UMOA** | 23/10/2026 | H | communiqué ETI |
 
 **Classement final (§7)**, à lire comme une liste de priorités de recherche et non comme des ordres d'achat :
@@ -75,7 +77,8 @@ Sources : BOC 20/11/2026 pour le cours, le PER, le rendement net, la variation d
 | ORGT | Oragroup | TG | Principal | 2 500 | 69 986 131 | 175 | 19,8 | 8,02 (**) | 2,38 % (*) | +4,2 % | +0,2 % | 11,6 | 0,52 % |
 
 (*) Le rendement BOC est **périmé** : il se calcule sur le dernier dividende payé, versé en juin 2025 pour BOAN et en juillet 2020 pour ORGT. BOAN ne verse **rien** au titre de 2025, et ORGT ne verse rien depuis 2020.
-(**) Le PER du BOC et la capitalisation BRVM d'ETIT et d'ORGT **ne sont pas fiables** : le BOC divise le résultat consolidé **total** (minoritaires compris) par le nombre de titres. Pour ETIT, le BPA IFRS 2025 publié est de 10,00 FCFA, ce qui donne un **PER de 5,7** au cours de 57, et non 2,98. Ce BPA implique ≈23,7 milliards d'actions, contre 18,08 milliards retenus par la BRVM (voir §8). Pour ORGT, le BPA part du groupe 2025 est de 241 FCFA, soit un **PER de 10,4**.
+(***) *(Ajout du 22/11/2026)* Le rendement BOC de BOAC (5,43 %) est calculé sur 597,53 FCFA, une valeur erronée de la colonne « Dernier dividende payé ». Le dividende réellement appliqué par la BRVM est de 594,53 FCFA (voir §4), ce qui donne un rendement de 5,41 %. Le flottant de BOAN (40,9 %, avis 303) compte la part de SONIMEX (5,73 %) : seul le bloc de BOA West Africa (59,06 %) en est exclu.
+(**) Le PER du BOC et la capitalisation BRVM d'ETIT et d'ORGT **ne sont pas fiables** : le BOC divise le résultat consolidé **total** (minoritaires compris) par le nombre de titres. Pour ETIT, le BPA IFRS 2025 publié est de 10,00 FCFA, ce qui donne un **PER de 5,7** au cours de 57, et non 2,98. Ce BPA implique ≈23,7 milliards d'actions, contre 18,08 milliards retenus par la BRVM (voir §8). Pour ORGT, le BPA part du groupe 2025 est de **264 FCFA (de base)** et de **241 FCFA (dilué)**, soit un **PER de 9,5 (de base) ou de 10,4 (dilué)** *(précisé le 22/11/2026)*. Pour ETIT, la vérification confirme : RN consolidé 2025 de 345 523 M FCFA / 18,084 milliards de titres = 19,1 FCFA, et 57 / 19,1 = 2,98, soit exactement le PER du BOC.
 
 **Lecture** : les trois banques du compartiment Prestige (SGBC, SIBC, ECOC) et BOAC/BBGC sont les plus liquides (≥ 60 M FCFA par séance). Les spreads sont serrés (0,2-0,8 %), sauf ETIT : son pas de cotation de 1 FCFA pour un cours de 57 FCFA représente à lui seul 1,75 %.
 
@@ -85,12 +88,12 @@ Sources : BOC 20/11/2026 pour le cours, le PER, le rendement net, la variation d
 
 | Fait | Détail | Date | Conf. | Source |
 |---|---|---|---|---|
-| Capital social minimum des banques | Le capital minimum des banques et établissements financiers de l'UMOA passe à **20 Md FCFA** (décision du Conseil des ministres de l'UMOA du 21/12/2023, avis BCEAO n°001-01-2024). Les banques ont 3 ans à compter du 01/01/2024 pour s'y conformer. Conséquences observées : attributions gratuites BOA et SIB en 2024 (doc 01, §8.2), nominal SGCI porté de 500 à 643 FCFA (AGE du 28/05/2024), hausse de capital de BICI CI par incorporation de réserves (titre d'un communiqué de 11/2024) | 2024-2026 | H | communiqué SGCI 21/02/2025 ; communiqué BICI 29/11/2024 (titre) |
-| Ratio de solvabilité minimum | **11,50 %** pour la solvabilité totale (et pour SAFC : CET1 ≥ 7,5 %, Tier 1 ≥ 8,5 %, levier ≥ 3 %) | 2025-2026 | H | rapport annuel BIIC 2025 ; rapport T3 2026 SAFCA |
-| Fiscalité des dividendes (CI) | Le calendrier BRVM donne les dividendes **bruts** des sociétés ivoiriennes, avec un **IRVM de 12 %** pour les personnes physiques et de **10 %** pour les personnes morales. Les autres pays sont publiés en net | 06/10/2026 | H | calendrier des dividendes, exercice 2025 |
+| Capital social minimum des banques | Le capital minimum des **banques** de l'UMOA passe à **20 Md FCFA** (décision du Conseil des ministres de l'UMOA du 21/12/2023, avis BCEAO n°001-01-2024 du **05/01/2024**). Les banques ont 3 ans à compter du 01/01/2024 pour s'y conformer, soit jusqu'au 31/12/2026. Le seuil applicable aux **établissements financiers** (cas de SAFC) n'est pas clair dans le texte du communiqué SGCI et reste **[NON VÉRIFIÉ]** : le site de la BCEAO n'est pas accessible depuis cette session *(corrigé le 22/11/2026)*. Conséquences observées : attributions gratuites BOA et SIB en 2024 (doc 01, §8.2), nominal SGCI porté de 500 à 643 FCFA (AGE du 28/05/2024), hausse de capital de BICI CI par incorporation de réserves (titre d'un communiqué de 11/2024) | 2024-2026 | H | communiqué SGCI 21/02/2025 ; communiqué BICI 29/11/2024 (titre) |
+| Ratio de solvabilité minimum | **11,50 %** pour la solvabilité totale (et pour SAFC : CET1 ≥ 7,5 %, Tier 1 ≥ 8,5 %, levier ≥ 3 %, division des risques ≤ 25 %). Une éventuelle surcharge pour les banques d'importance systémique n'a pas été vérifiée **[NON VÉRIFIÉ]** : pour une grande banque, le minimum effectif peut être supérieur à 11,5 % | 2025-2026 | H | rapport annuel BIIC 2025 (« minimum réglementaire BCEAO de 11,50 % ») ; rapport T3 2026 SAFCA (annexe 4) |
+| Fiscalité des dividendes (CI) | Le calendrier BRVM donne les dividendes **bruts** des sociétés ivoiriennes, avec un **IRVM de 12 %** pour les personnes physiques et de **10 %** pour les personnes morales. Les autres pays sont publiés en net. **Exception** : SGBC 2026, avec un brut de 2 606 et un net publié de 2 298,75 (et non 2 606 × 0,88 = 2 293,28). La BRVM a appliqué 2 298,75 au cours de référence (40 000 → 37 705 le 20/08/2026). Il faut donc **toujours utiliser le net publié**, jamais brut × 0,88 *(corrigé le 22/11/2026)* | 06/10/2026 | H | calendrier des dividendes, exercice 2025 ; BOC 20/08/2026 |
 | Saison des dividendes FIN (exercice 2025) | BOABF le 23/04 (premier) ; BOAC le 06/05 ; BOAB et ECOC le 26/05 ; BOAS le 01/06 ; BOAM le 03/06 ; CBIBF le 19/06 ; ETIT le 30/06 ; BICC le 06/07 ; SIBC et BICB le 31/07 ; NSBC le 04/08 ; SGBC le 24/08 (dernier). Date ex-dividende = veille de la date de paiement | 2026 | H | calendrier des dividendes, exercice 2025 |
 | Risque souverain (Sénégal) | Plusieurs obligations de l'État du Sénégal cotent nettement sous le pair (ex. EOS.O24 à 8 500 pour 10 000 de nominal). Les banques sénégalaises (BOAS) portent des titres publics | 20/11/2026 | H (cours) / M (lien) | BOC 20/11/2026, p.5 |
-| Risque pays (Niger) | Créances en souffrance du secteur bancaire nigérien : **24,4 % → 28,6 %** entre 11/2024 et 11/2025 ; crédits du secteur −4,1 % en 2025 | 20/02/2026 | H | communiqué BOA-Niger (« profit warning ») |
+| Risque pays (Niger) | Créances en souffrance du secteur bancaire nigérien : **24,4 % → 28,6 %** entre 11/2024 et 11/2025 ; crédits du secteur −4,1 % en 2025. Le communiqué est daté du 20/02/2026, mais il n'a été publié sur brvm.org que le 18/03/2026 à 09:06 UTC (fichier préfixé 20260313) | 20/02/2026 (publication : 18/03/2026) | H | communiqué BOA-Niger (« profit warning ») ; en-tête HTTP `Last-Modified` |
 | Prime de risque du marché affichée au BOC | 0,58 (indicateur BRVM, définition non documentée ici) | 20/11/2026 | H (valeur) / B (définition) | BOC p.1 |
 
 ---
@@ -114,12 +117,14 @@ RN = résultat net **social** (comptes PCB-UMOA), sauf pour BICB (IFRS depuis 20
 | BOAS | 17,02 | 19,98 | 21,91 | +9,6 % | 16,37 | 18,17 | +11,0 % | 23,7 | +13,5 % | H |
 | CBIBF | 64,25 | 47,94 | 65,50 | +36,6 % | 52,92 | 62,34 | +17,8 % | 74,9 | +1,0 % | H |
 | ETIT (part du groupe) | 174,6 (287,8 M$) | 202,3 (333,2 M$) | 236,8 (407,1 M$) | +22 % ($) | 182,1 (310,0 M$) | 205,8 (364,0 M$) | +17 % ($) | 260,5 | +16,5 % | H |
-| ORGT (total ; part du groupe) | −18,19 ; −19,46 | −44,36 ; n.d. | 21,64 ; ≈16,9 | n.s. | 19,06 | 21,72 | +14 % | 24,3 (total) | n.s. | H |
+| ORGT (total ; part du groupe) | −18,19 ; −19,46 | −44,36 ; **−37,87** | 21,64 ; **18,36** *(corrigé : et non ≈16,9)* | n.s. | 19,06 | 21,72 | +14 % | 24,3 (total) | n.s. | H |
 | SAFC | −0,58 | −0,17 | 0,70 | n.s. | 0,31 | 1,21 | +294 % | 1,6 | n.s. | H |
 | BICB | n.d. (avant IFRS) | 29,0 (IFRS retraité) | 36,2 | +24,7 % | 12,96 | 21,20 | +63,6 % | 44,4 | n.d. | H |
 | BBGC | n.d. | n.d. | ≈27,2 (M) | n.d. | 16,9 | 23,8 | +41 % | ≈34,1 | n.d. | H (9M) / M (2025) |
 
 Notes :
+- ORGT *(corrigé le 22/11/2026)* : les états financiers 2025 donnent un RN « attribuable aux actionnaires de la holding » de **18 355 M** (2024 : −37 865 M), un **BPA de base de 264** FCFA et un **BPA dilué de 241** FCFA. L'ancien chiffre de ≈16,9 Md venait de 241 × 69,99 M d'actions, ce qui mélange le BPA dilué et le nombre d'actions de base.
+- Contrôle croisé (22/11/2026) : pour les 16 valeurs hors ETIT, RN 2025 ≈ (cours / PER BOC) × nombre de titres, à ±0,1 % près (ORGT +0,8 %). Les RN 2025 du tableau sont donc cohérents avec ceux qu'utilise la BRVM.
 - BBGC : le RN 2025 est **déduit** du PER BOC (8 145 / 14,97 = 544 FCFA par action × 50 M d'actions). Il n'a pas été trouvé dans un document de l'émetteur (la note d'information de l'OPV n'a pas pu être lue).
 - ETIT : les montants en FCFA sont publiés par ETI au taux de chaque période. La variation en dollars est la plus parlante.
 - BICB : le RN du 4e trimestre est historiquement élevé. Selon la direction, le RN 9M 2026 représente déjà 59 % du RN 2025.
@@ -143,7 +148,7 @@ ROE = RN / moyenne des CP de début et de fin d'exercice (M), sauf mention « pu
 | BOAS | 23,7 % (M) | 96,5 (12/2025) | 2,87 | 11,7 | 8,5 % | n.d. | emplois −3,4 % (9M 2026) ; exposition au souverain sénégalais | H/M |
 | CBIBF | n.d. (CP non trouvés) | n.d. | n.d. | 11,7 | 8,5 % | n.d. | CoR 2024 40,5 Md (+72 %), puis 16,5 Md en 2025 (−59 %) : nettoyage du portefeuille en 2024 | H |
 | ETIT | **ROTE 27,8 % (publié 2025)** ; 24,9 % sur 9M 2026 | 1 181,8 part du groupe (09/2026) | ≈1,1-1,25 (sur BPA) | ≈5,3 (sur BPA TTM) | ≈19 % | n.d. | créances douteuses **9,4 % → 7,5 %** (12/2025 → 09/2026) ; CoR 287 M$ sur 9M | H/M |
-| ORGT | non significatif (CP part du groupe passés de 94,4 à 54,8 puis 69,5 Md) | 69,5 part du groupe (12/2025) | 2,52 | 9,0 | 11,2 % | n.d. | CoR −69,1 Md (2024) → −7,0 Md (2025) ; crédits −9 % (9M 2026) | H |
+| ORGT | ≈29,5 % (M, RN part du groupe 18,36 / moyenne des CP 54,8 et 69,5), sur une base de fonds propres très mince ; peu significatif | 69,5 part du groupe (12/2025) | 2,52 | 9,0 | 11,2 % | n.d. | CoR −69,1 Md (2024) → −7,0 Md (2025) ; crédits −9 % (9M 2026) | H |
 | SAFC | ≈12,6 % (M) | 8,6 (09/2026) | 4,17 | 22,5 | 4,4 % | **12,11 %** (minimum 11,5 %) | CoR positif (reprises) | H |
 | BICB | **26,8 % (publié)** | 140,8 (09/2026) | 3,08 | 9,8 | 10,3 % | **19,64 %** (CET1 = T1 = total) | couverture ECL IFRS 9 de 1,14 % (2025) puis 1,65 % (S1 2026) ; CoR = 26 % du RBE | H |
 | BBGC | n.d. | n.d. | n.d. | ≈11,9 (M) | ≈8,4 % | n.d. | CoR 5,9 Md (+28 %) ; crédits **+39 %** sur un an | H/M |
@@ -156,6 +161,8 @@ ROE = RN / moyenne des CP de début et de fin d'exercice (M), sauf mention « pu
 
 Source : colonne « Dernier dividende payé » des BOC 2020-2026 (montants **nets** par action, en FCFA, classés par **année de paiement** ; le dividende payé en N porte sur l'exercice N−1). Les colonnes « ajustées » tiennent compte des attributions gratuites de 2024 (doc 01, §8.2). Payout de l'exercice 2025 = dividende 2026 × nombre de titres / RN 2025.
 
+> *(Corrigé le 22/11/2026)* Le payout est calculé ici sur le **brut** pour les sociétés ivoiriennes et sur le **net** pour les autres. Les deux ne sont donc pas comparables. Le payout économique est celui du **brut** (ce que la société distribue). Pour les émetteurs non ivoiriens, le brut se déduit du net avec l'IRVM du pays (doc 01 §6.1 : BJ ≈10 % pour BOAB, ≈5 % pour BICB ; BF 12,5 % [NON VÉRIFIÉ] ; ML et NE 7 % ; SN 10 % ; TG non vérifié). Les payouts bruts figurent entre crochets dans la colonne.
+
 | Symb. | 2021 | 2022 | 2023 | 2024 | 2025 | 2026 | Ajustement attributions | Série ajustée 2021→2026 | Payout exercice 2025 | Conf. |
 |---|---:|---:|---:|---:|---:|---:|---|---|---:|---|
 | SGBC | 368,30 | 1 004,93 | 1 112,43 | 1 553,85 | 1 645,78 | 2 298,75 (brut 2 606) | aucun | identique | **80 % brut** (57,25 % pour l'exercice 2024) | H |
@@ -163,10 +170,10 @@ Source : colonne « Dernier dividende payé » des BOC 2020-2026 (montants **net
 | ECOC | 294,30 | 420,30 | 549 | 594 | 707,52 | 781,44 (brut 888) | aucun | identique | 77 % brut (publié) | H |
 | BICC | 50 | 518 | 401,40 | 540,90 | 830,72 | 1 157,20 (brut 1 315) | aucun (même nombre de titres) | identique | 60 % brut | H |
 | NSBC | — | — | 363,60 | 454,83 | 668,15 | 675,98 (brut 768,16) | aucun | identique | 47 % brut | H |
-| BOAB | 436 | 546 | 627 | 706 | 468 | 585 | 1:1 le 03/09/2024 (×0,5) | 218 ; 273 ; 313,5 ; 353 ; 468 ; 585 | **≈118 % net** | H/M |
-| BOABF | 370 | 448 | 577 | 704 | 428 | 397 | 1:1 le 28/08/2024 (×0,5) | 185 ; 224 ; 288,5 ; 352 ; 428 ; 397 | ≈91 % net | H/M |
-| BOAC | 315 | 374 | 540 | 684 | 469 | 597,53 | 1:1 le 25/10/2024 (×0,5) | 157,5 ; 187 ; 270 ; 342 ; 469 ; 597,5 | ≈67 % net | H/M |
-| BOAM | — | — | — | 144 | 237,15 | 305,04 | 1:2 le 28/08/2024 (×2/3) | — ; — ; — ; 96 ; 237,15 ; 305,04 | ≈76 % net | H/M |
+| BOAB | 436 | 546 | 627 | 706 | 468 | 585 | 1:1 le 03/09/2024 (×0,5) | 218 ; 273 ; 313,5 ; 353 ; 468 ; 585 | **≈118 % net** [≈131 % brut] | H/M |
+| BOABF | 370 | 448 | 577 | 704 | 428 | 397 | 1:1 le 28/08/2024 (×0,5) | 185 ; 224 ; 288,5 ; 352 ; 428 ; 397 | ≈91 % net [**≈104 % brut**, IRVM 12,5 % NON VÉRIFIÉ] | H/M |
+| BOAC | 315 | 374 | 540 | 684 | 469 | **594,53** *(corrigé : 597,53 au BOC)* | 1:1 le 25/10/2024 (×0,5) | 157,5 ; 187 ; 270 ; 342 ; 469 ; 594,5 | ≈67 % net [≈76 % brut si IRVM 12 %] | H/M |
+| BOAM | — | — | — | 144 | 237,15 | 305,04 | 1:2 le 28/08/2024 (×2/3) | — ; — ; — ; 96 ; 237,15 ; 305,04 | ≈76 % net [≈81 % brut] | H/M |
 | BOAN | 429,66 | 567,30 | 613,80 | 609,15 | 209,25 | **0** | 3:5 le 04/09/2024 (×0,625) | 268,5 ; 354,6 ; 383,6 ; 380,7 ; 209,25 ; 0 | 0 % | H |
 | BOAS | 161,01 | — | 187,50 | 300 | 350 | 450 | 1:2 le 29/08/2024 (×2/3) | 107,3 ; — ; 125 ; 200 ; 350 ; 450 | ≈74 % net | H/M |
 | CBIBF | 406 | 448 | 525 | 790 | 555 | 900 | aucun | identique | ≈44 % net | H/M |
@@ -176,9 +183,9 @@ Source : colonne « Dernier dividende payé » des BOC 2020-2026 (montants **net
 | BICB | (non cotée) | — | — | — | 254,6 | 254,6 | aucun | identique | ≈41 % net | H |
 | BBGC | (non cotée) | — | — | — | — | — | — | premier dividende attendu en 2027 (non annoncé) | — | H |
 
-Anomalies relevées dans les BOC : (a) ECOC affiche en 2023 une date « 30-mai-22 » pour le dividende de 549 FCFA payé en 2023. Il s'agit d'une coquille de date à corriger. (b) BOAC : 597,53 au BOC contre 594,528 au calendrier BRVM et 594,5 sur la page émetteur (écart < 0,5 %). Retenir la valeur du BOC pour l'ajustement des prix, puisque c'est elle que la BRVM applique au cours de référence.
+Anomalies relevées dans les BOC : (a) ECOC affiche en 2023 une date « 30-mai-22 » pour le dividende de 549 FCFA payé en 2023. Il s'agit d'une coquille de date à corriger. (b) BOAC *(corrigé le 22/11/2026 ; la recommandation précédente est **réfutée**)* : le BOC du 04/05/2026 (ligne « (d) ») affiche 594,53 et une référence ex de 8 845 pour une clôture de 9 435. Or 9 435 − 594,53 = 8 840,47, arrondi au pas supérieur de 5 FCFA = 8 845, alors que 597,53 donnerait 8 840. La colonne ne passe à 597,53 qu'à partir du BOC du 05/05/2026. **La BRVM a donc appliqué 594,53** (calendrier : 594,528 ; page émetteur : 594,5). Pour l'ajustement des prix, retenir 594,528 et considérer 597,53 comme une coquille du BOC.
 
-**Lecture** : SGBC, ECOC, BICC, BOAS, BOAC et CBIBF combinent un dividende ajusté en hausse régulière et un payout soutenable (≤ 80 %). Pour BOAB, le dividende 2026 dépasse le bénéfice 2025. Il est donc **financé en partie par les réserves**, ce qui n'est pas soutenable sans reprise des résultats.
+**Lecture** : SGBC, ECOC, BICC, BOAS, BOAC et CBIBF combinent un dividende ajusté en hausse régulière et un payout soutenable (≤ 80 % en brut pour les sociétés ivoiriennes). Pour BOAB, le dividende 2026 dépasse le bénéfice 2025, en net (118 %) comme en brut (≈131 %). Il est donc **financé en partie par les réserves**, ce qui n'est pas soutenable sans reprise des résultats. *(Ajout du 22/11/2026)* Pour BOABF, le brut est probablement **supérieur au RN 2025 lui aussi** (≈104 % avec un IRVM de 12,5 %, ≈96 % avec 5 %). Le constat dépend du taux d'IRVM du Burkina, qui reste [NON VÉRIFIÉ].
 
 ---
 
@@ -217,7 +224,7 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 - **Résultats** : RN 12,4 Md (2022), 16,7 Md (2023), 26,2 Md (2024), **36,5 Md (2025, +39,2 %)**. 9M 2026 : PNB 65,2 Md (+12,1 %), RN **31,4 Md (+14,7 %)**. Moteurs : portefeuille titres (+25,6 % en 2025) et commissions (+29,8 %). Les crédits nets **reculent** (−7,2 % en 2025, −1,2 % sur 9M 2026) et les dépôts augmentent (+16,3 %, puis +9,1 %) (H).
 - **Rentabilité** : ROE 2025 ≈33 % (M ; CP de 99,8 → 120,6 Md) (M).
 - **Dividende** : brut de 1 315 FCFA (payout 60 %) ; net de 1 157,20 FCFA le 06/07/2026 (H).
-- **Actionnariat** : décret du 28/09/2022 autorisant un consortium ivoirien (**BNI, CNPS, CDC-CI, IPS-CGRAE**) à racheter **67,49 %** (BNP Paribas 59,79 % + Proparco 7,70 %) pour 80 Md FCFA. **Brandon & McAin Capital** a franchi le seuil de 10 % (19,11 %) le 27/06/2023 en rachetant les titres des sociétés SUNU au cours de 6 945 FCFA (H). Le flottant officiel de 32,5 % (avis 303) est incohérent avec ces deux blocs (67,49 % + 19,11 %) : voir §10.
+- **Actionnariat** : décret du 28/09/2022 autorisant un consortium ivoirien (**BNI, CNPS, CDC-CI, IPS-CGRAE**) à racheter **67,49 %** (BNP Paribas 59,79 % + Proparco 7,70 %) pour 80 Md FCFA. **Brandon & McAin Capital** a franchi le seuil de 10 % (19,11 %) le 27/06/2023 en rachetant les titres des sociétés SUNU au cours de 6 945 FCFA (H). *(Corrigé le 22/11/2026)* Le flottant officiel de 32,51 % (avis 303 : 5 418 860 titres) **n'est pas incohérent** : 16 666 670 − 11 247 810 (bloc du consortium) = 5 418 860, exactement. La BRVM n'exclut que le bloc de contrôle et compte les 19,11 % de Brandon & McAin dans le flottant. Le flottant **économique** est donc d'au plus ≈13,4 % si ce bloc est toujours détenu (détention actuelle [NON VÉRIFIÉ]).
 - **Verdict** : la croissance la plus forte des banques ivoiriennes et un ROE de premier plan. Mais la croissance vient de la **trésorerie et des titres, pas du crédit**, ce qui la rend sensible à une baisse des taux BCEAO. Valorisation élevée (P/B 4,3), liquidité faible. **Rang 5.**
 
 ### 5.5 NSBC — NSIA Banque Côte d'Ivoire (CI, Principal)
@@ -230,7 +237,7 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 
 ### 5.6 BBGC — Bridge Bank Group Côte d'Ivoire (CI, Principal)
 - **Marché** : 8 145 FCFA ; 407 Md ; PER BOC 14,97 ; introduite le **24/09/2026** au prix de 6 750 FCFA (+20,7 % depuis), avec un premier cours de 7 255 FCFA et 4 séances bloquées à la hausse (doc 01) (H).
-- **OPV** : 20 % du capital (10 M d'actions) cédés par Bridge Group West Africa ; 67,5 Md offerts pour une demande de **95,8 Md** de 17 544 investisseurs ; clôture le 20/07/2026 (H).
+- **OPV** : 20 % du capital (10 M d'actions) cédés par Bridge Group West Africa ; 67,5 Md offerts (10 M × 6 750, H). La demande de 95,8 Md émanant de 17 544 investisseurs et la date de clôture n'ont pas pu être relues pendant la vérification **[NON VÉRIFIÉ]**. Le doc 01 donne une période d'OPV du 20 au 21/07/2026. Vérifié (avis 285-2026 et BOC) : première cotation le 24/09/2026 à 7 255 FCFA (+7,48 %, borne haute), compartiment Principal, 50 M d'actions, puis borne haute les 25, 28 et 29/09. Au 20/11/2026, le titre compte 42 séances de cotation (41 BOC disponibles et 1 manquant), et non 40.
 - **Résultats** : RN S1 2026 de 15,2 Md (+46 %). RN 9M 2026 de **23,8 Md (+41 %)** ; PNB 59,3 Md (+28 %) ; coefficient d'exploitation 41,7 % ; crédits 924 Md (+39 %) ; dépôts 1 294 Md (+40 %) (H). RN 2023-2025 non trouvé dans un document de l'émetteur ; 2025 ≈27,2 Md déduit du BOC (M).
 - **Actionnariat** : Bridge Group West Africa ≈80 % après l'OPV (M : 100 % − 20 %).
 - **Verdict** : croissance la plus rapide du secteur. Mais historique de cotation très court, aucun dividende encore versé et ratios de solvabilité non publiés dans les documents lus. Une croissance de bilan de +40 % par an consomme du capital. **Rang 11** (en quarantaine IPO, voir §9).
@@ -239,7 +246,8 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 - **Marché** : 10 995 FCFA ; 440 Md ; PER BOC 12,37 ; rendement 5,43 % ; +53,1 % depuis le 1er janvier ; très liquide (82 M FCFA par séance, spread 0,33 %) (H).
 - **Résultats** : PNB 60,8 / 72,7 / 73,5 Md et RN **26,1 / 32,0 / 35,5 Md** (2023/2024/2025). 9M 2026 : PNB 57,8 Md (+8,0 %), RN **29,7 Md (+11,4 %)**, crédits nets 495 Md (**+19,9 %**), dépôts 942 Md (+17,7 %), coefficient d'exploitation 35,7 % (H).
 - **Rentabilité** : ROE 2024 ≈30,7 % (M, CP 95,8 → 112,6 Md). ROE 2025 ≈30 % (M, CP 2025 **estimés** à ≈127 Md, car les états financiers 2025 scannés n'ont pas été lus en détail).
-- **Dividende** : nets de 315 → 597,53 FCFA (série ajustée 157,5 → 597,5) ; payout ≈67 % (M).
+- **Dividende** : nets de 315 → **594,53** FCFA (série ajustée 157,5 → 594,5 ; la valeur de 597,53 du BOC est une coquille, voir §4) ; payout ≈67 % en net (M).
+- **Vérifié le 22/11/2026 (OCR du rapport T3 2026)** : RN de 29 657 contre 26 632 M (+11,35 %), crédits nets de 495 097 M (+19,94 %), dépôts de 942 180 M (+17,71 %), coût du risque de 3 440 M. Les états financiers 2025 ont été publiés sur brvm.org le **12/06/2026** (rapport des CAC). Leur bilan n'a pas pu être lu par OCR : les CP 2025 restent estimés **[NON VÉRIFIÉ]**.
 - **Actionnariat** : **BOA West Africa 69,68 %**, flottant 30,32 % (31/12/2025, page émetteur BRVM) (H).
 - **Verdict** : le meilleur équilibre du secteur entre ROE ≈30 %, croissance des crédits à deux chiffres, PER TTM 11,4, rendement 5,4 %, liquidité et pays (CI). **Rang 1.**
 
@@ -272,7 +280,7 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 - **Résultats** : RN **29,1 / 22,4 / 19,3 Md** (2023/2024/2025 ; deux années de baisse : −22,9 % puis −14,1 %). 9M 2026 : PNB 45,7 Md (+5,6 %), RN **18,1 Md (+34,2 %)**, commissions +23,3 % (H).
 - **Bilan** : emplois clientèle −19,3 % en 2025 (474 Md), puis +2,2 % sur 9M 2026 ; dépôts 939 Md (H).
 - **Rentabilité** : ROE 2025 ≈15,1 % (M), ≈19 % en TTM (M).
-- **Dividende** : net de 397 FCFA, en baisse pour la deuxième année consécutive après ajustement (428 → 397). Payout ≈91 % (M).
+- **Dividende** : net de 397 FCFA, en baisse pour la deuxième année consécutive après ajustement (428 → 397). Payout ≈91 % en net (M), soit **≈104 % en brut** si l'IRVM est de 12,5 % (brut ≈454 FCFA) [NON VÉRIFIÉ]. Le dividende pourrait donc dépasser le RN 2025, comme chez BOAB *(ajout du 22/11/2026)*.
 - **Actionnariat** : BOA West Africa, majoritaire selon la page émetteur de 2014 (52,38 % à l'époque, B). Flottant de 43,5 %.
 - **Verdict** : le rebond 2026 est réel, mais le cours a déjà doublé en 2026 et l'historique 2023-2025 est mauvais. **Rang 12.**
 
@@ -297,7 +305,8 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 - **Résultats** : RN **10,1 / 5,0 / 0,4 Md** (2023/2024/2025 : −50 % puis −92 %). Alertes sur résultats les 18/12/2025 et 20/02/2026. Crédits −20,9 % en 2025. 9M 2026 : RN **6,3 Md (+122 %)**, coefficient d'exploitation de 63,4 % à 54,2 %, CoR −23 % (H).
 - **Rentabilité et solidité** : ROE de 11,4 % (2024), 1,0 % (2025), **16,0 %** (T1 2026). Solvabilité 15,4 % → 14,1 % → 17,4 % (H).
 - **Dividende** : **aucun dividende au titre de 2025** (communiqué de presse du 27/04/2026). Le rendement BOC de 4,73 % est donc trompeur (H).
-- **Actionnariat** : BOA West Africa 59,06 %, SONIMEX 5,73 %, flottant 35,21 % (31/12/2025) (H).
+- **Actionnariat** : BOA West Africa 59,06 %, SONIMEX 5,73 %, flottant 35,21 % (31/12/2025, page émetteur) (H). L'avis BRVM 303 retient un flottant de 40,94 %, qui inclut SONIMEX.
+- **Publication** *(ajout du 22/11/2026)* : l'alerte sur résultats du conseil du 20/02/2026 n'a été mise en ligne sur brvm.org que le 18/03/2026 à 09:06 UTC. Dans un backtest, l'événement date du **18/03**, pas du 20/02.
 - **Verdict** : pari de redressement (PER ≈11 sur le 9M 2026 annualisé). Mais le système bancaire nigérien est très dégradé (28,6 % de NPL sectoriel) et le cours a déjà rebondi de 69 %. **Rang 15.**
 
 ### 5.15 BOAS — Bank of Africa Sénégal (SN, Principal)
@@ -317,8 +326,8 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 - **Verdict** : de loin la moins chère (PER ≈5, P/B ≈1,2) avec une rentabilité en hausse. Mais le différend avec le superviseur, le dividende symbolique, l'exposition aux devises (Nigeria, Ghana, etc.) et un spread de 3 % justifient une forte décote. **Rang 6** : poche « valeur / événement », pas un cœur de portefeuille.
 
 ### 5.17 ORGT — Oragroup (TG, Principal)
-- **Marché** : 2 500 FCFA ; 175 Md ; PER BOC 8,02 (sur le RN total) ; PER part du groupe ≈10,4 ; aucun dividende depuis 2020 (H/M).
-- **Résultats (IFRS consolidé)** : RN total **−18,2 Md (2023 ; part du groupe −19,5), −44,4 Md (2024), +21,6 Md (2025 ; BPA part du groupe 241 FCFA)**. 9M 2026 : PNB 165,0 Md (+8 %), RN **21,7 Md (+14 %)**, crédits nets −9 % depuis décembre, dépôts +11 % (H).
+- **Marché** : 2 500 FCFA ; 175 Md ; PER BOC 8,02 (sur le RN total) ; PER part du groupe ≈9,5 (BPA de base) ou ≈10,4 (BPA dilué) ; aucun dividende depuis 2020 (H/M).
+- **Résultats (IFRS consolidé)** : RN total **−18,2 Md (2023 ; part du groupe −19,5), −44,4 Md (2024 ; part du groupe −37,9), +21,6 Md (2025 ; part du groupe 18,36 Md ; BPA de base 264, BPA dilué 241 FCFA)** *(corrigé le 22/11/2026)*. 9M 2026 : PNB 165,0 Md (+8 %), RN **21,7 Md (+14 %)**, crédits nets −9 % depuis décembre, dépôts +11 % (H).
 - **Solidité** : capitaux propres part du groupe de 94,4 Md (2023) à **54,8 Md (2024)** puis 69,5 Md (2025) pour un bilan de 4 014 Md. La base de fonds propres est **très mince** au regard du bilan (H).
 - **Actionnariat et événements** : ECP Financial Holding (EFH) est l'actionnaire majoritaire. Les cessions à Vista (02/08/2023, puis 30/09/2024) ont été annulées : Vista s'est retiré le 13/05/2025. Le 19/05/2025, le conseil a validé un **plan alternatif avec les actionnaires institutionnels, dont la BOAD**, avec une première tranche de **80 Md FCFA d'augmentation de capital** (H). L'exécution de ce plan à fin 2026 n'a pas pu être vérifiée.
 - **Verdict** : redressement en cours, mais une **dilution importante est probable** (80 Md à lever face à une capitalisation de 175 Md) et le dividende reste absent. **Rang 16.**
@@ -350,6 +359,7 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 - Une donnée manquante reçoit le rang 0,4 : c'est une pénalité volontaire, l'opacité étant un risque.
 - **Score** = (Q × V × G)^(1/3), soit une moyenne géométrique : une seule dimension faible pénalise le score.
 - **Ajustement qualitatif final** (voir les justifications) : risque pays, gouvernance, liquidité, historique de cotation, soutenabilité du dividende.
+- *(Note de vérification du 22/11/2026)* Cet ajustement **n'est pas codifié**. Il fait passer ETIT du 2e au 6e rang et BICB du 4e au 2e, ce qui ne se reproduit pas à partir des scores bruts. Dans le code, seul le score brut multiplié par les coefficients de §9.3-§9.4 doit servir. Le classement final est un avis d'analyste, pas un résultat du modèle. Les poids, le rang de 0,4 pour une donnée manquante et le plancher de ROE sont des **choix de conception** : aucune étude ne les étaye et aucun backtest ne les a validés.
 
 ### 7.2 Scores bruts calculés (M)
 
@@ -387,8 +397,8 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 | 8 | **CBIBF** | Satellite | RN +18 % sur 9M, payout 44 % (marge de hausse du dividende) | +155 % depuis le 1er janvier ; Burkina et Niger ; ROE non vérifié |
 | 9 | **SIBC** | Qualité chère | ROE 27 %, croissance régulière | P/B 4,0 ; PER 14 |
 | 10 | **ECOC** | À surveiller | ROE 25-29 %, dividende 5,3 % | RN −12 % sur 9M ; NPL +28 % ; CoR ×11 |
-| 11 | **BBGC** | Quarantaine IPO | croissance +40 % | introduite il y a 40 séances ; pas de dividende ; solvabilité inconnue |
-| 12 | **BOABF** | Rebond déjà payé | RN +34 % sur 9M | cours ×2 depuis le 1er janvier ; RN 2023-2025 en baisse ; payout 91 % |
+| 11 | **BBGC** | Quarantaine IPO | croissance +40 % | introduite il y a 42 séances ; pas de dividende ; solvabilité inconnue |
+| 12 | **BOABF** | Rebond déjà payé | RN +34 % sur 9M | cours ×2 depuis le 1er janvier ; RN 2023-2025 en baisse ; payout de 91 % en net, ≈104 % en brut [IRVM NON VÉRIFIÉ] |
 | 13 | **NSBC** | Piège à valeur possible | P/B 1,6, PER 10,9 | RN −27 % ; bilan −6 % ; crédits −19 % |
 | 14 | **BOAB** | Dividende fragile | rendement 6,4 % | payout ≈118 % ; RN stagnant ; PER 19 |
 | 15 | **BOAN** | Spéculatif (redressement) | RN +122 % sur 9M ; ROE du T1 2026 à 16 % | Niger (28,6 % de NPL sectoriel) ; aucun dividende 2025 |
@@ -403,17 +413,19 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 
 | # | Anomalie | Traitement recommandé | Conf. |
 |---|---|---|---|
-| 1 | PER BOC d'ETIT (2,98) et d'ORGT (8,02) calculés sur le RN consolidé **total** | recalculer le PER sur le BPA part du groupe publié (ETIT 10,00 FCFA ; ORGT 241 FCFA) | H |
+| 1 | PER BOC d'ETIT (2,98) et d'ORGT (8,02) calculés sur le RN consolidé **total** (vérifié pour ETIT : 345 523 M / 18,084 Md de titres = 19,1 FCFA) | recalculer le PER sur le BPA part du groupe publié : ETIT 10,00 FCFA (de base = dilué) ; ORGT **264 de base / 241 dilué**. Choisir une convention unique (de base par défaut) | H |
 | 2 | Nombre d'actions ETI : 18,08 milliards selon la BRVM, contre ≈23,7 milliards impliqués par le BPA et ≈25 milliards par le dividende (40 M$ / 0,0016 $) | utiliser le BPA publié pour le PER, et le nombre BRVM pour les poids d'indice. Question ouverte | M |
 | 3 | Rendement BOC périmé quand aucun dividende n'est voté (BOAN 2026, ORGT, SAFC) | rendement « attendu » = dernier dividende voté pour l'exercice N−1, mis à 0 si l'émetteur annonce une absence de dividende | H |
 | 4 | PER BOC de BOAN (224,6) sur un RN 2025 exceptionnellement bas | utiliser le PER TTM et signaler les variations de RN > ±50 % | H |
 | 5 | Attributions gratuites BOA et SIB de 2024 (ratios 1:1, 1:2, 3:5) | ajuster les dividendes et les cours historiques (facteurs §4 ; doc 01, §8.2) | H |
 | 6 | DPS SAFC d'avril 2026 (émission à 400 FCFA, valeur du DPS 1 615 FCFA) | ajuster la série de cours (facteur = réf. ex / (réf. ex + DPS)) ; la variation BOC depuis le 1er janvier (−8,3 %) n'est **pas** ajustée | H |
 | 7 | Date erronée dans le BOC (ECOC, dividende 549 daté « 30-mai-22 » en 2023) | dédupliquer par montant, en gardant la première séance d'apparition | H |
-| 8 | BOAC : dividende de 597,53 (BOC) contre 594,528 (calendrier) | utiliser le montant du BOC pour l'ajustement du cours de référence | H |
+| 8 | BOAC : dividende de 597,53 (BOC) contre 594,528 (calendrier) | *(corrigé le 22/11/2026)* utiliser **594,528**, la valeur effectivement appliquée par la BRVM à la référence ex du 04/05/2026 (9 435 → 8 845). Règle générale : lire le dividende sur la ligne « (d) » (dernière séance avec dividende), et non sur les BOC suivants | H |
 | 9 | PDF scannés (BOA, Coris, Oragroup) : pdftotext renvoie 0 caractère | prévoir une OCR ou une saisie manuelle contrôlée ; vérifier la cohérence (RN 9M ≤ RN annuel, etc.) | H |
 | 10 | Texte parasite dans un PDF SIB (« Bonsoir M.KADER ») | contrôles de cohérence numérique, sans faire confiance à la seule mise en page | H |
-| 11 | Flottant officiel de BICC (32,5 %) incohérent avec les blocs déclarés (67,49 % + 19,11 %) | signaler ; ne pas utiliser le flottant comme facteur de pondération sans contrôle | M |
+| 11 | Flottant officiel de BICC (32,51 %) : il exclut seulement le bloc du consortium (5 418 860 = 16 666 670 − 11 247 810), et pas les 19,11 % de Brandon & McAin *(expliqué le 22/11/2026)* | le flottant BRVM n'est pas un flottant économique : ne pas l'utiliser seul pour la liquidité ou la pondération | H |
+| 12 | Préfixe AAAAMMJJ du nom de fichier ≠ heure de mise en ligne (*ajout du 22/11/2026*). Sur les 79 PDF cités, d'après l'en-tête `Last-Modified` : 59 sont en ligne avant la séance J+1, 18 pendant ou après cette séance (ECOC T3 à 12:03, Coris T3 à 17:29, ETI 2025 à 11:59, etc.), 1 à J+4 (alerte BOAN) et 1 porte un préfixe erroné (n°13) | rendre la donnée disponible à la **première séance dont la pré-ouverture (09:00 UTC) suit le `Last-Modified`**, et au plus tôt à J+1. À défaut d'en-tête, utiliser J+2 | H |
+| 13 | Préfixe erroné : `20260703_-_rapport_dactivites_-_4e_trimestre_2024_-_safca_ci.pdf` a un `Last-Modified` du **03/07/2025**, soit un préfixe décalé d'un an | si `Last-Modified` < préfixe − 30 jours, prendre `Last-Modified` et signaler l'anomalie | H |
 
 ---
 
@@ -421,7 +433,7 @@ Chaque fiche indique les faits, puis un verdict. Les URL complètes sont en §11
 
 ### 9.1 Données fondamentales point-in-time
 
-Un chiffre fondamental n'est utilisable qu'**à partir de la séance qui suit sa publication sur brvm.org**. La date de publication figure dans le préfixe AAAAMMJJ du nom de fichier. Délais observés pour les publications de 2026 (H) :
+Un chiffre fondamental n'est utilisable qu'**à partir de la séance qui suit sa publication sur brvm.org**. *(Corrigé le 22/11/2026)* Le préfixe AAAAMMJJ du nom de fichier n'est **pas** l'heure de mise en ligne : c'est une date de document ou de réception. L'en-tête HTTP `Last-Modified` (simple requête HEAD) montre que 18 des 79 PDF cités sont arrivés pendant ou après la séance J+1, et un à J+4. La règle « J+1 » introduirait donc un biais d'anticipation sur ≈24 % des publications. Il faut utiliser `Last-Modified` quand il est disponible, sinon J+2. Ce chiffre de `Last-Modified` est un majorant de la première mise en ligne (un fichier remplacé garde la date du remplacement), donc la règle reste prudente. Délais observés pour les publications de 2026 (H) :
 
 | Publication | Plus précoce | Plus tardive | Exemples |
 |---|---|---|---|
@@ -433,7 +445,12 @@ Un chiffre fondamental n'est utilisable qu'**à partir de la séance qui suit sa
 ```yaml
 fundamentals:
   source: brvm.org/fr/rapports-societe-cotes/<slug>   # liste des PDF par émetteur
-  availability_lag_sessions: 1        # utilisable à partir de la séance J+1 après la date du nom de fichier
+  # (corrigé le 22/11/2026) J+1 réfuté : 18/79 PDF en ligne pendant ou après la séance J+1, 1 à J+4
+  availability_rule: "first_session_with_preopen_after(max(prefix_date+1 session, http_last_modified))"
+  preopen_utc: "09:00"
+  availability_lag_sessions_fallback: 2   # si pas d'en-tête Last-Modified : J+2 après la date du nom de fichier
+  prefix_sanity_check_days: 30            # si Last-Modified < préfixe - 30 j, le préfixe est faux (SAFCA T4 2024)
+  event_date: publication_on_brvm         # ex. alerte BOAN : 18/03/2026, et non la date du conseil (20/02/2026)
   stale_after_days: 200               # donnée trimestrielle considérée comme périmée au-delà
   ttm_rule: "RN_FY(N-1) + RN_YTD(N) - RN_YTD(N-1)"
   unaudited_flag: true                # T1/T3 non audités : poids réduit
@@ -457,7 +474,7 @@ fundamentals:
     ORGT: oragroup
   eps_override:   # BPA à utiliser à la place du BOC
     ETIT: {basis: "group_share_ifrs", eps_fy2025_fcfa: 10.00}
-    ORGT: {basis: "group_share_ifrs", eps_fy2025_fcfa: 241}
+    ORGT: {basis: "group_share_ifrs", eps_basic_fy2025_fcfa: 264, eps_diluted_fy2025_fcfa: 241, ni_group_fy2025_mfcfa: 18355}  # corrigé le 22/11/2026
   ocr_required: [BOAB, BOABF, BOAC, BOAM, BOAN, BOAS, CBIBF, ORGT]
 ```
 
@@ -486,15 +503,20 @@ fin_score:
 ### 9.3 Signaux d'alerte (drapeaux binaires, seuils chiffrés)
 
 ```yaml
+# Tous les seuils ci-dessous sont des CHOIX DE CONCEPTION calibrés sur 1 ou 2 exemples (risque de surajustement).
+# Ils n'ont été validés par aucune étude ni aucun backtest (vérification du 22/11/2026).
 red_flags:
-  payout_net_gt: 1.00            # BOAB 2026 ≈ 1.18
-  ni_ytd_drop_lt_pct: -15        # NSBC -27 %, ECOC -12 % (orange à -10 %)
-  cost_of_risk_multiple_gt: 3.0  # ECOC 9M 2026 : 8.1 / 0.7 Md
-  npl_ratio_gt_pct: 8.0          # SGBC atteint 8.0 % en 2025
+  payout_gross_gt: 1.00          # corrigé le 22/11/2026 : brut = net / (1 - IRVM du pays) ; BOAB ≈1.31 ; BOABF ≈1.04 [IRVM BF NON VÉRIFIÉ]
+  payout_net_gt: 1.00            # repli si l'IRVM est inconnu ; BOAB ≈1.18 (BOABF 0.91 n'est alors pas détecté)
+  ni_ytd_drop_lt_pct: -15        # NSBC -27 %, ECOC -12.3 % (orange à -10 %), vérifiés sur les rapports T3 2026
+  cost_of_risk_multiple_gt: 3.0  # ECOC 9M 2026 : 8.079 / 0.702 Md = 11.5x
+  cost_of_risk_min_base_pct_loans: 0.25  # garde-fou : multiple ignoré si le CoR N-1 < 0.25 % des crédits ou en reprise nette (BICC, SAFC)
+  npl_ratio_ge_pct: 8.0          # ">=" (et non ">") pour que SGBC (8.0 % en 2025) soit bien détecté ;
+                                 # les définitions de NPL diffèrent (brut PCB, IFRS stage 3, ETI) : ne comparer que des séries homogènes
   npl_growth_yoy_gt_pct: 25      # ECOC +28 %
   solvency_buffer_lt_pp: 2.0     # solvabilité - 11.5 % < 2 pp -> SAFC (0.6 pp)
   loans_yoy_lt_pct: -15          # NSBC -19 %, BOABF -19 % (2025), BOAN -21 %
-  profit_warning_window_days: 120  # après une « alerte sur résultats » (BOAN 12/2025, 02/2026)
+  profit_warning_window_days: 120  # après une « alerte sur résultats » (BOAN 12/2025, 02/2026), compté à partir de la mise en ligne sur brvm.org (18/03/2026 pour celle du 20/02)
   regulator_intervention: true   # ETI : AGO annulée sur instruction de la Commission Bancaire (23/10/2026)
   no_dividend_years_ge: 3        # ORGT (depuis 2020), SAFC (depuis 2011)
   pending_dilution: true         # ORGT : plan de 80 Md ; SAFC : besoins futurs
@@ -506,7 +528,7 @@ action_on_flag:
 ### 9.4 Risque pays, IPO et liquidité
 
 ```yaml
-country_risk_multiplier:   # appliqué au poids maximum, cohérent avec le doc 05
+country_risk_multiplier:   # appliqué au poids maximum, cohérent avec le doc 05 ; JUGEMENT, aucune source chiffrée [NON VÉRIFIÉ]
   CI: 1.0
   BJ: 1.0
   SN: 0.85       # dette souveraine, obligations sous le pair
@@ -514,7 +536,7 @@ country_risk_multiplier:   # appliqué au poids maximum, cohérent avec le doc 0
   BF: 0.75
   ML: 0.7
   NE: 0.6        # NPL sectoriel 28.6 % (11/2025)
-ipo_quarantine_sessions: 60      # BBGC (1re cotation le 24/09/2026) éligible fin décembre 2026
+ipo_quarantine_sessions: 60      # choix de conception (sans base empirique) ; BBGC : 42 séances au 20/11/2026 -> éligible vers le 16/12/2026 si aucun jour férié
 liquidity:
   min_median_value_per_session_fcfa: 10_000_000    # exclut aucun FIN actuel ; BICC (13.6 M) et ORGT (11.6 M) sont à la limite
   max_participation_of_median_value: 0.10
@@ -527,13 +549,19 @@ sector_cap_pct: 45               # le secteur FIN pèse lourd dans les indices ;
 
 ```yaml
 dividends:
-  source_priority: [boc_last_div, brvm_calendar_pdf, avis_paiement]
+  # corrigé le 22/11/2026 : lire le montant sur la ligne "(d)" du BOC (dernière séance avec dividende) ;
+  # la colonne des BOC suivants peut être fausse (BOAC : 597.53 au lieu de 594.53 appliqué)
+  source_priority: [boc_d_line_div, avis_paiement, brvm_calendar_pdf, boc_last_div]
   ci_gross_to_net:                 # calendrier 2025 : sociétés ivoiriennes publiées en brut
-    natural_person: 0.88           # IRVM 12 %
+    natural_person: 0.88           # IRVM 12 % (vérifié : ECOC, BICC, SIBC, NSBC, ORAC, SLBC)
     legal_person: 0.90             # IRVM 10 %
-  ex_date_rule: "payment_date - 1 business day"   # calendrier BRVM : T-1 = ex-dividende
+    use_published_net_first: true  # exception SGBC 2026 : 2298.75 publié et appliqué, contre 2606 x 0.88 = 2293.28
+  ex_date_rule: "payment_date - 1 business day"   # vérifié : 1re séance ex = colonne "Ex-dividende" du calendrier (SGBC 21/08, BOAC 05/05, ECOC 22/05)
+  boc_flag_day: "ex_date - 1 session"             # ligne "(d)" : dernière séance avec dividende ; la colonne "Cours Référence" y donne déjà la référence ex
+  ex_reference_rounding: "ceil_to_tick(close_cum - net_div)"   # 7/7 cas en 2026 pour un pas de 5 FCFA ; ETIT (pas de 1) : 37 - 0.92 -> 36
+  bonus_reference_rounding: "floor_to_tick(close_cum * factor)" # BOAM 2020*2/3 -> 1345 ; BOAS 4690*2/3 -> 3125 ; BOAN 5220*0.625 -> 3260
   fin_season_window: ["04-15", "08-31"]           # 23/04 (BOABF) -> 24/08 (SGBC) en 2026
-  bonus_adjustment_factors_2024:   # facteur multiplicatif des dividendes et cours antérieurs
+  bonus_adjustment_factors_2024:   # facteur multiplicatif des dividendes et cours antérieurs ; ratios et dates ex VÉRIFIÉS sur les BOC 2024 (référence ex / clôture veille)
     BOAM: 0.6667   # 1:2, ex le 28/08/2024
     BOABF: 0.5     # 1:1, ex le 28/08/2024
     BOAS: 0.6667   # 1:2, ex le 29/08/2024
@@ -542,7 +570,7 @@ dividends:
     BOAC: 0.5      # 1:1, ex le 25/10/2024
     SIBC: 0.5      # 1:1, ex le 14/11/2024
   rights_issue_2026:
-    SAFC: {ex_date: "2026-04-24", ref_ex: 3890, dps_value: 1615, factor: 0.7066}
+    SAFC: {ex_date: "2026-04-24", ref_ex: 3890, dps_value: 1615, factor: 0.7066}  # vérifié : BOC 23/04/2026, clôture 5 505 -> référence 3 890 ; 3,75 M actions nouvelles à 400 pour 8 119 750 anciennes
 ```
 
 ### 9.6 Valeurs de référence au 20/11/2026 (pour les tests unitaires)
@@ -556,7 +584,7 @@ FIN_SNAPSHOT_20261120 = {
  "BICC": (31000, 16_666_670, 36.52, 40.6, 0.331, 1157.20, 0.147),
  "NSBC": (15000, 24_734_572, 40.71, 34.1, 0.183, 675.98, -0.27),
  "BBGC": (8145, 50_000_000, None, None, None, None, 0.41),
- "BOAC": (10995, 40_000_000, 35.54, 38.6, None, 597.53, 0.114),
+ "BOAC": (10995, 40_000_000, 35.54, 38.6, None, 594.53, 0.114),   # corrigé le 22/11/2026 (597.53 = coquille du BOC)
  "SAFC": (3030, 11_869_750, 0.701, 1.6, None, 0.0, 2.94),
  "BOAB": (9095, 40_561_048, 20.11, 19.6, 0.171, 585.0, -0.03),
  "BICB": (7500, 57_759_800, 36.2, 44.4, 0.268, 254.6, 0.636),
@@ -566,10 +594,13 @@ FIN_SNAPSHOT_20261120 = {
  "BOAN": (4420, 20_800_000, 0.41, 3.9, 0.010, 0.0, 1.219),
  "BOAS": (7700, 36_000_000, 21.91, 23.7, 0.237, 450.0, 0.110),
  "ETIT": (57, 18_084_106_722, None, None, None, 0.9184, 0.17),     # IFRS, part du groupe en USD
- "ORGT": (2500, 69_986_131, None, None, None, 0.0, 0.14),
+ "ORGT": (2500, 69_986_131, None, None, None, 0.0, 0.14),        # RN part du groupe 2025 = 18.355 Md ; BPA 264 (de base) / 241 (dilué)
 }
 # Tests suggérés : PER TTM SGBC ≈ 12.3 ; P/B NSBC ≈ 1.59 ; payout BOAB > 1 -> drapeau ;
 # rendement attendu BOAN = 0 (et non 4.73 %) ; PER ETIT recalculé ≈ 5.7.
+# Tests ajoutés le 22/11/2026 : référence ex BOAC 04/05/2026 = ceil5(9435 - 594.53) = 8845 ;
+# SGBC 20/08/2026 = ceil5(40000 - 2298.75) = 37705 ; payout brut BOABF > 1 si IRVM BF = 12.5 % ;
+# PER ORGT de base = 2500/264 ≈ 9.5 ; flottant BICC = (16_666_670 - 11_247_810) / 16_666_670 = 0.3251.
 ```
 
 ---
@@ -578,12 +609,13 @@ FIN_SNAPSHOT_20261120 = {
 
 1. **ETI** : quel est l'objet des « consultations » exigées par la Commission Bancaire, et quand une nouvelle AGO sera-t-elle convoquée ? Quel est le nombre exact d'actions en circulation (18,08 milliards selon la BRVM, contre ≈23,7-25 milliards implicites) ? Pourquoi les capitaux propres part du groupe ont-ils bondi de 1 079 à 1 931 M$ en 2025 ?
 2. **Oragroup** : la tranche de 80 Md d'augmentation de capital (plan BOAD du 19/05/2025) a-t-elle été réalisée, à quel prix et avec quelle dilution ?
-3. **BICC** : comment le flottant de 32,5 % (avis 303-2026) se concilie-t-il avec les blocs de 67,49 % (consortium) et 19,11 % (Brandon & McAin) ?
+3. ~~**BICC** : comment le flottant de 32,5 % se concilie-t-il avec les blocs de 67,49 % et 19,11 % ?~~ **Résolu le 22/11/2026** : la BRVM n'exclut que le bloc du consortium (5 418 860 = 16 666 670 − 11 247 810). Reste à savoir si Brandon & McAin détient toujours ses 19,11 % en 2026 [NON VÉRIFIÉ].
 4. Ratios de solvabilité et taux de NPL 2025 de la plupart des banques : à extraire des états financiers annuels complets (souvent scannés), ou des publications de la Commission Bancaire.
 5. Actionnariats à jour de SIBC, CBIBF, ECOC, BOAB, BOABF, BOAS et BICB.
 6. RN 2023-2025 et ratios prudentiels de Bridge Bank (note d'information de l'OPV visée par l'AMF-UMOA).
 7. L'échéance de fin 2026 pour le capital minimum de 20 Md entraînera-t-elle d'autres opérations (attributions gratuites, augmentations de capital) chez les plus petites banques ? Capital actuel : BOAN 20,8 Md, BOAM 27,45 Md, SAFC 4,75 Md (établissement financier, donc seuil à vérifier).
-8. Ces informations sont à compléter quand la recherche web sera de nouveau disponible : il suffira de relancer la tâche ou d'augmenter le quota. Les domaines african-markets.com et capmad.com devront aussi être autorisés dans les réglages réseau de la session.
+8. *(Ajout du 22/11/2026)* IRVM du Burkina Faso et du Togo, et éventuelle surcharge de solvabilité pour les banques systémiques : ces deux points décident si BOABF déclenche le drapeau « payout brut > 1 » et quel minimum de solvabilité retenir pour les grandes banques. Ils sont à vérifier sur les sites de la BCEAO et des administrations fiscales (non joignables depuis cette session).
+9. Ces informations sont à compléter quand la recherche web sera de nouveau disponible : il suffira de relancer la tâche ou d'augmenter le quota. Les domaines african-markets.com et capmad.com devront aussi être autorisés dans les réglages réseau de la session.
 
 ---
 
@@ -642,6 +674,7 @@ Toutes les URL ci-dessous sont des documents primaires de `www.brvm.org`, consul
 
 **BOAC**
 - T3 2026 : https://www.brvm.org/sites/default/files/20261102_-_rapport_dactivites_-_3e_trimestre_2026_-_boa_ci.pdf
+- Exercice 2025 (rapport des CAC et états financiers, mis en ligne le 12/06/2026) : https://www.brvm.org/sites/default/files/20260612_-_rapport_des_commissaires_aux_comptes_et_etats_financiers_annuels_-_exercice_2025_-_boa_ci.pdf
 - Exercice 2024 : https://www.brvm.org/sites/default/files/20250402_-_etats_financiers_-_exercice_2024_-_boa_ci.pdf
 - Page émetteur : https://www.brvm.org/fr/emetteurs/societes-cotees/bank-africa-cote-divoire
 
@@ -711,3 +744,49 @@ Toutes les URL ci-dessous sont des documents primaires de `www.brvm.org`, consul
 - Exercice 2023 : https://www.brvm.org/sites/default/files/20240429_-_etats_financiers_-_exercice_2023_-_oragroup_togo.pdf
 - Nouveau plan de financement (BOAD) : https://www.brvm.org/sites/default/files/20250522_-_communique_-_oragroup_tg.pdf
 - Contrat de cession à Vista : https://www.brvm.org/sites/default/files/20241001_-_communique_-_oragroup_tg_1.pdf
+
+---
+
+## Vérification adversariale (2026-11-22)
+
+**Méthode** : un vérificateur indépendant a tenté de réfuter les affirmations les plus coûteuses en cas d'erreur, surtout les paramètres qui seront codés. Les moyens utilisés :
+- les BOC locaux (`data/boc_text/`, 2024-2026) : lignes « (d) », « (Ex- » et « (V) », cours de référence ;
+- 25 PDF primaires de brvm.org retéléchargés et relus (`pdftotext`, OCR `tesseract` pour les documents scannés) ;
+- les en-têtes HTTP `Last-Modified` des 79 PDF cités, obtenus par requête HEAD simple.
+
+Limites : le quota de recherche web de la session était épuisé, et `www.bceao.int` et `www.amf-umoa.org` sont inaccessibles (proxy). Aucune source secondaire n'a pu être consultée. Le document ne cite **aucune étude académique nommée** : il n'y avait donc aucune référence à authentifier. La formule du P/B « juste » (ROE − g)/(k − g) est la formule standard tirée du modèle de Gordon.
+
+Verdicts : **confirmé** = la source primaire relue donne la même valeur ; **corrigé** = la valeur ou la règle a été modifiée dans le texte ; **réfuté** = l'affirmation est fausse et a été retirée ou inversée ; **invérifiable** = aucune source primaire accessible.
+
+| # | Élément vérifié | Verdict | Valeur correcte / commentaire | Source de la vérification | Conf. |
+|---|---|---|---|---|---|
+| 1 | Univers FIN : 17 valeurs (14 banques, ETIT, ORGT, SAFC) ; aucun assureur coté ; indice 221,79 ; +52,06 % ; PER 14,51 | confirmé | 48 actions au BOC, dont 12 en Prestige et 36 en Principal ; les seules mentions « assurance » sont des FCP | BOC 20/11/2026 (https://www.brvm.org/sites/default/files/boc_20261120_2.pdf) | high |
+| 2 | `ci_gross_to_net` 0,88 / 0,90 (IRVM CI 12 % / 10 %) | confirmé, avec précision | Taux confirmés par le calendrier. Exception : SGBC, net de 2 298,75 pour un brut de 2 606 (0,8821), net appliqué par la BRVM. Toujours utiliser le net publié | https://www.brvm.org/sites/default/files/20261006_-_calendrier_de_paiement_des_dividendes_-_exercice_2025.pdf ; BOC 20/08/2026 | high |
+| 3 | `ex_date_rule` = paiement − 1 jour ouvré | confirmé, règle précisée | La 1re séance ex correspond à la colonne « Ex-dividende » du calendrier. Le BOC de la veille porte « (d) » et donne déjà la référence ex = ceil5(clôture − net) (7 cas sur 7 en 2026) | BOC 20-21/08, 04-05/05, 21-22/05, 02-03/07, 29-30/07, 31/07-03/08/2026 | high |
+| 4 | BOAC : « retenir 597,53 (BOC), car c'est la valeur appliquée » | **réfuté** | La BRVM a appliqué **594,53** : référence ex de 8 845 = ceil5(9 435 − 594,53), alors que 597,53 donnerait 8 840. La colonne passe à 597,53 le lendemain seulement | BOC 04/05 et 05/05/2026 ; calendrier (594,528) | high |
+| 5 | `bonus_adjustment_factors_2024` (7 titres, ratios et dates ex) | confirmé | Référence ex / clôture de la veille : BOAM 1 345/2 020 ; BOABF 3 400/6 800 ; BOAS 3 125/4 690 ; BOAB 3 885/7 775 ; BOAN 3 260/5 220 ; BOAC 5 150/10 300 ; SIBC 3 550/7 100. Dates ex 28/08, 28/08, 29/08, 03/09, 04/09, 25/10 et 14/11/2024. Arrondi au pas inférieur | BOC 27/08-14/11/2024 (locaux) | high |
+| 6 | DPS SAFC : facteur 0,7066, ex le 24/04/2026, référence 3 890, DPS 1 615 | confirmé | BOC 23/04 : clôture 5 505 → référence 3 890. Cohérent avec 3,75 M actions à 400 pour 8 119 750 anciennes (TERP ≈ 3 892) | BOC 23-24/04/2026 ; avis 303 (8 119 750 titres) | high |
+| 7 | `solvency_min_pct` = 11,5 (CET1 7,5 ; T1 8,5 ; levier 3) | confirmé | Mention explicite « minimum réglementaire BCEAO de 11,50 % » (BIIC) et tableau des normes (SAFCA). Surcharge systémique [NON VÉRIFIÉ] | https://www.brvm.org/sites/default/files/20260619_-_rapport_dactivites_annuel_et_etats_financiers_ifrs_-_exercice_2025_-_biic.pdf ; https://www.brvm.org/sites/default/files/20261102_-_rapport_dactivites_-_3e_trimestre_2026_-_safca_ci.pdf | high |
+| 8 | Capital minimum de 20 Md (avis 001-01-2024), mise en conformité fin 2026 | confirmé pour les banques, corrigé | Avis du **05/01/2024** ; 3 ans à compter du 01/01/2024. Seuil des établissements financiers [NON VÉRIFIÉ]. Le lien avec les attributions BOA/SIB est une inférence | https://www.brvm.org/sites/default/files/20250224_-_communique_-_augmentation_de_capital_-_societe_generale_ci.pdf | high |
+| 9 | `availability_lag_sessions` = 1 (confiance « high ») | **corrigé** | 59 PDF sur 79 sont en ligne avant J+1 ; 18 pendant ou après la séance J+1 ; 1 à J+4 (BOAN) ; 1 préfixe décalé d'un an (SAFCA T4 2024). Nouvelle règle : `Last-Modified`, sinon J+2 | en-têtes HTTP `Last-Modified` des 79 URL de §11 (requêtes HEAD du 22/11/2026) | high |
+| 10 | ETIT : `eps_override` 10,00 FCFA ; PER 5,7 ; le BOC (2,98) utilise le RN total | confirmé | BPA de base = BPA dilué = 1,68 cent US = 10,00 FCFA ; RN part du groupe 407 141 k$ ; RN consolidé de 345 523 M FCFA / 18,084 Md de titres = 19,1, donc PER 2,98 | https://www.brvm.org/sites/default/files/20260413_-_etats_financiers_ifrs_-_exercice_2025_-_eti_tg.pdf | high |
+| 11 | ORGT : `eps_override` 241 ; RN part du groupe 2025 ≈16,9 Md ; 2024 n.d. | **corrigé** | RN attribuable de **18 355 M** (2024 : −37 865 M) ; BPA de **base de 264** et BPA **dilué de 241** ; CP part du groupe de 69 479 M ; bilan de 4 014 192 M (confirmés) | https://www.brvm.org/sites/default/files/20260504_-_etats_financiers_-_exercice_2025_-_oragroup_tg.pdf | high |
+| 12 | BOAB : payout ≈118 % ; `payout_net_gt` 1,00 | confirmé, règle corrigée | RN 2025 de 20,10 Md (= cours / PER BOC × titres) ; 585 × 40 561 048 = 23,7 Md. En brut ≈131 % (IRVM BJ de 10 % inféré). Le drapeau doit porter sur le brut : BOABF ≈104 % (IRVM BF NON VÉRIFIÉ) | BOC 20/11/2026 ; calendrier ; doc 01 §6.1 | medium |
+| 13 | ECOC : CoR de 0,7 → 8,1 Md ; RN −12,3 % ; NPL +28 % ; ROE 24,9 % | confirmé | CoR de 702 → 8 079 M (×11,5) ; RN de 44 437 → 38 954 M ; créances en souffrance de 36 638 → 46 902 M ; provisions de 43 442 M | https://www.brvm.org/sites/default/files/20261027_-_rapport_dactivites_-_3e_trimestre_2026_-_ecobank_ci.pdf | high |
+| 14 | NSBC : RN 9M −27 % ; crédits −19 % | confirmé | RN de 25 037 → 18 388 M ; crédits nets de 1 818 671 → 1 472 560 M (depuis décembre) ; RN 2025 de 40 712 M | https://www.brvm.org/sites/default/files/20261030_-_rapport_dactivites_-_3e_trimestre_2026_-_nsia_banque_ci.pdf | high |
+| 15 | ETI : AGO du 26/10/2026 annulée « conformément aux instructions de la Commission Bancaire de l'UMOA » | confirmé | Texte exact relu (communiqué daté du 23/10/2026, en ligne le 26/10 à 05:11 UTC) | https://www.brvm.org/sites/default/files/20261023_-_communique_-_annulation_ago_-_eti_tg.pdf | high |
+| 16 | ETI : AGE du 13/08/2026 (quorum de 25 %, 12 administrateurs, fin de la limite de mandats) | confirmé | Plus un quorum du conseil porté à plus de la moitié des membres ; nombre d'administrateurs réduit de 15 à 12 | https://www.brvm.org/sites/default/files/20260817_-_communique_de_presse_-_eti_tg.pdf | high |
+| 17 | ETI 9M 2026 : RN part du groupe de 364 M$ (+17 %) ; NPL de 9,4 → 7,5 % ; ROTE de 24,9 % ; CP part du groupe de 1 181,8 Md | confirmé | Chiffres identiques à ceux du rapport | https://www.brvm.org/sites/default/files/20261028_-_rapport_dactivites_-_3e_trimestre_2026_-_eti_tg.pdf | high |
+| 18 | BOAN : aucun dividende au titre de 2025 ; ROE de 11,4 / 1,0 / 16,0 % ; solvabilité de 15,4 / 14,1 / 17,4 % ; NPL sectoriel de 24,4 → 28,6 % | confirmé | Plus : l'alerte du 20/02/2026 n'a été mise en ligne que le 18/03/2026 | https://www.brvm.org/sites/default/files/20260429_-_communique_de_presse_-_boa_ng.pdf ; https://www.brvm.org/sites/default/files/20260313_-_communique_-_profit_warning_-_boa_niger.pdf | high |
+| 19 | SGBC : NPL 8,0 % ; couverture 82 % ; brut 2 606 ; payout 80 % ; RN 101 352 M ; solvabilité 17,6 % (S1 2026) | confirmé | Chiffres identiques à ceux des rapports | https://www.brvm.org/sites/default/files/20260421_-_rapport_dactivites_annuel_et_etats_financiers_-_exercice_2025_-_societe_generale_ci_annule_et_remplace_le_precedent.pdf ; https://www.brvm.org/sites/default/files/20260831_-_rapport_dactivites_-_1er_semestre_2026_-_societe_generale_ci.pdf | high |
+| 20 | BOAC 9M 2026 : RN de 29,7 Md (+11,4 %), crédits +19,9 %, dépôts +17,7 % | confirmé (OCR) | 29 657 / 26 632 M ; 495 097 M (+19,94 %) ; 942 180 M (+17,71 %). CP 2025 toujours non lus [NON VÉRIFIÉ] | https://www.brvm.org/sites/default/files/20261102_-_rapport_dactivites_-_3e_trimestre_2026_-_boa_ci.pdf | high |
+| 21 | BICC : consortium à 67,49 % pour 80 Md ; Brandon & McAin à 19,11 % au cours de 6 945 | confirmé | 11 247 810 actions (BNP 59,79 % + Proparco 7,70 %) ; 3 185 017 actions achetées le 27/06/2023 auprès de SUNU | https://www.brvm.org/sites/default/files/20220928_-_communique_-_bici_ci.pdf ; https://www.brvm.org/sites/default/files/20230627_-_communique_declaration_franchissement_seuils_-_bici_ci.pdf | high |
+| 22 | BICC : « flottant de 32,5 % incohérent » | **réfuté** | 5 418 860 = 16 666 670 − 11 247 810 : la BRVM n'exclut que le bloc de contrôle. Flottant économique ≤ 13,4 % | avis 303-2026 (OCR) : https://www.brvm.org/sites/default/files/20261012_-_avis_ndeg303_brvmdg_-_flottant_des_societes_cotees_a_la_brvm.pdf | high |
+| 23 | BBGC : 1re cotation le 24/09/2026 à 7 255, 4 séances à la borne haute, compartiment Principal ; « 40 séances » | confirmé / corrigé | Avis 285 et BOC confirmés ; **42** séances au 20/11/2026 ; demande de l'OPV (95,8 Md, 17 544 investisseurs) [NON VÉRIFIÉ] | https://www.brvm.org/sites/default/files/20260924_-_avis_ndeg285_brvmdg_-_resultats_de_premiere_cotation_-_bridge_bank_group_cote_divoire_bbgc.pdf ; BOC 24/09-01/10/2026 | high |
+| 24 | `ipo_quarantine_sessions` = 60 ; BBGC « éligible fin décembre » | invérifiable / corrigé | Choix de conception sans base empirique ; éligibilité vers le 16/12/2026, et non fin décembre | BOC locaux (décompte des séances) | low |
+| 25 | `red_flag.npl_ratio_gt_pct` = 8,0, « SGBC à 8,0 % » | corrigé | Avec « > », SGBC n'est pas détecté : passage à « ≥ ». Les définitions de NPL (PCB brut, IFRS stage 3) ne sont pas comparables. Garde-fou ajouté sur le multiple de CoR | rapport SGBC 2025 ; rapport ECOC T3 ; rapport ETI T3 | medium |
+| 26 | RN 2025 des 16 valeurs (tableau §3) | confirmé | (cours / PER BOC) × nombre de titres = RN du tableau à ±0,1 % (ORGT +0,8 %) | BOC 20/11/2026 | high |
+| 27 | BICB : 1re cotation le 28/04/2025 (5 600) ; dividende de 254,6 versé le 15/09/2025 et le 31/07/2026 | confirmé | BOC 28/04/2025, 31/12/2025 et 20/11/2026 ; prix d'OPV de 5 250 tiré de l'avis 073 (scanné, non relu) | BOC locaux | high |
+| 28 | `country_risk_multiplier`, poids de `fin_score`, `missing_rank` 0,4 | invérifiable | Jugements de conception, sans source chiffrée ni backtest : à traiter comme hyperparamètres et à valider hors échantillon | — | low |
+
+**Bilan** : 28 éléments vérifiés. 18 sont confirmés (dont 4 avec une précision de règle), 6 corrigés, 2 réfutés (dividende BOAC appliqué ; incohérence du flottant BICC) et 2 invérifiables (paramètres de conception). Aucun chiffre n'a été inventé. Les valeurs non relues restent marquées [NON VÉRIFIÉ] : CP 2025 de BOAC, demande de l'OPV BBGC, IRVM du BF et du TG, seuil de capital des établissements financiers, surcharge des banques systémiques.

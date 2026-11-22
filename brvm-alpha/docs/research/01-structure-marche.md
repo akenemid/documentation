@@ -16,10 +16,10 @@ Légende de confiance : **H** (haute : document primaire ou vérification sur le
 | 1 | Sociétés cotées (actions) | **48** (12 Prestige + 36 Principal ; aucune au compartiment Croissance) | 20/11/2026 | H | BOC 20/11/2026 |
 | 2 | Horaires (UTC = heure d'Abidjan) | pré-ouverture 9h00–9h45, continu 9h45–14h00, pré-clôture 14h00–14h30, fixing de clôture 14h30, négociation au dernier cours 14h30–15h00 (±60 s aléatoires) | page consultée le 22/11/2026 | H | brvm.org/horaires |
 | 3 | Plafond de variation journalière | **±7,5 %** autour du cours de référence (actions et obligations) | règle de 2016, toujours appliquée en 2026 | H | Instruction I-A ; BOC 2026 : 0 clôture hors ±7,5 % sur 10 374 lignes |
-| 4 | Pas de cotation | **5 FCFA** (actions) ; **1 FCFA observé** pour ETIT (cours < 100 FCFA) | 2016 / 2026 | H / H | Instruction I-E ; BOC |
+| 4 | Pas de cotation | **5 FCFA** (actions cotant ≥ 100 FCFA) ; **1 FCFA sous 100 FCFA** (règle empirique : ETIT, et NEIC en 2017-2018 ; le texte I-E ne prévoit que 5 FCFA) | 2016 / 2017-2026 | H (texte) / H (observation, corrigé le 22/11) | Instruction I-E ; BOC 2017-2026 |
 | 5 | Quotité | **1 titre** | 2016 | H | Instruction I-E, art. 1125 |
 | 6 | Règlement-livraison | **J+2** depuis le **04/12/2025** (J+3 avant) | 02/12/2025 | H (texte) / M (date) | Instruction N°03-2025/BRVM/DG |
-| 7 | Date ex-dividende | 1er jour ouvré **avant** la date de fermeture des registres | 2025 | H | même instruction, art. 2 |
+| 7 | Date ex-dividende | 1er jour ouvré **avant** la date de fermeture des registres depuis le passage à J+2 ; **2e jour ouvré avant** sous J+3 (jusqu'au 03/12/2025) | 2025 | H | même instruction, art. 2 ; BOC 2023-2026 (77/80 cas à 2 jours avant, 35/35 à 1 jour en 2026) |
 | 8 | Commission BRVM + DC/BR | **0,20 % + 0,10 %** du montant, payées par l'acheteur **et** le vendeur | en vigueur | H | brvm.org « frais applicables » ; tarification 2014 |
 | 9 | Courtage SGI | libre mais homologué ; grilles observées **0,4 %–1 %** (max 1 %) | 2024–2025 | H | décisions PAMF-UMOA (BICI Bourse, FGI) |
 | 10 | IRVM Côte d'Ivoire (sociétés cotées) | **12 %** personnes physiques / **10 %** personnes morales | 2025–2026 | H | calendriers BRVM 2026 ; note DGI 2025 (via ENS) |
@@ -37,7 +37,7 @@ Légende de confiance : **H** (haute : document primaire ou vérification sur le
 |---|---|---|---|
 | **BRVM** (Abidjan) | Bourse unique des 8 pays de l'UEMOA (Bénin, Burkina Faso, Côte d'Ivoire, Guinée-Bissau, Mali, Niger, Sénégal, Togo), avec des antennes nationales de bourse dans chaque pays | Elle publie chaque jour le BOC, qui fait foi | H |
 | **DC/BR** (Dépositaire Central / Banque de Règlement) | Conservation centrale, règlement-livraison, paiement des dividendes | Passage à J+2 approuvé par son CA le 21/10/2025 | H/M |
-| **AMF-UMOA** (ex-CREPMF) | Régulateur régional : agrément des SGI, homologation des tarifs, visas | Nouveau nom depuis le 01/01/2021 (presse) | M |
+| **AMF-UMOA** (ex-CREPMF) | Régulateur régional : agrément des SGI, homologation des tarifs, visas | Changement de nom prévu par le Traité révisé de l'UMOA du 12/07/2019, **entré en vigueur le 01/10/2022** (visas de la décision PAMF-UMOA 2024-326). La date du 01/01/2021 citée par la presse est corrigée | H |
 | **SGI** (Sociétés de Gestion et d'Intermédiation) | Seuls intermédiaires habilités à transmettre des ordres ; teneurs de compte-conservateurs ; elles garantissent l'exécution des ordres de leurs clients | **36 SGI participantes** au 20/11/2026 (BOC). Une **SGI spécialiste** (animateur) est désignée par valeur. Un contrat d'animation est obligatoire en Prestige et Principal (RG 2021, art. 35 et 65) | H |
 
 **Compartiments actions** (depuis le 02/01/2023, RG BRVM modifié par la décision CREPMF/2021/196) :
@@ -68,7 +68,7 @@ Flottant minimal de 15 % : l'avis 303-2026 (données au 31/12/2025) indique que 
 
 Chaque horaire comporte une composante aléatoire de **±60 s**. Abidjan est à UTC+0 toute l'année. En 2026, des horaires réduits ont été publiés par avis pour les 03/04, 30/04, 26/05, 06/08 et 14/08 (avis 080, 113, 140, 230 et 243-2026). L'ancien règlement de 2016 prévoyait 3 séances par semaine en fixing seul. Ce texte est obsolète sur ce point : depuis la décision CREPMF 2013-060, l'article 29 du RG prévoit une cotation « soit par fixing, soit en continu ».
 
-**Jours de fermeture** : les jours ouvrés sont ceux du pays du site central (Côte d'Ivoire), et les fermetures sont annoncées par avis. Les fichiers BOC absents en 2026 coïncident avec des jours fériés : 01/05, 14/05 (Ascension), 25/05 (Pentecôte), 27/05 (Tabaski), 07/08 (fête nationale CI) et 25/08 (Mawlid, avis 250-2026). Le 02/10/2026 est absent sans explication trouvée (B).
+**Jours de fermeture** : les jours ouvrés sont ceux du pays du site central (Côte d'Ivoire), et les fermetures sont annoncées par avis. *(Corrigé le 22/11/2026.)* Le BOC du 20/11/2026 porte le **n° 222** alors que 220 fichiers sont présents localement : **deux séances ont eu lieu mais leur BOC manque**. La numérotation le montre. Le 01/10 porte le n° 186 et le 05/10 le n° 188, donc le **02/10/2026 était une séance** (BOC n° 187, introuvable sous `boc_20261002.pdf` et `boc_20261002_2.pdf`, HTTP 404). Le 18/03 porte le n° 53 et le 23/03 le n° 55, donc l'un des jours **19/03 ou 20/03** a eu une séance (n° 54). Les jours ouvrés sans séance (numérotation continue) sont : 01/01, 16/03, l'un des jours 19-20/03, 06/04 (lundi de Pâques), 01/05, 14/05 (Ascension), 25/05 (Pentecôte), 27/05 (Tabaski), 07/08 (fête nationale CI) et 25/08 (Mawlid, avis 250-2026). **Règle pour le pipeline** : un BOC absent n'est pas un jour férié. Il faut contrôler la continuité des numéros de BOC.
 
 ### 2.2 Ordres et exécution (Règles de négociation 2016 ; RG 2021)
 
@@ -85,10 +85,10 @@ Chaque horaire comporte une composante aléatoire de **±60 s**. Abidjan est à 
 | Instrument | Pas | Quotité | Conf. |
 |---|---|---|---|
 | Actions | **5 FCFA** (Instruction I-E) | 1 titre | H |
-| Actions à très bas prix | **1 FCFA observé pour ETIT** (cours entre 22 et 57 FCFA en 2026). Seule action dont les clôtures 2026 ne sont pas multiples de 5. Aucune action ne cote entre 100 et 1 000 FCFA, donc le seuil exact de changement de pas n'est pas observable | 1 | H (observation) / seuil inconnu |
+| Actions cotant **moins de 100 FCFA** | **1 FCFA** (règle empirique). Clôtures non multiples de 5 observées uniquement pour ETIT (13 à 78 FCFA, 2017-2026) et NEIC (37 à 94 FCFA, 2017-2018) | 1 | H (observation) / texte non trouvé |
 | Obligations | 0,10 % du nominal | 1 | H |
 
-Sur les 10 374 lignes action×séance de 2026, toutes les clôtures sont des multiples de 5 FCFA, sauf celles d'ETIT.
+*(Corrigé le 22/11/2026.)* Le seuil est observable sur l'historique. Sur les BOC 2017-2026 (≈ 96 000 lignes), **toutes** les clôtures comprises entre 100 et 999 FCFA sont des multiples de 5 : environ 11 000 lignes, dont NEIC (100-199 FCFA, 315 séances), STAC, SEMC, SIVC, SAFC, CABC et CFAC. Les clôtures non multiples de 5 n'apparaissent que sous 100 FCFA. L'affirmation précédente selon laquelle « aucune action ne cote entre 100 et 1 000 FCFA en 2026 » est fausse : SEMC a coté 750-990 FCFA du 02 au 08/01/2026. Règle à coder : `pas = 1 si cours < 100 FCFA, sinon 5`. Elle est **empirique**, car l'Instruction I-E de 2016 ne mentionne que 5 FCFA. Pour les cours compris entre 95 et 99 FCFA, la frontière exacte n'a pas été observée.
 
 ---
 
@@ -118,6 +118,13 @@ Les bornes sont arrondies **vers l'intérieur** de la fourchette. Exemples tiré
 
 Les avis BOABF, BOAS, BOAB, BOAN et SIBC de 2024 vérifient la même règle.
 
+**Contre-vérification sur les BOC 2018-2026 (22/11/2026)**. Sur environ 87 000 lignes, il y a **1 638 clôtures** exactement à `floor(réf×1,075/pas)×pas` dans des cas où un arrondi au plus proche aurait donné un cours plus haut. Il y a de même **1 262 clôtures** à la borne basse `ceil` là où l'arrondi au plus proche aurait donné un cours plus bas. Les seuls dépassements de ces bornes sont de trois types :
+1. des jours de détachement dans les BOC 2018-2022, où « Cours précédent » n'est pas ajusté du dividende (voir §7) ;
+2. une erreur de mise en page (BOAC le 19/12/2024) ;
+3. **ETIT 13 → 14 FCFA (+7,69 %)**, à 10 reprises en 2019-2021.
+
+Ce dernier cas montre que la bande autorise **au minimum un pas** quand l'arrondi vers l'intérieur la réduirait à zéro (13×1,075 = 13,98, plancher 13). La règle de borne doit donc inclure `haute = max(haute, réf + pas)`. Par symétrie, on code aussi `basse = min(basse, réf − pas)`, ce qui n'a pas été observé. **H** pour l'arrondi, **M** pour le pas minimal.
+
 ### 3.3 Introductions en bourse (H)
 
 Le premier jour suit la **« procédure ordinaire »** : cours de référence = prix de l'offre, et la même bande de ±7,5 % s'applique. Constats :
@@ -133,7 +140,7 @@ Conséquence : une demande excédentaire à l'introduction se résorbe **sur plu
 
 ### 3.4 Historique de la règle
 
-Aucune modification du seuil de 7,5 % n'a été trouvée entre le texte de 2016 et les données de 2026 (recherche web, y compris sur la période Covid de 2020). Seuls les horaires ont été temporairement modifiés en mars 2020. **Un historique antérieur à 2016 n'a pas été trouvé** (B).
+Aucune modification du seuil de 7,5 % n'a été trouvée entre le texte de 2016 et les données de 2026 (recherche web, y compris sur la période Covid de 2020). Seuls les horaires ont été temporairement modifiés en mars 2020. **Un historique antérieur à 2016 n'a pas été trouvé** (B). Vérification du 22/11/2026 sur les BOC 2018-2026 : aucun écart à la référence ajustée supérieur à 7,5 %, hors le cas du pas minimal d'ETIT (§3.2). Le seuil est donc stable sur toute la période des données (H).
 
 ### 3.5 Statistiques 2026 sur les BOC (H, calcul local)
 
@@ -150,6 +157,7 @@ Aucune modification du seuil de 7,5 % n'a été trouvée entre le texte de 2016 
 |---|---|---|---|---|
 | Cycle | **J+2 ouvrés** (J+3 auparavant, instruction 01-2007) | instruction signée le 02/12/2025, en vigueur à sa publication au BOC. La presse indique que les transactions passent à J+2 **dès le 04/12/2025** | H (texte) / M (date) | Instruction N°03-2025/BRVM/DG ; BOC du 03/12/2025 (cité par la presse) ; DC/BR |
 | Ex-droit / ex-coupon / ex-dividende | 1er jour ouvré précédant la date de fermeture des registres. Si ce jour est férié : le 2e jour ouvré précédent | idem | H | Instruction 03-2025, art. 2 |
+| Ex-date **avant** le 04/12/2025 (régime J+3) | **2e jour ouvré** précédant la date de fermeture des registres. Exemples : SNTS, registres le 22/05/2025 et ex le 20/05/2025 ; registres le 17/05/2024 et ex le 15/05/2024. Mesure sur les lignes (V) des BOC : 16/18 cas en 2023, 30/31 en 2024, 31/31 en 2025 à 2 jours ouvrés, contre 35/35 à 1 jour ouvré en 2026 | 2023-2025 | H (empirique) | BOC locaux, vérification du 22/11/2026 |
 | Garantie | La SGI garantit l'exécution des obligations de son client, y compris en cas de défaillance de celui-ci | 2016 | H | art. 1123 |
 | Transfert de propriété | par inscription en compte | 2016 | H | art. 1122 |
 | Fonds de garantie | Fonds de garantie du marché et fonds de protection des épargnants (textes de 2016) | 2016 | H | brvm.org textes |
@@ -171,11 +179,11 @@ Aucune modification du seuil de 7,5 % n'a été trouvée entre le texte de 2016 
 | Courtage acheté/vendu | BICI Bourse 0,3 %–0,75 % | — | H | décision 326-2024 |
 | Courtage transactions sur dossier | BICI Bourse 0,1 %–0,70 % ; FGI ≤ 0,8 % | — | H | idem |
 | Droits de garde (conservation) | BICI Bourse **0,1 %–0,5 % par an** de la valeur conservée (prélèvement trimestriel) ; FGI ≤ 0,25 % par an | titulaire | H | idem |
-| Tenue de compte | BICI Bourse **5 000 FCFA par an** (personne physique) et 10 000 FCFA (personne morale) ; FGI gratuit | titulaire | H | idem |
+| Tenue de compte | BICI Bourse **5 000 FCFA par an et PAR LIGNE de titres** (personne physique) et 10 000 FCFA par ligne (personne morale), base « forfait par ligne », prélèvement trimestriel ; FGI gratuit, mais « bourse en ligne » à 1 000 FCFA par trimestre. *(Corrigé le 22/11/2026 : il s'agit d'un forfait par ligne, pas par compte.)* | titulaire | H | annexes des décisions 326-2024 (04/12/2024) et 124-2025 (28/03/2025), lues par OCR |
 | Ouverture / clôture de compte | gratuit (BICI Bourse) | — | H | idem |
 | Transfert de titres | 5 000 FCFA (FGI) ; 10 000 à 34 375 FCFA (BICI Bourse) par ligne | — | H | idem |
 | Redevance AMF-UMOA par transaction | **Non trouvée**. Elle n'apparaît ni sur la page officielle des frais, ni dans les grilles homologuées consultées | — | B | — |
-| Taxe sur le courtage (TVA ou TAF selon le pays) | La page BRVM mentionne des « taxes » sur l'avis d'opéré, **sans taux**. Des sources secondaires évoquent la TAF en Côte d'Ivoire. **Taux non vérifié** | — | B | brvm.org node/312 ; guides tiers |
+| Taxe sur le courtage (TVA ou TAF selon le pays) | La page BRVM mentionne des « taxes » sur l'avis d'opéré, **sans taux**. Des sources secondaires évoquent la TAF en Côte d'Ivoire. **[NON VÉRIFIÉ]** : aucun taux dans la tarification BRVM-DC/BR 2014 ni dans les grilles BICI Bourse et FGI (vérification du 22/11/2026) | — | B | brvm.org node/312 ; guides tiers |
 
 ### 5.2 Exemple chiffré (achat de 1 000 000 FCFA, courtage 1 %)
 
@@ -187,7 +195,7 @@ Aucune modification du seuil de 7,5 % n'a été trouvée entre le texte de 2016 
 | Taxe sur courtage (hypothèse 10 %, non vérifiée) | 1 000 |
 | **Total** | **≈ 14 000 FCFA, soit 1,4 %** |
 
-Aller-retour : **≈ 2,8 %** au plafond, et **≈ 1,7 %** avec un courtage négocié à 0,5 %. À cela s'ajoutent le spread et l'impact de marché : le spread médian de fin de séance est de 0,69 % sur 48 titres en 2026, de 0,21 % (BOAM) à 4,3 % (UNLC). Il faut aussi compter les droits de garde (jusqu'à 0,5 % par an).
+Aller-retour : **≈ 2,8 %** au plafond, et **≈ 1,7 %** avec un courtage négocié à 0,5 %. Sans la taxe hypothétique, ces montants sont de 2,6 % et 1,6 %. À cela s'ajoutent le spread et l'impact de marché : le spread médian de fin de séance est de 0,69 % sur 48 titres en 2026, de 0,21 % (BOAM) à 4,3 % (UNLC). Ce spread est recalculé à l'identique le 22/11/2026, mais il n'est mesuré que les jours où le carnet a les deux côtés, ce qui le sous-estime pour les titres illiquides. Il faut aussi compter les droits de garde (jusqu'à 0,5 % par an) et, chez BICI Bourse, **5 000 FCFA par ligne et par an**. Pour 20 lignes, cela fait 100 000 FCFA par an, soit 1 % par an sur un portefeuille de 10 M FCFA : ce coût fixe pénalise les petits portefeuilles diversifiés.
 
 ---
 
@@ -199,13 +207,13 @@ Principe : la retenue est appliquée **au taux du pays du siège de l'émetteur*
 
 | Pays (code) | Taux observé sur les dividendes des sociétés cotées | Preuve | Date | Conf. |
 |---|---|---|---|---|
-| Côte d'Ivoire (CI) | **12 % personnes physiques / 10 % personnes morales**. Le taux des personnes physiques est passé de 10 % à 12 % avec la loi de finances 2025 (note de service DGI, juin 2025) | Calendrier des dividendes BRVM du 06/10/2026 : *« IRVM applicable de 12 % pour les personnes physiques et 10 % pour les personnes morales »* ; avis SGBC 231-2026 ; montants nets du BOC = brut × 0,88 (ORAC 800 → 704 ; NTLC 420 → 369,6) | 2025–2026 | H |
-| Sénégal (SN) | **10 %** | Résolution AG SONATEL 2025 : 1 933 brut → 1 740 net | 04/2026 | H |
-| Burkina Faso (BF) | **12,5 %** | AG BOA BF 2025 : net 397,25 FCFA « après prélèvement de l'IRVM de 12,5 % » | 03–04/2026 | M |
-| Mali (ML) | **7 %** | BOA Mali 2025 : 328 brut → 305,04 net (328 × 0,93) ; 9,003 Md brut pour 27 450 000 actions | 03/2026 | M+ |
-| Niger (NE, « NG » à la BRVM) | **7 %** | BOA Niger 2024 : 225 brut (communiqué déposé à la BRVM) → 209,25 net (BOC) | 2025 | M+ |
-| Bénin (BJ, « BN » à la BRVM) | **≈ 5 %** | LNB 2025 : 173 brut → 164 net (164,1709 au BOC) | 05/2026 | M |
-| Togo (TG) | **Inconnu** : 7 % selon un agrégateur, ≈ 3 % selon un article de 2026. ETI verse en USD (0,16 cent net) | — | 2026 | B |
+| Côte d'Ivoire (CI) | **12 % personnes physiques / 10 % personnes morales** pour les paiements de **2025 et 2026**. Pour les paiements **jusqu'en 2024, 10 %** pour les personnes physiques | Calendrier des dividendes BRVM du 06/10/2026 : *« IRVM applicable de 12 % pour les personnes physiques et 10 % pour les personnes morales »* ; avis SGBC 231-2026. Montants nets du BOC = brut × 0,88 pour 12 émetteurs en 2026 (ORAC 800 → 704 ; NTLC 420 → 369,6 ; SLBC 2 127 → 1 871,76 ; STBC 1 940 → 1 707,2…). Historique déduit des nets du BOC, qui donnent un brut rond à 10 % en 2024 (NTLC 675 = 750×0,9 ; ECOC 594 = 660×0,9 ; STBC 675 = 750×0,9 ; SIBC 495 = 550×0,9 ; CIEC 171 = 190×0,9) et à 12 % dès mai-juin 2025 (ECOC 707,52 = 804×0,88 ; ORAC 660 = 750×0,88). Exception : **SGBC 2026, net publié 2 298,75** alors que 2 606 × 0,88 = 2 293,28. La BRVM a utilisé 2 298,75 pour la référence ex. **Toujours prendre le net du BOC** | 2024–2026 | H (2025-2026) / M (historique, par inférence) |
+| Sénégal (SN) | **10 % pour 2026** | Avis 111-2026 : 1 740 FCFA net (SONATEL), cohérent avec un brut de 1 933 (résolution AG, non relue : sonatel.sn inaccessible dans cette session) ; BOAS 2026 : 450 = 500 × 0,90. **Historique [NON VÉRIFIÉ]** : plusieurs nets antérieurs correspondent à des bruts ronds à 12,5 % (SNTS 2021 : 1 225 = 1 400×0,875 ; SNTS 2022 : 1 400 = 1 600×0,875 ; BOAS 2025 : 350 = 400×0,875) | 2026 | H (2026) / B (avant 2026) |
+| Burkina Faso (BF) | **12,5 % [NON VÉRIFIÉ en source primaire]** | Presse : AG BOA BF 2025, net 397,25 « après IRVM 12,5 % ». L'avis 072-2026 donne 397 FCFA net (arrondi). Nets cohérents avec 12,5 % : CBIBF 2021-2023 (406, 448, 525 = 464, 512, 600 × 0,875). Incohérent : **CBIBF 2026, 900 net = 1 000 × 0,90**. Le taux peut varier selon l'émetteur ou l'année | 03–04/2026 | M− |
+| Mali (ML) | **7 % en 2025-2026** | BOAM : 305,04 = 328 × 0,93 (avis 129-2026) et 237,15 = 255 × 0,93 (2025). En 2024, 144 = 160 × 0,90, ce qui suggère 10 % avant 2025 **[NON VÉRIFIÉ]** | 2025–2026 | M+ |
+| Niger (NE, « NG » à la BRVM) | **7 %** | Communiqué BOA NG déposé à la BRVM (29/04/2026) : dividende brut 2024 de 225 → net BOC 209,25 = 225 × 0,93. Nets BOAN 2021-2024 = 462, 610, 660, 655 × 0,93 (bruts ronds) | 2021–2025 | **H** (relevé le 22/11/2026) |
+| Bénin (BJ, « BN » à la BRVM) | **Selon l'émetteur, PAS un taux unique de 5 %** *(corrigé le 22/11/2026)* : ≈ 5 % pour LNBB (2025 : 275,5 = 290 × 0,95 ; 2026 : 164,1709 pour 173 brut selon la presse) et BICB (254,6 = 268 × 0,95) ; **≈ 10 % pour BOAB** (585 = 650 × 0,90 en 2026 ; 468 = 520 × 0,90 en 2025) | Avis 121, 199 et 211-2026 (nets) ; bruts déduits | 2025–2026 | B (inférence). Utiliser le net du BOC |
+| Togo (TG) | **Inconnu** : 7 % selon un agrégateur, ≈ 3 % selon un article de 2026. ORGT 2020 : 59,52 = 64 × 0,93 (cohérent avec 7 %, par inférence). ETI déclare en USD (0,16 cent net selon le chercheur), et le calendrier BRVM 2026 le convertit en 0,9184 FCFA net, ce qui est cohérent avec ≈ 575 FCFA par USD | — | 2026 | B |
 | Guinée-Bissau (GW) | Sans objet : aucune action cotée | — | — | H |
 
 Important pour le code : au BOC, la colonne « Dernier dividende payé — Montant net » correspond au **net d'IRVM pour les personnes physiques**. Les avis BRVM des émetteurs non ivoiriens ne donnent que le net. Les avis des émetteurs ivoiriens donnent le brut avec le taux d'IRVM.
@@ -231,8 +239,9 @@ Important pour le code : au BOC, la colonne « Dernier dividende payé — Monta
    | SLBC (28/07/2026) | 39 500 | 1 871,76 | 37 630 | 37 628,2 arrondi vers le haut |
    | ETIT (26/06/2026) | 37 | 0,9184 | 36 | arrondi au plus proche (pas de 1) |
 
-   Pour un pas de 5, l'arrondi observé est **vers le haut** (9 cas sur 9, dont BOABF, BOAC, ECOC et SGBC).
-4. Le **jour ex** (ligne marquée **(V)**), la colonne « Cours précédent » du BOC contient le **cours ajusté**, pas la clôture de la veille. La « Variation jour » est calculée par rapport à ce cours ajusté. Les bornes de ±7,5 % s'appliquent autour de ce cours ajusté.
+   Pour un pas de 5, l'arrondi observé est **vers le haut**. La contre-vérification du 22/11/2026 porte sur **45 lignes (d) de 2025-2026** : 44 sont exactes ou arrondies vers le haut. La seule exception, BOAC le 04/05/2026, s'explique par le montant : la BRVM a utilisé le net du calendrier (594,528), alors que le BOC affiche ensuite 597,53. Avec 594,528, l'arrondi est bien vers le haut (8 845).
+   **Attributions gratuites (2024)** : la référence théorique est au contraire arrondie **vers le bas**. BOAM 2 020 × 2/3 = 1 346,7 donne 1 345 ; BOAS 4 690 × 2/3 = 3 126,7 donne 3 125 ; BOAB 7 775/2 = 3 887,5 donne 3 885 ; BOAN 5 220 × 5/8 = 3 262,5 donne 3 260.
+4. Le **jour ex** (ligne marquée **(V)**), la colonne « Cours précédent » du BOC contient **en général (2025-2026)** le **cours ajusté**, pas la clôture de la veille. La « Variation jour » est calculée par rapport à ce cours ajusté. Les bornes de ±7,5 % s'appliquent autour de ce cours ajusté. *(Nuance ajoutée le 22/11/2026.)* Ce n'est **pas toujours** le cas. SNTS le 15/05/2024 affiche 18 995 au lieu de 17 925, et SOGC le 10/07/2025 affiche 7 640 au lieu de 7 115. Dans les **BOC 2018-2022**, « Cours précédent » et « Variation jour » ne sont pas ajustés les jours de détachement (exemples : SCRC le 26/09/2018 à −8,72 % ; SLBC le 18/08/2022 à −10,27 % ; BOABF le 29/04/2019 à −13 %). La bande s'applique pourtant bien autour de la référence ajustée : SLBC 135 000 − 4 050 = 130 950, et la borne basse 121 130 a été atteinte. **Ne jamais utiliser « Variation jour » ni « Cours précédent » de la ligne (V) comme rendement.** Utiliser la référence de la ligne (d) ou la recalculer.
 5. **La « Variation de l'année » du BOC n'est pas ajustée des dividendes** : elle compare le cours brut à la clôture de l'année précédente. Pour SNTS, 10,64 % puis 9,11 % le jour ex.
 6. **Rendement total exact** : `TR_t = (Clôt_t + D_net·1[t = jour ex]) / Clôt_{t-1} − 1`, où `Clôt_{t-1}` est la clôture **non ajustée** de la veille.
 
@@ -270,7 +279,7 @@ Facteur d'ajustement historique : `f = réf_ex / (réf_ex + valeur_DA)`. Par exe
 | Événement | Détail | Date | Source | Conf. |
 |---|---|---|---|---|
 | SAFCA CI : augmentation de capital avec DPS | 6 nouvelles pour 13 anciennes ; ex-DPS le 24/04/2026 (réf. 3 890, DPS 1 615) ; DPS négocié du 27/04 au 09/06/2026 ; 3 750 000 actions nouvelles admises le **11/08/2026** (8 119 750 → 11 869 750 actions) | 2026 | avis 108 et 237-2026 | H |
-| MOVIS CI : offre publique de retrait puis radiation | OPR ouverte le 07/04/2025 ; radiation le 25/06/2025 | 2025 | avis 069 et 142-2025 | H |
+| MOVIS CI (SVOC) : offre publique de retrait puis radiation | OPR ouverte le 07/04/2025 ; avis de radiation 142-2025 publié au BOC du 25/06/2025. Le titre figure encore au BOC du **26/06/2025** (suspendu, SP, 2 395 FCFA) et disparaît le **27/06/2025** | 2025 | avis 069 et 142-2025 ; BOC | H |
 | BOA Mali : augmentation de capital avec DPS | valeur théorique du DPS (avis 191-2021) ; clôture le 10/11/2021 | 2021 | avis 191 et 211-2021 | H (titre de l'avis) |
 | NSIA Banque CI : augmentation par apport partiel d'actifs | clôture des souscriptions le 05/01/2021 | 2020–2021 | avis 002-2021 | H (titre de l'avis) |
 | Suspensions 2026 | SICC, SCRC et SEMC suspendus le 16/09/2026 (SCRC repris le 21/09). SICC et SEMC toujours suspendus le 20/11/2026. Motif non vérifié (un avis 214-2026 du 22/07/2026 porte sur le respect de la diffusion de l'information financière) | 2026 | avis 268, 269, 270 et 276-2026 ; BOC | H (fait) / B (motif) |
@@ -297,7 +306,7 @@ Aucune introduction d'actions n'a été trouvée en 2023. Bilan net 2022→2026 
 
 | Date | Réforme | Source |
 |---|---|---|
-| 15/09/1998 | BRVM Composite (et ancien BRVM 10) en base 100 | BOC historiques (« Base = 100 au 15 septembre 1998 ») |
+| 15/09/1998 | BRVM Composite (et ancien BRVM 10) en base 100 **[NON VÉRIFIÉ le 22/11/2026 : les BOC locaux 2017-2026 ne mentionnent pas cette base, et la source lefaso.net n'était pas accessible]**. Cela n'affecte que la normalisation du niveau | BOC historiques (« Base = 100 au 15 septembre 1998 ») |
 | 02/01/2023 | Nouveaux compartiments Prestige, Principal et Croissance. Lancement des indices **BRVM Prestige** et **BRVM 30** en base 100 (le BRVM 30 remplace le BRVM 10). Niveaux du 1er jour : Prestige 100,54, BRVM 30 100,13, Composite 206,34. L'indice BRVM Principal apparaît au BOC avec la même base | communiqué BRVM du 02/01/2023 ; BOC |
 | 02/01/2025 | **7 nouveaux indices sectoriels** (avis 341-2024 du 26/12/2024), en base 100 au 02/01/2025. **BRVM Composite Total Return** disponible sur la plate-forme de négociation | avis 341-2024 ; avis 308-2025 |
 | 02/01/2026 | Les anciens indices sectoriels sont supprimés des supports après un an de transition (avis 307-2025). Le Total Return est affiché au BOC (avis 308-2025). Nouveau format du BOC | avis 307 et 308-2025 ; article BRVM sur le BOC |
@@ -316,6 +325,10 @@ La BRVM ne publie pas, sur son site, de document méthodologique détaillé (for
 | **BRVM Principal** | les 36 valeurs du compartiment Principal | — | non testé | — | — |
 | **BRVM Composite Total Return** | comme le Composite | « révisé à chaque paiement de dividende » | **dividendes NETS réinvestis** | le jour ex, l'écart TR − Composite vaut 150,2 / 62,2 / 36,1 / 16,6 pb, contre 148,2 / 62,6 / 35,7 / 16,6 pb prévus avec les dividendes nets, et 164,5 / 71,1 / 40,5 / 18,8 pb avec les bruts | **H** |
 | **Indices sectoriels** (7) | selon la nomenclature 2025 | — | non testé (probablement la capitalisation totale, comme le Composite) | — | B |
+
+**Contre-vérification indépendante (22/11/2026)** :
+- **Composite** : sur 465 séances de 2025-2026, la variation quotidienne du Composite et celle de la capitalisation « Actions & Droits » publiée au BOC diffèrent en médiane de **0,09 pb** (moins de 1 pb dans 98 % des séances). Les seuls écarts notables tombent les jours d'introduction (28/04/2025, 24/09/2026), d'admission d'actions nouvelles (SAFC le 11/08/2026) et de négociation de DPS. Cela confirme la pondération par capitalisation totale.
+- **Total Return** : l'excédent TR − Composite les jours ex vaut 150,2 / 62,2 / 36,1 / 16,6 pb. La prédiction avec les dividendes nets est de 148,2 / 62,5 / 35,7 / 16,6 pb, et celle avec les bruts de 168,4 / 71,0 / 40,6 / 18,8 pb. Cela confirme le réinvestissement des dividendes **nets**.
 
 Au 20/11/2026, la capitalisation reconstruite (cours BOC × nombre de titres) vaut 19 330 Md FCFA, contre **19 328,8 Md FCFA publiés** (écart de 0,007 %). Le nombre de titres de l'avis 303-2026 est donc fiable, une fois mis à jour pour SNTS (×10) et SAFC (11 869 750).
 
@@ -429,10 +442,10 @@ market:
   holidays_source: "avis BRVM 'Jour férié' + absence de BOC"   # liste à maintenir dans les données
   price_limit_pct: 0.075             # actions ET obligations, ±7,5 % autour de la référence
   price_limit_applies_on_ipo_day: true      # référence = prix d'offre
-  band_rounding: "inward"            # basse = ceil, haute = floor au pas
+  band_rounding: "inward"            # basse = ceil, haute = floor au pas (vérifié BOC 2018-2026)
+  band_min_one_tick: true            # ETIT 13 -> 14 (+7,69 %) observé 10 fois ; haute >= ref + pas
   tick:
-    equity_default: 5                # FCFA
-    equity_overrides: {ETIT: 1}      # observé ; seuil exact inconnu
+    equity_rule: [{below: 100, tick: 1}, {else: 5}]   # FCFA ; empirique 2017-2026 (ETIT, NEIC), texte I-E = 5 seulement
     bond_pct_nominal: 0.001
   lot_size: 1
   short_selling: false
@@ -440,7 +453,11 @@ market:
   settlement_lag_days: 2             # J+2 depuis le 2025-12-04 (J+3 avant)
   settlement_lag_history: [{until: "2025-12-03", lag: 3}, {from: "2025-12-04", lag: 2}]
   ex_date_rule: "business_day_before_record_date"
+  ex_date_rule_history:              # vérifié sur les lignes (V) des BOC 2023-2026
+    - {until: "2025-12-03", business_days_before_record: 2}
+    - {from: "2025-12-04", business_days_before_record: 1}
   cancel_open_orders_on_corporate_action: true
+  missing_boc_is_not_holiday: true   # contrôler la continuité des n° de BOC (2026 : n° 54 et 187 manquants)
 
 costs:                                # par côté (achat ET vente)
   brvm_fee: 0.0020
@@ -449,19 +466,23 @@ costs:                                # par côté (achat ET vente)
   tax_on_commission: {rate: 0.10, verified: false}   # TAF/TVA : taux NON vérifié
   amf_levy: {rate: 0.0, verified: false}             # aucune redevance trouvée
   custody_annual: {default: 0.0025, range: [0.0, 0.005]}
-  account_fee_annual_fcfa: 5000
+  account_fee_annual_fcfa_per_line: {default: 5000, range: [0, 10000]}   # BICI : 5 000 PP / 10 000 PM PAR LIGNE ; FGI : 0
   slippage_model: "half_spread + impact"
   half_spread_default: 0.0035        # spread médian de clôture 0,69 % en 2026
   max_participation_of_adv: 0.10     # hypothèse prudente de recherche
 
 tax:
   irvm_dividend:                      # taux du pays du siège de l'émetteur
-    CI: {individual: 0.12, corporate: 0.10, confidence: H}
-    SN: {individual: 0.10, confidence: H}
-    BF: {individual: 0.125, confidence: M}
-    ML: {individual: 0.07, confidence: M}
-    NE: {individual: 0.07, confidence: M}
-    BJ: {individual: 0.05, confidence: M}
+    # RÈGLE PRIORITAIRE : utiliser le montant NET publié au BOC ; ces taux ne servent qu'au brut <-> net
+    CI: {individual: 0.12, corporate: 0.10, confidence: H,
+         history: [{until: "2024-12-31", individual: 0.10, confidence: M}]}   # inféré des nets BOC 2024
+    SN: {individual: 0.10, confidence: H, valid_from: "2026-01-01",
+         history_verified: false}            # nets antérieurs compatibles avec 0,125
+    BF: {individual: 0.125, confidence: B, verified: false}   # CBIBF 2026 compatible avec 0,10
+    ML: {individual: 0.07, confidence: M, valid_from: "2025-01-01",
+         history: [{until: "2024-12-31", individual: 0.10, confidence: B}]}
+    NE: {individual: 0.07, confidence: H}
+    BJ: {individual: null, by_issuer: {LNBB: 0.05, BICB: 0.05, BOAB: 0.10}, confidence: B}  # inféré
     TG: {individual: null, confidence: B}   # inconnu : utiliser les montants NETS du BOC
   capital_gains_individual: {rate: 0.0, verified: false}
 
@@ -481,18 +502,23 @@ indices:
 import math
 
 def tick(symbol: str, price: float) -> int:
-    return 1 if symbol == "ETIT" else 5          # voir §2.3 (seuil inconnu)
+    return 1 if price < 100 else 5                # §2.3 : règle empirique 2017-2026 (ETIT, NEIC)
 
 def price_band(ref: float, symbol: str, pct: float = 0.075) -> tuple[int, int]:
     t = tick(symbol, ref)
-    lo = math.ceil(ref * (1 - pct) / t) * t
-    hi = math.floor(ref * (1 + pct) / t) * t
-    return lo, hi                                 # vérifié sur 11 avis BRVM
+    lo = math.ceil(ref * (1 - pct) / t - 1e-9) * t
+    hi = math.floor(ref * (1 + pct) / t + 1e-9) * t
+    hi = max(hi, ref + t)                         # pas minimal (ETIT 13 -> 14 observé)
+    lo = min(lo, ref - t)                         # par symétrie (non observé)
+    return lo, hi                                 # vérifié : 11 avis + BOC 2018-2026
 
 def ex_dividend_reference(close_cum: float, div_net_individual: float, symbol: str) -> int:
     t = tick(symbol, close_cum)
     x = close_cum - div_net_individual
-    return math.ceil(x / t) * t if t == 5 else round(x)   # observé 2026 ; préférer la valeur du BOC
+    return math.ceil(x / t - 1e-9) * t if t == 5 else round(x)   # 44/45 cas 2025-2026 ; préférer la réf. (d) du BOC
+
+def bonus_reference(close_cum: float, new: int, old: int, t: int = 5) -> int:
+    return math.floor(close_cum * old / (old + new) / t) * t       # attributions 2024 : arrondi vers le bas
 
 def side_cost(notional: float, broker=0.01, tax_on_broker=0.10) -> float:
     return notional * (broker * (1 + tax_on_broker) + 0.002 + 0.001)
@@ -503,7 +529,7 @@ def side_cost(notional: float, broker=0.01, tax_on_broker=0.10) -> float:
 1. **Source de vérité** : BOC (« Clôt. », « Cours de référence », colonnes volume et valeur). Ne jamais utiliser le bandeau du site, ni les « transactions sur dossier ».
 2. **Lignes spéciales du BOC** :
    - **(d)** = dernier jour avec droit. Le cours de référence de la ligne est ajusté du dividende net.
-   - **(V)** = jour ex. « Cours précédent » est alors la référence ajustée.
+   - **(V)** = jour ex. « Cours précédent » est **en général** la référence ajustée, avec des exceptions (SNTS 15/05/2024, SOGC 10/07/2025). Dans les BOC 2018-2022, il n'est jamais ajusté. Il faut prendre la référence de la ligne (d).
    - **Val-T** = valeur théorique (split ou attribution).
    - **SP** = suspendu.
    - **NC** = non coté.
@@ -532,13 +558,15 @@ def side_cost(notional: float, broker=0.01, tax_on_broker=0.10) -> float:
 
 ## 13. Questions ouvertes (à traiter dans d'autres tâches)
 
-- Seuil exact du pas de cotation de 1 FCFA (prix < 100 ? < 1 000 ?). Seul ETIT permet de l'observer. Il faut trouver l'instruction BRVM la plus récente sur le pas de cotation.
+- ~~Seuil exact du pas de cotation de 1 FCFA~~ : **résolu empiriquement le 22/11/2026**, pas de 1 FCFA sous 100 FCFA (§2.3). Le texte officiel qui fixe ce seuil reste à trouver.
+- Taux d'IRVM historiques (SN avant 2026, ML avant 2025, BF, BJ par émetteur). Les valeurs ont été déduites des nets du BOC et doivent être confirmées par des sources primaires (AG, CGI).
+- Écart SGBC 2026 : le net publié au BOC (2 298,75) diffère de 2 606 × 0,88 (2 293,28).
 - Taux de la taxe sur le courtage (TAF/TVA) par pays, et existence d'une redevance AMF-UMOA. Il faut un vrai avis d'opéré de SGI.
 - Taux d'IRVM au Togo (ETIT, ORGT). Régime appliqué aux non-résidents UEMOA et hors UEMOA.
 - Fiscalité des plus-values sur actions cotées, pays par pays (CGI 2026 de chaque État).
 - Méthodologie officielle (formule et plafonnement) des indices Prestige, Principal et sectoriels. Composition BRVM 30 du T1-2026 (avis 002-2026, non lu).
 - Règle de report (« réservation ») en cotation continue : durée de la période de report et traitement des ordres hors bornes pendant le continu (le texte de 2016 décrit surtout le fixing).
-- Cause de l'absence du BOC du 02/10/2026 (jour férié ? fichier manquant ?).
+- ~~Cause de l'absence du BOC du 02/10/2026~~ : **c'était une séance** (BOC n° 187, d'après la numérotation). Il faut récupérer ce fichier ainsi que le n° 54 (19 ou 20/03/2026).
 - Motif officiel des suspensions de SICC et SEMC du 16/09/2026.
 
 ---
@@ -652,3 +680,76 @@ Scripts (bac à sable de session, non versionnés) : analyse des 220 BOC 2026, c
 - le calcul des spreads et des valeurs médiane échangées.
 
 Les résultats chiffrés sont reproduits dans le texte (§3.5, §10.2, §11). Pour les rendre permanents, il faut les réimplémenter dans le module `brvm_alpha` du projet.
+
+---
+
+## Vérification adversariale (2026-11-22)
+
+**Rôle** : vérificateur sceptique indépendant. **Méthode** : chaque élément a été vérifié à nouveau, sans reprendre les calculs du chercheur, de trois façons :
+1. relecture des documents primaires téléchargés depuis `www.brvm.org` par `curl`, avec OCR (tesseract, français) pour les PDF scannés ;
+2. re-parsing complet des BOC locaux 2017-2026 (≈ 96 700 lignes action×séance ; 2017 et 2021 partiellement lisibles) ;
+3. tests arithmétiques.
+
+**Limites de la session** :
+- seul `www.brvm.org` était joignable. financialafrik, allafrica, ensafrica, sonatel.sn et hub24 ont été refusés par le proxy, et le quota de recherche web était épuisé. Les sources secondaires citées par le chercheur **n'ont donc pas pu être relues** ;
+- ce document ne cite aucune étude académique, il n'y avait donc aucune référence bibliographique à contrôler.
+
+| # | Élément vérifié | Verdict | Valeur retenue | Preuve |
+|---|---|---|---|---|
+| 1 | Plafond ±7,5 % (actions **et** obligations) | **Confirmé** + nuance | 0,075 ; au minimum un pas de cotation (ETIT 13 → 14 = +7,69 %, 10 fois en 2019-2021) | Instruction I-A (texte relu) ; BOC 2018-2026 : aucun dépassement hors jours ex mal ajustés et pas minimal |
+| 2 | Arrondi des bornes vers l'intérieur (ceil / floor) | **Confirmé** | inchangé | Avis 309-2026 et 108-2026 relus ; 1 638 + 1 262 cas discriminants dans les BOC, 0 contre-exemple |
+| 3 | Pas de cotation 5 FCFA ; 1 FCFA pour ETIT, « seuil inconnu » | **Corrigé** | 1 FCFA si cours < 100 FCFA, sinon 5 | BOC 2017-2026 : ≈ 11 000 clôtures entre 100 et 999 FCFA, toutes multiples de 5 ; non-multiples seulement sous 100 FCFA (ETIT, NEIC). « Aucune action entre 100 et 1 000 FCFA en 2026 » est **réfuté** (SEMC 750-990 FCFA en janvier 2026) |
+| 4 | Règlement J+2 au 04/12/2025 (J+3 avant) | **Confirmé** | inchangé | Instruction 03-2025 du 02/12/2025, relue par OCR (en vigueur à sa publication au BOC) ; listée au BOC du 03/12/2025 ; changement visible dans les dates ex |
+| 5 | Règle ex-date (1er jour ouvré avant les registres) | **Confirmé (2026) + corrigé (historique)** | 2 jours ouvrés avant jusqu'au 03/12/2025, puis 1 jour | Lignes (V) des BOC : 77/80 cas à 2 jours en 2023-2025, 35/35 à 1 jour en 2026 ; avis 072, 111, 121, 129, 154 et 199-2026 |
+| 6 | Horaires de séance (UTC) et veille de fête | **Confirmé** | inchangé | brvm.org/fr/horaires-de-cotation (relu le 22/11/2026, ±60 s) |
+| 7 | Commission BRVM 0,20 % et DC/BR 0,10 % par côté | **Confirmé** | 0,0020 + 0,0010, acheteur ET vendeur | brvm.org/fr/node/312 (« payables par l'Acheteur et par le Vendeur ») ; tarification 2014, tableau B.1 |
+| 8 | Courtage SGI 0,4-1 % (BICI Bourse), ≤ 1 % (FGI) | **Confirmé** | inchangé | Décisions PAMF-UMOA 2024-326 (04/12/2024) et 2025-124 (28/03/2025), relues par OCR |
+| 9 | Droits de garde et tenue de compte | **Corrigé** | garde 0,1-0,5 % par an (BICI), ≤ 0,25 % (FGI) ; tenue de compte **5 000 FCFA par LIGNE** et par an (BICI, personne physique) | Annexe de la décision 326-2024 : « Forfait par ligne » |
+| 10 | Taxe de 10 % sur le courtage (TAF/TVA) | **Invérifiable** | [NON VÉRIFIÉ], conservée comme hypothèse | Absente de la tarification BRVM et des grilles SGI ; sources secondaires inaccessibles |
+| 11 | IRVM CI 12 % (personne physique) / 10 % (personne morale) | **Confirmé** + historique ajouté | 0,12 (paiements 2025-2026) ; 0,10 jusqu'en 2024 (inférence) | Calendrier BRVM du 06/10/2026 ; avis 231-2026 ; nets BOC = brut × 0,88 (12 émetteurs) ; nets 2024 = brut rond × 0,90 |
+| 12 | IRVM SN 10 % | **Confirmé pour 2026** ; historique [NON VÉRIFIÉ] | 0,10 depuis 2026 | Avis 111-2026 (1 740 net) ; BOAS 450 = 500 × 0,9. Nets antérieurs compatibles avec 12,5 % |
+| 13 | IRVM NE 7 % | **Confirmé** (M+ → H) | 0,07 | Communiqué BOA NG (brut 225) et BOC 209,25 ; nets BOAN 2021-2024 = bruts ronds × 0,93 |
+| 14 | IRVM ML 7 % | **Confirmé pour 2025-2026** | 0,07 (2024 : 0,10 [NON VÉRIFIÉ]) | Avis 129-2026 (305,04 = 328 × 0,93) ; 237,15 = 255 × 0,93 |
+| 15 | IRVM BJ ≈ 5 % | **Corrigé** (taux unique réfuté) | selon l'émetteur : LNBB et BICB ≈ 5 %, BOAB ≈ 10 % (inférence) | Nets des avis 121, 199 et 211-2026 ; 585 = 650 × 0,9 ; 254,6 = 268 × 0,95 |
+| 16 | IRVM BF 12,5 % | **Invérifiable** (plausible) | 0,125 [NON VÉRIFIÉ] | Avis 072-2026 : 397 net, sans le brut ; CBIBF 2026 (900 = 1 000 × 0,9) contredit un taux uniforme |
+| 17 | Split SONATEL 10 pour 1 au 26/10/2026, f = 0,1 | **Confirmé** | inchangé | Avis 309-2026 relu (réf. 4 385, bornes [4 060 ; 4 710]) ; BOC : clôture 43 850 le 23/10, ouverture 4 710 le 26/10 |
+| 18 | Split SOLIBRA 10 pour 1 au 30/09/2024 | **Confirmé** | inchangé | BOC du 30/09/2024 : ligne (V), précédent 10 215 |
+| 19 | DPS SAFCA 6 pour 13, f = 0,7066 | **Confirmé** | 3 890 / 5 505 = 0,7066 | Avis 108-2026 relu (DPS 1 615, réf. 3 890, bornes [3 600 ; 4 180]) ; BOC du 23/04/2026, clôture 5 505 |
+| 20 | Attributions gratuites 2024 (7 titres, ratios et dates ex) | **Confirmé** + précision | références arrondies **vers le bas** | BOC : clôtures avec droit et références ex (BOAM 2 020 → 1 345, BOAN 5 220 → 3 260, etc.) |
+| 21 | Introductions : bande de ±7,5 % le 1er jour, prix et 1ers cours | **Confirmé** | inchangé | BOC : ORAC 10 210 (30/12/2022), LNBB 5 160, BICB 5 600, BBGC 7 255 puis 7 795, 8 375 et 9 000 (bornes exactes) |
+| 22 | Radiation de MOVIS le 25/06/2025 | **Précisé** | avis du 25/06/2025 ; dernière ligne (SP) au BOC du 26/06/2025 | BOC des 25, 26 et 27/06/2025 |
+| 23 | Composite pondéré par la capitalisation totale | **Confirmé** | inchangé | ΔComposite − ΔCapitalisation : médiane 0,09 pb sur 465 séances |
+| 24 | Total Return avec dividendes nets réinvestis | **Confirmé** | inchangé | 4 jours ex : écart observé = prédiction avec les nets (à ± 2 pb près), loin de la prédiction avec les bruts |
+| 25 | Niveaux des indices au 20/11/2026, écart de +6,6 pts du TR | **Confirmé** | inchangé | BOC n° 222 |
+| 26 | Compositions BRVM 30 (T4-2026) et Prestige 2026 | **Confirmé** | inchangé | Avis 289-2026 et 001-2026, relus par OCR |
+| 27 | Exceptions au flottant (SICC 12,26 %, SEMC 10,29 %, CFAC 4,15 %, UNLC 0,22 %) | **Confirmé** | inchangé | Avis 303-2026 relu par OCR (CFAC : 181 371 900 titres) |
+| 28 | Spread médian 0,69 % ; 41/48 titres ≥ 5 M FCFA par séance | **Confirmé** + réserve | inchangé | Recalcul indépendant (BOAM 0,21 %, UNLC 4,26 %). Spread mesuré seulement quand le carnet a les deux côtés |
+| 29 | BOC absents de 2026 = jours fériés ; 02/10 « sans explication » | **Corrigé** | le 02/10/2026 et l'un des jours 19-20/03 étaient des séances (BOC manquants) | Numérotation des BOC : 186 → 188 et 53 → 55 ; 220 fichiers pour 222 séances |
+| 30 | AMF-UMOA « depuis le 01/01/2021 » | **Corrigé** | Traité révisé du 12/07/2019, en vigueur le 01/10/2022 | Visas de la décision PAMF-UMOA 2024-326 |
+| 31 | Ventes à découvert et marge interdites (art. 1123) | **Confirmé** | long-only | Texte de l'art. 1123 relu |
+| 32 | Critères des compartiments (RG art. 62, 63, 63 bis) | **Confirmé** | inchangé | RG BRVM 2021 (texte) |
+| 33 | Base 100 du Composite au 15/09/1998 | **Invérifiable** dans la session | [NON VÉRIFIÉ] | Absente des BOC locaux ; lefaso.net inaccessible |
+| 34 | Référence ex-dividende = ceil_5(clôture − net) | **Confirmé** | inchangé (44/45 cas en 2025-2026) | Lignes (d) des BOC ; exception BOAC expliquée par le montant net utilisé |
+| 35 | « Cours précédent » de la ligne (V) = référence ajustée | **Corrigé** (pas toujours vrai) | utiliser la référence de la ligne (d) | SNTS 15/05/2024, SOGC 10/07/2025 ; BOC 2018-2022 non ajustés |
+
+**Bilan** : 35 éléments contrôlés.
+- Aucun paramètre de coût ou de microstructure à fort impact n'a été réfuté.
+- 9 corrections ou précisions intégrées : pas de cotation, règle ex-date historique, tenue de compte par ligne, IRVM BJ et historiques, date AMF-UMOA, BOC manquants, (V) non fiable, MOVIS, arrondi des attributions.
+- 4 éléments restent invérifiables et sont marqués [NON VÉRIFIÉ] : taxe sur le courtage, IRVM BF, plus-values, base 1998.
+
+**Sources ajoutées par la vérification** (consultées le 22/11/2026) :
+- https://www.brvm.org/fr/node/312 ; https://www.brvm.org/fr/horaires-de-cotation ; https://www.brvm.org/fr/node/313
+- https://www.brvm.org/sites/default/files/instruction_03_2025_brvm_dg_reduction_delai_j3_j2_0.pdf
+- https://www.brvm.org/sites/default/files/9_pj_tarification_-_v_010710_maj_01012014_v4_-_valide_ca_002.pdf
+- https://www.brvm.org/sites/default/files/decision_ndeg326_sgi_bici_bourse_homologation_des_tarifs_de_la_sgi_bici_bourse.pdf
+- https://www.brvm.org/sites/default/files/decision_ndegpamf-umoa_-_124_-_2025_-_homologation_des_tarifs_de_la_sgi_fgi.pdf
+- https://www.brvm.org/sites/default/files/regles_negociation_admission_0.pdf (Instructions I-A et I-E ; art. 1123)
+- https://www.brvm.org/sites/default/files/20261006_-_calendrier_de_paiement_des_dividendes_-_exercice_2025.pdf
+- Avis de dividendes 072, 111, 121, 129, 154, 199 et 231-2026 (URL dans la section Sources ci-dessus)
+- https://www.brvm.org/sites/default/files/20260429_-_communique_de_presse_-_boa_ng.pdf
+- https://www.brvm.org/sites/default/files/20261023_-_avis_ndeg309_brvmdg_-_fractionnement_dactions_valeur_theorique_-_sonatel_sn.pdf
+- https://www.brvm.org/sites/default/files/20260423_-_avis_ndeg108_brvmdg_-_valeur_theorique_-_dps_-_augmentation_de_k_-_safca_ci.pdf
+- https://www.brvm.org/sites/default/files/20261012_-_avis_ndeg303_brvmdg_-_flottant_des_societes_cotees_a_la_brvm.pdf
+- https://www.brvm.org/sites/default/files/20261001_-_avis_ndeg289_brvmdg_-_composition_de_lindice_brvm_30.pdf
+- https://www.brvm.org/sites/default/files/20260102_-_avis_ndeg001_brvmdg_-_composition_de_lindice_brvm_prestige.pdf
+- BOC locaux `data/boc_text/boc_2017*.txt.gz` à `boc_20261120.txt.gz`, re-parsés de façon indépendante

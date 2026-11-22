@@ -1,0 +1,488 @@
+name,nature,date,heure,lieu,year_file,annule,report,symbol
+MOVIS CI,Ordinaire,2017-12-22,09:00:00,Amphithéatre de l'immeuble CRRAE-UEMOA Sise au,2017,False,False,SVOC
+TOTAL,Extraordinaire,2017-12-12,10:00:00,Hotel Radisson Blu Abidjan,2017,False,False,TTLC
+FILTISAC,Mixte,2017-12-08,15:00:00,"mmeuble CRRAE-UEMOA, Abidjan Plateau (RCI)",2017,False,False,FTSC
+PRSC,Mixte,2017-12-07,10:00:00,"Siège social sis à Abidjan-zone 3,km 4, Boulevard de",2017,False,False,PRSC
+CFAO-CI,Extraordinaire,2017-09-29,10:00:00,Siège CFAO CI,2017,False,False,CFAC
+CORIS BANK,Extraordinaire,2017-09-21,09:00:00,Hôtel SOPATEL - OUAGADOUGOU,2017,False,False,CBIBF
+BOA-BENIN,Extraordinaire,2017-09-07,10:00:00,"Cotonou, Azalai Hotel de la Plage",2017,False,False,BOAB
+SICOR,Mixte,2017-09-01,09:00:00,Palm Club Hôtel Abidjan,2017,False,False,SICC
+BOA - MALI,Extraordinaire,2017-06-30,09:30:00,AZALAI GRAND HOTEL - BAMAKO,2017,False,False,BOAM
+UNILEVER CI,Mixte,2017-06-30,09:00:00,Amphithéatre de l'immeuble CRRAE-UEMOA Sise au,2017,False,False,UNLC
+AIR LIQUIDE CI,Mixte,2017-06-29,10:00:00,"Salle de conférence de l'immeuble CRRAE-UEMOA,",2017,False,False,SIVC
+CROWN SIEM,Ordinaire,2017-06-28,09:00:00,Hôtel TIAMA Abidjan/ Plateau,2017,False,False,SEMC
+UNIWAX,Mixte,2017-06-23,10:00:00,"Espace Latrille Event, sise à Abidjan, II Plateaux (",2017,False,False,UNXC
+NESTLE-CI,Mixte,2017-06-21,10:00:00,Espace Latrille Event,2017,False,False,NTLC
+SHEC,Ordinaire,2017-06-20,10:00:00,Hôtel AZALAI,2017,False,False,SHEC
+SOGB,Mixte,2017-06-20,11:00:00,"Salle de conférence de l'immeuble CRRAE-UEMOA,",2017,False,False,SOGC
+TOTAL SENEGAL S.A.,Mixte,2017-06-20,11:00:00,"Hôtel Terrou-BI, Corniche Ouest, Boulevard Martin",2017,False,False,TTLS
+PRSC,Ordinaire,2017-06-20,10:00:00,"Siège de l'entreprise à Abidjan Zone 3, Km 4,Boulevard",2017,False,False,PRSC
+BERNABE - CI,Mixte,2017-06-20,11:00:00,CGECI (La Maison de l'Entreprise) sis à Abidjan- Plateau,2017,False,False,BNBC
+SMB,Ordinaire,2017-06-19,09:30:00,CCGECI (La Maison de l'Entreprise) sis à Abidjan-,2017,False,False,SMBC
+SETAO,Mixte,2017-06-16,10:00:00,Salle MERCURE de la Maison de l'Entreprise Plateau à,2017,False,False,STAC
+ETI,Mixte,2017-06-16,10:30:00,Salle de conférence du centre de planification,2017,False,False,ETIT
+NEI-CEDA CI,Mixte,2017-06-14,10:00:00,"AZALAI Hôtel, sis Boulevard VGE Marcory",2017,False,False,NEIC
+SGBCI,Mixte,2017-06-13,09:00:00,"Complexe CRRAE-UEMOA,sis à Abidjan, Commune du",2017,False,False,SGBC
+FILTISAC,Ordinaire,2017-06-13,09:00:00,Immeuble CRRAE UMOA Abidjan Plateau (RCI),2017,False,False,FTSC
+CFAO-CI,Ordinaire,2017-06-08,09:00:00,"Hôtel AZALAI, sis à Abidjan Marcory, Boulevard Valéry",2017,False,False,CFAC
+CIE,Mixte,2017-06-08,10:00:00,"Sofitel, Hôtel Ivoire",2017,False,False,CIEC
+TOTAL,Mixte,2017-05-31,10:00:00,Hôtel Radisson Blu,2017,False,False,TTLC
+BICICI,Mixte,2017-05-31,11:00:00,CRRAE UEMOA - ABIDJAN,2017,False,False,BICC
+SAFCA,Mixte,2017-05-30,11:30:00,"Siège de la société,1, Rue des Carrossiers, Zone 3 C",2017,False,False,SAFC
+PALMCI,Mixte,2017-05-18,09:30:00,SSalle de conférence du Ministère des Affaires,2017,False,False,PALC
+SITAB,Ordinaire,2017-05-18,10:30:00,"Salle JEWELS de la ""Maison de l'Entreprise"" (C.G.E.C.I)",2017,False,False,STBC
+SUCRIVOIRE,Mixte,2017-05-17,09:30:00,Salle de conférence du Ministère des Affaires,2017,False,False,SCRC
+SODECI,Mixte,2017-05-16,09:00:00,Espace Latrille Events sis à Cocody boulevard Latrille,2017,False,False,SDCC
+SIB,Ordinaire,2017-05-05,09:00:00,Salle de conférence CRRAE-UEMOA (Immeuble Versus,2017,False,False,SIBC
+SOLIBRA,Mixte,2017-05-04,10:00:00,"Espace CRISTAL 8, rue du Chevalier de Clieu Zone 4 C """,2017,False,False,SLBC
+SAPH,Mixte,2017-05-03,09:30:00,Salle de conférence - CRRAE-UEMOA (Versus Bank au,2017,False,False,SPHC
+CORIS BANK INTERNATIONAL,Mixte,2017-04-27,09:00:00,Hôtel SOPATEL - OUAGADOUGOU,2017,False,False,CBIBF
+SERVAIR ABIDJAN,Ordinaire,2017-04-25,11:00:00,Amphithéatre de l'immeuble CRRAE-UEMOA Sise au,2017,False,False,ABJC
+BOA-NIGER,Mixte,2017-04-20,10:00:00,Centre de Formation de la BOA-NIGER (Sise à BOA-,2017,False,False,BOAN
+SONATEL,Ordinaire,2017-04-18,10:00:00,Centre International de conférence Abdou DIOUF,2017,False,False,SNTS
+ONATEL,Ordinaire,2017-04-14,10:00:00,Royal Beach Hôtel- OUAGADOUGOU,2017,False,False,ONTBF
+BOA-BENIN,Mixte,2017-04-14,10:00:00,AZALAI HOTEL - COTONOU,2017,False,False,BOAB
+BOA - MALI,Ordinaire,2017-04-08,09:00:00,AZALAI GRAND HOTEL - BAMAKO,2017,False,False,BOAM
+BOA - COTE D'IVOIRE,Mixte,2017-04-05,09:00:00,"Siège social, Abidjan-Plateau, Angle Avenue Terrasson",2017,False,False,BOAC
+BOA - SENEGAL,Mixte,2017-03-30,10:00:00,Immeuble ELAN II,2017,False,False,BOAS
+BOA-BURKINA FASO,Mixte,2017-03-28,10:00:00,"Hôtel LAICO OUAGA 2000, OUGADOUGOU",2017,False,False,BOABF
+SICABLE,Mixte,2017-03-14,09:00:00,"Hôtel AZALAI, Bld VGE à Abidjan",2017,False,False,CABC
+CORIS BANK INTERNATIONAL,Ordinaire,2018-12-29,09:00:00,Hôtel SOPATEL Silmandé SA,2018,False,False,CBIBF
+ECOBANK CI,Mixte,2018-12-04,10:00:00,"Espace Latrille Events, sis à Abidjan Cocody Deux",2018,False,False,ECOC
+UNILEVER CI,Mixte,2018-11-23,09:00:00,Hôtel Belle Côte sis à la Riviera Palmeraie,2018,False,False,UNLC
+BANK OF AFRICA NG,Mixte,2018-11-02,10:00:00,Centre de formation de la BOA-NIGER (sise à BOA-,2018,False,False,BOAN
+CORIS BANK INTERNATIONAL,Extraordinaire,2018-08-29,09:00:00,Hôtel SOPATEL Silmandé SA,2018,False,False,CBIBF
+MOVIS CI,Extraordinaire,2018-07-26,11:00:00,Amphithéatre de l'immeuble CRRAE-UEMOA Sise au,2018,False,False,SVOC
+MOVIS CI,Ordinaire,2018-07-26,09:30:00,Amphithéatre de l'immeuble CRRAE-UEMOA Sise au,2018,False,False,SVOC
+SMB,Mixte,2018-07-05,09:30:00,Amphithéatre de la CGECI (La Maison de l'Entreprise),2018,False,False,SMBC
+TRACTAFRIC CI,Mixte,2018-06-29,17:00:00,"Siège de TRACTAFRIC MOTORS Zone 3, Km 4, boulevard",2018,False,False,PRSC
+SODECI,Ordinaire,2018-06-27,15:30:00,"Espace Events sis à Abidjan, Cocody 2 Plateaux,",2018,False,False,SDCC
+UNILEVER CI,Mixte,2018-06-27,09:30:00,Amphithéatre de l'immeuble CRRAE-UEMOA Sise au,2018,False,False,UNLC
+AIR LIQUIDE CI,Ordinaire,2018-06-26,10:00:00,Salle de Conférence de la CRRAE-UEMOA,2018,False,False,SIVC
+BERNABE CI,Ordinaire,2018-06-25,11:00:00,"Maison de l'Entreprise (CGECI), Abidjan-Plateau",2018,False,False,BNBC
+NESTLE CI,Ordinaire,2018-06-25,10:00:00,LATRILLE EVENTS,2018,False,False,NTLC
+SETAO CI,Ordinaire,2018-06-22,10:00:00,Hôtel TIAMA (Salle EBENE) - Abidjan,2018,False,False,STAC
+SAFCA CI,Ordinaire,2018-06-22,10:00:00,"Siège de la société, 1,Rue des Carrossiers, Zone 3 C",2018,False,False,SAFC
+SITAB,Mixte,2018-06-21,10:30:00,Salle JEWELS de la Maison de l'Entreprise C.G.E.C.I au,2018,False,False,STBC
+SICOR,Ordinaire,2018-06-21,09:30:00,"Palm Club Hôtel Abidjan, Cocody, angle Boulevard",2018,False,False,SICC
+NEI-CEDA CI,Ordinaire,2018-06-21,10:00:00,"Hôtel AZALAI, Boulevard VGE à ABIDJAN",2018,False,False,NEIC
+CROWN SIEM CI,Mixte,2018-06-20,09:00:00,"Siège de la CGECI, sis à la Maison de l'Entreprise, au",2018,False,False,SEMC
+CIE CI,Ordinaire,2018-06-20,10:00:00,Sofitel Abidjan Hôtel Ivoire,2018,False,False,CIEC
+TOTAL,Ordinaire,2018-06-20,10:00:00,Salle de conférence de l'hôtel Radisson Blu à Abidjan,2018,False,False,TTLC
+TOTAL SENEGAL S.A.,Ordinaire,2018-06-18,15:00:00,"Hôtel Terrou-Bi, Corniche Ouest, Boulevard Martin",2018,False,False,TTLS
+SGB CI,Mixte,2018-06-13,09:00:00,"Amphithéâtre de la CGECI, Plateau Angle du Boulevard",2018,False,False,SGBC
+FILTISAC CI,Ordinaire,2018-06-08,10:00:00,Immeuble CRRAE - UMOA ABIDJAN-Plateau (RCI) -,2018,False,False,FTSC
+BICI CI,Ordinaire,2018-06-07,11:00:00,CGECI Abidjan,2018,False,False,BICC
+UNIWAX CI,Ordinaire,2018-06-07,10:00:00,"Espace Latrille Events, sis à Abidjan, II Plateaux",2018,False,False,UNXC
+CFAO MOTORS CI,Ordinaire,2018-06-05,10:00:00,"Siège social de CFAO MOTORS CI sis à Abidjan, 117,",2018,False,False,CFAC
+SOGB,Ordinaire,2018-06-05,11:00:00,"Salle de conférence de l’immeuble CRRAE-UMOA,",2018,False,False,SOGC
+NSBC,Ordinaire,2018-05-30,10:00:00,"Espace Latrille Event sis à Abidjan-Cocody, Deux",2018,False,False,NSBC
+ECOBANK CI,Ordinaire,2018-05-29,10:30:00,"Espace Latrille Event sis à Abidjan-Cocody, Deux",2018,False,False,ECOC
+ONATEL BF,Mixte,2018-05-17,10:00:00,"Royal Beach Hôtel, OUAGADOUGOU - BURKINA FASO",2018,False,False,ONTBF
+SUCRIVOIRE,Ordinaire,2018-05-17,09:30:00,Auditorium de la CRRAE-UMOA sise à Abidjan-Plateau,2018,False,False,SCRC
+BANK OF AFRICA CI,Mixte,2018-05-14,10:00:00,"Locaux du siège social, Angle Avenue Terrasson de",2018,False,False,BOAC
+PALM CI,Ordinaire,2018-05-09,09:30:00,"Salle de Conférence de la CRRAE-UEMOA, sise à",2018,False,False,PALC
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2018-05-09,10:00:00,"Salle de conférence de l'immeube CRRAE-UEMOA, sise",2018,False,False,SDSC
+BANK OF AFRICA ML,Mixte,2018-05-05,09:30:00,Grand-Hôtel,2018,False,False,BOAM
+SAPH CI,Ordinaire,2018-05-03,09:30:00,Salle de conférence de CRRAE-UMOA (Versus Bank au,2018,False,False,SPHC
+SOLIBRA,Ordinaire,2018-04-24,10:30:00,"Espace CRISTAL 8, rue du chevalier de Clieu, Zone 4 C,",2018,False,False,SLBC
+ECOBANK TG,Ordinaire,2018-04-24,10:30:00,"Salle de Conférence du Centre Panafricain Ecobank,",2018,False,False,ETIT
+VIVO ENERGY CI,Ordinaire,2018-04-19,09:00:00,Espace Latrille Event,2018,False,False,SHEC
+SONATEL,Ordinaire,2018-04-17,10:00:00,l’hôtel King Fahd Palace à Dakar,2018,False,False,SNTS
+BANK OF AFRICA BN,Ordinaire,2018-04-12,10:00:00,Salle de conférence du BENIN MARINA Hôtel,2018,False,False,BOAB
+CORIS BANK INTERNATIONAL,Ordinaire,2018-04-12,09:00:00,Hôtel SOPATEL Silmandé SA,2018,False,False,CBIBF
+SIB,Mixte,2018-04-06,09:00:00,"Maison de l'Entreprise (CGECI), Abidjan-Plateau",2018,False,False,SIBC
+BANK OF AFRICA BF,Ordinaire,2018-04-06,10:00:00,Salle de Conférence de OUAGA 2000,2018,False,False,BOABF
+BANK OF AFRICA NG,Ordinaire,2018-04-05,10:00:00,Centre de formation de la BOA-NIGER (sise à BOA-,2018,False,False,BOAN
+SICABLE,Ordinaire,2018-04-03,10:00:00,"Hôtel AZALAI, Boulevard VGE à ABIDJAN",2018,False,False,CABC
+SERVAIR ABIDJAN CI,Ordinaire,2018-03-28,10:00:00,la salle JEWELS de la CGECI sise au Plateau,2018,False,False,ABJC
+BANK OF AFRICA SN,Ordinaire,2018-03-16,10:00:00,"Immeuble Elan II, 2eme Etage, Route de Ngor, Zone",2018,False,False,BOAS
+NSBC,Extraordinaire,2019-10-18,10:00:00,"Espace Latrille Event sis à Abidjan-Cocody, Deux",2019,False,False,NSBC
+MOVIS CI,Ordinaire,2019-10-14,09:00:00,"Siège social de MOVIS CI, Vridi, Zone Industrielle, Rue",2019,False,False,SVOC
+SICOR,Ordinaire,2019-06-28,09:30:00,"Palm Club Hôtel Abidjan situé à Cocody, angle",2019,False,False,SICC
+TRACTAFRIC CI,Mixte,2019-06-28,10:00:00,"Salons du NOVOTEL ABIDJAN, 10, Avenue du Général",2019,False,False,PRSC
+VIVO ENERGY CI,Ordinaire,2019-06-27,14:00:00,Heden Golf Hôtel,2019,False,False,SHEC
+SETAO CI,Mixte,2019-06-27,10:00:00,Novotel Hôtel - Abidjan Plateau,2019,False,False,STAC
+BERNABE CI,Ordinaire,2019-06-27,11:00:00,Salle de conférence GEWELS de la CGECI au plateau,2019,False,False,BNBC
+CIE CI,Ordinaire,2019-06-26,10:00:00,Patinoire du Sofitel Abidjan Hôtel Ivoire,2019,False,False,CIEC
+SITAB,Mixte,2019-06-26,10:30:00,Salle JEWELS de la Maison de l'Entreprise (CGECI) au,2019,False,False,STBC
+BICI CI,Mixte,2019-06-25,11:00:00,Maison de l'Entreprise (CGECI) sise au Plateau,2019,False,False,BICC
+SAFCA CI,Ordinaire,2019-06-24,10:00:00,"Siège de la société, 1,Rue des Carrossiers, Zone 3 C",2019,False,False,SAFC
+FILTISAC CI,Ordinaire,2019-06-24,15:00:00,"Immeuble CRRAE-UMOA, Abidjan Plateau",2019,False,False,FTSC
+NESTLE CI,Ordinaire,2019-06-21,10:00:00,LATRILLE EVENTS,2019,False,False,NTLC
+UNIWAX CI,Ordinaire,2019-06-21,00:00:00,Salle des fêtes du Sofitel Abidjan Hôtel Ivoire sis à,2019,False,False,UNXC
+TOTAL,Ordinaire,2019-06-20,10:00:00,Salle de conférence de l'hôtel Radisson Blu à Abidjan,2019,False,False,TTLC
+CROWN SIEM CI,Ordinaire,2019-06-20,09:00:00,"Siège de la CGECI, sis à la Maison de l'Entreprise, au",2019,False,False,SEMC
+AIR LIQUIDE CI,Mixte,2019-06-19,10:00:00,"Salle de conférence de l'immeuble CRRAE-UMOA,",2019,False,False,SIVC
+SMB,Ordinaire,2019-06-18,09:30:00,CGECI (La maison de l'Entreprise),2019,False,False,SMBC
+SOGB,Ordinaire,2019-06-14,11:00:00,"Salle de conférence de l'immeuble CRRAE-UMOA,",2019,False,False,SOGC
+CFAO MOTORS CI,Mixte,2019-06-11,09:00:00,"Siège social sis à Abidjan, 117, Boulevard de Marseille",2019,False,False,CFAC
+SGB CI,Mixte,2019-06-11,09:00:00,"Espace Events sis à Abidjan, Cocody 2 Plateaux,",2019,False,False,SGBC
+TOTAL SENEGAL S.A.,Ordinaire,2019-06-05,09:00:00,"Hôtel Terrou-Bi, Corniche Ouest, Boulevard Martin",2019,False,False,TTLS
+NEI-CEDA CI,Ordinaire,2019-05-29,10:00:00,"Hôtel TIAMA, Abidjan - Plateau",2019,False,False,NEIC
+NSBC,Ordinaire,2019-05-28,10:00:00,"Espace Latrille Event sis à Abidjan-Cocody, Deux",2019,False,False,NSBC
+ORAGROUP,Ordinaire,2019-05-23,10:00:00,"Salle des Fêtes du Sofitel Abidjan, Hôtel Ivoire située",2019,False,False,ORGT
+SODECI,Ordinaire,2019-05-22,14:00:00,"Espace Events sis à Abidjan, Cocody 2 Plateaux,",2019,False,False,SDCC
+PALM CI,Ordinaire,2019-05-09,09:30:00,"Salle de Conférence de la CRRAE-UEMOA,sise à Abidjan",2019,False,False,PALC
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2019-05-09,10:00:00,Salle Kodjo Eboucle du palais de la culture sis à,2019,False,False,SDSC
+SAPH CI,Ordinaire,2019-05-08,09:30:00,Salle de Conférence de CRRAE-UEMOA (Versus Bank au,2019,False,False,SPHC
+SUCRIVOIRE,Ordinaire,2019-05-03,09:30:00,Auditorium de la CRRAE-UMOA sis Abidjan-Plateau (Rue,2019,False,False,SCRC
+SIB,Ordinaire,2019-04-26,09:00:00,"Maison de l'Entreprise (CGECI), Abidjan-Plateau",2019,False,False,SIBC
+CORIS BANK INTERNATIONAL,Mixte,2019-04-25,09:00:00,Hôtel SOPATEL Silmandé SA,2019,False,False,CBIBF
+ECOBANK TG,Ordinaire,2019-04-25,10:30:00,"Salle de Conférence du Centre Panafricain Ecobank,",2019,False,False,ETIT
+SOLIBRA,Ordinaire,2019-04-24,09:00:00,"Espace CRISTAL 8, rue du Chevalier de Clieu Zone 4 C",2019,False,False,SLBC
+BANK OF AFRICA BN,Mixte,2019-04-23,10:00:00,AZALAI Hôtel à Cotonou,2019,False,False,BOAB
+BANK OF AFRICA ML,Ordinaire,2019-04-20,09:30:00,Hôtel SALAM à Bamako,2019,False,False,BOAM
+BANK OF AFRICA SN,Ordinaire,2019-04-19,09:30:00,"Immeuble Elan II, 2eme Etage, Route de Ngor, Zone",2019,False,False,BOAS
+ONATEL BF,Mixte,2019-04-18,10:00:00,"ROYAL BEACH HOTEL,OUAGADOUGOU",2019,False,False,ONTBF
+SONATEL,Ordinaire,2019-04-17,10:00:00,Centre International de Conférences Abdou DIOUF,2019,False,False,SNTS
+ECOBANK CI,Ordinaire,2019-04-16,10:00:00,Espace Latrille Events sis à Abidjan Cocody Deux,2019,False,False,ECOC
+BANK OF AFRICA CI,Ordinaire,2019-04-10,10:00:00,Salle Jewels du Patronat Ivoirien (CGECI) à Abidjan,2019,False,False,BOAC
+BANK OF AFRICA NG,Ordinaire,2019-04-05,10:00:00,Centre de formation de la BOA-NIGER (sise à BOA-,2019,False,False,BOAN
+SICABLE,Ordinaire,2019-04-05,09:00:00,"Hôtel AZALAI, Bld VGE à ABIDJAN",2019,False,False,CABC
+BANK OF AFRICA BF,Ordinaire,2019-04-02,10:00:00,Salle WAONGO I de l'hôtel LAICO à Ouaga 2000,2019,False,False,BOABF
+SERVAIR ABIDJAN CI,Ordinaire,2019-03-28,10:00:00,Salle JEWELS de la Maison de l'Entreprise C.G.E.C.I sise,2019,False,False,ABJC
+CROWN SIEM CI,Mixte,2020-12-28,09:00:00,"Siège de la CGECI, sis à la Maison de l’Entreprise,",2020,False,False,SEMC
+TOTAL SENEGAL S.A.,Ordinaire,2020-11-27,09:30:00,Visioconférence,2020,False,False,TTLS
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2020-11-24,10:00:00,Salle Lougah François du palais de la culture sis à,2020,False,False,SDSC
+BICI CI,Ordinaire,2020-11-24,09:30:00,Auditorium de la Maison de l’Entreprise (CGECI) sise au,2020,False,False,BICC
+SAFCA CI,Ordinaire,2020-11-20,10:00:00,"Siège de la société, sis à Abidjan, 1, Rue des",2020,False,False,SAFC
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2020-11-17,10:00:00,Salle Lougah François du palais de la culture sis à,2020,False,False,SDSC
+NSBC,Extraordinaire,2020-11-09,11:00:00,Plateforme de conférence à distance Teams,2020,False,False,NSBC
+TOTAL SENEGAL S.A.,Ordinaire,2020-10-30,09:30:00,Visioconférence,2020,False,False,TTLS
+MOVIS CI,Mixte,2020-10-30,09:00:00,"Siège Social de MOVIS CI : Vridi, zone industrielle, Rue",2020,False,False,SVOC
+SAPH CI,Ordinaire,2020-10-27,09:30:00,Visioconférence,2020,False,False,SPHC
+SONATEL,Extraordinaire,2020-10-27,15:00:00,Visioconférence,2020,False,False,SNTS
+NESTLE CI,Mixte,2020-10-21,10:00:00,Visioconférence,2020,False,False,NTLC
+SERVAIR ABIDJAN CI,Mixte,2020-10-08,11:00:00,Salon Fromager de l’hôtel IVOTEL sis au Plateau,2020,False,False,ABJC
+AIR LIQUIDE CI,Ordinaire,2020-10-07,10:00:00,"Salle de conférence de la CRRAE-UMOA, à Abidjan",2020,False,False,SIVC
+SITAB,Mixte,2020-09-30,10:00:00,SALLE DES FÊTES de l’Hôtel Ivoire à Cocody,2020,False,False,STBC
+SOLIBRA,Ordinaire,2020-09-29,09:00:00,"L’espace CRISTAL 8, rue du Chevalier de Clieu Zone 4",2020,False,False,SLBC
+BERNABE CI,Ordinaire,2020-09-26,10:00:00,Salle de conférence du Radisson Blu Hôtel situé près de,2020,False,False,BNBC
+VIVO ENERGY CI,Ordinaire,2020-09-18,10:00:00,Visioconférence,2020,False,False,SHEC
+SUCRIVOIRE,Ordinaire,2020-08-28,09:30:00,Visioconférence,2020,False,False,SCRC
+FILTISAC CI,Ordinaire,2020-07-20,15:00:00,"Hôtel RADISSON BLU, situé sur la Route de l’Aéroport,",2020,False,False,FTSC
+CIE CI,Ordinaire,2020-06-30,08:30:00,Visioconférence,2020,False,False,CIEC
+SODECI,Ordinaire,2020-06-30,10:30:00,"Siège Social : 1, Avenue Christiani Treichville ABIDJAN",2020,False,False,SDCC
+CFAO MOTORS CI,Ordinaire,2020-06-30,09:00:00,"Siège social sis à Abidjan Treichville, 117, Boulevard",2020,False,False,CFAC
+ECOBANK TG,Mixte,2020-06-30,11:00:00,"Eko Hotels & Suites, 1415 Adetokunbo Ademola Street,",2020,False,False,ETIT
+TRACTAFRIC CI,Ordinaire,2020-06-30,10:00:00,"hôtel PULLMAN ABIDJAN sis au Plateau, rue Abdoulaye",2020,False,False,PRSC
+UNIWAX CI,Mixte,2020-06-30,10:00:00,"Espace Latrille Event, sis à Abidjan, Cocody II-Plateaux",2020,False,False,UNXC
+ECOBANK CI,Ordinaire,2020-06-30,10:00:00,"Hôtel Radisson Blu, sis à Abidjan Port Bouët, route de",2020,False,False,ECOC
+TOTAL,Ordinaire,2020-06-30,10:00:00,Siège social de la société,2020,False,False,TTLC
+ORAGROUP,Ordinaire,2020-06-29,10:00:00,"Hôtel 2 Février situé à la place de l'indépendance,",2020,False,False,ORGT
+SETAO CI,Ordinaire,2020-06-26,10:00:00,Hôtel TIAMA (salon Ebène) - Abidjan Plateau,2020,False,False,STAC
+SMB,Ordinaire,2020-06-25,09:30:00,"Abidjan-Port-Bouët, Boulevard de l’Aéroport",2020,False,False,SMBC
+SOGB,Ordinaire,2020-06-19,11:00:00,Immeuble CRRAE-UEMOA sis à Abidjan Plateau,2020,False,False,SOGC
+SICABLE,Ordinaire,2020-06-19,10:00:00,"Hôtel TIAMA, Boulevard de la République à ABIDJAN",2020,False,False,CABC
+SGB CI,Ordinaire,2020-06-12,09:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2020,False,False,SGBC
+NSBC,Ordinaire,2020-06-12,10:00:00,"Abidjan-Plateau, 8-10 Avenue Joseph ANOMA, 01 BP",2020,False,False,NSBC
+NEI-CEDA CI,Ordinaire,2020-06-10,10:00:00,"Hôtel TIAMA, Abidjan-Plateau",2020,False,False,NEIC
+BANK OF AFRICA SN,Ordinaire,2020-05-29,09:30:00,"Immeuble Elan II au 2ème Etage, Almadies, Zone 12,",2020,False,False,BOAS
+SIB,Ordinaire,2020-05-26,09:00:00,Siège social par Visioconférence,2020,False,False,SIBC
+BANK OF AFRICA CI,Ordinaire,2020-05-22,09:30:00,initialement prévue pour le 11 mai 2020 est reportée,2020,False,True,BOAC
+SGB CI,Ordinaire,2020-05-16,09:00:00,"Espace latrille Events, sis à Abidjan Commune de",2020,False,False,SGBC
+BANK OF AFRICA CI,Ordinaire,2020-05-11,09:30:00,"Siège social de la banque, immeuble BOA sis à Abidjan",2020,False,False,BOAC
+ONATEL BF,Ordinaire,2020-05-07,09:00:00,L'Assemblée Générale Ordinaire des actionnaires de,2020,False,False,ONTBF
+SONATEL,Mixte,2020-05-04,10:00:00,Siège social par Visioconférence,2020,False,False,SNTS
+BANK OF AFRICA ML,Mixte,2020-04-25,09:30:00,"Au siège, Immeuble BANK OF AFRICA, Avenue du Mali,",2020,False,False,BOAM
+BANK OF AFRICA ML,Mixte,2020-04-11,09:30:00,Siège de la Banque BOA MALI,2020,False,False,BOAM
+CORIS BANK INTERNATIONAL,Ordinaire,2020-04-08,09:00:00,Hôtel SOPATEL Silmandé SA,2020,False,False,CBIBF
+BANK OF AFRICA NG,Extraordinaire,2020-04-02,10:00:00,Centre de Formation de la BOA NIGER (BOA-Siège),2020,False,False,BOAN
+BANK OF AFRICA BN,Mixte,2020-04-01,10:00:00,NOVOTEL à Cotonou,2020,False,False,BOAB
+BANK OF AFRICA BF,Ordinaire,2020-03-30,10:00:00,Salle LAICO HOTEL OUAGA 2000,2020,False,False,BOABF
+MOVIS CI,Ordinaire,2021-12-16,10:00:00,"Siège social de MOVIS CI (Vridi, en Zone Industrielle,",2021,False,False,SVOC
+SICOR,Ordinaire,2021-12-09,10:00:00,"PALM CLUB, Abidjan, Cocody",2021,False,False,SICC
+UNILEVER CI,Ordinaire,2021-12-02,14:00:00,VISIOCONFERENCE,2021,False,False,UNLC
+ORAGROUP,Ordinaire,2021-11-22,10:00:00,Siège social de ORAGROUP,2021,False,False,ORGT
+CROWN SIEM CI,Mixte,2021-10-21,09:00:00,"Maison de l’Entreprise, au Plateau, à l’Angle du",2021,False,False,SEMC
+NSBC,Ordinaire,2021-08-06,10:00:00,Maison du Patronat Ivoirien (CGECI) sise à Abidjan,2021,False,False,NSBC
+TOTAL SENEGAL S.A.,Mixte,2021-06-30,17:00:00,Lamantin Beach Hôtel et par VISIOCONFERENCE,2021,False,False,TTLS
+BERNABE CI,Ordinaire,2021-06-28,10:00:00,Salle de conférence du Radisson Blu Hôtel situé près de,2021,False,False,BNBC
+UNIWAX CI,Ordinaire,2021-06-25,09:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2021,False,False,UNXC
+TRACTAFRIC CI,Ordinaire,2021-06-24,10:00:00,"Hôtel AZALAI sis Marcory, Bd VGE, en face de Cap Sud,",2021,False,False,PRSC
+FILTISAC CI,Ordinaire,2021-06-24,11:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2021,False,False,FTSC
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2021-06-24,10:00:00,Salle Lougah François du palais de la culture sis à,2021,False,False,SDSC
+SAFCA CI,Ordinaire,2021-06-23,10:00:00,"Siège de la société, sis à Abidjan, 1, Rue des",2021,False,False,SAFC
+SODECI,Ordinaire,2021-06-22,08:30:00,Visioconférence,2021,False,False,SDCC
+TOTAL,Mixte,2021-06-21,10:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2021,False,False,TTLC
+CIE CI,Ordinaire,2021-06-21,08:30:00,Visioconférence,2021,False,False,CIEC
+PALM CI,Ordinaire,2021-06-18,09:30:00,Visioconférence,2021,False,False,PALC
+ORAGROUP,Mixte,2021-06-18,10:00:00,"Hôtel 2 Février , Lomé TOGO",2021,False,False,ORGT
+SUCRIVOIRE,Ordinaire,2021-06-17,09:30:00,Visioconférence,2021,False,False,SCRC
+BICI CI,Ordinaire,2021-06-17,10:00:00,Auditorium de la Maison des Entreprises (CGECI) sise,2021,False,False,BICC
+SOGB,Ordinaire,2021-06-17,11:00:00,Immeuble CRRAE – UEMOA sis à Abidjan Plateau,2021,False,False,SOGC
+NEI-CEDA CI,Ordinaire,2021-06-16,10:00:00,"Hôtel TIAMA, Abidjan-Plateau",2021,False,False,NEIC
+CFAO MOTORS CI,Ordinaire,2021-06-15,09:00:00,"Siège social sis à Abidjan Treichville, 117, Boulevard de",2021,False,False,CFAC
+SETAO CI,Ordinaire,2021-06-15,10:00:00,"Hôtel TIAMA (salon EBENE), Abidjan-Plateau",2021,False,False,STAC
+SAPH CI,Ordinaire,2021-06-14,09:30:00,Visioconférence,2021,False,False,SPHC
+NESTLE CI,Ordinaire,2021-06-04,10:00:00,Visioconférence,2021,False,False,NTLC
+AIR LIQUIDE CI,Ordinaire,2021-06-04,09:00:00,"Salle de conférence de la CRRAE-UMOA, à Abidjan",2021,False,False,SIVC
+SITAB,Ordinaire,2021-06-03,10:00:00,SALLE JEWELS de la CGECI (Plateau),2021,False,False,STBC
+SMB,Ordinaire,2021-06-01,09:30:00,Angle du Boulevard de la République et de l’Avenue,2021,False,False,SMBC
+ECOBANK TG,Mixte,2021-05-27,10:30:00,Visioconférence,2021,False,False,ETIT
+SOLIBRA,Mixte,2021-05-21,09:00:00,"Espace CRISTAL 8, rue du Chevalier de Clieu Zone 4 C «",2021,False,False,SLBC
+SGB CI,Mixte,2021-05-19,09:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2021,False,False,SGBC
+SIB,Ordinaire,2021-05-17,09:00:00,"Maison de l'Entreprise (siège du Patronat Ivoirien),",2021,False,False,SIBC
+SONATEL,Ordinaire,2021-04-28,10:00:00,Visioconférence,2021,False,False,SNTS
+ONATEL BF,Ordinaire,2021-04-27,14:00:00,"Hôtel SOPATEL SILMANDE, OUAGADOUGOU-BURKINA",2021,False,False,ONTBF
+UNILEVER CI,Mixte,2021-04-19,08:00:00,Visioconférence,2021,False,False,UNLC
+BANK OF AFRICA ML,Mixte,2021-04-16,09:30:00,Siège de la banque,2021,False,False,BOAM
+BANK OF AFRICA SN,Ordinaire,2021-04-16,09:30:00,"Immeuble Elan II au 2ème Etage, Almadies, Zone 12,",2021,False,False,BOAS
+BANK OF AFRICA CI,Ordinaire,2021-04-15,10:00:00,Salle Jewels du Patronat Ivoirien (CGECI) sis à Abidjan,2021,False,False,BOAC
+ECOBANK CI,Mixte,2021-04-08,10:00:00,"Hôtel Radisson Blu, sis à Abidjan Port Bouët, route de",2021,False,False,ECOC
+BANK OF AFRICA BN,Ordinaire,2021-04-08,10:00:00,Hôtel GOLDEN TULIP à Cotonou,2021,False,False,BOAB
+CORIS BANK INTERNATIONAL,Mixte,2021-04-08,09:00:00,"Hôtel SOPATEL Silmandé SA, à Ouagadougou",2021,False,False,CBIBF
+BANK OF AFRICA NG,Ordinaire,2021-04-07,10:00:00,Centre de Formation de la BOA NIGER (BOA-Siège),2021,False,False,BOAN
+BANK OF AFRICA BF,Mixte,2021-04-01,10:00:00,Salle WANGO de LAICO HOTEL OUAGA 2000,2021,False,False,BOABF
+SICABLE,Ordinaire,2021-03-30,10:00:00,"L’hôtel TIAMA, à ABIDJAN",2021,False,False,CABC
+BANK OF AFRICA SN,Ordinaire,2021-03-26,09:30:00,"Immeuble Elan II au 2ème Etage, Almadies, Zone 12,",2021,False,False,BOAS
+MOVIS CI,Ordinaire,2022-12-23,10:00:00,"Siège social de MOVIS CI, Vridi, Zone Industrielle, Rue",2022,False,False,SVOC
+NEI-CEDA CI,Mixte,2022-12-13,09:30:00,"Siège, Abidjan-Treichville",2022,False,False,NEIC
+UNILEVER CI,Ordinaire,2022-12-13,10:00:00,Salle de Conférence d’Azalai Hotel Abidjan sis à,2022,False,False,UNLC
+VIVO ENERGY CI,Ordinaire,2022-09-22,10:00:00,VISIOCONFERENCE,2022,False,False,SHEC
+AIR LIQUIDE CI,Ordinaire,2022-07-12,00:00:00,Salle de conférence de la CRRAE-UMOA,2022,False,False,SIVC
+SERVAIR ABIDJAN CI,Ordinaire,2022-07-06,11:00:00,Salle JEWELS de la CGECI sise à la Maison de,2022,False,False,ABJC
+UNIWAX CI,Ordinaire,2022-06-30,09:00:00,"Espace Latrille Events, sis à Abidjan Cocody II-Plateaux",2022,False,False,UNXC
+TRACTAFRIC CI,Ordinaire,2022-06-30,10:00:00,à l’hôtel AZALAI ABIDJAN,2022,False,False,PRSC
+CROWN SIEM CI,Ordinaire,2022-06-29,09:00:00,"siège de la CGECI, sis à la Maison de l’Entreprise, au",2022,False,False,SEMC
+SITAB,Ordinaire,2022-06-28,10:00:00,la SALLE JEWELS de la CGECI (Plateau),2022,False,False,STBC
+BICI CI,Ordinaire,2022-06-23,10:00:00,"Maison de l'Entreprise (siège du Patronat Ivoirien),",2022,False,False,BICC
+SUCRIVOIRE,Mixte,2022-06-23,09:30:00,VISIOCONFERENCE,2022,False,False,SCRC
+SMB,Ordinaire,2022-06-21,09:30:00,"amphithéâtre de la CGECI sis Abidjan-Plateau, à l'Angle",2022,False,False,SMBC
+SODECI,Ordinaire,2022-06-21,14:00:00,VISIOCONFERENCE,2022,False,False,SDCC
+PALM CI,Mixte,2022-06-21,09:30:00,VISIOCONFERENCE,2022,False,False,PALC
+CFAO MOTORS CI,Ordinaire,2022-06-21,09:00:00,"siège social sis Abidjan, 117, Boulevard de Marseille",2022,False,False,CFAC
+SOLIBRA,Ordinaire,2022-06-20,09:00:00,"espace CRISTAL 8, rue du Chevalier de Clieu Zone 4 C",2022,False,False,SLBC
+CIE CI,Ordinaire,2022-06-20,08:30:00,VISIOCONFERENCE,2022,False,False,CIEC
+TOTAL SENEGAL S.A.,Ordinaire,2022-06-17,10:00:00,Hôtel PULLMAN DAKAR TERANGA et par visio-,2022,False,False,TTLS
+FILTISAC CI,Ordinaire,2022-06-16,09:00:00,Immeuble CRRAE-UMOA sis à Abidjan Plateau (RCI),2022,False,False,FTSC
+TOTAL,Ordinaire,2022-06-16,10:00:00,"l’Hôtel Radisson Blu, sis à Abidjan Port- Bouët, route",2022,False,False,TTLC
+SOGB,Ordinaire,2022-06-15,11:00:00,Immeuble CRRAE-UEMOA sis à Abidjan Plateau,2022,False,False,SOGC
+BERNABE CI,Ordinaire,2022-06-15,10:00:00,Salle Gewels du patronat Ivoirien (CGECI) sis à Abidjan,2022,False,False,BNBC
+SETAO CI,Ordinaire,2022-06-15,10:00:00,"Hôtel TIAMA, à ABIDJAN-Plateau",2022,False,False,STAC
+SAPH CI,Mixte,2022-06-13,09:30:00,VISIOCONFERENCE,2022,False,False,SPHC
+NEI-CEDA CI,Ordinaire,2022-06-10,10:00:00,"Hôtel TIAMA, à ABIDJAN-Plateau",2022,False,False,NEIC
+NSBC,Ordinaire,2022-06-07,10:30:00,"Espace Latrille Events, situé à Abidjan- Cocody, Deux-",2022,False,False,NSBC
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2022-05-31,10:00:00,salle Kodjo EBOUCLE du palais de la culture sis à,2022,False,False,SDSC
+SAFCA CI,Mixte,2022-05-27,10:00:00,"Abidjan, 1 Rue des Carrosiers, Zone 3 C (Face de",2022,False,False,SAFC
+ORAGROUP,Mixte,2022-05-25,10:00:00,l'Hôtel 2 Février de LOME,2022,False,False,ORGT
+ECOBANK TG,Ordinaire,2022-05-25,10:00:00,Salle des Fêtes du Sofitel Abidjan Hôtel Ivoire - Côte,2022,False,False,ETIT
+NESTLE CI,Ordinaire,2022-05-20,10:00:00,VISIOCONFERENCE,2022,False,False,NTLC
+SIB,Ordinaire,2022-05-18,09:00:00,"Maison de l'Entreprise (siège du Patronat Ivoirien),",2022,False,False,SIBC
+ONATEL BF,Ordinaire,2022-05-12,10:30:00,"ROYAL BEACH HÔTEL, OUAGADOUGOU-BURKINA FASO",2022,False,False,ONTBF
+SGB CI,Ordinaire,2022-05-06,09:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2022,False,False,SGBC
+SONATEL,Mixte,2022-04-28,10:00:00,"VISIOCONFERENCE, dans ses locaux situés au",2022,False,False,SNTS
+BANK OF AFRICA SN,Ordinaire,2022-04-15,09:30:00,"Immeuble Elan II au 2ème Etage, Almadies, Zone 12,",2022,False,False,BOAS
+BANK OF AFRICA BN,Ordinaire,2022-04-13,10:00:00,Hôtel GOLDEN TULIP à Cotonou,2022,False,False,BOAB
+SICABLE,Ordinaire,2022-04-07,10:00:00,"Hôtel TIAMA, à ABIDJAN",2022,False,False,CABC
+CORIS BANK INTERNATIONAL,Ordinaire,2022-04-07,09:00:00,"Hôtel SOPATEL Silmandé SA, à Ouagadougou",2022,False,False,CBIBF
+ECOBANK CI,Ordinaire,2022-04-05,10:00:00,"l’Hôtel Radisson Blu, sis à Abidjan Port- Bouët, route",2022,False,False,ECOC
+BANK OF AFRICA ML,Ordinaire,2022-04-05,09:30:00,"Siège de la banque à l'Immeuble BANK OF AFRICA,",2022,False,False,BOAM
+BANK OF AFRICA CI,Ordinaire,2022-03-31,10:00:00,Salle Jewels du patronat Ivoirien (CGECI) sis à Abidjan,2022,False,False,BOAC
+BANK OF AFRICA NG,Ordinaire,2022-03-30,10:00:00,Centre de Formation de la BOA-NIGER (BOA-Siège),2022,False,False,BOAN
+BANK OF AFRICA BF,Ordinaire,2022-03-29,10:00:00,Salle LAICO HOTEL OUAGA 2000,2022,False,False,BOABF
+AIR LIQUIDE CI,Ordinaire,2024-01-10,10:00:00,Salle de conférence de la CRRAE-UMOA,2023,False,False,SIVC
+MOVIS CI,Ordinaire,2023-11-28,09:30:00,"Siège social de MOVIS CI sis Vridi, Zone Industrielle,",2023,False,False,SVOC
+VIVO ENERGY CI,Ordinaire,2023-11-21,09:00:00,Espace Latrille Events II-Plateaux Boulevard Latrille,2023,False,False,SHEC
+UNILEVER CI,Ordinaire,2023-10-31,10:00:00,La salle Tamarin de l’Hôtel Azalaï,2023,False,False,UNLC
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2023-10-20,09:00:00,"Amphitéatre de l’immeuble CRRAE-UMOA, sise au",2023,False,False,SDSC
+SMB,Ordinaire,2023-10-17,15:00:00,Salle ABIDJAN de l’hôtel RADISSON BLU sis à Abidjan-,2023,False,False,SMBC
+CROWN SIEM CI,Ordinaire,2023-09-29,09:00:00,"Maison de l’Entreprise, au Plateau, à l’Angle du",2023,False,False,SEMC
+SICOR,Ordinaire,2023-07-26,09:00:00,"Hôtel Palm Club, Cocody",2023,False,False,SICC
+SITAB,Ordinaire,2023-06-30,10:30:00,Hôtel PULLMAN,2023,False,False,STBC
+AIR LIQUIDE CI,Mixte,2023-06-27,09:00:00,SALLE DE CONFÉRENCE DE LA CRRAE-UMOA,2023,False,False,SIVC
+SUCRIVOIRE,Ordinaire,2023-06-27,09:30:00,VISIOCONFERENCE,2023,False,False,SCRC
+CFAO MOTORS CI,Ordinaire,2023-06-27,09:00:00,"Au siège social, sis à Abidjan, 117, Boulevard de",2023,False,False,CFAC
+BICI CI,Ordinaire,2023-06-27,10:00:00,Auditorium de la Maison des Entreprises (siège de la,2023,False,False,BICC
+TRACTAFRIC CI,Ordinaire,2023-06-26,10:00:00,"Hôtel AZALAI ABIDJAN sis Marcory, Bd VGE, en face de",2023,False,False,PRSC
+FILTISAC CI,Ordinaire,2023-06-22,10:00:00,Espace Latrille Events II-Plateaux Boulevard Latrille,2023,False,False,FTSC
+UNIWAX CI,Ordinaire,2023-06-22,09:00:00,"Espace Latrille Events, sis à Abidjan, Cocody II-",2023,False,False,UNXC
+SODECI,Ordinaire,2023-06-21,09:00:00,"Siège social sis, 1, Avenue Christiani Treichville",2023,False,False,SDCC
+PALM CI,Ordinaire,2023-06-21,09:30:00,VISIOCONFERENCE,2023,False,False,PALC
+CIE CI,Ordinaire,2023-06-20,10:00:00,VISIOCONFERENCE,2023,False,False,CIEC
+NEI-CEDA CI,Ordinaire,2023-06-19,14:30:00,"Hôtel TIAMA , à Abidjan",2023,False,False,NEIC
+SETAO CI,Ordinaire,2023-06-16,10:00:00,Hôtel TIAMA (salon EBENE) - Abidjan Plateau,2023,False,False,STAC
+SAFCA CI,Ordinaire,2023-06-16,10:00:00,"Siège de la société sis à Abidjan, 1,Rue des Carrossiers,",2023,False,False,SAFC
+TOTAL,Ordinaire,2023-06-15,10:00:00,Radisson Blu Hotel Abidjan Airport sis au boulevard de,2023,False,False,TTLC
+TOTAL SENEGAL S.A.,Ordinaire,2023-06-13,10:00:00,Hôtel Radisson Blu Dakar,2023,False,False,TTLS
+SERVAIR ABIDJAN CI,Ordinaire,2023-06-13,11:00:00,Salle JEWELS de la CGECI sise à la Maison de,2023,False,False,ABJC
+SOGB,Ordinaire,2023-06-13,11:00:00,Immeuble CRRAE – UEMOA sis à Abidjan Plateau,2023,False,False,SOGC
+SAPH CI,Ordinaire,2023-06-12,14:00:00,VISIOCONFERENCE,2023,False,False,SPHC
+BERNABE CI,Ordinaire,2023-06-08,10:00:00,Salle de conférence GEWELS de la Maison du Patronat,2023,False,False,BNBC
+SOLIBRA,Mixte,2023-05-31,09:00:00,"Espace CRISTAL 8, rue du Chevalier de Clieu Zone 4 C «",2023,False,False,SLBC
+ORAGROUP,Ordinaire,2023-05-31,09:30:00,"Hôtel 2 Février situé à Place de l'indépendance, BP 131",2023,False,False,ORGT
+ECOBANK TG,Mixte,2023-05-17,10:30:00,"Salle de Conférence du Centre Panafricain Ecobank,",2023,False,False,ETIT
+SIB,Ordinaire,2023-05-12,10:00:00,CRRAE - UEMOA (Abidjan-Plateau - Angle Boulevard,2023,False,False,SIBC
+NESTLE CI,Ordinaire,2023-05-12,10:00:00,"Espace CRISTAL 8, rue du Chevalier de Clieu Zone 4 C «",2023,False,False,NTLC
+ONATEL BF,Ordinaire,2023-05-09,10:30:00,"ROYAL BEACH HÔTEL, OUAGADOUGOU-BURKINA FASO",2023,False,False,ONTBF
+ECOBANK CI,Ordinaire,2023-04-26,10:00:00,"Hôtel Radisson Blu, sis à Abidjan Port-Bouët, route de",2023,False,False,ECOC
+BOLLORE TRANSPORT & LOGISTICS,Extraordinaire,2023-04-20,10:00:00,Salle Kodjo EBOUCLE du palais de la culture sis à,2023,False,False,SDSC
+SONATEL,Ordinaire,2023-04-18,10:00:00,PAR VISIOCONFERENCE dans ses locaux situés au,2023,False,False,SNTS
+CORIS BANK INTERNATIONAL,Ordinaire,2023-04-17,09:00:00,Sopatel Hôtel Silmandé SA,2023,False,False,CBIBF
+BANK OF AFRICA BN,Ordinaire,2023-04-14,10:00:00,Hôtel GOLDEN TULIP à Cotonou,2023,False,False,BOAB
+SGB CI,Ordinaire,2023-04-13,09:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2023,False,False,SGBC
+ORANGE CI,Ordinaire,2023-04-13,10:00:00,"Au siège de la société, sis à Abidjan, Cocody Riviera",2023,False,False,ORAC
+ORAGROUP,Extraordinaire,2023-03-31,09:00:00,Hôtel 2 FEVRIER de Lomé,2023,False,False,ORGT
+BANK OF AFRICA SN,Ordinaire,2023-03-31,09:30:00,"Immeuble Elan II au 2ème étage, Almadies, zone 12,",2023,False,False,BOAS
+SICABLE,Ordinaire,2023-03-30,10:00:00,"Hôtel TIAMA , à Abidjan",2023,False,False,CABC
+BANK OF AFRICA ML,Ordinaire,2023-03-30,09:30:00,"Siège de la banque à l'immeuble BANK OF AFRICA,",2023,False,False,BOAM
+BANK OF AFRICA NG,Ordinaire,2023-03-30,10:00:00,Centre de formation de BOA-NIGER sis à BOA siège,2023,False,False,BOAN
+BANK OF AFRICA BF,Ordinaire,2023-03-30,10:00:00,Salle LAICO HOTEL OUAGA 2000,2023,False,False,BOABF
+BANK OF AFRICA CI,Ordinaire,2023-03-29,10:00:00,Salle FROMAGER de l'hôtel IVOTEL du Plateau 10ème,2023,False,False,BOAC
+CROWN SIEM CI,Ordinaire,2024-12-30,10:00:00,Visioconférence,2024,False,False,SEMC
+ORANGE CI,Extraordinaire,2024-12-05,09:00:00,"Siège de la société, sis à Abidjan, Cocody Riviera Golf,",2024,False,False,ORAC
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2024-11-13,09:30:00,"Salle de conférence de la maison de la presse, sise au",2024,False,False,SDSC
+SICOR,Ordinaire,2024-11-08,09:00:00,Siège de la SICOR à Jacqueville,2024,False,False,SICC
+ORAGROUP,Mixte,2024-10-15,10:00:00,"Hôtel 2 Février, Lomé - Togo",2024,False,False,ORGT
+BANK OF AFRICA CI,Extraordinaire,2024-10-10,10:00:00,siège de la Banque au Plateau (4è étage),2024,False,False,BOAC
+ECOBANK CI,Ordinaire,2024-10-04,10:00:00,Caisse de Retraite par Répartition avec Epargne de,2024,False,False,ECOC
+SOLIBRA,Extraordinaire,2024-09-11,09:30:00,"Espace Latrille Event sis à Cocody Boulevard Latrille,",2024,False,False,SLBC
+UNILEVER CI,Ordinaire,2024-09-06,09:00:00,Salle Tamarin de l’Hôtel Azalaï sis à Abidjan Marcory,2024,False,False,UNLC
+SUCRIVOIRE,Mixte,2024-08-26,09:30:00,VISIOCONFERENCE,2024,False,False,SCRC
+BANK OF AFRICA NG,Extraordinaire,2024-08-22,10:00:00,Centre de Formation de la BOA-NIGER (sise à BOA-,2024,False,False,BOAN
+BANK OF AFRICA BN,Extraordinaire,2024-08-20,10:00:00,"NOVOTEL, salle Baobab 2 & 3 à Cotonou",2024,False,False,BOAB
+BANK OF AFRICA SN,Extraordinaire,2024-08-16,09:30:00,"3ème Etage Immeuble Elan I, Almadies, Zone 12, Route",2024,False,False,BOAS
+BANK OF AFRICA BF,Extraordinaire,2024-08-13,10:00:00,Hôtel BRAVIA à la Salle LAAFI,2024,False,False,BOABF
+BANK OF AFRICA ML,Extraordinaire,2024-08-13,09:30:00,"Immeuble BANK OF AFRICA, Avenue du Mali, Quartier",2024,False,False,BOAM
+AIR LIQUIDE CI,Mixte,2024-07-22,14:00:00,"SALLE DE CONFÉRENCE DE LA CRRAE-UMOA, à Abidjan",2024,False,False,SIVC
+VIVO ENERGY CI,Ordinaire,2024-06-28,09:30:00,"Espace Crystal situé à Marcory zone 4C, 805 rue",2024,False,False,SHEC
+SODECI,Ordinaire,2024-06-27,08:30:00,VISIOCONFERENCE,2024,False,False,SDCC
+SERVAIR ABIDJAN CI,Ordinaire,2024-06-27,11:00:00,"Salle JEWELS de la CGECI sise au Plateau, Avenue",2024,False,False,ABJC
+UNIWAX CI,Ordinaire,2024-06-27,09:00:00,"Espace Latrille Events, sis à Abidjan, Cocody II-",2024,False,False,UNXC
+CFAO MOTORS CI,Mixte,2024-06-27,09:00:00,"Siège social sis à Abidjan, 117, Boulevard de Marseille",2024,False,False,CFAC
+CIE CI,Ordinaire,2024-06-26,10:00:00,Visioconférence,2024,False,False,CIEC
+SAFCA CI,Ordinaire,2024-06-25,10:00:00,"Siège de la société, sis à Abidjan, 1, Rue des",2024,False,False,SAFC
+ORAGROUP,Mixte,2024-06-25,10:00:00,Hôtel 2 Février situé à Place de l'indépendance BP 131,2024,False,False,ORGT
+ONATEL BF,Ordinaire,2024-06-24,10:30:00,"ROYAL BEACH HÔTEL, OUAGADOUGOU-BURKINA FASO",2024,False,False,ONTBF
+SITAB,Ordinaire,2024-06-21,10:00:00,SALLE JEWELS de la CGECI (Plateau),2024,False,False,STBC
+TRACTAFRIC CI,Ordinaire,2024-06-21,10:00:00,Hôtel AZALAI ABIDJAN,2024,False,False,PRSC
+TOTAL,Mixte,2024-06-21,10:00:00,Radisson Blu Hotel Abidjan Airport sis au boulevard de,2024,False,False,TTLC
+FILTISAC CI,Ordinaire,2024-06-20,10:00:00,"Espace Latrille Events – Salle KOSSIA, II-Plateaux",2024,False,False,FTSC
+BERNABE CI,Ordinaire,2024-06-20,10:00:00,"ABIDJAN, salle de conférence GEWELS de la Maison du",2024,False,False,BNBC
+SMB,Ordinaire,2024-06-14,09:30:00,Amphithéâtre de la CGECI (La Maison de l’Entreprise),2024,False,False,SMBC
+MOVIS CI,Extraordinaire,2024-06-14,10:45:00,"Siège social de MOVIS CI (Situé à Vridi, zone",2024,False,False,SVOC
+MOVIS CI,Ordinaire,2024-06-14,09:30:00,"Siège social de MOVIS CI (Situé à Vridi, en zone",2024,False,False,SVOC
+PALM CI,Ordinaire,2024-06-13,09:00:00,VISIOCONFERENCE,2024,False,False,PALC
+NESTLE CI,Ordinaire,2024-06-11,10:00:00,"Espace CRYSTAL, situé à Abidjan, Zone 4 C, 08 Rue du",2024,False,False,NTLC
+ECOBANK TG,Mixte,2024-06-06,10:00:00,"Salle de conférence du Centre Panafricain Ecobank,",2024,False,False,ETIT
+SAPH CI,Ordinaire,2024-06-04,09:00:00,VISIOCONFERENCE,2024,False,False,SPHC
+SIB,Mixte,2024-06-04,10:00:00,CRRAE-UMOA (Abidjan - Plateau Angle Boulevard,2024,False,False,SIBC
+SOLIBRA,Ordinaire,2024-05-31,09:30:00,"Espace LATRILLE EVENTS, Cocody Boulevard Latrille,",2024,False,False,SLBC
+SETAO CI,Ordinaire,2024-05-30,10:00:00,Hôtel TIAMA (salon EBENE),2024,False,False,STAC
+TOTAL SENEGAL S.A.,Ordinaire,2024-05-29,10:00:00,Hôtel Radisson Blu Dakar,2024,False,False,TTLS
+NEI-CEDA CI,Ordinaire,2024-05-28,10:00:00,"Hôtel TIAMA, Abidjan - Plateau",2024,False,False,NEIC
+SGB CI,Mixte,2024-05-28,09:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2024,False,False,SGBC
+BICI CI,Ordinaire,2024-05-27,10:00:00,Auditorium de la Maison des Entreprises (CGECI) sise,2024,False,False,BICC
+BICI CI,Extraordinaire,2024-05-27,11:30:00,Auditorium de la Maison des Entreprises (CGECI) sise,2024,False,False,BICC
+SOGB,Ordinaire,2024-05-24,10:30:00,Immeuble CRRAE – UEMOA sis à Abidjan Plateau,2024,False,False,SOGC
+NSBC,Ordinaire,2024-05-23,10:30:00,Amphithéâtre de la Caisse de Retraite par Répartition,2024,False,False,NSBC
+ECOBANK CI,Ordinaire,2024-04-25,10:00:00,"Hôtel Radisson Blu, sis à Abidjan Port-Bouët, route de",2024,False,False,ECOC
+SONATEL,Ordinaire,2024-04-25,10:00:00,PAR VISIOCONFERENCE dans ses locaux situés au,2024,False,False,SNTS
+BANK OF AFRICA ML,Ordinaire,2024-04-23,09:30:00,"Siège de la banque à l'Immeuble BANK OF AFRICA,",2024,False,False,BOAM
+BANK OF AFRICA SN,Ordinaire,2024-04-18,09:30:00,"Immeuble Elan II au 2ème Etage, Almadies, Zone 12,",2024,False,False,BOAS
+ORANGE CI,Ordinaire,2024-04-16,10:00:00,"Siège de la société, sis à Abidjan, Cocody Riviera Golf,",2024,False,False,ORAC
+BANK OF AFRICA BN,Ordinaire,2024-04-12,09:00:00,Hôtel Golden Tulip à Cotonou,2024,False,False,BOAB
+CORIS BANK INTERNATIONAL,Ordinaire,2024-04-12,09:00:00,Sopatel Hôtel Silmandé,2024,False,False,CBIBF
+SICABLE,Ordinaire,2024-04-05,10:00:00,"Hôtel TIAMA, ABIDJAN",2024,False,False,CABC
+BANK OF AFRICA NG,Ordinaire,2024-04-04,10:00:00,Centre de Formation de BOA-NIGER (BOA-Siège),2024,False,False,BOAN
+BANK OF AFRICA BF,Ordinaire,2024-03-28,10:00:00,Salle WANGO I à l'hôtel LANCASTER (EX LAICO HOTEL),2024,False,False,BOABF
+BANK OF AFRICA CI,Ordinaire,2024-03-28,10:00:00,Salle Fromager de l'hôtel IVOTEL du Plateau (10ème,2024,False,False,BOAC
+CROWN SIEM CI,Ordinaire,2025-12-31,10:00:00,Visioconférence,2025,False,False,SEMC
+AIR LIQUIDE CI,Ordinaire,2025-12-16,08:30:00,"SALLE DE CONFÉRENCE DE LA CRRAE-UMOA, à Abidjan",2025,False,False,SIVC
+BANK OF AFRICA SN,Ordinaire,2025-11-24,10:00:00,"Immeuble Elan I au 3ème Etage, Almadies, Zone 12,",2025,False,False,BOAS
+UNIWAX CI,Ordinaire,2025-09-23,09:00:00,"l’Espace Latrille Events, sis à Abidjan, Cocody II-",2025,False,False,UNXC
+SITAB,Ordinaire,2025-07-30,10:00:00,SALLE JEWELS de la CGECI (Plateau),2025,False,False,STBC
+SGB CI,Ordinaire,2025-07-14,09:00:00,Par Visioconférence ou en présentiel à Novotel -,2025,False,False,SGBC
+LNB,Mixte,2025-06-30,10:00:00,Par visioconférence ou en présentiel au Palais des,2025,False,False,LNBB
+PALM CI,Ordinaire,2025-06-30,09:00:00,"PRESENTIEL, à la Salle de Conférence de la CRRAE-",2025,False,False,PALC
+SAFCA CI,Ordinaire,2025-06-30,10:00:00,"siège de la société, sis à Abidjan, 1, Rue des",2025,False,False,SAFC
+TRACTAFRIC CI,Ordinaire,2025-06-30,10:00:00,"Hôtel NOVOTEL MARCORY ABIDJAN sis Marcory, Bd VGE,",2025,False,False,PRSC
+BIIC,Ordinaire,2025-06-30,15:00:00,Salle bleue du palais des Congrès de cotonou,2025,False,False,BICB
+BOLLORE TRANSPORT & LOGISTICS,Ordinaire,2025-06-26,09:30:00,Salle Christian Lattier du palais de la culture Bernard,2025,False,False,SDSC
+FILTISAC CI,Ordinaire,2025-06-26,10:30:00,Immeuble C.R.R.A.E – U.M.O.A,2025,False,False,FTSC
+SODECI,Ordinaire,2025-06-26,08:30:00,Siège social de l'entreprise et en visioconférence sous,2025,False,False,SDCC
+VIVO ENERGY CI,Ordinaire,2025-06-26,10:00:00,"Espace Crystal situé à Marcory zone 4C, 805 rue",2025,False,False,SHEC
+CIE CI,Ordinaire,2025-06-25,08:30:00,Visioconférence sous réserve d'un recensement au plus,2025,False,False,CIEC
+CFAO MOTORS CI,Mixte,2025-06-20,09:00:00,"Siège social sis à Abidjan, 117, Boulevard de Marseille",2025,False,False,CFAC
+TOTAL,Ordinaire,2025-06-19,10:00:00,Radisson Blu Hotel Abidjan Airport sis au boulevard de,2025,False,False,TTLC
+SMB,Ordinaire,2025-06-19,09:30:00,Amphithéâtre de la CGECI (La Maison de l’Entreprise),2025,False,False,SMBC
+NESTLE CI,Mixte,2025-06-12,09:00:00,"ESPACE LATRILLE EVENTS situé à Abidjan, Cocody, Deux",2025,False,False,NTLC
+TOTAL SENEGAL S.A.,Ordinaire,2025-06-11,10:00:00,Noom Hôtel Dakar Sea Plaza (ex Radisson Blu de Dakar),2025,False,False,TTLS
+SERVAIR ABIDJAN CI,Ordinaire,2025-06-11,11:00:00,"Salle JEWELS de la CGECI sise au Plateau, Avenue",2025,False,False,ABJC
+BERNABE CI,Ordinaire,2025-06-10,10:00:00,"ABIDJAN, à la salle de conférence GEWELS de la Maison",2025,False,False,BNBC
+ECOBANK TG,Mixte,2025-05-28,10:30:00,"Salle de Conférence du Centre Panafricain Ecobank,",2025,False,False,ETIT
+SETAO CI,Ordinaire,2025-05-28,10:00:00,Hôtel TIAMA (salon EBENE) - Abidjan Plateau,2025,False,False,STAC
+ONATEL BF,Ordinaire,2025-05-28,10:30:00,"ROYAL BEACH HÔTEL, OUAGADOUGOU-BURKINA FASO",2025,False,False,ONTBF
+SUCRIVOIRE,Ordinaire,2025-05-27,09:30:00,Salle de Conférence de la CRRAE-UMOA à Abidjan-,2025,False,False,SCRC
+BANK OF AFRICA CI,Ordinaire,2025-05-27,09:00:00,"Siège de la banque (4e étage) de l’immeuble BOA, sis",2025,False,False,BOAC
+NSBC,Ordinaire,2025-05-26,10:30:00,Confédération Générale des Entreprises de Côte,2025,False,False,NSBC
+SIB,Ordinaire,2025-05-23,10:00:00,"CRRAE – UMOA (Abidjan – Plateau, Angle Boulevard",2025,False,False,SIBC
+SOLIBRA,Ordinaire,2025-05-21,09:30:00,"Espace LATRILLE EVENTS, Cocody Boulevard Latrille,",2025,False,False,SLBC
+SOGB,Ordinaire,2025-05-20,10:30:00,Immeuble CRRAE – UEMOA sis à Abidjan Plateau,2025,False,False,SOGC
+SGB CI,Mixte,2025-05-20,09:00:00,"Espace Latrille Events, sis à Abidjan Commune de",2025,False,False,SGBC
+NEI-CEDA CI,Ordinaire,2025-05-19,10:00:00,"Hôtel TIAMA, Abidjan - Plateau",2025,False,False,NEIC
+ECOBANK CI,Ordinaire,2025-04-29,10:00:00,"En présentiel au Radisson Blu, sis à Abidjan Port-Bouët,",2025,False,False,ECOC
+CORIS BANK INTERNATIONAL,Ordinaire,2025-04-29,09:00:00,Sopatel Hôtel Silmandé SA,2025,False,False,CBIBF
+SONATEL,Mixte,2025-04-17,10:00:00,Par visioconférence et en présentiel dans ses locaux,2025,False,False,SNTS
+BANK OF AFRICA CI,Ordinaire,2025-04-16,10:00:00,Salle Mikko du NOOM hôtel du Plateau (21ème étage),2025,False,False,BOAC
+BICI CI,Ordinaire,2025-04-14,10:00:00,Auditorium de la Maison des Entreprises (CGECI) sise,2025,False,False,BICC
+BANK OF AFRICA ML,Ordinaire,2025-04-10,09:30:00,"Siège de la banque à l'Immeuble BANK OF AFRICA ,",2025,False,False,BOAM
+ORANGE CI,Ordinaire,2025-04-10,10:00:00,Par visioconférence (demande d’accès par mail à,2025,False,False,ORAC
+BANK OF AFRICA SN,Ordinaire,2025-04-08,09:30:00,"Immeuble Elan II au 2ème Etage, Almadies, Zone 12,",2025,False,False,BOAS
+SAPH CI,Ordinaire,2025-04-08,09:00:00,Salle de Conférence de la CRRAE-UMOA à Abidjan-,2025,False,False,SPHC
+BANK OF AFRICA NG,Ordinaire,2025-04-03,10:00:00,Centre de Formation de BOA-NIGER (BOA-Siège),2025,False,False,BOAN
+BANK OF AFRICA BN,Ordinaire,2025-04-02,10:00:00,NOVOTEL à Cotonou,2025,False,False,BOAB
+CROWN SIEM CI,Extraordinaire,2025-04-01,10:00:00,Visioconférence,2025,False,False,SEMC
+SICABLE,Ordinaire,2025-03-28,10:00:00,"Hôtel TIAMA, à ABIDJAN",2025,False,False,CABC
+BANK OF AFRICA BF,Ordinaire,2025-03-17,10:00:00,AZALAÏ Hôtel à la salle DIMAKO,2025,False,False,BOABF
+ECOBANK TG,Ordinaire,2026-10-26,10:30:00,Visioconférence (Annulé - communiqué du 23/10/2026),2026,True,False,ETIT
+SONATEL,Extraordinaire,2026-10-08,15:00:00,"VISIOCONFERENCE, au 64, Voie de Dégagement Nord",2026,False,False,SNTS
+BOLLORE TRANSPORT & LOGISTICS,Mixte,2026-09-02,09:30:00,"Amphithéâtre de l’immeuble CRRAE-UMOA, sis au",2026,False,False,SDSC
+ECOBANK TG,Extraordinaire,2026-08-13,10:30:00,Visioconférence,2026,False,False,ETIT
+ORAGROUP,Mixte,2026-07-23,10:00:00,"Hôtel 2 Février situé à la Place de l'indépendance, BP",2026,False,False,ORGT
+UNIWAX CI,Ordinaire,2026-07-16,09:00:00,"Espace Latrille Events, sis à Abidjan, Cocody II-",2026,False,False,UNXC
+SITAB,Ordinaire,2026-07-15,10:00:00,SALLE JEWELS de la CGECI au Plateau,2026,False,False,STBC
+ERIUM CI,Ordinaire,2026-07-13,09:00:00,"SALLE DE CONFÉRENCE DE L’HOTEL TIAMA , à Abidjan",2026,False,False,SIVC
+SODECI,Ordinaire,2026-06-30,08:30:00,Espace CRYSTAL sis à Abidjan Zone 4C,2026,False,False,SDCC
+NSBC,Ordinaire,2026-06-30,10:30:00,"Espace Latrille Events, sis à Abidjan-Cocody, Deux-",2026,False,False,NSBC
+BIIC,Ordinaire,2026-06-30,13:00:00,Salle bleue du palais des congrès de Cotonou,2026,False,False,BICB
+LNB,Ordinaire,2026-06-30,08:00:00,Salle bleue du palais des congrès de Cotonou,2026,False,False,LNBB
+TRACTAFRIC CI,Mixte,2026-06-30,10:00:00,"Hôtel MOVENPICK ABIDJAN sis au Plateau, Avenue",2026,False,False,PRSC
+NEI-CEDA CI,Ordinaire,2026-06-25,10:00:00,"Hôtel TIAMA, Abidjan-Plateau",2026,False,False,NEIC
+VIVO ENERGY CI,Ordinaire,2026-06-24,10:00:00,"Espace JECKAD, Angré 7e tranche Rue L155, à côté de",2026,False,False,SHEC
+CIE CI,Ordinaire,2026-06-24,08:30:00,Visioconférence,2026,False,False,CIEC
+SMB,Ordinaire,2026-06-23,09:30:00,Amphithéâtre de la CGECI (La Maison de l’Entreprise),2026,False,False,SMBC
+SAFCA CI,Mixte,2026-06-23,09:00:00,"Siège de Alios Finance Côte d’Ivoire, sis à Abidjan",2026,False,False,SAFC
+CFAO MOTORS CI,Ordinaire,2026-06-23,09:00:00,"Siège social sis à Abidjan, 117, Boulevard de Marseille",2026,False,False,CFAC
+SGB CI,Mixte,2026-06-22,15:00:00,"Espace Latrille Events, sis à Abidjan commune de",2026,False,False,SGBC
+FILTISAC CI,Ordinaire,2026-06-18,10:00:00,Immeuble C.R.R.A.E – U.M.O.A ABIDJAN – Plateau (RCI),2026,False,False,FTSC
+TOTALENERGIES MARKETING SN,Ordinaire,2026-06-17,10:00:00,Noom Hôtel Dakar Sea Plaza (ex Radisson Blu de Dakar),2026,False,False,TTLS
+BERNABE CI,Ordinaire,2026-06-15,10:00:00,"ABIDJAN, à la salle de conférence GEWELS de la Maison",2026,False,False,BNBC
+NESTLE CI,Ordinaire,2026-06-11,10:00:00,"l’ESPACE LATRILLE EVENTS situé à Abidjan, Cocody,",2026,False,False,NTLC
+SERVAIR ABIDJAN CI,Ordinaire,2026-06-10,10:30:00,Salle JEWELS de la Maison de l’Entreprise (CGECI) sise,2026,False,False,ABJC
+SOLIBRA,Ordinaire,2026-06-05,09:00:00,Salle Jewels de la Maison de l’Entreprise sise au,2026,False,False,SLBC
+ECOBANK TG,Ordinaire,2026-06-03,10:30:00,"Salle de Conférence du Centre Panafricain Ecobank,",2026,False,False,ETIT
+SOGB,Ordinaire,2026-05-28,10:30:00,Immeuble CRRAE – UEMOA sis à Abidjan Plateau,2026,False,False,SOGC
+SETAO CI,Ordinaire,2026-05-28,10:00:00,Hôtel TIAMA (salon EBENE) - Abidjan Plateau,2026,False,False,STAC
+SICOR,Ordinaire,2026-05-22,09:00:00,Siège de la Société à l’Usine SICOR de Jacqueville,2026,False,False,SICC
+SUCRIVOIRE,Ordinaire,2026-05-21,09:30:00,Par visioconférence via la plateforme web dédiée à,2026,False,False,SCRC
+TOTAL,Ordinaire,2026-05-21,10:00:00,"Sofitel Abidjan Hôtel Ivoire sis au Boulevard Hassan II,",2026,False,False,TTLC
+SIB,Ordinaire,2026-05-12,10:00:00,Par Visioconférence ou en présentiel à la CRRAE-UMOA,2026,False,False,SIBC
+ECOBANK TG,Extraordinaire,2026-05-07,10:30:00,Par Visioconférence,2026,False,False,ETIT
+BICI CI,Ordinaire,2026-05-04,10:00:00,Auditorium de la Maison des Entreprises (CGECI) sise,2026,False,False,BICC
+BANK OF AFRICA BN,Ordinaire,2026-04-30,10:00:00,GOLDEN TULIP LE DIPLOMATE à Cotonou,2026,False,False,BOAB
+ORANGE CI,Ordinaire,2026-04-29,10:00:00,"En présentiel au siège de la société, sis à Abidjan,",2026,False,False,ORAC
+ONATEL BF,Ordinaire,2026-04-29,10:30:00,"AZALAÏ HÔTEL, OUAGADOUGOU-BURKINA FASO",2026,False,False,ONTBF
+ECOBANK CI,Ordinaire,2026-04-28,10:00:00,Par Visioconférence ou en présentiel à l’hôtel Radisson,2026,False,False,ECOC
+SONATEL,Ordinaire,2026-04-16,10:00:00,"Visioconférence, au NOOM Hôtel à Dakar",2026,False,False,SNTS
+CORIS BANK INTERNATIONAL,Ordinaire,2026-04-16,09:00:00,Sopatel Hôtel Silmandé SA,2026,False,False,CBIBF
+BANK OF AFRICA CI,Ordinaire,2026-04-15,10:00:00,Salle Fromager de l'hôtel IVOTEL du Plateau (10ème,2026,False,False,BOAC
+BANK OF AFRICA ML,Ordinaire,2026-04-14,09:30:00,"Siège de la banque à l'Immeuble BANK OF AFRICA,",2026,False,False,BOAM
+PALM CI,Ordinaire,2026-04-14,09:00:00,Salle de Conférence de la CRRAE-UMOA à Abidjan-,2026,False,False,PALC
+SAPH CI,Ordinaire,2026-04-09,09:00:00,Salle de Conférence de la CRRAE-UMOA à Abidjan-,2026,False,False,SPHC
+BANK OF AFRICA SN,Ordinaire,2026-04-07,09:30:00,"Immeuble Elan II au 2ème Etage, Almadies, Zone 12,",2026,False,False,BOAS
+BANK OF AFRICA NG,Ordinaire,2026-04-03,10:00:00,Centre de Formation de BOA-NIGER (BOA-Siège),2026,False,False,BOAN
+SICABLE,Ordinaire,2026-03-27,10:00:00,"Hôtel TIAMA, à ABIDJAN",2026,False,False,CABC
+UNILEVER CI,Ordinaire,2026-03-27,10:00:00,"Salle Sirocco 1 de l’Hôtel Novotel Adagio, situé à",2026,False,False,UNLC
+BANK OF AFRICA BF,Ordinaire,2026-03-23,10:00:00,AZALAÏ Hôtel à la salle DIMAKO,2026,False,False,BOABF

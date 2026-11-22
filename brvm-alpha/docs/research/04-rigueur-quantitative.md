@@ -1,7 +1,7 @@
 # 04 — Rigueur quantitative et statistique : ne pas se tromper
 
 > **Projet** : BRVM Alpha · **Module** : recherche / validation, inférence, risque, construction
-> **Rédigé le** : 2026-11-22 · **Statut** : v1
+> **Rédigé le** : 2026-11-22 · **Statut** : v1.1 (passé au vérificateur sceptique le 2026-11-22 ; voir la dernière section)
 > **Portée** : surapprentissage des backtests (PBO par CSCV), Sharpe probabiliste et dégonflé, tests multiples, validation walk-forward et purgée, bootstrap stationnaire, covariance rétrécie, HRP, Black-Litterman, Kelly fractionnel, CVaR, corrections du trading peu fréquent (Dimson, Scholes-Williams, Getmansky-Lo-Makarov, Lo 2002), régimes, combinaison bayésienne et James-Stein, coefficient d'information et loi fondamentale. Pour chaque méthode : formule exacte, référence, et **paramètres chiffrés pour un marché d'environ 48 actions peu liquides comme la BRVM**.
 > **Documents liés** : `01-structure-marche.md` (règles, ±7,5 %), `02-litterature-brvm.md` (efficience), `03-facteurs-marches-frontieres.md` (facteurs, DSR interne = 0,65), `../ARCHITECTURE.md` (contrats `quant/stats.py`, `portfolio/risk.py`, `portfolio/construct.py`, `backtest/walkforward.py`).
 
@@ -38,7 +38,7 @@
 | 11 | **Bootstrap stationnaire** : la longueur de bloc optimale de Politis-White (avec la correction de 2009) vaut **8,6 séances** pour le panier journalier et **12,4** pour ses carrés. Recommandation : **b = 20 séances** pour les IC de Sharpe. L'IC à 95 % du Sharpe du panier passe de [2,22 ; 4,10] (i.i.d.) à [1,46 ; 4,97] (b = 20) : il est **presque deux fois plus large**. | high [C] / medium [S] |
 | 12 | **Construction** : HRP (pas d'inversion de Σ) et Black-Litterman (précision des vues tirée de l'IC) sont adaptés à N ≈ 45 et T court. Le Kelly doit être **fractionnel (¼, plafond ½)** et appliqué à un alpha **rétréci**. Le ½-Kelly garde 75 % de la croissance pour 25 % de la variance. Il fait passer la probabilité de perdre un jour la moitié du capital de 50 % à **12,5 %**. Surestimer μ d'un facteur 2 ramène la croissance à **zéro**. | high [D] / medium [S] |
 | 13 | **CVaR** : les limites de ±7,5 % tronquent les pertes journalières. La CVaR 95 % journalière × √21 donne 5,6 % pour le panier, contre **7,3 %** mesuré en mensuel (−23 %). Il faut optimiser la CVaR sur des **scénarios hebdomadaires ou mensuels rééchantillonnés par blocs**, jamais sur des scénarios journaliers. | high [C] |
-| 14 | **Régimes** : un modèle markovien à 2 états sur le Composite hebdomadaire est préféré à 1 état (BIC 894,0 contre 900,1). Les durées moyennes sont d'environ **18 semaines**. Mais l'état « volatil » a eu le rendement moyen le **plus élevé** (marché haussier 2022-2026 : +144 %), et le Composite n'a croisé sa moyenne mobile 200 jours que **3 fois**. Il n'y a **pas assez d'événements** pour valider un filtre de régime comme source d'alpha. Il faut l'utiliser seulement comme **dosage du risque**. | high [C] / low (portée) |
+| 14 | **Régimes** : un modèle markovien à 2 états sur le Composite hebdomadaire est préféré à 1 état (BIC 894,0 contre 900,1). Les durées moyennes sont d'environ **18 semaines**. Mais l'état « volatil » a eu le rendement moyen le **plus élevé** (marché haussier 2022-2026 : +144 %), et le Composite n'a croisé sa moyenne mobile 200 jours que **3 fois**. Il n'y a **pas assez d'événements** pour valider un filtre de régime comme source d'alpha. Il faut l'utiliser seulement comme **dosage du risque**. **[Vérificateur]** 2017-2020 est désormais disponible : le Composite y perd 49 %, avec un drawdown de −57,9 % et 13 croisements de la moyenne mobile 200 séances. Il faut tout ré-estimer sur 2017-2026 (§14.3). | high [C] / low (portée) |
 
 **Message central** : sur la BRVM, la rigueur consiste à (i) **annualiser et estimer le risque avec les corrections de prix périmés**, (ii) **compter chaque essai** et dégonfler en conséquence, (iii) **rétrécir tout ce qui est estimé** (covariance, IC, alpha, Kelly), et (iv) **refuser de promouvoir** un signal qui ne franchit pas l'ensemble des filtres de la section 17. Le fait que nos premiers résultats échouent à ces filtres (DSR 0,50 ; PBO 0,37) prouve qu'ils sont utiles.
 
@@ -49,6 +49,9 @@
 **Données** : BOC texte parsés par `brvm_alpha.data.store.build_panel` (1 273 séances, du 25/06/2021 au 20/11/2026, 50 symboles, avertissements de parsing hors informatifs : 0,06 %). **Échantillon d'analyse : du 03/01/2022 au 20/11/2026 (1 202 séances)**. 2021 est exclue parce que le téléchargement a laissé de longs trous (jusqu'à 50 jours entre deux BOC), ce qui produirait de faux rendements « d'une séance ». Rendements = rendement total quotidien (`tr_ret`, dividendes nets réinvestis), séances suspendues exclues. Marché = BRVM Composite (indice de prix). Panier équipondéré (« EW ») = moyenne des rendements des titres disponibles.
 
 Source des faits de marché : BOC du 20/11/2026, https://www.brvm.org/sites/default/files/boc_20261120_2.pdf : **48 sociétés cotées**, 12 au compartiment Prestige et 36 au compartiment Principal ; 46 titres transigés ce jour-là ; Composite à 492,89 (confiance high).
+
+> **[Mise à jour du vérificateur, 2026-11-22]** Le téléchargement a progressé depuis la rédaction. `data/boc_text` contient maintenant **2 334 BOC du 02/01/2017 au 20/11/2026**, et le panel reconstruit compte 50 symboles et 106 892 lignes. **2017-2020 n'a aucun trou de plus de 5 jours** (238 à 250 BOC par an). **2021 reste troué** : 156 BOC seulement et 9 trous de plus de 5 jours, le plus long de 50 jours (du 06/05 au 25/06/2021). La date de début propre du 03/01/2022 reste donc valable pour l'échantillon contigu principal. En revanche, **2017-2020 est désormais disponible comme second échantillon** (voir §14.3 et §17.2).
+> **Nombre réel de séances par an** : les numéros des BOC donnent N° 247 au 29/12/2023, N° 249 au 31/12/2024, N° 249 au 31/12/2025 et N° 222 au 20/11/2026. La BRVM a donc environ **248 séances par an**, et non 252. Annualiser avec 252 surestime la volatilité et le Sharpe annualisés d'environ 0,8 % (√(252/248)) : c'est négligeable, mais à documenter. Quelques séances manquent aussi au téléchargement (par exemple 243 fichiers pour 249 séances en 2024) : un rendement « d'une séance » couvre alors parfois deux séances. Sources : BOC locaux `boc_20231229`, `boc_20241231`, `boc_20251231` et `boc_20261120` (confiance high).
 
 ### 2.1 Liquidité et univers
 
@@ -158,7 +161,7 @@ Lecture : il y a un peu de signal (PBO < 0,5, en ligne avec le momentum 3-6 mois
 
 ### 4.2 Formules (Sharpe par période, non annualisé)
 
-Soient SR̂ le Sharpe estimé sur T observations, γ₃ l'asymétrie et γ₄ la kurtosis **non centrée** (= 3 pour une loi normale) :
+Soient SR̂ le Sharpe estimé sur T observations, γ₃ l'asymétrie et γ₄ la kurtosis **non excédentaire**, c'est-à-dire le moment centré réduit d'ordre 4 (= 3 pour une loi normale ; `scipy.stats.kurtosis(fisher=False)`, comme dans `quant/stats.py`). La même forme, avec √(T − 1) et (γ₄ − 1)/4, est implémentée dans `skfolio.measures.probabilistic_sharpe_ratio` (skfolio 1.14.4, qui cite Bailey & López de Prado 2012) ; vérification du 2026-11-22.
 
 ```
 σ²(SR̂) ≈ (1 − γ₃·SR̂ + ((γ₄ − 1)/4)·SR̂²) / (T − 1)
@@ -234,6 +237,8 @@ Meilleure configuration de la grille (section 3.4) : SR̂ = 0,0620 par séance, 
 | 1,50 | 1,2 an | 1,3 an | 1,8 an | 2,7 ans |
 
 À appliquer **au Sharpe corrigé de Lo**, sinon le MinTRL est sous-estimé.
+
+> **[Précision du vérificateur]** La colonne « contre SR* = 0,5 » suppose des rendements **i.i.d. normaux** (recalcul : 43,3 / 10,8 / 2,7 ans). Avec γ₃ = −0,5 et γ₄ = 6, il faut **44,4 / 11,2 / 2,9 ans** en journalier et **50,6 / 13,6 / 4,0 ans** en mensuel, pour des Sharpe observés de 0,75 / 1,00 / 1,50. Les autres colonnes sont confirmées par recalcul.
 
 Probabilité de perte sur un horizon, si le vrai Sharpe est SR et les rendements normaux : P(perte sur h années) = Φ(−SR·√h) [D].
 
@@ -319,7 +324,14 @@ La règle souvent citée d'un embargo d'environ 1 % de T n'a **pas pu être vér
 | Hors échantillon final | Réserver les **6 derniers mois** jusqu'à la décision de mise en production ; ne les consulter **qu'une fois** | Évite l'usure de l'échantillon de test |
 | Pré-enregistrement | Paramètres figés **avant** la première exécution sur la réserve (voir revue 03, §8) | Les DSR et PBO perdent leur sens sinon |
 
-**Spécificité BRVM** : utiliser 2013-2021 comme **second échantillon de validation** une fois les BOC anciens téléchargés et propres (règle de promotion déjà posée en revue 03). Les données d'avant 2013 (fixing, univers plus petit) ne doivent servir qu'à des **tests de robustesse qualitatifs**.
+**Spécificité BRVM** : utiliser 2013-2021 comme **second échantillon de validation** une fois les BOC anciens téléchargés et propres (règle de promotion déjà posée en revue 03). Les données d'avant 2013 (fixing, univers plus petit) ne doivent servir qu'à des **tests de robustesse qualitatifs**. **[Mise à jour du vérificateur]** 2017-2020 est **déjà disponible et sans trou** (§2) ; 2013-2016 n'est pas encore téléchargé, et 2021 reste exclu (trous).
+
+> **[Correction du vérificateur : correspondance avec le code]** `backtest/walkforward.py:walk_forward_windows(dates, train_years, test_months, embargo_days, expanding=True, min_train_days)` travaille en **ancrages calendaires** (années et mois), pas en nombre de séances. Il n'a **qu'un seul** écart, `embargo_days`, qui compte des séances retirées à la **fin** de l'apprentissage, juste **avant** le test. Ce paramètre joue donc le rôle de la **purge**. L'embargo « après le test » de López de Prado n'existe pas en walk-forward pur ; il ne s'applique qu'en k-fold purgé et en CPCV. Correspondance à coder :
+> - `train_years = 2` (environ 496 séances à 248 séances par an) et `min_train_days = 480` ;
+> - `test_months = 3` (environ 62 séances) ;
+> - `embargo_days = h + 21` (purge du label, plus une marge pour la mémoire sérielle d'environ 10 séances), soit 42 pour un label mensuel et 84 pour un label trimestriel. C'est une règle prudente, choix du vérificateur.
+>
+> En CPCV, purge (h) et embargo (21) restent deux paramètres séparés (Source : lecture du code, 2026-11-22 ; confiance high pour le code, medium pour la règle h + 21.)
 
 ---
 
@@ -346,7 +358,13 @@ Longueur optimale de Politis-White (version corrigée, noyau « flat-top » λ(s
 b_opt = (2·Ĝ² / D_SB)^{1/3} · n^{1/3}
 ```
 
-M = 2·m̂, où m̂ est le plus petit retard au-delà duquel K_n = max(5, ⌈√log₁₀ n⌉) autocorrélations consécutives restent sous 2·√(log₁₀ n / n). Confiance : **medium** (structure confirmée [S], constantes de la règle de m̂ issues de la littérature et non relues dans le texte).
+M = 2·m̂, où m̂ est le plus petit retard au-delà duquel K_n = max(5, ⌈√log₁₀ n⌉) autocorrélations consécutives restent sous 2·√(log₁₀ n / n). Confiance : **medium-high**. **[Vérifié le 2026-11-22]** Les constantes figurent à l'identique dans `arch.bootstrap.optimal_block_length` (arch 9.0.0, PyPI, qui cite Politis & White 2004, *Econometric Reviews* 23:1, 53-70, DOI 10.1081/ETC-120028836, et Patton, Politis & White 2009, *Econometric Reviews* 28:4, 372-375, DOI 10.1080/07474930802459016) :
+- D_SB = 2·ĝ(0)² et D_CB = (4/3)·ĝ(0)² ;
+- noyau flat-top ;
+- bande de ±2√(log₁₀ n / n) ;
+- m_max = ⌈√n⌉ + K_n et b_max = ⌈min(3√n, n/3)⌉.
+
+Seule différence : arch prend K_n = max(5, log₁₀ n). Pour n < 10⁵, les deux règles donnent K_n = 5. Une réimplémentation indépendante retrouve exactement les valeurs du §7.3.
 
 ### 7.3 Mesures sur nos BOC [C]
 
@@ -382,7 +400,7 @@ Le niveau élevé de ce Sharpe reflète un marché très haussier (+144 %) et un
 
 - Ledoit & Wolf (2003). « Improved estimation of the covariance matrix of stock returns with an application to portfolio selection ». *Journal of Empirical Finance* 10(5) : cible à **un facteur** (marché). PDF : https://uzh.ch/cmsssl/econ/dam/jcr:ffffffff-935a-b0d6-ffff-ffff9961f70f/jef.pdf [S].
 - Ledoit & Wolf (2004). « Honey, I Shrunk the Sample Covariance Matrix ». *Journal of Portfolio Management* 30(4), 110-119, DOI 10.3905/jpm.2004.110 : cible à **corrélation constante** ; intensité optimale **κ̂/T** bornée à [0, 1]. https://econ-papers.upf.edu/papers/691.pdf ; notes : https://reasonabledeviations.com/notes/papers/ledoit_wolf_covariance [S].
-- Ledoit & Wolf (2004). « A well-conditioned estimator for large-dimensional covariance matrices ». *Journal of Multivariate Analysis* 88(2) : cible **identité** ; c'est l'estimateur de `sklearn.covariance.LedoitWolf` (https://scikit-learn.org/stable/modules/generated/sklearn.covariance.LedoitWolf.html) [B].
+- Ledoit & Wolf (2004). « A well-conditioned estimator for large-dimensional covariance matrices ». *Journal of Multivariate Analysis* 88(2), février 2004, p. 365-411 : cible **identité** ; c'est l'estimateur de `sklearn.covariance.LedoitWolf` (https://scikit-learn.org/stable/modules/generated/sklearn.covariance.LedoitWolf.html). Volume, numéro, mois et pages sont confirmés le 2026-11-22 par la docstring de scikit-learn 1.9.1 (source secondaire, confiance medium-high).
 - Effet Epps : Epps (1979), *JASA* 74 [B]. Bruit des matrices de corrélation et loi de Marchenko-Pastur : Laloux, Cizeau, Bouchaud & Potters (1999), *Physical Review Letters* 83 [B].
 
 ### 8.2 Formules (cible à corrélation constante)
@@ -396,7 +414,7 @@ Le niveau élevé de ce Sharpe reflète un marché très haussier (+144 %) et un
 γ̂ = ‖F − S‖²_F
 ```
 
-Structure confirmée [S]. Expression complète transcrite du code `covCor.m` des auteurs, comme dans `portfolio/risk.py`. Confiance : **medium-high**.
+Structure confirmée [S]. Expression complète transcrite du code `covCor.m` des auteurs, comme dans `portfolio/risk.py`. Confiance : **medium-high**. **[Vérifié le 2026-11-22]** C'est la même structure (π̂, ρ̂ avec θ̂, γ̂ = ‖F − S‖²) que `CovarianceShrinkage._ledoit_wolf_constant_correlation` de PyPortfolioOpt 1.6.0. Une réimplémentation indépendante redonne δ* = 0,68 / 0,79 / 0,87 (tableau ci-dessous).
 
 Bord du bruit (Marchenko-Pastur, corrélations) : λ₊ = (1 + √(N/T))². Les valeurs propres sous λ₊ sont indiscernables du bruit.
 
@@ -440,7 +458,7 @@ López de Prado, M. (2016). « Building Diversified Portfolios that Outperform O
 3. **Quasi-diagonalisation** : réordonner les titres selon les feuilles du dendrogramme.
 4. **Bissection récursive** : couper chaque grappe en deux moitiés L₀ et L₁. Avec V_k = w̃_kᵀ·Σ_k·w̃_k (w̃_k = poids inverses de la variance dans L_k), α = 1 − V₀/(V₀ + V₁), puis w[L₀] ×= α et w[L₁] ×= 1 − α.
 
-Pas d'inversion de Σ, d'où la robustesse aux matrices mal conditionnées (section 8.3). Les détails de l'algorithme n'ont pas été relus dans le texte pendant la session ; ils sont conformes à `portfolio/risk.py:hrp_weights`. Confiance : **medium**.
+Pas d'inversion de Σ, d'où la robustesse aux matrices mal conditionnées (section 8.3). Les détails de l'algorithme n'ont pas été relus dans le texte pendant la session ; ils sont conformes à `portfolio/risk.py:hrp_weights`. Confiance : **medium**. **[Vérificateur, 2026-11-22]** La distance d = √(½(1 − ρ)) et le lien `single` par défaut sont confirmés par une implémentation tierce : `HRPOpt.optimize(linkage_method="single")` dans PyPortfolioOpt 1.6.0, qui reprend le code de López de Prado avec sa permission. Cette implémentation classe directement sur d, **sans** distance des distances. L'affirmation selon laquelle d̃ « reproduit l'article » reste **[NON VÉRIFIÉ]** dans le texte primaire. Attention : dans le projet, `hrp_weights(distance_of_distances=False)` est la valeur par défaut, donc il faut passer `True` explicitement si l'on garde ce choix. skfolio 1.14.4 utilise `ward` par défaut : le choix du lien n'est pas neutre et doit être compté dans le registre.
 
 ### 9.3 Paramètres BRVM
 
@@ -479,7 +497,12 @@ Pas d'inversion de Σ, d'où la robustesse aux matrices mal conditionnées (sect
 
 - **Vues = alpha de Grinold** (section 16) : P = I (une vue par titre), Q_i = Π_i + IC·ω_i·z_i, avec Ω_ii = **(ω_i·σ_IC)²**, où σ_IC est l'incertitude sur l'IC (section 15). Le modèle devient alors une **combinaison bayésienne** équilibre + signaux, où la confiance vient de la **mesure** de l'IC et non d'une opinion.
 - **w_mkt** : capitalisations **flottantes** de l'univers éligible. Le flottant est publié par la BRVM (avis n° 303 du 12/10/2026, cité en revue 01). Sinon, utiliser les capitalisations brutes avec un plafond de 15 % par titre, pour éviter que les plus grosses capitalisations ne dominent Π.
-- **τ** : **0,05** (choix interne dans la plage usuelle 0,025-0,05, non vérifiée ici). Avec Ω proportionnel à τ (He-Litterman), le choix de τ influe peu sur μ_BL.
+- **τ** : **0,05** (choix interne dans la plage usuelle 0,025-0,05) **[NON VÉRIFIÉ dans une source primaire]**. Seule confirmation secondaire : 0,05 est la valeur par défaut de `BlackLittermanModel` dans PyPortfolioOpt 1.6.0. Le même code définit l'Ω par défaut comme diag(τ·PΣPᵀ) et l'attribue à He & Litterman (1999). Avec un Ω de He-Litterman, μ_BL ne dépend **pas du tout** de τ quand P = I.
+- **[Correction du vérificateur]** L'Ω retenu ici, Ω_ii = (ω_i·σ_IC)², **n'est pas proportionnel à τ** : la phrase précédente ne s'y applique donc pas. Ordre de grandeur en mensuel :
+  - Ω_ii ≈ (0,092 × 0,02)² ≈ 3·10⁻⁶ ;
+  - τ·σ_i² ≈ 0,05 × 0,113² ≈ 6·10⁻⁴.
+
+  Le poids donné à chaque vue, τσ²/(τσ² + Ω), vaut donc environ **0,99** quel que soit τ dans [0,025 ; 0,05]. On obtient μ_BL ≈ Q = Π + α. Black-Litterman n'apporte alors **presque aucun rétrécissement supplémentaire** : tout le rétrécissement de l'alpha vient de IC_post (§15.4). Il faut le savoir avant de compter sur BL comme second garde-fou. Il faut aussi exprimer Σ et Ω sur **le même horizon** (mensuel). Calcul du vérificateur, confiance medium.
 - **δ** : calibré pour que la prime implicite du Composite égale une hypothèse de prime **À CALIBRER** (aucune valeur sourcée pour la BRVM dans cette revue ; le BOC publie un indicateur « prime de risque du marché » de 0,58 dont la définition n'est pas documentée ici).
 - Optimisation finale sous contraintes (long-only, plafonds, liquidité) avec Σ rétrécie. BL sert à produire **μ**, pas à lever les contraintes.
 
@@ -531,7 +554,7 @@ Panier EW 2022-2026 (mensuel) : μ = 29,4 %/an, σ = 16,3 %/an, sur 4,9 ans. L'e
 
 ### 12.1 Références
 
-- Rockafellar, R. T. & Uryasev, S. (2000). « Optimization of conditional value-at-risk ». *Journal of Risk* 2(1), 21-42 : VaR et CVaR calculées **simultanément** ; avec des scénarios, le problème devient un **programme linéaire**. https://ideas.repec.org/a/rsk/journ4/2161159.html ; version de travail : https://sites.math.washington.edu/~rtr/papers/rtr179-CVaR1.pdf [S]. Synthèse : https://arxiv.org/pdf/1511.00140 [S].
+- Rockafellar, R. T. & Uryasev, S. (2000). « Optimization of conditional value-at-risk ». *Journal of Risk* 2, 21-42 **[NON VÉRIFIÉ : numéro et pages]**. Le vérificateur se souvient de la citation usuelle « vol. 2, n° 3, p. 21-41 », mais n'a pas pu la contrôler en session ; la notice RePEc ci-dessous doit trancher. L'existence et le titre sont confirmés par skfolio 1.14.4, qui cite « Optimization of conditional value-at-risk », Rockafellar & Uryasev (2000). Contenu : VaR et CVaR calculées **simultanément** ; avec des scénarios, le problème devient un **programme linéaire**. https://ideas.repec.org/a/rsk/journ4/2161159.html ; version de travail : https://sites.math.washington.edu/~rtr/papers/rtr179-CVaR1.pdf [S]. Synthèse : https://arxiv.org/pdf/1511.00140 [S].
 - Rockafellar & Uryasev (2002). « Conditional value-at-risk for general loss distributions ». *Journal of Banking & Finance* 26(7) [B].
 
 ### 12.2 Formules
@@ -561,7 +584,7 @@ Pour le panier, la CVaR journalière × √5 donne 2,71 % contre 2,99 % mesuré 
 | Paramètre | Valeur |
 |---|---|
 | Horizon des scénarios | **5 séances** (rendements hebdomadaires glissants) ; 21 séances pour le reporting |
-| Génération | **5 000 scénarios** par bootstrap stationnaire de blocs de semaines (b = 8 semaines) sur 2 à 5 ans, plus des scénarios de stress explicites (Composite −15 % en 2 mois, repère : drawdown maximal 2022 de −13,9 %) |
+| Génération | **5 000 scénarios** par bootstrap stationnaire de blocs de semaines (b = 8 semaines) sur 2 à 5 ans, plus des scénarios de stress explicites : Composite −15 % en 2 mois (repère : la pire baisse sur 8 semaines vaut −14,3 % en 2017-2020 et −8,9 % en 2022-2026). **[Correction du vérificateur]** Le repère « drawdown maximal de −13,9 % » ne vaut que pour 2022-2026. Les BOC 2017-2020 montrent un **drawdown du Composite de −57,9 %**, du 01/03/2017 au 26/10/2020 (285,18 le 02/01/2017, 145,37 le 31/12/2020, soit −49 % sur quatre ans). Il faut ajouter un **scénario de marché baissier prolongé** (−50 % sur environ 3,5 ans) au jeu de stress, pour la CVaR et pour le dimensionnement de Kelly. Source : BOC locaux et recalcul du vérificateur, confiance high |
 | α | **0,95**. Avec 255 semaines d'historique brut, la queue à 95 % ne contient qu'environ 13 observations, d'où la nécessité du bootstrap. Utiliser α = 0,90 pour une estimation stable si les scénarios ne sont pas rééchantillonnés |
 | Usage | **contrainte** (CVaR du portefeuille ≤ 1,25 × CVaR du Composite, choix interne) plutôt qu'objectif unique ; l'objectif reste l'alpha rétréci |
 | Contrôle | Comparer chaque mois la CVaR ex ante et les pertes réalisées (test de couverture) |
@@ -606,6 +629,8 @@ Lo, A. W. (2002). « The Statistics of Sharpe Ratios ». *Financial Analysts Jou
 ```
 SR(q) = η(q)·SR ,   η(q) = q / √( q + 2·Σ_{k=1}^{q−1} (q − k)·ρ_k )
 ```
+
+> **[Précision du vérificateur : notation]** Chez Lo (2002), **q est l'horizon d'agrégation**. Pour passer du journalier à l'annuel, q = T = 252 (ou 248 séances réelles). Dans `quant/stats.py:lo_adjusted_sharpe(returns, q, periods_per_year)`, η est calculé à T = `periods_per_year`, et **`q` désigne le retard maximal** des autocorrélations ρ_k estimées, supposées nulles au-delà (troncature). Le paramètre `lo_q` de ce document (10 en journalier, 4 en hebdomadaire, 2 en mensuel) est donc une **troncature**, pas l'horizon de Lo. La mise en garde « jamais q = 252 » veut dire : ne jamais additionner 251 autocorrélations empiriques bruitées. Formule et valeurs inchangées : 0,771 et 0,582 sont reproduits à l'identique (troncature 10, T = 252).
 
 ### 13.5 Mesures sur nos BOC [C]
 
@@ -681,6 +706,14 @@ Filtres de tendance : le Composite était au-dessus de sa moyenne mobile de 200 
 
 **Lecture** : (i) sur cette période, l'état agité a eu le rendement moyen le **plus élevé**. La règle des marchés développés (forte volatilité = marché baissier) **ne s'applique pas** telle quelle. (ii) **Trois** signaux en cinq ans ne permettent **aucune** inférence sur la valeur d'un filtre de tendance. Un backtest de filtre de tendance sur cette période est du **pur surapprentissage**.
 
+> **[Recalcul et mise à jour du vérificateur, 2026-11-22]** Sur 254 semaines (contre 255), le modèle à 2 régimes donne :
+> - BIC = 891,5 (2 régimes) contre 897,5 (1 régime). L'écart de BIC, environ 6, est le même que dans la revue ;
+> - μ = 0,21 % / 0,52 % par semaine, σ = 0,87 % / 1,75 % ;
+> - P(rester) = 0,946 / 0,950 ;
+> - 86 % du temps au-dessus de la moyenne mobile 200 séances, avec 3 croisements.
+>
+> Résultats **confirmés**. Mais la conclusion (i) ne vaut que pour un marché haussier. Sur **2017-2020**, désormais disponible sans trou, le Composite a passé seulement **6 % du temps au-dessus de sa moyenne mobile 200 séances**, avec **13 croisements**, et a subi un drawdown de **−57,9 %**. Les paramètres de régime doivent être ré-estimés sur 2017-2026 (2021 étant exclu ou traité à part) avant tout usage, même pour le dosage du risque. Source : BOC locaux, confiance high (calcul).
+
 ### 14.4 Paramètres BRVM
 
 | Paramètre | Valeur |
@@ -688,7 +721,7 @@ Filtres de tendance : le Composite était au-dessus de sa moyenne mobile de 200 
 | Modèle | 2 régimes, moyenne et variance changeantes, sur les rendements **hebdomadaires** du Composite (puis du Composite Total Return quand l'historique sera suffisant) |
 | Estimation | fenêtre expansive, ré-estimée **mensuellement**, `search_reps=20` ; probabilités **filtrées** uniquement |
 | Usage autorisé | **dosage du risque** : cible de volatilité ex ante, réduction de 25 % de l'exposition si P(agité) > 0,8 **et** drawdown du Composite > 8 % (choix interne). Ce dosage reste un essai compté dans le registre |
-| Usage interdit (pour l'instant) | signal d'alpha ou de *market timing*, tant qu'il n'y a pas **au moins 10 changements de régime indépendants** hors échantillon (règle interne). Il faudra les BOC 1998-2021 |
+| Usage interdit (pour l'instant) | signal d'alpha ou de *market timing*, tant qu'il n'y a pas **au moins 10 changements de régime indépendants** hors échantillon (règle interne). Il faudra les BOC 1998-2021 ; 2017-2020 est déjà disponible, avec 13 croisements de la moyenne mobile 200 séances (vérificateur) |
 | Filtre de tendance | moyenne mobile de 200 séances avec bande de ±2 %, en **challenger** d'overlay seulement, évalué sur 1998-2021 |
 
 ---
@@ -811,12 +844,13 @@ Toutes les conditions sont évaluées **hors échantillon (walk-forward), nettes
 data:
   clean_start: "2022-01-03"            # 2021 : trous de BOC (jusqu'à 50 jours)
   holdout_months: 6                    # réserve finale, consultée une fois
-  validation_history: ["2013-01-01", "2021-12-31"]   # second échantillon quand disponible
+  validation_history: ["2017-01-02", "2020-12-31"]   # [CORRIGÉ vérif. 2026-11-22] 2017-2020 disponible sans trou ; 2021 exclu (trous) ; 2013-2016 à ajouter une fois téléchargé
+  sessions_per_year_observed: 248      # [AJOUT vérif.] BOC N° 247 (2023), 249 (2024), 249 (2025)
 
 returns_and_sharpe:
-  periods_per_year: 252
+  periods_per_year: 252                # convention ; réel ≈ 248 → surestimation ≈ 0,8 % des vol/Sharpe annualisés (à documenter dans les rapports)
   report: [naive, lo, glm]             # toujours les trois
-  lo_q: {daily: 10, weekly: 4, monthly: 2}   # jamais q = 252
+  lo_q: {daily: 10, weekly: 4, monthly: 2}   # = retard MAXIMAL des ρ_k (troncature, paramètre `q` du code), η calculé à T = periods_per_year ; jamais troncature à 251
   eval_frequency: "W-FRI"              # métriques de performance en hebdomadaire
   sr_star_alpha: 0.0
   sr_star_worth_it_annual: 0.3
@@ -838,14 +872,16 @@ validation:
   step_sessions: 63
   purge_sessions: "label_horizon"      # 21 (mensuel) / 63 (trimestriel)
   embargo_sessions: 21                 # mesuré : mémoire ≈ 10 séances / 3-4 semaines
-  cpcv: {n_groups: 10, k_test: 2}      # 45 découpages, 9 chemins
+  cpcv: {n_groups: 10, k_test: 2}      # 45 découpages, 9 chemins (formule k/N·C(N,k) confirmée : skfolio 1.14.4)
+  # [AJOUT vérif. 2026-11-22] correspondance avec l'API réelle (calendaire, un seul écart avant le test) :
+  walk_forward_windows_args: {train_years: 2, test_months: 3, embargo_days: "label_horizon + 21", expanding: true, min_train_days: 480}
 
 bootstrap:
   method: "stationary"
   mean_block_daily: 20
   mean_block_weekly: 8
   block_floor_daily: 10
-  n_boot: 5000
+  n_boot: 5000                         # à passer explicitement : défaut du code stationary_bootstrap = 2000
   sharpe_difference_test: "ledoit_wolf_2008_studentized"
 
 covariance:
@@ -868,11 +904,11 @@ beta:
 hrp:
   cov: "covariance (ci-dessus)"
   linkage_method: "single"             # challenger "ward" -> registre
-  distance_of_distances: true
+  distance_of_distances: true          # à passer explicitement (défaut du code : False) ; fidélité à l'article [NON VÉRIFIÉ]
   role: "pondération intra-sélection + portefeuille de référence risque"
 
 black_litterman:
-  tau: 0.05
+  tau: 0.05                            # [NON VÉRIFIÉ en source primaire] ; peu influent ICI car Ω ≪ τΣ → μ_BL ≈ Q (voir §10.3, note du vérificateur)
   views: "grinold_alpha"               # P = I, Q = Pi + IC_post * omega * z
   omega: "(omega_i * sigma_IC)^2"
   market_weights: "float_cap_eligible_capped_15pct"
@@ -888,7 +924,8 @@ cvar:
   alpha: 0.95
   horizon_sessions: 5
   scenarios: 5000                      # bootstrap stationnaire de semaines, b = 8
-  stress: [{composite_drop: -0.15, weeks: 8}]
+  stress: [{composite_drop: -0.15, weeks: 8},          # pire 8 semaines observée : −14,3 % (2017-2020)
+           {composite_drop: -0.50, weeks: 190}]        # [AJOUT vérif.] marché baissier 01/03/2017 → 26/10/2020 : drawdown −57,9 %
   constraint: "cvar_port <= 1.25 * cvar_composite"
 
 regime:
@@ -916,7 +953,7 @@ signals:
 1. `quant/stats.py:dimson_betas` : ajouter `leads` et `lags` séparés (aujourd'hui symétrique −K..K).
 2. `quant/stats.py` : ajouter `glm_smoothing(returns) -> dict(theta, xi, sr_adj)` (MA(2) normalisé, statsmodels) et `politis_white_block(x)` (version corrigée de 2009).
 3. `backtest/walkforward.py` : ajouter `purged_kfold` / `cpcv(n_groups, k_test, purge, embargo)` et un `TrialRegistry` persistant (`reports/trials.parquet`) qui alimente automatiquement N (DSR), M (haircut) et la matrice de la PBO.
-4. `quant/regime.py` : modèle markovien à 2 états, probabilités **filtrées** seulement, fonction `risk_scale(asof)`.
+4. `quant/regime.py` : modèle markovien à 2 états, probabilités **filtrées** seulement, fonction `risk_scale(asof)`. **[Vérificateur]** Le module existe déjà : il contient `GaussianHMM` (méthodes `fit` et `filter`) et `hmm_filtered_probabilities`. Il reste à ajouter `risk_scale` et la ré-estimation sur 2017-2026.
 5. `pbo_cscv` : passer un critère `metric` appelable « Sharpe corrigé de Lo » (q = 10) au lieu du Sharpe naïf.
 6. Rapport (`report/html.py`) : afficher systématiquement Sharpe naïf, Lo et GLM, DSR avec N, PBO, MinTRL restant, et un bandeau **« non promu »** tant que G1-G9 ne sont pas tous verts.
 
@@ -926,7 +963,7 @@ signals:
 
 1. **Textes intégraux** : relire dans les PDF originaux (hôtes à autoriser : `www.davidhbailey.com`, `escholarship.org`, `people.duke.edu`, `papers.ssrn.com`) la borne MinBTL exacte, l'approximation du N effectif, les formules exactes de Harvey-Liu (y compris leur traitement de la corrélation entre tests), la règle de choix de bloc de Ledoit-Wolf (2008) et la règle d'embargo de López de Prado.
 2. **Thèmes non vérifiés faute de budget de recherche** : HMM appliqués aux marchés africains ou frontières, filtres de tendance sur marchés frontières, James-Stein et Jorion sur marchés émergents, valeurs de τ dans Black-Litterman, valeurs empiriques du TC en long-only (Clarke et al. 2002). À relancer dans un nouveau tour.
-3. **Historique** : toutes les mesures portent sur 2022-2026, une période très haussière (+144 %) et post-cotation continue. Il faut les ré-estimer sur 1998-2021 dès que les BOC anciens seront téléchargés (en cours), en particulier les régimes, l'embargo, la longueur de bloc et les bêtas.
+3. **Historique** : toutes les mesures portent sur 2022-2026, une période très haussière (+144 %) et post-cotation continue. Il faut les ré-estimer sur 1998-2021 dès que les BOC anciens seront téléchargés (en cours), en particulier les régimes, l'embargo, la longueur de bloc et les bêtas. **[Vérificateur]** 2017-2020 est déjà disponible : c'est un marché baissier (−49 %, drawdown −57,9 %), donc c'est le contre-échantillon le plus utile. À traiter en priorité.
 4. **Prime de risque BRVM** pour calibrer δ (Black-Litterman) et la cible de Kelly : source introuvable dans cette revue. Définition à trouver pour l'indicateur « prime de risque du marché » du BOC (0,58 le 20/11/2026).
 5. **Coefficient de transfert réel** avec la référence pondérée par la capitalisation, les plafonds de liquidité et les lots : à mesurer dans le moteur de backtest.
 
@@ -942,7 +979,7 @@ Légende : [S] vérifié par recherche dans cette session (métadonnées, résum
 
 **Surapprentissage, Sharpe, tests multiples**
 - Bailey, Borwein, López de Prado & Zhu (2017), PBO : https://papers.ssrn.com/abstract=2326253 ; https://ideas.repec.org/a/rsk/journ0/2471206.html ; https://www.risk.net/journal-of-computational-finance/2471206/the-probability-of-backtest-overfitting [S]
-- Applications de la CSCV (logit, PBO) : https://arxiv.org/pdf/2608.27734 ; https://arxiv.org/pdf/1910.05555 ; https://www.mql5.com/en/articles/24095 ; https://github.com/mrbcuda/pbo [S]
+- Applications de la CSCV (logit, PBO) : https://arxiv.org/pdf/2608.27734 [NON VÉRIFIÉ par le vérificateur : identifiant d'août 2026, non consultable en session] ; https://arxiv.org/pdf/1910.05555 ; https://www.mql5.com/en/articles/24095 ; https://github.com/mrbcuda/pbo [S]
 - Bailey & López de Prado (2014), DSR : https://papers.ssrn.com/abstract=2460551 [S]
 - López de Prado (2015), présentation Nomura (E[max SR]) : https://www.nomura.com/events/9th-annual-global-quantitative-investment-strategies-conference/resources/upload/10_00_Marcos_Lopez_de_Prado_20150510.pdf [S]
 - Bailey & López de Prado (2012), PSR et MinTRL, *Journal of Risk* 15(2) : https://www.researchgate.net/publication/308231636_The_Sharpe_ratio_efficient_frontier [S] ; explications : https://portfoliooptimizer.io/blog/the-probabilistic-sharpe-ratio-bias-adjustment-confidence-intervals-hypothesis-testing-and-minimum-track-record-length/ [S]
@@ -988,3 +1025,69 @@ Légende : [S] vérifié par recherche dans cette session (métadonnées, résum
 
 **Documents internes liés**
 - `docs/research/01-structure-marche.md` (±7,5 %, coûts) ; `02-litterature-brvm.md` (efficience, trading peu fréquent) ; `03-facteurs-marches-frontieres.md` (facteurs, DSR interne 0,65, règles de promotion)
+
+---
+
+## Vérification adversariale (2026-11-22)
+
+**Rôle** : vérificateur sceptique du domaine « quant-rigor ». **Objectif** : réfuter en priorité les paramètres qui seront codés.
+
+**Moyens et limites.** Le budget de recherche web du tour était **épuisé** dès la première requête du vérificateur. Le réseau de la session n'autorise que `www.brvm.org`, `sikafinance.com`, `richbourse.com` et les registres de paquets ; `ideas.repec.org` échoue (DNS), comme les hôtes académiques déjà signalés au §0. Les vérifications reposent donc sur quatre moyens :
+1. les **BOC locaux** (source primaire : `data/boc_text`, panel reconstruit de zéro dans un répertoire temporaire, 2 334 BOC) ;
+2. un **recalcul indépendant** avec des scripts écrits par le vérificateur, sans réutiliser les fonctions statistiques du projet ;
+3. la **lecture du code** du projet ;
+4. les **implémentations de référence** téléchargées depuis PyPI et lues sans être exécutées (arch 9.0.0, PyPortfolioOpt 1.6.0, skfolio 1.14.4), plus scikit-learn 1.9.1 (installé).
+
+**Aucune référence bibliographique n'a pu être relue dans sa source primaire.** Les éléments bibliographiques non couverts par une implémentation de référence sont donc marqués « invérifiable en session ».
+
+### Tableau des verdicts
+
+| # | Élément vérifié | Verdict | Valeur correcte / constat | Preuve |
+|---|---|---|---|---|
+| 1 | Faits BOC du 20/11/2026 : 48 sociétés (12 Prestige + 36 Principal), 46 titres transigés, Composite 492,89, « prime de risque du marché » 0,58 | **confirmé** | identique | BOC local `boc_20261120.txt.gz` (https://www.brvm.org/sites/default/files/boc_20261120_2.pdf) |
+| 2 | Composite 202,28 (31/12/2021) → 492,89 : +144 % ; drawdown maximal −13,9 %, creux le 02/12/2022 | **confirmé** | +143,7 % ; −13,9 % le 02/12/2022 | `boc_20211231` (https://www.brvm.org/sites/default/files/boc_20211231_2.pdf) + recalcul |
+| 3 | `data.clean_start = 2022-01-03` (trous de BOC en 2021, jusqu'à 50 jours) | **confirmé** | 2021 : 156 BOC, 9 trous de plus de 5 jours, le plus long de 50 jours (06/05 → 25/06/2021) | inventaire de `data/boc_text` |
+| 4 | `validation_history = 2013-2021` (« quand disponible ») | **corrigé** | **2017-01-02 → 2020-12-31 déjà disponible sans trou** (238 à 250 BOC par an) ; 2021 exclu ; 2013-2016 pas encore téléchargé | inventaire de `data/boc_text` |
+| 5 | `periods_per_year = 252` | **corrigé** (convention gardée, mais documentée) | environ **248 séances par an** (BOC N° 247 au 29/12/2023, N° 249 au 31/12/2024, N° 249 au 31/12/2025) ; surestimation d'environ 0,8 % des vol et Sharpe annualisés | en-têtes des BOC locaux |
+| 6 | Autocorrélations et facteur de Lo : ρ₁ EW = 0,231, Q(10) = 155,7, VR(20) = 2,70, η/√252 = 0,582 (EW) et 0,771 (Composite) | **confirmé** | 0,231 ; 155,8 ; 2,70 ; 0,582 ; 0,771 (troncature 10) | recalcul indépendant sur 1 202 séances |
+| 7 | `lo_q` (10 / 4 / 2) | **corrigé** (notation) | c'est une **troncature** des ρ_k (paramètre `q` du code), pas le « q » de Lo, qui est l'horizon d'agrégation ; valeurs inchangées | `quant/stats.py:lo_adjusted_sharpe` |
+| 8 | `eval_frequency = W-FRI` : volatilité d'un portefeuille sous-estimée de 44 % en journalier | **confirmé** | EW 9,1 % (j) / 11,4 % (h) / 16,5 % (m), rapport 1,80 ; Composite 9,6 / 10,0 / 13,1 % | recalcul |
+| 9 | Covariance : effet Epps (0,046 / 0,087 / 0,179), δ* Ledoit-Wolf vers la corrélation constante (0,68 / 0,79 / 0,86), bord de Marchenko-Pastur | **confirmé** | 0,046 / 0,090 / 0,169 ; δ* 0,68 / 0,79 / 0,87 ; 2 / 2 / 1 valeurs propres au-dessus du bord ; sklearn (identité) 0,21 / 0,33 / 0,49 | réimplémentation indépendante ; structure identique à PyPortfolioOpt 1.6.0 |
+| 10 | Bêtas médians : MCO 0,50, Dimson (−1..+5) 0,88, Scholes-Williams 0,78, MCO hebdomadaire 0,71 ; 22 % des titres avec t(retard 1) > 2 | **confirmé** (écart mineur sur l'hebdomadaire) | 0,51 / 0,89 / 0,78 / **0,67** ; 23 % ; 47 titres | recalcul |
+| 11 | `bootstrap.mean_block` : b_opt de Politis-White corrigé (0,4 / 8,5 / 8,6 / 12,4 / 2,7 / 7,7) et constantes de la règle (D_SB = 2ĝ(0)², noyau flat-top, bande ±2√(log₁₀n/n)) | **confirmé** | valeurs identiques ; constantes identiques à arch 9.0.0 (seule différence : K_n = max(5, log₁₀ n), sans effet) | arch 9.0.0 sur PyPI (https://pypi.org/project/arch/), réimplémentation |
+| 12 | Références de Politis & White (2004), *Econometric Reviews* 23(1), 53-70, et de la correction de Patton, Politis & White (2009), 28(4), 372-375 | **confirmé** | DOI 10.1081/ETC-120028836 et 10.1080/07474930802459016 | docstring d'arch 9.0.0 |
+| 13 | Formule E[max SR] (γ = 0,5772) et table des multiplicateurs ; Sharpe maximal « par hasard » (0,70 / 1,02 / 1,46 sur 5 ans) | **confirmé** | identique au centième | recalcul ; formule identique dans `skfolio.measures.expected_max_sharpe_ratio` (cite Bailey & López de Prado 2014) |
+| 14 | Démonstration DSR : SR₀ = 0,0619, PSR(0) = 0,967, DSR = 0,501 | **confirmé** (à partir des entrées publiées) | 0,0619 ; 0,9675 ; 0,5015 | recalcul ; grille momentum **non** relancée |
+| 15 | Formules PSR et MinTRL ((γ₄ − 1)/4, √(T − 1)) ; table MinTRL | **confirmé** (avec précision) | la colonne « contre SR* = 0,5 » est i.i.d. normale ; avec queues épaisses : 11,2 ans (journalier) et 13,6 ans (mensuel) pour SR = 1 | skfolio 1.14.4 (cite B&LdP 2012) + recalcul |
+| 16 | Haircut de Bonferroni sur 5 ans (SR 1,0 : −49 % pour N = 10, −100 % pour N = 50 ; SR 1,5 : −39 % pour N = 50) | **confirmé** | identique | recalcul |
+| 17 | Kelly : ½-Kelly = 75 % de la croissance pour 25 % de la variance ; P(perdre la moitié) = 50 % / 12,5 % / 0,8 % ; croissance nulle à 2× | **confirmé** | identique | dérivation refaite |
+| 18 | P(année négative) = Φ(−SR) (15,9 % pour SR = 1) ; table de puissance des IC (36 / 80 mois) ; IR ≈ 0,36 | **confirmé** | identique | recalcul |
+| 19 | CPCV N = 10, k = 2 → 45 découpages et 9 chemins ; φ = (k/N)·C(N, k) | **confirmé** | identique | `skfolio.model_selection.CombinatorialPurgedCV._n_test_paths` |
+| 20 | `validation.purge/embargo` et fenêtres en séances (504 / 63 / 21) | **corrigé** (correspondance avec le code) | `walk_forward_windows` est calendaire et n'a qu'un écart avant le test (`embargo_days`), qui joue le rôle de la purge → `train_years = 2`, `test_months = 3`, `embargo_days = h + 21` | lecture de `backtest/walkforward.py` |
+| 21 | Stress CVaR « Composite −15 % en 8 semaines, repère : drawdown maximal −13,9 % » | **corrigé** | le repère ne vaut que pour 2022-2026 ; en 2017-2020, drawdown de **−57,9 %** (01/03/2017 → 26/10/2020) et pire baisse sur 8 semaines de −14,3 % → ajout d'un stress de marché baissier prolongé | BOC locaux 2017-2020 + recalcul |
+| 22 | Régimes : BIC 894,0 (2 régimes) contre 900,1 (1 régime) ; durées d'environ 18 semaines ; 3 croisements de la moyenne mobile 200 séances ; « l'état agité a le meilleur rendement » | **confirmé** (2022-2026), **portée corrigée** | ΔBIC ≈ 6 (891,5 contre 897,5 sur 254 semaines) ; p = 0,946 / 0,950 ; mais 2017-2020 : 13 croisements, 6 % du temps au-dessus de la moyenne mobile 200 séances | recalcul (statsmodels 0.15.0) |
+| 23 | James-Stein c = 0 (43 titres, 59 mois) ; corrélation entre moitiés −0,12 (Spearman) | **confirmé** | c = 0 (dispersion 14,6 % contre erreur-type 18,6 %) ; corrélations −0,12 (Pearson) et −0,16 (Spearman) | recalcul |
+| 24 | Lissage GLM MA(2) : θ et ξ | **confirmé** | EW journalier (0,747 ; 0,151 ; 0,102), ξ = 0,59 ; Composite hebdomadaire identique | recalcul (ARIMA(0,0,2) de statsmodels) |
+| 25 | Limite de ±7,5 % (3,1 % des lignes à \|var\| ≥ 7,3 %) | **confirmé** (empiriquement) | 3,25 % des lignes échangées ; une seule ligne échangée sur 51 808 au-delà de 7,55 % (SLBC −10,27 % le 18/08/2022, exception non expliquée ici) | BOC locaux 2022-2026 |
+| 26 | Black-Litterman : « avec Ω ∝ τ, τ influe peu » ; τ = 0,05 ; Ω de He-Litterman = diag(PτΣPᵀ) | **corrigé** (raisonnement) / τ **invérifiable** | l'Ω retenu (ω·σ_IC)² n'est pas ∝ τ ; τ influe peu seulement parce que Ω ≪ τΣ, d'où μ_BL ≈ Q. τ = 0,05 et Ω de He-Litterman confirmés seulement par une source secondaire (défauts de PyPortfolioOpt 1.6.0) | calcul + PyPortfolioOpt |
+| 27 | HRP : d = √(½(1 − ρ)), lien `single`, « d̃ reproduit l'article » | **confirmé** (d, `single`) / **invérifiable** (d̃) | PyPortfolioOpt (code de López de Prado, avec sa permission) n'utilise pas d̃ ; dans le projet, `distance_of_distances=False` par défaut | PyPortfolioOpt 1.6.0, `portfolio/risk.py` |
+| 28 | Ledoit & Wolf (2004), *JMVA* 88(2), cible identité = sklearn | **confirmé** (complété) | février 2004, p. 365-411 | docstring de scikit-learn 1.9.1 |
+| 29 | Rockafellar & Uryasev (2000), *Journal of Risk* 2(1), 21-42 | **invérifiable** | numéro et pages douteux ; la citation usuelle dont se souvient le vérificateur est 2(3), 21-41, **non contrôlée** → marqué [NON VÉRIFIÉ] au §12.1 | aucune source accessible en session |
+| 30 | arXiv 2608.27734 (application de la CSCV) | **invérifiable** | identifiant d'août 2026 non consultable ; marqué [NON VÉRIFIÉ] | — |
+| 31 | Références de Bailey-López de Prado (DSR, *JPM* 40(5) ; PBO, *JCF* 20(4) ; PSR, *J. Risk* 15(2)), de Harvey-Liu-Zhu (*RFS* 29(1), t > 3,0) et de Lo (2002, 65 %) | **invérifiable en session** (titres et années de DSR 2014 et PSR 2012 corroborés par skfolio) | les étiquettes [S] du chercheur sont maintenues, mais rien n'a été recontrôlé (budget épuisé, RePEc bloqué) | — |
+| 32 | Code : `dimson_betas` symétrique ; `fractional_kelly_scale(fraction=0.25, max_gross=1.0)` ; `UniverseFilter` (50 % de 120 séances, 2 M FCFA) ; `quant/regime.py` « à créer » | **confirmé** sauf le dernier point (**corrigé**) | `quant/regime.py` existe déjà (`GaussianHMM`, `hmm_filtered_probabilities`) ; `stationary_bootstrap` a `n_boot = 2000` par défaut, donc passer 5 000 explicitement | lecture du code |
+
+### Bilan
+
+- **Aucun chiffre interne [C] n'a été réfuté.** Les recalculs indépendants reproduisent les valeurs au centième près, ou avec des écarts de l'ordre de l'arrondi ou d'une semaine de bord (seule exception notable : le bêta MCO hebdomadaire, 0,67 contre 0,71). Aucune étude citée ne s'est révélée inventée. En revanche, la plupart des références n'ont **pas pu** être recontrôlées en source primaire dans ce tour.
+- **Corrections qui comptent pour le code** :
+  1. second échantillon 2017-2020 disponible : c'est un marché baissier, avec un drawdown de −57,9 % ;
+  2. stress de marché baissier prolongé à ajouter ;
+  3. correspondance entre `walk_forward_windows` et les paramètres en séances (`embargo_days = h + 21`) ;
+  4. `lo_q` est une troncature ;
+  5. environ 248 séances par an ;
+  6. Black-Litterman n'apporte presque aucun rétrécissement avec l'Ω choisi ;
+  7. `distance_of_distances` et `n_boot` à passer explicitement.
+- **À relancer** quand les hôtes académiques seront autorisés ou qu'un nouveau budget de recherche sera disponible : notice RePEc de Rockafellar-Uryasev (numéro et pages), texte de HRP (d̃), τ de He-Litterman, existence d'arXiv 2608.27734, résumés de HLZ et de Lo (2002).
+
+**Sources du vérificateur** : BOC locaux (`data/boc_text`, en particulier https://www.brvm.org/sites/default/files/boc_20261120_2.pdf et https://www.brvm.org/sites/default/files/boc_20211231_2.pdf) ; https://pypi.org/project/arch/ (9.0.0, `arch/bootstrap/base.py`) ; https://pypi.org/project/PyPortfolioOpt/ (1.6.0 : `pypfopt/black_litterman.py`, `pypfopt/hierarchical_portfolio.py`, `pypfopt/risk_models.py`) ; https://pypi.org/project/skfolio/ (1.14.4 : `skfolio/measures/_measures.py`, `skfolio/model_selection/_combinatorial.py`) ; https://scikit-learn.org/stable/modules/generated/sklearn.covariance.LedoitWolf.html (docstring de la 1.9.1). Les scripts de recalcul ont été exécutés dans le répertoire temporaire de la session : ils ne sont pas versionnés.
