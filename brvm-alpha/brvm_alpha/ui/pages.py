@@ -15,7 +15,11 @@ Règles de rendu :
   distingue faits, estimations et hypothèses ;
 - les pages Tableau de bord, Notes, Indices et Portefeuille affichent la ligne datée des notes
   (« Notes connues au …, appliquées à la séance du … : N en vigueur (dont M manuelles), F filtre(s)
-  de risque actif(s) ») : :func:`notes_status_block`.
+  de risque actif(s) ») : :func:`notes_status_block` ;
+- **préfixe d'adresse** (``PageContext.prefix``, option ``serve --prefixe``) : les pages sont écrites
+  avec des adresses internes absolues (``/notes``, ``/rapport/voir?nom=…``) ; quand un préfixe est
+  donné, :func:`layout` l'ajoute à **tous** les liens, actions de formulaire, adresses de fichiers et à
+  l'appel JavaScript (:func:`with_prefix`). Sans préfixe, le document sort tel quel, à l'octet près.
 """
 
 from __future__ import annotations
@@ -405,11 +409,39 @@ LEGEND = Safe('<p class="legend muted"><span><strong>Fait</strong> : publié (BO
 @dataclass
 class PageContext:
     """Contexte d'une page : jeton anti-CSRF (formulaires POST), nonce CSP (scripts) et, s'il y a lieu,
-    l'avertissement « panel en retard » affiché en tête de chaque page (``panel_warning``)."""
+    l'avertissement « panel en retard » affiché en tête de chaque page (``panel_warning``).
+
+    ``prefix`` : préfixe d'adresse sous lequel l'interface est servie (``/rz_brvm_alpha/ui``), vide par
+    défaut. Il est validé par le serveur (``cli.parse_prefix``) : jamais une valeur venue du navigateur."""
 
     token: str
     nonce: str
     panel_warning: str | None = None
+    prefix: str = ""
+
+
+#: Attributs qui portent une adresse interne : ``href``, ``action``, ``src``, ``formaction`` dont la valeur
+#: commence par ``/`` (mais pas ``//``). Toute saisie est échappée (guillemets compris, :func:`esc`) : un
+#: texte ne peut donc pas produire ce motif ; les liens externes commencent par ``http``.
+_URL_ATTR_RX = re.compile(r'(?<=\s)(href|action|src|formaction)="/(?!/)')
+#: Début de l'appel JavaScript vers l'interface (suivi des travaux), dans :data:`BODY_JS`.
+_JS_FETCH = "fetch('/"
+
+
+def with_prefix(document: str, prefix: str) -> str:
+    """``document`` dont chaque adresse interne (``href``, ``action``, ``src``, ``formaction``) porte ``prefix``.
+
+    Sans préfixe, le document est rendu tel quel (même objet, à l'octet près). ``prefix`` vient de la
+    configuration du serveur, déjà validé : ``/chemin`` sans ``/`` final, caractères sûrs seulement.
+    """
+    if not prefix:
+        return document
+    return _URL_ATTR_RX.sub(lambda m: f'{m.group(1)}="{prefix}/', document)
+
+
+def body_script(prefix: str = "") -> str:
+    """Script de fin de page ; avec un préfixe, l'appel ``fetch`` du suivi des travaux le porte."""
+    return BODY_JS.replace(_JS_FETCH, f"fetch('{prefix}/") if prefix else BODY_JS
 
 
 def layout(ctx: PageContext, title: str, body: Any, *, active: str = "", flash: Any = None) -> str:
@@ -430,7 +462,8 @@ def layout(ctx: PageContext, title: str, body: Any, *, active: str = "", flash: 
     # Panel en retard : même avertissement que l'ordre de bataille, en tête de chaque page.
     late = box("warn", str(getattr(ctx, "panel_warning", None)).replace("`", ""), "Données en retard :") \
         if getattr(ctx, "panel_warning", None) else Safe("")
-    return (
+    prefix = str(getattr(ctx, "prefix", "") or "")
+    return with_prefix(
         "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
         "<meta name=\"color-scheme\" content=\"light dark\">\n<meta name=\"referrer\" content=\"" + REFERRER_POLICY + "\">\n"
@@ -442,8 +475,8 @@ def layout(ctx: PageContext, title: str, body: Any, *, active: str = "", flash: 
         f"<main>\n<p class=\"banner\" role=\"note\">{esc(BANNER)}</p>\n{late}{fl}<h1>{esc(title)}</h1>\n{body}\n</main>\n"
         f"<footer class=\"foot\">{LEGEND}<p>Interface locale de BRVM Alpha (127.0.0.1) : aide à l'analyse, pas un "
         "conseil en investissement personnalisé. Aucune ressource externe n'est chargée. "
-        f"{esc(BANNER)}</p></footer>\n<script nonce=\"{n}\">{BODY_JS}</script>\n</body>\n</html>\n"
-    )
+        f"{esc(BANNER)}</p></footer>\n<script nonce=\"{n}\">{body_script(prefix)}</script>\n</body>\n</html>\n",
+        prefix)
 
 
 def error_page(ctx: PageContext, status: int, title: str, message: Any) -> str:
@@ -1351,5 +1384,5 @@ def page_validation(ctx: PageContext, *, s1: Mapping[str, Any] | None, s1_md: st
 __all__ = [
     "Safe", "esc", "md_to_html", "layout", "error_page", "PageContext", "job_panel", "target_options",
     "page_dashboard", "page_notes", "page_note", "page_research", "page_indices", "page_dossier",
-    "page_portfolio", "page_explain", "page_validation", "note_form",
+    "page_portfolio", "page_explain", "page_validation", "note_form", "with_prefix", "body_script",
 ]

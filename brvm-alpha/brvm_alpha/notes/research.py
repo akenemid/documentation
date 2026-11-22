@@ -103,6 +103,8 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 import pandas as pd
 
+from brvm_alpha import paths as _paths
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -127,7 +129,8 @@ MAX_RETRIES = 3
 BACKOFF_S = 10.0
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = REPO_ROOT / "data"
+#: Dossier de données : ``<dépôt>/data`` ou celui de ``BRVM_ALPHA_DONNEES`` (:mod:`brvm_alpha.paths`).
+DATA_DIR = _paths.DATA_DIR
 DEFAULT_NOTES_DIR = DATA_DIR / "notes"
 DEFAULT_BOC_DIR = DATA_DIR / "boc_text"
 DEFAULT_PANEL_DIR = DATA_DIR / "panel"

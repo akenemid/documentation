@@ -68,6 +68,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from brvm_alpha import paths as _paths
 from brvm_alpha import reference, settings
 from brvm_alpha.config import CostModel, TaxModel
 from brvm_alpha.quant import macro
@@ -104,7 +105,8 @@ __all__ = [
 ]
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_PANEL_DIR = ROOT / "data" / "panel"
+#: ``<dépôt>/data/panel``, ou ``<BRVM_ALPHA_DONNEES>/panel`` (:mod:`brvm_alpha.paths`) ; la validation reste au dépôt.
+DEFAULT_PANEL_DIR = _paths.PANEL_DIR
 DEFAULT_VALIDATION_DIR = "reports/validation_S1"
 DEFAULT_REGISTRY_PATH = ROOT / "reports" / "trials.parquet"
 

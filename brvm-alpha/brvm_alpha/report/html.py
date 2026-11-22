@@ -72,6 +72,7 @@ __all__ = [
 ]
 
 import brvm_alpha as _pkg
+from brvm_alpha import paths as _paths
 
 #: Racine du dépôt (dossier qui contient le paquet ``brvm_alpha``).
 ROOT = Path(_pkg.__file__).resolve().parents[1]
@@ -299,8 +300,8 @@ def _rel(path: Any) -> str:
 def _resolve(path: str | Path | None) -> Path | None:
     if path is None:
         return None
-    p = Path(path)
-    return p if p.is_absolute() else ROOT / p
+    # ``data/…`` suit le dossier de données en vigueur (``BRVM_ALPHA_DONNEES``) ; le reste demeure au dépôt.
+    return _paths.repo_path(path)
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,8 @@ from typing import Any, Iterator
 
 import pandas as pd
 
+from brvm_alpha import paths as _paths
+
 from .model import (
     AUTHORS,
     RECONSTRUCTED_TAG,
@@ -187,7 +189,8 @@ class NoteStore:
     ):
         root = Path(root)
         if str(root) == DEFAULT_ROOT and not root.is_absolute():
-            root = _repo_root() / DEFAULT_ROOT
+            # ``<dépôt>/data/notes``, ou ``<BRVM_ALPHA_DONNEES>/notes`` si la variable est posée.
+            root = _paths.NOTES_DIR
         self.root = root
         self.path = self.root / filename
         self.lock_path = self.root / (filename + ".lock")

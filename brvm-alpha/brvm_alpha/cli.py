@@ -58,13 +58,17 @@ from typing import Any
 
 import pandas as pd
 
+from brvm_alpha import paths
+
 BANNER = "Performance passée ≠ garantie. Aucun gain n'est garanti."
 S1 = ("2017-01-02", "2022-11-16")
 S1_END = pd.Timestamp(S1[1])
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PANEL_DIR = ROOT / "data" / "panel"
-DEFAULT_BOC_DIR = ROOT / "data" / "boc_text"
-DEFAULT_REPORTS_DIR = ROOT / "reports"
+#: Dossiers par défaut : ``<dépôt>/data`` et ``<dépôt>/reports``, ou ceux des variables d'environnement
+#: ``BRVM_ALPHA_DONNEES`` et ``BRVM_ALPHA_RAPPORTS`` (:mod:`brvm_alpha.paths`). Les options l'emportent.
+DEFAULT_PANEL_DIR = paths.PANEL_DIR
+DEFAULT_BOC_DIR = paths.BOC_DIR
+DEFAULT_REPORTS_DIR = paths.REPORTS_DIR
 DEFAULT_CAPITAL = 10_000_000.0
 #: Hôtes de bouclage acceptés par ``serve`` sans option explicite.
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")

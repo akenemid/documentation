@@ -41,6 +41,7 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
+from brvm_alpha import paths as _paths
 from brvm_alpha.reference import COUNTRY_NAMES, SYMBOLS_2026
 
 # ---------------------------------------------------------------------------
@@ -190,7 +191,7 @@ def panel_symbols() -> frozenset[str]:
     Complète :data:`KNOWN_SYMBOLS` (liste 2026) par les titres réellement cotés dans le
     panel, par exemple une nouvelle cotation. Ensemble vide si le panel est absent.
     """
-    path = Path(__file__).resolve().parents[2] / "data" / "panel" / "equities.parquet"
+    path = default_panel_dir() / "equities.parquet"
     if not path.exists():
         return frozenset()
     try:
@@ -820,8 +821,8 @@ def _calendar(sessions: Any) -> SessionCalendar:
 
 
 def default_panel_dir() -> Path:
-    """Répertoire du panel du dépôt (``<dépôt>/data/panel``)."""
-    return Path(__file__).resolve().parents[2] / "data" / "panel"
+    """Répertoire du panel : ``<dépôt>/data/panel``, ou ``<BRVM_ALPHA_DONNEES>/panel`` si la variable est posée."""
+    return _paths.PANEL_DIR
 
 
 @lru_cache(maxsize=1)

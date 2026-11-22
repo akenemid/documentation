@@ -66,6 +66,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from brvm_alpha import paths as _paths
 from brvm_alpha import reference, settings
 from brvm_alpha.backtest import engine
 from brvm_alpha.config import PlatformConfig
@@ -89,8 +90,8 @@ __all__ = [
     "notes_available",
 ]
 
-#: Répertoire du panel livré avec le dépôt.
-DEFAULT_PANEL_DIR = Path(__file__).resolve().parents[2] / "data" / "panel"
+#: Répertoire du panel : ``<dépôt>/data/panel``, ou ``<BRVM_ALPHA_DONNEES>/panel`` (:mod:`brvm_alpha.paths`).
+DEFAULT_PANEL_DIR = _paths.PANEL_DIR
 
 #: Bornes de l'échantillon vierge S1 et début de S0 (§8.1).
 S1_END = "2022-11-16"
