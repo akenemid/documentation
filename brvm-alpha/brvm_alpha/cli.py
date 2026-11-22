@@ -48,6 +48,7 @@ import datetime as dt
 import ipaddress
 import json
 import math
+import os
 import re
 import sys
 import warnings
@@ -184,7 +185,17 @@ def notes_instant(date: Any, notes_au: Any = None, panel_dir: str | Path | None 
     - sinon (date passée demandée) : ``None``, règle stricte à la date demandée.
     """
     if notes_au is not None and str(notes_au).strip() != "":
-        return notes_au if isinstance(notes_au, pd.Timestamp) and notes_au.tzinfo is not None else parse_instant(notes_au)
+        t_given = notes_au if isinstance(notes_au, pd.Timestamp) and notes_au.tzinfo is not None else parse_instant(notes_au)
+        real = now_utc() if now is None else pd.Timestamp(now)
+        real = real.tz_localize("UTC") if real.tzinfo is None else real.tz_convert("UTC")
+        if t_given > real + pd.Timedelta(minutes=1):
+            # « Notes connues au … » ne peut pas désigner un instant qui n'est pas encore arrivé. Une date
+            # seule (fin de la journée) donnée pour aujourd'hui vaut « maintenant ».
+            if t_given.normalize() == real.normalize() and t_given.time() >= dt.time(23, 59):
+                return real
+            raise ValueError(f"--notes-au {t_given:%d/%m/%Y %H:%M} UTC est dans le futur (il est {real:%d/%m/%Y %H:%M} "
+                             "UTC) : l'instant de connaissance des notes ne peut pas dépasser l'heure réelle")
+        return t_given
     last_s = pd.Timestamp(last).normalize() if last is not None else last_session(panel_dir)
     if date is not None and last_s is not None and pd.Timestamp(date).normalize() < last_s:
         return None
@@ -391,6 +402,46 @@ def _table(rows: list[list[str]], headers: list[str]) -> str:
 
 def _say(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+#: Étape suivante quand le panel manque (mêmes mots dans toutes les commandes et dans l'interface).
+PANEL_HINT = ("lancer python -m brvm_alpha update (téléchargement des BOC, plusieurs lancements pour un historique "
+              "complet), puis python -m brvm_alpha panel")
+
+
+def panel_missing_message(panel_dir: str | Path | None = None) -> str:
+    return f"panel introuvable ({Path(panel_dir) if panel_dir else DEFAULT_PANEL_DIR}) : {PANEL_HINT}."
+
+
+def notes_root_arg(root: Any) -> Any:
+    """Contrôle ``--racine`` pour une commande qui LIT le journal : un dossier inexistant est refusé.
+
+    Sans ce contrôle, une faute de frappe faisait disparaître toutes les notes sans alerte (« 0 en
+    vigueur ») et un titre bloqué par une note redevenait achetable. Seules ``notes add`` et ``notes
+    research`` créent un journal. Lève ``ValueError`` (code de sortie 2)."""
+    if root in (None, ""):
+        return root
+    if not Path(root).is_dir():
+        raise ValueError(f"journal des notes introuvable : {root} (dossier inexistant ; vérifier --racine. Un "
+                         "nouveau journal se crée avec « notes add --racine … » ou « notes research --racine … »)")
+    return root
+
+
+def panel_warning(panel_dir: str | Path | None, date: Any = None, *, now: Any = None, orders: bool = False) -> str | None:
+    """« PANEL EN RETARD de N séance(s)… lancer python -m brvm_alpha update », ou ``None``.
+
+    Seulement quand la date de décision est la dernière séance du panel (une date passée demandée
+    exprès n'est pas un retard). Même règle que l'ordre de bataille
+    (``portfolio.recommend.panel_staleness`` : la séance du jour compte après 15h00 UTC)."""
+    try:
+        from brvm_alpha.portfolio import recommend as rec
+
+        last = last_session(panel_dir)
+        if last is None or (date is not None and pd.Timestamp(date).normalize() < last):
+            return None
+        return rec.stale_panel_message(last, now_utc() if now is None else now, orders=orders)
+    except Exception:  # un contrôle d'affichage ne fait jamais échouer une commande
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -813,7 +864,8 @@ def _build_panel(boc_dir: Path, panel_dir: Path, force: bool = False, workers: i
     from brvm_alpha.data import store
 
     if not boc_dir.exists():
-        _say(f"échec : dossier des BOC introuvable ({boc_dir})")
+        _say(f"échec : dossier des BOC introuvable ({boc_dir}) : lancer d'abord python -m brvm_alpha update "
+             "(téléchargement des BOC depuis www.brvm.org), puis python -m brvm_alpha panel.")
         return 1
     print(f"Reconstruction du panel {panel_dir} depuis {boc_dir}…", flush=True)
     summary = store.build_panel(boc_dir, panel_dir, workers=workers, force=force)
@@ -1016,7 +1068,11 @@ def format_enrich_report(rep: Any, limit: int = 30) -> list[str]:
     if more:
         lines.append("Détail : " + " ; ".join(more) + ".")
     if "n_candidates" in rep and not n("n_candidates"):
-        lines.append("Aucun document à lire : les documents utiles ont déjà été lus (rien n'est relu).")
+        if rep.get("journal_vide"):
+            lines.append("Aucun document à lire : le journal des notes est vide (lancer d'abord « python -m brvm_alpha "
+                         "notes research » pour collecter les publications).")
+        else:
+            lines.append("Aucun document à lire : les documents utiles ont déjà été lus (rien n'est relu).")
     if rep.get("stopped"):
         lines.append(f"Arrêt de la lecture : {rep['stopped']}")
     details = [d for d in (rep.get("details") or []) if isinstance(d, dict)]
@@ -1048,6 +1104,11 @@ def run_enrich(store: Any, *, max_docs: int, targets: Sequence[str] | None = Non
                  dry_run=bool(dry_run), **extra)
     except Exception as exc:  # la lecture des documents ne fait jamais échouer la collecte déjà faite
         return None, [f"lecture du contenu des documents interrompue ({exc.__class__.__name__} : {exc})"]
+    if isinstance(rep, dict) and not rep.get("n_candidates"):
+        try:  # « tout est déjà lu » et « il n'y a rien à lire » ne sont pas le même constat
+            rep = {**rep, "journal_vide": len(store) == 0}
+        except Exception:
+            pass
     return (rep if isinstance(rep, dict) else None), format_enrich_report(rep)
 
 
@@ -1246,6 +1307,8 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         print("\n".join(_analysis_lines(an)))
         print(BANNER)
         return 0
+    if cmd in ("list", "show", "archive", "export", "lire"):
+        notes_root_arg(args.racine)
     store = _notes_store(args.racine)
     if cmd == "add":
         from brvm_alpha.notes.store import NoteConflictError
@@ -1386,9 +1449,10 @@ def _cmd_indices(args: argparse.Namespace) -> int:
     if in_s1(t):
         _say(s1_refusal(t, "l'évaluation des indices"))
         return 2
-    store = None if args.sans_notes else _notes_store(args.racine)
+    store = None if args.sans_notes else _notes_store(notes_root_arg(args.racine))
     if store is not None and not store.path.exists():
         store = None
+    late = panel_warning(args.panel_dir, args.date)
     # Deux instants : date des cours (t) et instant de connaissance des notes (mode direct ou historique).
     known = None if store is None else notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
     panels = index_eval.load_panels(args.panel_dir) if args.panel_dir else None
@@ -1405,14 +1469,19 @@ def _cmd_indices(args: argparse.Namespace) -> int:
                                                 "composante « notes » exclue.")
     if dossier:
         if fmt == "json":
-            _print_json({"bandeau": BANNER, "notes": notes_status_json(status),
+            _print_json({"bandeau": BANNER, "avertissement_panel": late, "notes": notes_status_json(status),
                          **{k: v for k, v in d.items() if k not in ("overlays", "notes_moment")}})
             return 0
+        if late:
+            print(f"⚠ {late}")
         _print_dossier(d, notes_line=notes_line, status=status)
         return 0
     if fmt == "json":
-        _print_json({"bandeau": BANNER, "asof": t, "notes": notes_status_json(status), "indices": ev})
+        _print_json({"bandeau": BANNER, "avertissement_panel": late, "asof": t, "notes": notes_status_json(status),
+                     "indices": ev})
         return 0
+    if late:
+        print(f"⚠ {late}")
     when = fr_date(ev["date"].max()) if len(ev) and "date" in ev else fr_date(t)
     print(f"Évaluation des indices au {when} — aide à la décision, pas un signal validé "
           f"(notes : {'incluses' if store is not None else 'aucune'}).")
@@ -1534,10 +1603,15 @@ def _cmd_universe(args: argparse.Namespace) -> int:
     u = BrvmAlpha(notes=None, capital=args.capital).universe(t, panels)
     # séparateur de milliers appliqué au seul montant (et non à toute la ligne, dont la virgule)
     floor = f"{u.attrs['mdv_floor']:,.0f}".replace(",", " ")
-    print(f"Univers au {pd.Timestamp(t).date()} : {u.attrs['n_eligible']} titres éligibles, "
-          f"mode {u.attrs['mode']} (plancher U5 {floor} FCFA)")
+    mode = {"selection": "sélection", "reference": "référence", "index": "indice"}.get(str(u.attrs["mode"]), u.attrs["mode"])
+    absent = sum(1 for _, row in u.iterrows() if "absent du BOC" in str(row["reason"]))
+    listed = (f"{len(u) - absent} titres cotés (plus {absent} ancien(s) titre(s) absent(s) du BOC, listé(s) pour mémoire)"
+              if absent else f"{len(u)} titres cotés")
+    print(f"Univers au {fr_date(t)} : {listed}, dont {u.attrs['n_eligible']} éligibles ; "
+          f"mode {mode} (plancher U5 {floor} FCFA)")
     for sym, row in u.iterrows():
         print(f"  {sym:6s} {'oui' if row['eligible'] else 'non'}  {row['reason']}")
+    print(BANNER)
     return 0
 
 
@@ -1576,13 +1650,17 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     if in_s1(t):
         _say(s1_refusal(t, "l'explication"))
         return 2
-    notes: Any = None if args.sans_notes else (_notes_store(args.racine) if getattr(args, "racine", None) else "auto")
+    notes: Any = None if args.sans_notes else (
+        _notes_store(notes_root_arg(args.racine)) if getattr(args, "racine", None) else "auto")
     known = None if args.sans_notes else notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
+    late = panel_warning(args.panel_dir, args.date)
     e = explain_symbol(args.symbole, t, variant=args.variante, capital=args.capital,
                        notes=notes, panel_dir=args.panel_dir, notes_known_at=known)
     if args.format == "json":
-        _print_json({k: v for k, v in e.items()})
+        _print_json({"avertissement_panel": late, **{k: v for k, v in e.items()}})
         return 0
+    if late:
+        print(f"⚠ {late}")
     ch = e.get("choix_variante")
     print(f"Explication {e['symbol']} au {fr_date(e['asof'])}, variante {e['variant']}"
           + (f" ({ch.get('motif')})" if ch and ch.get("motif") else ""))
@@ -1714,7 +1792,7 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
         elif args.racine:
             from brvm_alpha.notes.store import NoteStore
 
-            store = NoteStore(args.racine)  # même journal que l'interface et le rapport (--racine)
+            store = NoteStore(notes_root_arg(args.racine))  # même journal que l'interface et le rapport (--racine)
         else:
             store = None
         # Mode direct (dernière séance du panel) : les notes connues maintenant comptent dans l'ordre.
@@ -1722,7 +1800,7 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
         o = rec.recommend(t, args.capital, holdings=holdings, cash=args.cash, variant=args.variante,
                           costs=args.couts, n_boot=args.tirages, seed=args.graine, notes_store=store,
                           panel_dir=args.panel_dir, index_evaluation=not args.sans_indices,
-                          notes_known_at=known)
+                          notes_known_at=known, today=now_utc())
     if args.format == "json":
         out = json.dumps(o.to_dict(), ensure_ascii=False, indent=1)
     elif args.format == "html":
@@ -1746,11 +1824,15 @@ def _cmd_report(args: argparse.Namespace) -> int:
     if in_s1(t):
         _say(s1_refusal(t, "le rapport"))
         return 2
+    if last_session(args.panel_dir) is None:
+        # Sans panel, le rapport n'aurait que des sections « indisponible » : même refus que « recommend ».
+        _say("échec : " + panel_missing_message(args.panel_dir))
+        return 1
     out = Path(args.sortie) if args.sortie else DEFAULT_REPORTS_DIR / f"rapport_{t:%Y-%m-%d}.html"
     kw: dict[str, Any] = {"holdings": _holdings_arg(args.portefeuille), "variant": args.variante,
                           "cash": args.cash, "n_boot": args.tirages, "costs": args.couts, "seed": args.graine}
     if args.racine:
-        kw["notes_root"] = args.racine
+        kw["notes_root"] = notes_root_arg(args.racine)
     if args.panel_dir:
         kw["panel_dir"] = args.panel_dir
     kw["notes_known_at"] = notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
@@ -1760,6 +1842,9 @@ def _cmd_report(args: argparse.Namespace) -> int:
               "qui suit le dernier BOC).", flush=True)
     else:
         print(f"Notes en mode historique : règle stricte au {fr_date(t)}, sans anticipation.", flush=True)
+    late = panel_warning(args.panel_dir, args.date, orders=True)
+    if late:
+        print(f"⚠ {late}", flush=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         path = build_report(t, args.capital, out, **kw)
@@ -1779,7 +1864,8 @@ def _cmd_serve(args: argparse.Namespace) -> int:
              "atteint cette adresse peut lire et écrire les notes. À réserver à un réseau de confiance.")
     try:
         srv = server.make_server(host, args.port, allow_remote=allow_remote,
-                                 services=server.Services(notes_root=args.racine, panel_dir=args.panel_dir))
+                                 services=server.Services(notes_root=notes_root_arg(args.racine),
+                                                          panel_dir=args.panel_dir))
     except (ValueError, OSError) as exc:
         _say(f"refusé : {exc}")
         return 2
@@ -1823,9 +1909,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if handler is None:  # pragma: no cover - argparse impose une commande
         return 2
     try:
-        return handler(args)
+        code = handler(args)
+        sys.stdout.flush()
+        return code
+    except BrokenPipeError:
+        # Sortie fermée par le lecteur (« … | head -1 ») : fin silencieuse, sans trace Python. La sortie
+        # standard est redirigée vers le néant pour que la fermeture de l'interpréteur n'écrive plus rien.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except (OSError, ValueError, AttributeError):
+            pass
+        return 0
     except FileNotFoundError as exc:
-        _say(f"échec : fichier introuvable ({exc}). Le panel existe-t-il ? (python -m brvm_alpha panel)")
+        txt = re.sub(r"\s*:?\s*lancer build_panel\(\) d'abord", "", str(exc)).strip()
+        if ".parquet" in txt or "panel" in txt.lower():
+            _say(f"échec : panel introuvable ({txt}) : {PANEL_HINT}.")
+        else:
+            _say(f"échec : fichier introuvable ({txt}).")
         return 1
     except (ValueError, KeyError) as exc:
         msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
