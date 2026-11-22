@@ -422,11 +422,12 @@ python -m pytest -q -p no:cacheprovider tests/test_report_html.py
 Les tests n'envoient **aucune requête réseau**. Ils utilisent des données synthétiques, des extraits de
 BOC et des pages de brvm.org enregistrées (`tests/fixtures/`), ou la période S0. **Aucun backtest,
 aucune performance et aucun IC n'est évalué sur S1** dans les tests. Le 22/11/2026, la suite complète
-compte 1 521 tests, tous verts : dont 36 pour le mode direct des notes (`tests/test_notes_direct.py`), 44
+compte 1 525 tests, tous verts : dont 36 pour le mode direct des notes (`tests/test_notes_direct.py`), 44
 pour la lecture du contenu des publications (`tests/test_notes_lecture.py`), 11 pour leur assemblage
 avec la ligne de commande, l'interface et l'ordre de bataille (`tests/test_notes_integration.py`,
-`tests/test_ui_notes_integration.py`) et 130 tests de régression de la recette finale, un par constat
-corrigé (`tests/test_recette_notes.py`, `tests/test_recette_ui.py`, `tests/test_recette_ordre_rapport.py`).
+`tests/test_ui_notes_integration.py`) et 134 tests de régression de la recette finale, au moins un par
+constat corrigé (`tests/test_recette_notes.py`, `tests/test_recette_ui.py`,
+`tests/test_recette_ordre_rapport.py`).
 
 ## Sources
 

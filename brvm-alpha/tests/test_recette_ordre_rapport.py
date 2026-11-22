@@ -483,3 +483,79 @@ def test_stale_panel_warning_in_indices_output(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(cli, "now_utc", lambda: pd.Timestamp("2026-11-22 16:00", tz="UTC"))  # dimanche : à jour
     assert cli.main(["indices", "--sans-notes"]) == 0
     assert "PANEL EN RETARD" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Compléments : motif « inclinaison », étiquettes de l'histogramme, couleurs, aide des sous-commandes
+# ---------------------------------------------------------------------------
+
+
+def test_bullish_tilt_is_not_given_as_the_reason_for_a_weight_decrease(monkeypatch):
+    """Variante factorielle : SNTS porte une inclinaison haussière et perd du poids à cause du blocage d'un
+    autre titre : le motif n'est pas « inclinaison » (il reste vide : « redistribution (construction) »)."""
+    import types
+
+    import brvm_alpha.strategy as strategy
+
+    class FakeModel:
+        def __init__(self, **kw):
+            pass
+
+        def decide(self, t, panels, held):
+            # même décision sans aucune note : ETIT présent, SNTS à 8 %, ORAC à 5 %
+            return types.SimpleNamespace(weights=pd.Series({"SNTS": 0.08, "ETIT": 0.06, "ORAC": 0.05}))
+
+    monkeypatch.setattr(strategy, "BrvmAlpha", FakeModel)
+    plan = types.SimpleNamespace(
+        decision=types.SimpleNamespace(weights=pd.Series({"SNTS": 0.0617, "ETIT": 0.0, "ORAC": 0.07})),
+        held_w=pd.Series(dtype=float), model=types.SimpleNamespace(spec=types.SimpleNamespace(kind="factor")))
+    state = {"n_filters": 1, "n_veto": 0, "n_tilt": 2, "filters": [{"symbole": "ETIT", "code": "R2", "bloque_achats": True}],
+             "overlays": {"tilt": {"SNTS": 0.5, "ORAC": 0.3}}}
+    eff = R._notes_effect(plan, "A", pd.Timestamp("2026-11-20"), {}, 10_000_000.0, state)
+    rows = {r["symbole"]: r for r in eff["lignes"]}
+    assert rows["SNTS"]["ecart"] < 0 and "inclinaison" not in rows["SNTS"]["motif"]  # baisse : pas l'inclinaison
+    assert rows["ETIT"]["motif"] == "filtre R2"
+    assert rows["ORAC"]["ecart"] > 0 and rows["ORAC"]["motif"].startswith("inclinaison +0,30 σ")  # hausse : cohérent
+
+
+def test_histogram_marker_labels_never_share_a_row_when_they_would_touch():
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    draws = rng.normal(0.11, 0.18, 3000)
+    markers = [(0.0, "0 %", "zero"), (-0.099, "P10 −10 %", "q"), (0.118, "médiane +12 %", "med"), (0.376, "P90 +38 %", "q"),
+               (0.10, "TR médian +10 %", "tr")]
+    html = str(RH.histogram_chart("c-dist", draws, markers=markers, label="x"))
+    labels = re.findall(r'<span class="ml (\w+) ?r?" style="left:([\d.]+)%;top:(\d+)px">([^<]+)</span>', html)
+    by_text = {plain(t): (float(left), int(top)) for _cls, left, top, t in labels}
+    assert set(by_text) == {"P10 −10 %", "médiane +12 %", "P90 +38 %", "TR médian +10 %"}
+    # « TR médian +10 % » et « médiane +12 % » sont à 2 points d'écart : deux lignes différentes ; avant, la ligne
+    # dépendait du rang (k % 3) et « P10 » partageait la sienne avec « TR médian ».
+    assert by_text["TR médian +10 %"][1] != by_text["médiane +12 %"][1]
+    assert by_text["P10 −10 %"][1] != by_text["TR médian +10 %"][1] or abs(
+        by_text["P10 −10 %"][0] - by_text["TR médian +10 %"][0]) > 2.4 * len("P10 −10 %") + 4
+
+
+def test_light_theme_colours_reach_the_contrast_threshold():
+    def lum(h):
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4  # noqa: E731
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+    def contrast(a, b):
+        la, lb = lum(a), lum(b)
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+    css = RH._CSS.split("@media (prefers-color-scheme: dark)")[0]
+    pos = re.search(r"--pos: (#[0-9a-f]{6})", css).group(1)
+    neg = re.search(r"--neg: (#[0-9a-f]{6})", css).group(1)
+    for colour in (pos, neg):
+        for background in ("#fcfcfb", "#f6f5f2", "#efeee9"):  # surface, fond de page, pastille
+            assert contrast(colour, background) >= 4.5, (colour, background)
+
+
+def test_every_subcommand_help_carries_the_banner(capsys):
+    for argv in (["recommend", "--help"], ["notes", "lire", "--help"], ["indices", "dossier", "--help"], ["universe", "-h"]):
+        with pytest.raises(SystemExit):
+            cli.main(argv)
+        assert capsys.readouterr().out.rstrip().endswith(cli.BANNER), argv
