@@ -956,6 +956,11 @@ def jsonable(value: Any) -> Any:
     """Convertit récursivement en types JSON (numpy, pandas, dates, ensembles…)."""
     if value is None or isinstance(value, (bool, str)):
         return value
+    # Date ou valeur manquante (``pd.NaT``, ``pd.NA``) : ``pd.NaT`` est une instance de ``datetime``
+    # sans être un ``Timestamp`` et ``pd.Timestamp(pd.NaT)`` rend ``pd.NaT`` ; sans ce test la branche
+    # « datetime » se rappelait sans fin (« indices dossier --format json », recette du 22/11/2026).
+    if value is pd.NaT or value is pd.NA:
+        return None
     if isinstance(value, (np.bool_,)):
         return bool(value)
     if isinstance(value, (int, np.integer)):
@@ -969,10 +974,9 @@ def jsonable(value: Any) -> Any:
         if value.tzinfo is None and value == value.normalize():
             return value.strftime("%Y-%m-%d")
         return value.isoformat()
-    if isinstance(value, (_dt.datetime, _dt.date)):
-        return jsonable(pd.Timestamp(value))
-    if isinstance(value, np.datetime64):
-        return jsonable(pd.Timestamp(value))
+    if isinstance(value, (_dt.datetime, _dt.date, np.datetime64)):
+        ts = pd.Timestamp(value)
+        return None if ts is pd.NaT else jsonable(ts)
     if isinstance(value, dict):
         return {str(k): jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset, np.ndarray, pd.Index, pd.Series)):

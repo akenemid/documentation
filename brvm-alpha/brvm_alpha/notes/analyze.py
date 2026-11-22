@@ -91,6 +91,10 @@ ANALYZE_VERSION = "notes-analyze/1 (BRVM-FR v0)"
 NUM_SCALE_PCT = {"rn": 25.0, "pnb": 25.0, "ca": 25.0, "div": 20.0}
 NUM_WEIGHTS = {"rn": 1.0, "div": 0.8, "pnb": 0.6, "ca": 0.5}
 W_NUM, W_TONE = 0.7, 0.3
+#: Part de la composante chiffrée qu'un ton de signe contraire peut retirer au plus quand la variation
+#: du résultat net est lue (« nombres d'abord » : le ton ne renverse pas le signe des chiffres ; tant que
+#: la formule 0,7·s_num + 0,3·tone garde au moins le quart de la part chiffrée, elle s'applique telle quelle).
+TONE_OPPOSITE_CAP = 0.75
 #: Poids maximal du jugement de l'analyste et borne de son effet sur le score.
 ANALYST_CAP = 0.8
 #: Date d'entrée en vigueur de l'instruction BRVM 01-2025 (alertes sur résultats, R10).
@@ -153,10 +157,19 @@ _RATIO_W = re.compile(
     r"flottant|represente\w*|pese|participation|couverture|solvabilite|rentabilite|roe|roa)(?![a-z])"
 )
 _PREV_W = re.compile(r"(?<![a-z])(?:contre|vs\.?|versus|par\s+rapport\s+a|comparativement\s+a|a\s+comparer\s+a)(?![a-z])")
+#: « passe de X à Y », « est porté de X à Y », « se réduit de X à Y », « ramené de X à Y » : X est le
+#: niveau précédent, Y le niveau courant (recette du 22/11/2026 : X était pris pour le montant courant
+#: dès que le verbe n'était pas « passer », et pour tout dividende).
 _FROM_TO = re.compile(
-    r"(?<![a-z])pass\w*\s+de\s+(?P<a>" + NUM + r")\s*(?P<ua>" + _UNIT + r")?(?:\s+de)?\s*(?:" + _CUR + r")?\s*"
+    r"(?<![a-z])(?:pass\w*|port\w*|ramen\w*|relev\w*|revien\w*|revenu\w*|se\s+redui\w*|redui\w*|"
+    r"s'alourdi\w*|se\s+creus\w*|mont\w*|tomb\w*)\s+de\s+(?P<a>" + NUM + r")\s*(?P<ua>" + _UNIT
+    + r")?(?:\s+de)?\s*(?:" + _CUR + r")?\s*"
     r"(?:en\s+20\d\d\s+)?a\s+(?P<b>" + NUM + r")\s*(?P<ub>" + _UNIT + r")?"
 )
+#: Montant en dollars dans la fenêtre d'un indicateur (« pour atteindre 2,0 milliards de dollars »).
+_USD_AMOUNT_RX = re.compile(r"(?<![\d,.])" + NUM + r"(?![\d])\s*(?:" + _UNIT + r")?(?:\s+de)?\s*(?:usd|dollars?|\$)")
+#: Motif d'écart d'une variation exprimée dans une autre monnaie que le FCFA (titre coté en FCFA).
+FOREIGN_CURRENCY = "variation exprimée en dollars (titre coté en FCFA) : non retenue"
 
 #: Mentions d'indicateurs (texte normalisé). « Bénéfice par action » n'est pas le RN.
 _IND_PATTERNS = {
@@ -441,6 +454,12 @@ def _extract_level(norm: str, a: int, b: int, mention: str, lookback: str, negat
     if negative:
         if cur is not None and cur > 0:
             cur = -cur
+        # « la perte nette se réduit de 477 à 346 millions », « perte nette de 346 millions contre 477
+        # millions » : le montant précédent est lui aussi une perte, sauf si le texte nomme un bénéfice.
+        if prev is not None and prev > 0 and not re.search(
+                r"(?<![a-z])(?:benefices?|profits?|excedents?|resultats?\s+(?:nets?\s+)?(?:positifs?|beneficiaires?))(?![a-z])",
+                norm[a:b]):
+            prev = -prev
     window = norm[a:b]
     if cur is not None and cur > 0 and re.search(r"deficitaire|negatif|deficit", window[:80]):
         cur = -cur
@@ -478,6 +497,10 @@ def _extract_level(norm: str, a: int, b: int, mention: str, lookback: str, negat
     if cur is None and growth_pct is None:
         return {}
     info: dict[str, Any] = {"value": cur, "prev": prev}
+    if growth_pct is not None and cur is None and _USD_AMOUNT_RX.search(norm, a, b):
+        # Niveau donné en dollars seulement (aucun montant en FCFA dans la phrase) : la variation est
+        # celle des comptes en dollars (ETI : +12 % en dollars, +8 % en FCFA dans le tableau du même document).
+        info["currency"] = "USD"
     if growth_pct is not None:
         info["growth"] = growth_pct
         info["growth_from"] = "pct"
@@ -510,6 +533,16 @@ def _extract_div(norm: str, a: int, b: int, mention: str, own: list[int] | None 
     pm = _PREV_W.search(norm, a, b)
     if pm:
         prev_pos = pm.end()
+    ft = _FROM_TO.search(norm, a, b)
+    if ft:
+        # « le dividende net par action passe de 1 500 FCFA à 1 800 FCFA » : 1 500 est l'ancien montant.
+        va, vb = parse_fr_number(ft.group("a")), parse_fr_number(ft.group("b"))
+        if va is not None and vb is not None and abs(va) < 1e6 and abs(vb) < 1e6 and not (ft.group("ua") or ft.group("ub")):
+            q = "gross" if re.search(r"(?<![a-z])bruts?(?![a-z])", mention) else "net"
+            if q == "net" and not re.search(r"(?<![a-z])nets?(?![a-z])", mention):
+                info["assumed_net"] = True
+            info[q], info["prev"] = vb, va
+            per_share = [x for x in per_share if not (ft.start() <= x.start < ft.end())]
     for k, x in enumerate(per_share):
         after = norm[x.end : x.end + 12]
         before = norm[max(a, x.start - 12) : x.start]
@@ -521,7 +554,7 @@ def _extract_div(norm: str, a: int, b: int, mention: str, own: list[int] | None 
             q = "net"
         elif re.search(r"(?<![a-z])bruts?(?![a-z])", after) or re.search(r"(?<![a-z])bruts?(?![a-z])", before):
             q = "gross"
-        elif k == 0:
+        elif k == 0 and not ft:
             q = "gross" if re.search(r"(?<![a-z])bruts?(?![a-z])", mention) else "net"
             if q == "net" and not re.search(r"(?<![a-z])nets?(?![a-z])", mention):
                 info["assumed_net"] = True
@@ -1666,6 +1699,11 @@ def _read_layout(text: str, title: str = "", expected: tuple[str | None, int | N
             f.pop("unit_note", None)
     for ind, f in sent.items():
         if ind != "div":
+            if f.get("currency") == "USD":
+                # Document à deux monnaies (ETI) : la variation écrite en dollars n'est pas celle des comptes
+                # en FCFA ; elle est écartée, seul un tableau en FCFA peut porter le chiffre.
+                rejected.append({"ind": ind, "reason": FOREIGN_CURRENCY, "source": f.get("source", ""), "line": f["line"]})
+                continue
             _vet_figure(f)
             if f.get("reject"):
                 rejected.append({"ind": ind, "reason": f["reject"], "source": f.get("source", ""), "line": f["line"]})
@@ -2312,6 +2350,10 @@ def _analyze(
             src_line = f.get("source") or f.get("surface")
             if src_line:
                 extracted[f"{ind}_source"] = re.sub(r"\s{2,}", "  ", str(src_line).strip())
+                if ind == "rai" and re.search(r"activites\s+ordinaires", fold(str(src_line))):
+                    # Libellé lu, non renommé : le résultat des activités ordinaires n'est pas le résultat
+                    # avant impôt (il manque le résultat hors activités ordinaires).
+                    extracted["rai_label"] = "résultat des activités ordinaires"
             if f.get("unit_note"):
                 extracted[f"{ind}_unit_note"] = f["unit_note"]
     d = figs.get("div") or {}
@@ -2449,9 +2491,19 @@ def _analyze(
             elif prev_v < 0 < cur_v:
                 fact = ("retour aux bénéfices", 2.0)
             elif cur_v < 0 and prev_v < 0:
-                fact = ("résultat net toujours déficitaire", -2.0)
+                # Perte réduite : amélioration, mais toujours une perte (+1, comme le terme « réduction de la
+                # perte » du lexique) ; perte égale ou aggravée : −2.
+                fact = ("perte nette réduite (toujours une perte)", 1.0) if cur_v > prev_v else \
+                    ("résultat net toujours déficitaire", -2.0)
             elif cur_v > prev_v > 0:
                 fact = ("résultat net multiplié par plus de quatre", 2.0)
+        if fact:
+            # Le fait lu dans les montants prime sur les mots du même indicateur qui disent le contraire
+            # (« perte nette » −2 dans une phrase qui dit que la perte se réduit).
+            for h in hits:
+                if h.indicator == "rn" and h.kind in ("pos", "neg") and h.weight * fact[1] < 0:
+                    h.weight = 0.0
+                    h.modifiers.append("contredit par les montants lus : sans portée")
         if fact and not any(h.indicator == "rn" and h.kind in ("pos", "neg") and h.weight * fact[1] > 0 for h in hits):
             hits.append(TermHit(fact[0], "pos" if fact[1] > 0 else "neg", fact[1], fact[1], "rn", None,
                                 str(rn_fig.get("source") or fact[0])[:120], 0, 0, 0,
@@ -2481,9 +2533,15 @@ def _analyze(
         s_num_raw = sum(NUM_WEIGHTS[k] * v for k, v in s_parts.items()) / wsum
     s_num = _clip(s_num_raw / 2.0, -1.0, 1.0)
     replaced = set(s_parts)
+    if "pnb" in s_parts and "ca" not in s_parts:
+        # Banque : les « revenus », les « recettes » ou le « chiffre d'affaires » décrits en mots sont le
+        # produit net bancaire, déjà chiffré (recette du 22/11/2026 : « progression des revenus » comptait
+        # comme un chiffre d'affaires « décrit en mots » et réduisait le poids des chiffres).
+        replaced.add("ca")
     for h in hits:
         if h.indicator in replaced and h.kind in ("pos", "neg"):
-            h.modifiers.append("remplacé par le chiffre")
+            h.modifiers.append("remplacé par le chiffre" if h.indicator in s_parts
+                               else "remplacé par le chiffre (PNB : revenus d'une banque)")
     tone_d = tone_from_hits(hits, exclude_indicators=replaced)
     tone = _clip(tone_d["tone"], -1.0, 1.0)
     # Pondération par couverture : si un indicateur pondéré (RN, dividende, PNB, CA) n'est
@@ -2491,7 +2549,7 @@ def _analyze(
     # (« les ventes bondissent de 40 % »), le poids des chiffres est partagé en proportion.
     lex_only = {
         h.indicator for h in hits
-        if h.kind in ("pos", "neg") and h.weight != 0 and h.indicator in NUM_WEIGHTS and h.indicator not in s_parts
+        if h.kind in ("pos", "neg") and h.weight != 0 and h.indicator in NUM_WEIGHTS and h.indicator not in replaced
     }
     w_num_eff = 0.0
     if s_parts:
@@ -2500,7 +2558,22 @@ def _analyze(
         w_num_eff = W_NUM * cov_num / (cov_num + cov_lex)
     # Document 07 §3.4 règle 5 : s = 0,7·s_num_doc + 0,3·tone, borné à [−1, 1] (le bornage ne
     # change ni le signe, ni le rapport 0,7:0,3 des poids dans le domaine usuel).
-    text_score = _clip(w_num_eff * s_num_raw + (1.0 - w_num_eff) * tone, -1.0, 1.0) if s_parts else tone
+    num_part = w_num_eff * s_num_raw
+    tone_part = (1.0 - w_num_eff) * tone
+    # « Nombres d'abord » (document 07 §3.4, règle 4) : quand la variation du résultat net est lue, le ton
+    # peut atténuer la part chiffrée, jamais en renverser le signe. Un ton de signe contraire retire au
+    # plus TONE_OPPOSITE_CAP (les trois quarts) de la part chiffrée. Sans cette borne, un seul terme positif
+    # (ton +0,67, saturé) donnait un score positif à une publication dont le résultat net, le résultat
+    # avant impôt et le PNB baissent, et une concession (« malgré la baisse du chiffre d'affaires »)
+    # l'emportait sur la proposition principale chiffrée (recette du 22/11/2026). Choix de conception, non validé.
+    tone_capped = False
+    if "rn" in s_parts and num_part * tone_part < 0 and abs(tone_part) > TONE_OPPOSITE_CAP * abs(num_part):
+        tone_part = -float(np.sign(num_part)) * TONE_OPPOSITE_CAP * abs(num_part)
+        tone_capped = True
+        warnings.append(
+            f"ton lexical ({fr_signed(tone)}) contraire aux chiffres (sentiment numérique {fr_signed(s_num_raw)}) : "
+            "le score garde le signe des chiffres, le ton n'en retire que les trois quarts au plus")
+    text_score = _clip(num_part + tone_part, -1.0, 1.0) if s_parts else tone
 
     # 6) Jugement de l'analyste (borné) et contradiction.
     contradiction = False
@@ -2558,7 +2631,16 @@ def _analyze(
     if re.search(r"respect\s+de\s+(?:la\s+)?diffusion\s+d'information", norm_title):
         flag("R7")
     rn_g = extracted.get("rn_growth")
-    if event_type in _RESULT_EVENTS and rn_g is not None and rn_g <= -0.25:
+    degraded = rn_g is not None and rn_g <= -0.25
+    if not degraded and rn_g is None and extracted.get("rn") is not None and extracted.get("rn_prev") is not None:
+        # Base non comparable (perte, changement de signe, variation au-delà de ±300 %) : aucune variation
+        # n'est notée, mais les deux montants sont gardés et la dégradation se lit sur eux. Sans ce test,
+        # les dégradations les plus fortes (bénéfice → perte, perte aggravée) échappaient à R10 (§5.6 :
+        # ΔRN ≤ −25 % ; recette du 22/11/2026).
+        degraded = rn_degradation(extracted["rn"], extracted["rn_prev"]) is not None
+        if degraded:
+            extracted["rn_degradation"] = rn_degradation(extracted["rn"], extracted["rn_prev"])
+    if event_type in _RESULT_EVENTS and degraded:
         in_force = published_at is None or published_at >= R10_EFFECTIVE
         if in_force:
             pw_found = None
@@ -2568,7 +2650,8 @@ def _analyze(
                 flag("R10")
             elif pw_found is None:
                 extracted["r10_candidate"] = True
-                warnings.append("ΔRN ≤ −25 % : vérifier qu'une alerte sur résultats a précédé (R10)")
+                what = "ΔRN ≤ −25 %" if rn_g is not None else f"résultat net dégradé ({extracted.get('rn_degradation')})"
+                warnings.append(f"{what} : vérifier qu'une alerte sur résultats a précédé (R10)")
     flags.sort(key=lambda c: int(c[1:]))
 
     # 8) Matérialité.
@@ -2623,6 +2706,8 @@ def _analyze(
     conf = 0.30 * c_type + 0.25 * c_target + 0.45 * c_signal
     if contradiction:
         conf *= 0.7
+    if tone_capped:
+        conf *= 0.85  # le texte et les chiffres ne disent pas la même chose
     if tone_d["uncertainty"] >= 2:
         conf *= 0.85
     if method == "ocr":
@@ -2651,7 +2736,9 @@ def _analyze(
             "uncertainty_terms": int(tone_d["uncertainty"]),
             "s_num_raw": round(s_num_raw, 4),
             "s_num_doc": round(s_num_raw, 4),
-            "score_formula": "clip(w_num·s_num_doc + (1 − w_num)·tone, −1, 1) (document 07 §3.4)" if s_parts else "tone",
+            "score_formula": ("clip(w_num·s_num_doc + (1 − w_num)·tone, −1, 1) (document 07 §3.4) ; w_num = 0,7 × part "
+                              "des indicateurs chiffrés ; ton contraire aux chiffres borné aux trois quarts de la part "
+                              "chiffrée quand la variation du résultat net est lue") if s_parts else "tone",
             "s_parts": {k: round(v, 4) for k, v in s_parts.items()},
             "text_score": round(text_score, 4),
             "analyst": None if analyst_component is None else round(analyst_component, 4),
@@ -2661,6 +2748,7 @@ def _analyze(
             "weights": {"w_num": round(w_num_eff, 4) if s_parts else 0.0, "w_tone": round(1 - w_num_eff, 4) if s_parts else 1.0,
                         "analyst_cap": ANALYST_CAP},
             "lexical_only_indicators": sorted(lex_only),
+            "tone_contradicts_numbers": bool(tone_capped),
             "event_candidate": event_candidate,
             "context_entities": context_entities,
             "theme_exposure": {t: theme_exposure(t) for t in targets if target_kind(t) == "theme" and theme_exposure(t)},
@@ -2675,6 +2763,27 @@ def _analyze(
         sessions=sessions,
     )
     return analysis
+
+
+def rn_degradation(cur: float | None, prev: float | None, threshold: float = 0.25) -> str | None:
+    """Dégradation du résultat net d'au moins ``threshold`` lue sur les **montants** (filtre R10).
+
+    Renvoie le motif en français, ou ``None`` : « passage d'un bénéfice à une perte » (base positive,
+    résultat négatif ou nul), « perte aggravée de X % » (base négative, perte accrue d'au moins 25 % de
+    la perte précédente), « baisse de X % » (base positive, baisse d'au moins 25 %). Sert quand la
+    variation n'est pas notée (« base non comparable ») : le score numérique reste absent.
+    """
+    if cur is None or prev is None or not np.isfinite(cur) or not np.isfinite(prev) or cur >= prev:
+        return None
+    if prev > 0:
+        if cur <= 0:
+            return "passage d'un bénéfice à une perte"
+        g = (cur - prev) / prev
+        return f"baisse de {abs(g) * 100:.0f} %" if g <= -threshold + _EPS else None
+    if prev < 0:
+        g = (cur - prev) / abs(prev)
+        return f"perte aggravée de {abs(g) * 100:.0f} %" if g <= -threshold + _EPS else None
+    return "passage de l'équilibre à une perte"  # prev == 0, cur < 0
 
 
 def _had_profit_warning(history: pd.DataFrame, symbol: str, published_at: pd.Timestamp | None) -> bool | None:
@@ -2779,9 +2888,9 @@ def build_reading(
         why = ex.get(f"{ind}_note")
         if v is None and g is None:
             if why:
-                dropped.append(f"{_IND_LABEL[ind]} ({why})")
+                dropped.append(f"{ex.get(f'{ind}_label') or _IND_LABEL[ind]} ({why})")
             continue
-        txt = _IND_LABEL[ind]
+        txt = str(ex.get(f"{ind}_label") or _IND_LABEL[ind])
         if v is not None:
             txt += " " + fr_amount(v)
         if p is not None:
@@ -2860,7 +2969,10 @@ def build_reading(
                 mod = ", " + ", ".join(m for m in h.modifiers if not m.startswith("pourcentage"))
                 mod = mod if mod != ", " else ""
             items.append(f"« {h.surface.strip()} » ({fr_signed(h.weight, 1)}{mod})")
-        sentences.append(f"Ton lexical {fr_signed(a.tone)} : " + ", ".join(items) + ".")
+        s3 = f"Ton lexical {fr_signed(a.tone)} : " + ", ".join(items)
+        if a.components.get("tone_contradicts_numbers"):
+            s3 += " ; ce ton est contraire aux chiffres : le score garde le signe des chiffres"
+        sentences.append(s3 + ".")
     elif not parts and not dropped and doc_status not in ("scan", "illisible"):
         unc = [h for h in hits if h.kind == "unc"]
         if unc:

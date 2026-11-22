@@ -1128,11 +1128,35 @@ def _sec_bandeau(ctx: _Ctx) -> H:
     ])
     warns = list(val.get("avertissements") or [])
     toc = "".join(f'<a href="#{esc(sid)}">{esc(lab)}</a>' for sid, lab in SECTIONS[1:])
+    gaps = _gaps_summary(ctx)
+    limits = H('<p class="sub limits" role="note"><strong>Limites à lire d\'abord.</strong> '
+               + esc((f"Données : {gaps} ; " if gaps else "Données : pas de BOC avant 2017, trous en 2021 ; ")
+                     + "le test S1 a été relancé une fois pour un défaut de mesure (D12) ; points ouverts : indice TR des "
+                       "signaux non strictement daté, REF investi à 82 % en moyenne sur S1, plancher D1 et âge des "
+                       "ordres pendant les trous de 2021. Détail : ")
+               + '<a href="#methode">Méthode et limites</a>.</p>')
     return H(f'<header class="top"><div class="hrow"><h1>{esc(title)}</h1>'
              f'<button type="button" class="toggle" id="theme-toggle" aria-label="Changer de thème">Thème : auto</button>'
-             f'</div><p class="sub">{esc(sub)}</p></header>{banner}{tiles}'
+             f'</div><p class="sub">{esc(sub)}</p></header>{banner}{limits}{tiles}'
              + "".join(_box("warn", "Avertissement", w) for w in warns)
              + f'<nav class="toc" aria-label="Sommaire">{toc}</nav>')
+
+
+def _gaps_summary(ctx: _Ctx) -> str | None:
+    """« 129 séances sans BOC, dont 96 en 2021 » d'après ``sessions.parquet`` ; ``None`` sans calendrier."""
+    try:
+        sess = ctx.long("sessions")
+        if sess is None or "available" not in sess.columns or not len(sess):
+            return None
+        miss = sess[~sess["available"].astype(bool)]
+        years = (miss["year"] if "year" in miss.columns else pd.to_datetime(miss["date"], errors="coerce").dt.year)
+        by_year = years.dropna().astype(int).value_counts()
+        if not len(miss) or not len(by_year):
+            return f"{fmt_int(len(miss))} séance(s) sans BOC"
+        y, n = int(by_year.idxmax()), int(by_year.max())
+        return f"{fmt_int(len(miss))} séances sans BOC, dont {fmt_int(n)} en {y}"
+    except Exception:  # le bandeau ne tombe jamais pour un calendrier illisible
+        return None
 
 
 # -- 2. Marché -------------------------------------------------------------------------------
@@ -1419,13 +1443,91 @@ def _interpretation(m: Mapping[str, Any]) -> list[str]:
     ref = V.get(REF) or {}
     rr = runs.get(ref.get("run_id") or "REF_central_10M") or {}
     if _ok(rr.get("actif_tr_an")):
-        P.append(f"La référence investissable REF (indice discipliné, hors famille) fait {fmt_pct(rr['actif_tr_an'], 1, True)} "
-                 "par an contre le TR : c'est le coût de la réplication avec frais, plafonds et règles de risque.")
+        inv = rr.get("part_investie_moyenne")
+        txt = (f"La référence investissable REF (indice discipliné, hors famille) fait {fmt_pct(rr['actif_tr_an'], 1, True)} "
+               "par an contre le TR. Cet écart ne vient pas seulement des frais, des plafonds et des règles de risque")
+        if _ok(inv):
+            txt += (f" : REF n'a été investi qu'à {fmt_pct(inv, 0)} en moyenne sur S1 (cible 98 %), et il est passé en "
+                    "liquidités d'août à octobre 2021, pendant les trous de BOC, alors que le TR montait (plancher D1 "
+                    "des filtres et âge des ordres : points ouverts, section « Méthode et limites »)")
+        P.append(txt + ".")
     P.append(f"Comparaison avec la prédiction écrite d'avance : le statut le plus probable était « candidat », et le "
              f"rejet de A était jugé plausible ; le résultat observé est « {st} ».")
-    P.append("Rappel : un seul test, sur environ six ans d'un marché dont la liquidité a été multipliée par environ 30 "
+    once = ("un seul test (relancé une fois pour un défaut de mesure prouvé, D12 : voir l'encadré en tête de section)"
+            if _rerun_info(m) is not None else "un seul test")
+    P.append(f"Rappel : {once}, sur environ six ans d'un marché dont la liquidité a été multipliée par environ 30 "
              "depuis 2019-2020 (§10.9). Ces chiffres sont des estimations, pas des promesses.")
     return P
+
+
+def _short(commit: Any) -> str:
+    return str(commit or "n.d.")[:7]
+
+
+def _sub_end(b: Any, fin: Any) -> str:
+    """Fin d'une sous-période, bornée à la fin de la fenêtre : metrics.json porte l'étiquette de semaine
+    (vendredi 18/11/2022) alors qu'aucune donnée n'est comptée après la fin (16/11/2022)."""
+    try:
+        tb, tf = pd.Timestamp(b), pd.Timestamp(fin)
+        if tb > tf:
+            return f"{fmt_date(tf)} (semaine du vendredi {fmt_date(tb)})"
+    except (TypeError, ValueError):
+        pass
+    return fmt_date(b)
+
+
+def _rerun_info(m: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Relance motivée (D12) lue dans ``metrics.json`` : ``None`` si le test n'a été exécuté qu'une fois."""
+    ex = m.get("execution") or {}
+    rel = ex.get("relance") if isinstance(ex.get("relance"), Mapping) else None
+    prev = m.get("precedent") if isinstance(m.get("precedent"), Mapping) else None
+    if not rel and not prev:
+        return None
+    pex = (prev or {}).get("execution") or (rel or {}).get("verrou_precedent") or {}
+    V = m.get("variantes") or {}
+    st_prev = {str(k): _norm_status(v) for k, v in ((prev or {}).get("statuts") or {}).items()}
+    st_now = {str(k): _norm_status((d or {}).get("statut")) for k, d in V.items() if isinstance(d, Mapping)}
+    same = bool(st_prev) and all(st_now.get(k) == v for k, v in st_prev.items())
+    return {"motif": str((rel or {}).get("motif") or "").strip(), "commit_prev": pex.get("commit"),
+            "quand_prev": pex.get("horodatage_utc"), "commit": ex.get("commit"), "quand": ex.get("horodatage_utc"),
+            "dossier": (prev or {}).get("dossier") or (rel or {}).get("precedent"), "t0_prev": (prev or {}).get("t0"),
+            "statuts_inchanges": same if st_prev else None}
+
+
+def _rerun_box(m: Mapping[str, Any]) -> H | None:
+    """Encadré de tête de la section S1 : le test a été relancé une fois, quand et pourquoi (D12)."""
+    r = _rerun_info(m)
+    if r is None:
+        return None
+    body = (f"Premier passage le {_utc_txt(r['quand_prev'])} (commit {_short(r['commit_prev'])}), relance le "
+            f"{_utc_txt(r['quand'])} (commit {_short(r['commit'])}). ")
+    body += (f"Motif enregistré dans metrics.json : {r['motif']} " if r["motif"] else
+             "Motif : voir reports/validation_S1/tentatives.md. ")
+    if r["statuts_inchanges"] is True:
+        body += "Les statuts des variantes et de la référence sont les mêmes aux deux passages. "
+    elif r["statuts_inchanges"] is False:
+        body += "Des statuts diffèrent entre les deux passages : voir tentatives.md. "
+    body += ("Les chiffres de cette section sont ceux de la relance ; le premier résultat est conservé dans "
+             f"{_rel(r['dossier']) if r['dossier'] else 'reports/validation_S1/precedent_…'}"
+             + (f" (t0 précédent {fmt_date(r['t0_prev'])})" if r["t0_prev"] else "")
+             + ", et les deux passages sont décrits dans reports/validation_S1/tentatives.md.")
+    return _box("warn", "Test unique, relancé une fois pour un défaut de mesure prouvé (D12).", body)
+
+
+def _fingerprint_note(ex: Mapping[str, Any]) -> str:
+    """Ce que vaut l'empreinte de configuration : jamais « pré-enregistrée » si elle ne l'est pas."""
+    c = ex.get("empreinte_controle") if isinstance(ex.get("empreinte_controle"), Mapping) else {}
+    if not c or not c.get("conforme"):
+        return ""
+    if c.get("preenregistree_independante") is True:
+        return " (identique au pré-enregistrement)"
+    frozen = _get(c, "etat_fige", "commit")
+    ref = _get(c, "reference_preenregistrement", "commit")
+    if frozen or ref or c.get("preenregistree_independante") is False:
+        return (" (identique à l'état figé" + (f" {_short(frozen)}" if frozen else "")
+                + (f" ; référence de pré-enregistrement : commit {_short(ref)}" if ref else "")
+                + " ; pas une valeur pré-enregistrée indépendante)")
+    return " (identique à l'état figé avant l'exécution)"
 
 
 def _s1_tables(m: Mapping[str, Any]) -> list[H]:
@@ -1470,7 +1572,7 @@ def _s1_tables(m: Mapping[str, Any]) -> list[H]:
                            f'{esc(fmt_num(sp.get("ir_tr")))} · {esc(sp.get("n_semaines", "n.d."))} sem.</span>'))
         srows.append([H(f"<b>{esc(v)}</b>")] + cells + [""] * max(0, 2 - len(cells)))
     subs = m.get("sous_periodes") or []
-    sh = ["Variante"] + [f"Actif vs TR [{fmt_date(a)} ; {fmt_date(b)}]" for a, b in subs[:2]]
+    sh = ["Variante"] + [f"Actif vs TR [{fmt_date(a)} ; {_sub_end(b, m.get('fin'))}]" for a, b in subs[:2]]
     while len(sh) < 3:
         sh.append(f"Sous-période {len(sh)}")
     t2 = _table(sh, srows)
@@ -1540,10 +1642,13 @@ def _sec_s1(ctx: _Ctx) -> H:
     parts: list[Any] = []
     if m.get("bandeau") and BANNER not in str(m.get("bandeau")):
         parts.append(_box("warn", "Bandeau de metrics.json inattendu", str(m.get("bandeau"))))
+    rerun = _rerun_box(m)
+    if rerun is not None:  # en tête : le lecteur sait d'emblée que le test a connu deux passages, et pourquoi
+        parts.append(rerun)
     parts.append(_tiles([
         ("t0 (D2)", fmt_date(m.get("t0")), "première séance investie de A (10 M FCFA, coûts centraux)", "fait"),
         ("Fin de la fenêtre", fmt_date(m.get("fin")), "sous-périodes " + (" et ".join(
-            f"{fmt_date(a)} → {fmt_date(b)}" for a, b in subs[:2]) or "n.d."), "fait"),
+            f"{fmt_date(a)} → {_sub_end(b, m.get('fin'))}" for a, b in subs[:2]) or "n.d."), "fait"),
         ("Statut de A", _status_chip(val.get("statut_A")), f"principal après §3.4 : {val.get('principal')}", "fait"),
         ("PBO (famille, N = 9)", fmt_num(fam.get("pbo"), 2), f"CSCV, {fam.get('n_blocs', 'n.d.')} blocs ; pente "
          f"{fmt_num(fam.get('pente_degradation'), 2)}", "estimation"),
@@ -1551,9 +1656,9 @@ def _sec_s1(ctx: _Ctx) -> H:
         ("Contrôles comptables", "verts" if _get(m, "controles", "tous_ok") else "à examiner",
          f"{len(_get(m, 'controles', 'runs_en_anomalie', default=[]))} run(s) en anomalie", "fait"),
     ]))
-    parts.append(_p(f"Exécution unique : commit {str(ex.get('commit') or 'n.d.')[:12]}, empreinte de configuration "
-                    f"{ex.get('empreinte_config', 'n.d.')}"
-                    + (" (identique au pré-enregistrement)" if _get(ex, "empreinte_controle", "conforme") else "")
+    parts.append(_p(f"{'Relance motivée (D12)' if rerun is not None else 'Exécution unique'} : commit "
+                    f"{str(ex.get('commit') or 'n.d.')[:12]}, empreinte de configuration "
+                    f"{ex.get('empreinte_config', 'n.d.')}" + _fingerprint_note(ex)
                     + f", {_utc_txt(ex.get('horodatage_utc'))}, mode de décision {ex.get('mode_decision', 'n.d.')}, "
                     f"bootstrap n = {m.get('n_boot', 'n.d.')} (blocs de {m.get('bloc_moyen_semaines', 'n.d.')} "
                     "semaines). Métriques hebdomadaires nettes de tous les coûts, sur [t0 ; fin], rebasées à t0.",
@@ -1591,16 +1696,26 @@ def _sec_s1(ctx: _Ctx) -> H:
                        _p("Les métriques sont des estimations sur environ six ans de données hebdomadaires ; seuls "
                           "les règles, les seuils et le plan des runs, figés avant l'exécution, sont des faits.",
                           "muted small")))
-    if m.get("precedent"):
-        prev = m["precedent"]
-        parts.append(_box("warn", "Relance motivée (D12) : les résultats de l'exécution précédente sont conservés.",
-                          H(f"Dossier <code>{esc(_rel(prev.get('dossier')))}</code> ; "
-                            f"t0 précédent {esc(fmt_date(prev.get('t0')))}.")))
     parts.append(_diag_block(ctx))
     return _join(parts)
 
 
 # -- 4. Ordre de bataille --------------------------------------------------------------------
+
+
+def _aes_lambda_load(lines: Sequence[Mapping[str, Any]]) -> float | None:
+    """Exposition économique λ du portefeuille cible au bloc AES : ``Σ poids_cible × λ_AES`` du titre
+    (``reference.economic_exposure`` : 1 pour un siège BF, ML ou NE ; 0,238 pour SNTS, exposé au Mali)."""
+    try:
+        from brvm_alpha import reference as ref
+
+        total = 0.0
+        for r in lines:
+            lam = ref.economic_exposure(str(r.get("symbole")))
+            total += float(r.get("poids_cible") or 0.0) * sum(float(v) for c, v in lam.items() if c in AES)
+        return total
+    except Exception:  # table d'exposition indisponible : la ligne affiche « n.d. », jamais un chiffre faux
+        return None
 
 
 def _active_constraints(od: Mapping[str, Any]) -> list[list[Any]]:
@@ -1643,11 +1758,21 @@ def _active_constraints(od: Mapping[str, Any]) -> list[list[Any]]:
             act = w >= cap - 5e-4
             rows.append([f"Pays {PAYS.get(c, c)}", fmt_pct(cap, 1), fmt_pct(w, 1),
                          _chip("active", "warn") if act else _chip("marge"), "§4.2"])
-    w_aes = sum(w for c, w in by_cty.items() if c in AES)
+    # Deux plafonds, deux charges : « siège » = poids des titres dont le siège est au Burkina Faso, au Mali ou
+    # au Niger ; « exposition λ » = Σ poids × part de l'activité du titre dans ces pays (SNTS : 23,8 % au Mali).
+    # Jusqu'à la recette du 22/11/2026 la charge « siège » était affichée pour les deux (8,9 % au lieu de 14,9 %).
+    w_seat = sum(w for c, w in by_cty.items() if c in AES)
+    w_lam = _aes_lambda_load(lines)
     for k, cap in aes_caps.items():
-        act = w_aes >= cap - 5e-4
-        rows.append([k[:1].upper() + k[1:], fmt_pct(cap, 1), fmt_pct(w_aes, 1),
-                     _chip("active", "warn") if act else _chip("marge"), "§4.2 (BF + ML + NE)"])
+        is_lam = "λ" in k or "lambda" in k.lower() or "exposition" in k.lower()
+        load = w_lam if is_lam else w_seat
+        if load is None:
+            rows.append([k[:1].upper() + k[1:], fmt_pct(cap, 1), "n.d.", _chip("marge"), "§4.2 (exposition λ non calculable)"])
+            continue
+        act = load >= cap - 5e-4
+        rows.append([k[:1].upper() + k[1:], fmt_pct(cap, 1), fmt_pct(load, 1),
+                     _chip("active", "warn") if act else _chip("marge"),
+                     "§4.2 (Σ poids × part de l'activité au BF, au ML et au NE)" if is_lam else "§4.2 (BF + ML + NE)"])
     ex = od.get("execution") or {}
     for s, why in (ex.get("reductions") or {}).items():
         rows.append([f"Quantité réduite {s}", "—", "—", _chip("active", "warn"), str(why)])
@@ -1774,8 +1899,9 @@ def _sec_ordre(ctx: _Ctx) -> H:
                                "Coûts", "Net", "Séances"], rows, left=(0,), foot_rows=foot_rows),
                        _details(f"Remarques par ligne ({len(remarks)})", _ul(remarks)) if remarks else "",
                        _p("Prix limite d'achat : min(borne haute ; cours × 1,01) au pas inférieur ; de vente : "
-                          "max(borne basse ; cours × 0,99) au pas supérieur. Coûts : courtage, TVA, BRVM 0,20 %, DC/BR "
-                          "0,10 % (faits) ; demi-spread et impact (estimations). Survolez un coût pour son détail.",
+                          "max(borne basse ; cours × 0,99) au pas supérieur. Coûts : BRVM 0,20 % et DC/BR 0,10 % "
+                          "(faits, barèmes) ; courtage 0,80 % et taxe 18 % sur le courtage (hypothèses ; taxe [NON "
+                          "VÉRIFIÉ] : TVA ou TAF) ; demi-spread et impact (estimations). Survolez un coût pour son détail.",
                           "muted small")))
     tr = od.get("tranches") or []
     if tr:
@@ -1886,9 +2012,7 @@ def _sec_revenus(ctx: _Ctx) -> H:
         rows.append([H(f"<b>{esc(d.get('symbole'))}</b>"), fmt_int(d.get("titres")), fmt_date(d.get("date_ago_estimee")),
                      fmt_date(d.get("date_ex_prevue")), fmt_date(d.get("date_paiement_prevue")),
                      fmt_num(d.get("dividende_net_prevu_par_titre"), 2), fmt_fcfa(d.get("montant_brut")),
-                     H(f"{esc(fmt_fcfa(d.get('irvm')))} <span class='muted small'>"
-                       f"{esc(fmt_pct(d.get('taux_irvm_prevu'), 1))}</span>"
-                       + (f"<div class='muted small desc'>{esc(d.get('irvm_note'))}</div>" if d.get('irvm_note') else "")),
+                     _irvm_cell(d),
                      H(f"<b>{esc(fmt_fcfa(d.get('montant_net')))}</b>"),
                      H(f"<span class='muted small wrap'>{esc(d.get('statut', ''))}</span>")])
     if rows:
@@ -1906,6 +2030,17 @@ def _sec_revenus(ctx: _Ctx) -> H:
 
 
 # -- 6. Distribution à 12 mois ---------------------------------------------------------------
+
+
+def _irvm_cell(d: Mapping[str, Any]) -> H:
+    """Montant de l'IRVM et son taux, affiché **une fois** : quand la remarque commence par le taux
+    (« 12,5 % [NON VÉRIFIÉ] »), elle le remplace au lieu de le répéter."""
+    rate = fmt_pct(d.get("taux_irvm_prevu"), 1)
+    note = str(d.get("irvm_note") or "").strip()
+    if note and note.replace("\u202f", " ").replace("\xa0", " ").startswith(rate.replace("\u202f", " ").replace("\xa0", " ")):
+        return H(f"{esc(fmt_fcfa(d.get('irvm')))} <span class='muted small'>{esc(note)}</span>")
+    return H(f"{esc(fmt_fcfa(d.get('irvm')))} <span class='muted small'>{esc(rate)}</span>"
+             + (f"<div class='muted small desc'>{esc(note)}</div>" if note else ""))
 
 
 def _stress_table(od: Mapping[str, Any]) -> H:
@@ -1960,10 +2095,16 @@ def _sec_distribution(ctx: _Ctx) -> H:
              (f"fréquence historique aux poids actuels ; {(d.get('resultat_s1') or {}).get('court')}"
               if (d.get("resultat_s1") or {}).get("court") else f"médiane du TR {fmt_pct(d.get('tr_mediane'), 1, True)}"),
              "estimation"),
-            ("P(perte)", fmt_pct(d.get("p_perte"), 1), "rendement net < 0 à 12 mois", "estimation"),
+            ("P(perte)", fmt_pct(d.get("p_perte"), 1), "rendement net < 0 à 12 mois ; repère réalisé : 43 % des "
+             "fenêtres de 12 mois du Composite prix sont négatives sur 2017-2026 (§10.3)", "estimation"),
             ("Volatilité annuelle", fmt_pct(d.get("vol_annuelle"), 1), f"TR {fmt_pct(d.get('tr_vol_annuelle'), 1)} ; β "
              f"{fmt_num(d.get('beta_hebdo'), 2)}", "estimation"),
         ]))
+        parts.append(_p("P(perte) et le repère réalisé ne mesurent pas la même chose : la première rééchantillonne le "
+                        "portefeuille d'aujourd'hui (dividendes compris) par blocs de quelques semaines, le second compte "
+                        "les fenêtres de 12 mois réellement observées sur l'indice de prix. Un bootstrap par blocs "
+                        "courts ne reproduit pas les baisses de plusieurs années : P(perte) est probablement trop basse.",
+                        "muted small"))
         if d.get("biais_fenetre"):
             parts.append(_box("warn", "Fenêtre d'estimation optimiste", d["biais_fenetre"]))
         if d.get("biais_retrospectif"):
@@ -1997,6 +2138,19 @@ def _sec_distribution(ctx: _Ctx) -> H:
 # -- 7. Indices ------------------------------------------------------------------------------
 
 
+MARKET_INDEX_CODES = ("IDX:BRVM-C", "IDX:BRVM-C-TR")
+
+
+def _per_cell(code: Any, r: Any) -> H:
+    """PER d'un indice, avec sa nature : publié (marché) ou médian des constituants (+ PER publié en petit)."""
+    per = fmt_num(r.get("per"), 1)
+    if str(code) in MARKET_INDEX_CODES:
+        return H(f"{esc(per)}<div class='muted small'>publié (BOC)</div>")
+    pub = r.get("per_index")
+    return H(f"{esc(per)}<div class='muted small'>médian"
+             + (f" ; publié {esc(fmt_num(pub, 1))}" if _ok(pub) else "") + "</div>")
+
+
 def _sec_indices(ctx: _Ctx) -> H:
     ev = ctx.indices_eval()
     if ev is None or not len(ev):
@@ -2025,19 +2179,18 @@ def _sec_indices(ctx: _Ctx) -> H:
         rows.append([H(f"<b class='cn'>{esc(r.get('label', code))}</b><div class='muted small'>{esc(code)}</div>"),
                      fmt_num(r.get("level"), 2), _num_cell(r.get("ret_1m"), signed=True),
                      _num_cell(r.get("ret_3m"), signed=True), _num_cell(r.get("ret_12m"), signed=True),
-                     _num_cell(r.get("ytd"), signed=True), fmt_num(r.get("per"), 1), esc(r.get("regime") or "n.d."),
+                     _num_cell(r.get("ytd"), signed=True), _per_cell(code, r), esc(r.get("regime") or "n.d."),
                      esc(_notes_z_txt(r)),
                      fmt_num(r.get("composite"), 2, True), H(pos),
                      fmt_pct(r.get("confidence"), 0)])
     if fragile:
-        parts.append(_box("warn", "Position fragile : elle ne change que par le poids de la composante « notes ».",
-                          H(_ul(fragile) + esc(
-                              "La composante « notes » entre dans le score avec son poids entier dès qu'une note en "
-                              "vigueur porte un score, même faible : elle rapproche alors le score de zéro sans "
-                              "apporter de signal fort. Lire ces indices avec leur position « sans notes » ; aucune "
-                              "pondération n'a été modifiée."))))
+        parts.append(_box("warn", STANCE_FLIP_TITLE, H(_ul(fragile) + esc(STANCE_FLIP_TEXT))))
     parts.append(_card(_table(["Indice", "Niveau", "1 mois", "3 mois", "12 mois", "Depuis le 31/12", "PER", "Régime",
-                               "Notes (z)", "Score", "Position", "Confiance"], rows)))
+                               "Notes (z)", "Score", "Position", "Confiance"], rows),
+                       _p("Colonne PER : pour le marché (Composite, Composite TR), PER moyen publié au BOC ; pour les autres "
+                          "indices, PER médian des constituants (0 < PER ≤ 100), utilisé par le score, avec en petit le "
+                          "PER publié de l'indice au BOC. Les deux diffèrent fortement quand quelques titres ont un PER "
+                          "très élevé.", "muted small")))
     det = []
     for code, r in ev.iterrows():
         reasons = list(r.get("reasons") or [])
@@ -2063,6 +2216,34 @@ def _ts_txt(x: Any) -> str:
 
 #: Lignes affichées au plus dans le tableau des notes automatiques en vigueur.
 NOTES_TABLE_MAX = 60
+
+
+#: Avertissement quand la position d'un indice diffère avec et sans les notes (mêmes textes que l'interface).
+STANCE_FLIP_TITLE = "Position changée par les notes : sans elles, la position serait différente."
+STANCE_FLIP_TEXT = ("Les notes s'ajoutent au score des autres composantes (+ 0,15 × z notes ; une note automatique pèse par "
+                    "la confiance de son analyse) : une note positive ne peut que relever le score, une note négative que "
+                    "l'abaisser. Ici elles font franchir un seuil : lire ces indices avec leur position « sans "
+                    "notes ». Aide à la décision, pas un signal validé.")
+
+
+def _note_targets_txt(n: Mapping[str, Any]) -> str:
+    """Cible(s) saisie(s) dans la note ; pour une note propagée : « IDX:BRVM-C, propagée aux constituants × 0,25 »."""
+    src = [str(x) for x in (n.get("source_targets") or n.get("targets") or [])]
+    txt = ", ".join(src[:4]) + (" …" if len(src) > 4 else "")
+    if _ok(n.get("propagation")) and str(n.get("relation") or "directe") != "directe":
+        txt += f", propagée aux constituants × {fmt_num(n.get('propagation'), 2)}"
+    return txt or "—"
+
+
+def _note_date_txt(n: Mapping[str, Any]) -> str:
+    """« saisie le … » (note de l'analyste) ou « publiée le … » (note collectée)."""
+    manual = str(n.get("author") or "") == "analyste"
+    for key, word in ((("created_at", "saisie"), ("published_at", "publiée")) if manual
+                      else (("published_at", "publiée"), ("created_at", "collectée"))):
+        v = n.get(key)
+        if _ok(v):
+            return f"{word} le {fmt_date(v)}"
+    return "date n.d."
 
 
 def _stance_flip(r: Any) -> str | None:
@@ -2189,7 +2370,7 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
         rows = []
         for code, r in ev.iterrows():
             det = list(r.get("notes_detail") or [])[:4]
-            who = _ul([f"« {str(e.get('title') or '')[:80]} » ({', '.join(map(str, (e.get('targets') or [])[:3]))}) : "
+            who = _ul([f"« {str(e.get('title') or '')[:80]} » ({_note_targets_txt(e)} ; {_note_date_txt(e)}) : "
                        f"score {fmt_num(e.get('note_score'), 2, True)}, part {fmt_num(e.get('part'), 3, True)}"
                        for e in det], "facts small") if det else esc(
                 "aucune note en vigueur" if not (_ok(r.get("notes_n")) and int(r.get("notes_n")) > 0)
@@ -2203,9 +2384,11 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
                            + (f"<div class='muted small'>{esc(flip)} → {esc(r.get('stance'))}</div>" if flip else "")),
                          H(f"<div class='lst'>{who}</div>")])
         parts.append(_card(H("<h3>Composante « notes » de chaque indice</h3>"),
-                           _p("z notes = score des notes / 0,5, borné à ±3, poids 0,15 dans le score composite ; « sans → "
-                              "avec » : score composite sans puis avec la composante. Aide à la décision, pas un signal "
-                              "validé.", "muted small"),
+                           _p("z notes = score des notes (les notes automatiques pondérées par leur confiance) / 0,5, borné à ±3 ; les "
+                              "notes s'ajoutent au score des autres composantes (+ 0,15 × z notes) : une note positive "
+                              "ne peut que relever le score, une note négative que l'abaisser. « sans → avec » : score "
+                              "composite sans puis avec les notes. Aide à la décision, pas un signal validé.",
+                              "muted small"),
                            _table(["Indice", "z notes", "Score des notes", "Notes en vigueur", "Composite sans → avec",
                                    "Notes qui portent la composante"], rows, left=(0, 5))))
     return parts
@@ -2310,6 +2493,8 @@ def _sec_risques(ctx: _Ctx) -> H:
     od = ctx.try_get("order_dict", "ordre de bataille", ctx.order_dict)
     dec = ctx.try_get("decision", "décision du modèle", ctx.decision)
     target = {str(r.get("symbole")) for r in (od or {}).get("lignes") or [] if (r.get("cibles") or 0) > 0}
+    # « en portefeuille » : titre déjà détenu ; « dans l'ordre » : titre que l'ordre propose d'acheter.
+    owned = {str(r.get("symbole")) for r in (od or {}).get("lignes") or [] if (r.get("detenus") or 0) > 0}
     # Filtres R actifs.
     if dec is not None and isinstance(getattr(dec, "risk", None), pd.DataFrame) and "active" in dec.risk.columns:
         rk = dec.risk
@@ -2319,7 +2504,8 @@ def _sec_risques(ctx: _Ctx) -> H:
             codes = str(r["active"])
             labs = ", ".join(sorted({R_LABELS.get(c, c) for c in re.findall(r"R\d+", codes)}))
             det = _as_list(r.get("detail_panel")) + _as_list(r.get("detail_notes"))
-            rows.append([H(f"<b>{esc(s)}</b>" + (" " + _chip("en portefeuille", "warn") if s in target else "")),
+            rows.append([H(f"<b>{esc(s)}</b>" + (" " + _chip("en portefeuille" if s in owned else "dans l'ordre", "warn")
+                                                 if s in target or s in owned else "")),
                          esc(codes), esc(labs), "oui" if bool(r.get("block_buys", False)) else "non",
                          H(f"<span class='small wrap'>{esc(_fr_txt(' ; '.join(det)))}</span>")])
         parts.append(_card(H("<h3>Filtres de risque R actifs (§5.6)</h3>"),
@@ -2371,6 +2557,9 @@ def _sec_risques(ctx: _Ctx) -> H:
     for x in _get(trig, "drawdown", "revues_lignes", default=[]) or []:
         facts.append(f"Revue obligatoire de {x.get('symbole')} : {fmt_pct(x.get('relatif_63'), 1, True)} contre le TR sur "
                      "63 séances (§9.1).")
+    for x in _get(trig, "drawdown", "revues_avant_achat", default=[]) or []:
+        facts.append(f"À revoir avant achat : {x.get('symbole')}, {fmt_pct(x.get('relatif_63'), 1, True)} contre le TR "
+                     "sur 63 séances (seuil de revue −25 %, §9.1) ; l'achat reste proposé dans l'ordre.")
     if facts:
         parts.append(_card(H("<h3>Drawdown et revues</h3>"), _ul(facts)))
     # Événements à venir.
@@ -2439,7 +2628,11 @@ def _sec_univers(ctx: _Ctx) -> H:
                      H(f"<b>{_num_cell(final.get(s), 'num', 2, True)}</b>") if _ok(final.get(s)) else "—",
                      *zc, fmt_pct(wt, 2) if wt > 0 else "—", esc(ract or "—")])
     n_el = int(elig.sum())
-    lead = _p(f"{len(uni)} titres au panel à la date, dont {n_el} éligibles (filtres U1-U10 du §2, capital "
+    # Titres du panel absents du BOC de la date (anciens titres, radiés ou non encore cotés) : listés pour mémoire.
+    absent = sum(1 for s in uni.index if "absent du BOC" in str(uni.loc[s].get("reasons") or uni.loc[s].get("reason") or ""))
+    counted = (f"{len(uni) - absent} titres cotés à la date (plus {absent} ancien(s) titre(s) absent(s) du BOC, listé(s) "
+               "pour mémoire)" if absent else f"{len(uni)} titres cotés à la date")
+    lead = _p(f"{counted}, dont {n_el} éligibles (filtres U1-U10 du §2, capital "
               f"{fmt_fcfa(_get(ctx.try_get('order_dict', 'ordre', ctx.order_dict), 'valeur_portefeuille') or ctx.capital)}) ; "
               f"variante {dec.variant}. Score final : composite du §3.2 normalisé (rang gaussien), après malus et "
               "inclinaisons bornées. Blocs : scores normalisés par signal (z).", "muted small")
@@ -2459,7 +2652,7 @@ def _sec_methode(ctx: _Ctx) -> H:
         "On ne prouve pas vite un alpha : il faut environ 30 ans de données hebdomadaires pour établir un IR de 0,3 à "
         "95 % (§10.2). Dix ans de BOC et 48 titres ne suffisent pas.",
         "Les marchés baissent, parfois longtemps : le Composite TR a perdu 46,7 % entre 2017 et 2020 ; 43 % des fenêtres "
-        "de 12 mois sont négatives sur 2017-2026 (§10.3).",
+        "de 12 mois du Composite prix sont négatives sur 2017-2026 (§10.3).",
         "Les professionnels n'y arrivent pas régulièrement : 28 à 30 % des années-fonds battent le TR (§10.4).",
         "Les effets s'affaiblissent quand ils sont exploités (fenêtre du dividende : de +5-6 % à environ +2,9 %) (§10.5).",
         "Les coûts mangent la marge : environ 3 à 3,5 % l'aller-retour pour un titre médian, et environ 1 % par an de "
@@ -2514,6 +2707,25 @@ def _sec_methode(ctx: _Ctx) -> H:
     gaps_txt.append("Fenêtres des signaux comptées en séances avec seuils au prorata des BOC disponibles (additif v1.1, "
                     "D1) : un BOC manquant est une perte de nos données, pas une absence de cotation.")
     parts.append(_card(H("<h3>Trous de données</h3>"), _tag("fait"), _ul(gaps_txt)))
+    val = ctx.try_get("validation", "résultats du test S1", ctx.validation) or {}
+    inv = _get(val, "metrics", "runs", "REF_central_10M", "part_investie_moyenne")
+    inv_txt = fmt_pct(inv, 0) if _ok(inv) else "82 %"
+    open_pts = [
+        "Indice TR des signaux non strictement daté : les signaux de momentum et de faible volatilité lisent un indice "
+        "TR qui intègre le dividende corrigé dès le jour ex, avant la publication de la correction. Aucun effet n'a été "
+        "trouvé sur S1 ; à corriger avant S2 (§8.5).",
+        f"REF n'est investi qu'à {inv_txt} en moyenne sur S1, contre une cible de 98 % : les dividendes et le produit des "
+        "sorties forcées restent en liquidités jusqu'au rebalancement annuel. L'écart de REF avec le TR ne mesure donc "
+        "pas le seul coût de la réplication. Décision humaine, et un nouvel essai.",
+        "Plancher D1 des filtres d'univers et âge des ordres après un trou de BOC : en 2021, REF est passé en liquidités "
+        "d'août à octobre pendant que le TR montait. Décision humaine attendue.",
+        "Le test S1 a été relancé une fois (D12) pour deux défauts de mesure prouvés par l'audit ; les deux passages "
+        "sont décrits dans reports/validation_S1/tentatives.md, le premier résultat est conservé.",
+    ]
+    parts.append(_card(H("<h3>Points ouverts</h3>"), _tag("fait"),
+                       _p("Limites connues, documentées au §8.5 de la spécification, dans le README et dans "
+                          "tentatives.md ; aucune n'est corrigée dans les chiffres de ce rapport.", "muted small"),
+                       _ul(open_pts)))
     od = ctx.try_get("order_dict", "ordre", ctx.order_dict)
     k = (od or {}).get("couts") or {}
     costs = [
@@ -2533,8 +2745,8 @@ def _sec_methode(ctx: _Ctx) -> H:
         "(§8.3, additif v1.1 du 22/11/2026). Ce rapport ne calcule aucune performance sur S1 : il lit metrics.json.",
         "S0 (17/11/2022 → 20/11/2026) : contaminé, diagnostic seulement. S2 (suivi réel, à partir du 01/12/2026) : seul "
         "test réellement hors échantillon.",
-        "Étalon : Composite Total Return (dividendes nets réinvestis), officiel depuis le 02/01/2025, reconstruit avant ; "
-        "battre l'indice prix ne prouve rien.",
+        "Étalon : Composite Total Return (dividendes nets réinvestis), base 100 au 02/01/2025, publié au BOC depuis le "
+        "02/01/2026 (avis 308-2025) et reconstruit avant cette date ; battre l'indice prix ne prouve rien.",
         "Distribution à 12 mois : bootstrap stationnaire des rendements hebdomadaires ; S0 seulement tant que S1 n'est "
         "pas exécuté (phase haussière : distribution probablement optimiste), toute l'histoire 2017-2026 ensuite, avec "
         "les poids actuels (biais rétrospectif signalé dans la section).",
@@ -2565,7 +2777,7 @@ _CSS = """
   --surface-0: #f6f5f2; --surface-1: #fcfcfb; --border: #e3e2dd; --grid: #e1e0d9; --axis: #c3c2b7;
   --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #6f6e68;
   --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100; --series-5: #e87ba4;
-  --pos: #2a78d6; --neg: #d03b3b; --good: #006300; --critical: #d03b3b; --warning: #8a5a00;
+  --pos: #1f66c1; --neg: #c22f2f; --good: #006300; --critical: #c22f2f; --warning: #8a5a00;
   --warn-bg: #fff6e0; --warn-border: #fab219; --info-bg: #eef4fc; --info-border: #86b6ef;
   --err-bg: #fdecec; --err-border: #e34948; --chip: #efeee9; --shadow: rgba(0,0,0,.12);
 }
@@ -2599,6 +2811,7 @@ body { background: var(--surface-0); color: var(--text-primary);
 header.top .hrow { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
 header.top h1 { font-size: 24px; line-height: 1.25; margin: 0 0 4px; letter-spacing: -0.01em; }
 header.top .sub { margin: 0; color: var(--text-secondary); }
+p.limits { margin: 8px 0 4px; color: var(--text-secondary); font-size: 13.5px; max-width: 110ch; }
 .toggle { flex: none; font: inherit; font-size: 12px; background: var(--chip); border: 1px solid var(--border);
   color: var(--text-secondary); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
 .banner { display: flex; gap: 12px; align-items: flex-start; margin: 16px 0 8px; padding: 12px 14px;
@@ -2622,7 +2835,7 @@ span.wrap.w2 { min-width: 260px; }
   overflow-wrap: normal; }
 .tile .s { font-size: 12.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .tile .s .tag { margin-right: 2px; }
-.tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; padding: 0 5px; border-radius: 4px;
+.tag { font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; padding: 0 5px; border-radius: 4px;
   border: 1px solid var(--border); color: var(--text-muted); white-space: nowrap; }
 .t-fait { color: var(--good); border-color: currentColor; }
 .t-estimation { color: var(--pos); border-color: currentColor; }

@@ -290,8 +290,8 @@ def test_manual_bearish_note_changes_the_index_score_in_direct_mode_only(tmp_pat
     w = ie.COMPONENT_WEIGHTS
     avail = {k: b[f"z_{c}"] for k, c in (("tendance", "trend"), ("valorisation", "valuation"), ("largeur", "breadth"),
                                            ("regime", "regime")) if pd.notna(b[f"z_{c}"])}
-    expected = (sum(w[k] * v for k, v in avail.items()) + w["notes"] * d["z_notes"]) / (
-        sum(w[k] for k in avail) + w["notes"])
+    # Surcouche additive (recette du 22/11/2026) : score sans notes + 0,15 × z notes, sans diluer les autres.
+    expected = sum(w[k] * v for k, v in avail.items()) / sum(w[k] for k in avail) + w["notes"] * d["z_notes"]
     assert d["composite"] == pytest.approx(expected)
     det = d["notes_detail"]
     assert [e["note_id"] for e in det] == [nid] and det[0]["part"] == pytest.approx(-0.8)

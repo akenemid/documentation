@@ -188,7 +188,7 @@ def test_security_headers_and_nonce(ui):
     nonce = re.search(r"script-src 'nonce-([^']+)'", csp).group(1)
     assert f'<script nonce="{nonce}">' in body and "default-src 'none'" in csp and "frame-ancestors 'none'" in csp
     assert h["x-frame-options"] == "DENY" and h["x-content-type-options"] == "nosniff"
-    assert h["referrer-policy"] == "no-referrer" and h["cache-control"] == "no-store"
+    assert h["referrer-policy"] == "same-origin" and h["cache-control"] == "no-store"
     assert "Python" not in h.get("server", "")
     # thème clair/sombre, gouttière et tableau défilant pour téléphone
     assert "prefers-color-scheme: dark" in body and ':root[data-theme="dark"]' in body and ".tablewrap" in body
@@ -406,7 +406,7 @@ def test_indices_dossier_explain_and_s1_refusal(ui):
     status, _, body = call(ui, "GET", "/indices?date=2020-01-02")
     assert status == 400 and "échantillon vierge S1" in body and len(ui.services.calls) == n
     status, _, body = call(ui, "GET", "/indices/dossier?code=IDX:BRVM-30")
-    assert status == 200 and "Notes qui l" in body and "Note &lt;b&gt;" in body and "seuil chiffré" in body
+    assert status == 200 and "Notes récentes qui l" in body and "Note &lt;b&gt;" in body and "seuil chiffré" in body
     status, _, body = call(ui, "GET", "/indices/dossier?code=%3Cscript%3E")
     assert status == 400 and "<script>" not in body.split("<main>")[1]
     status, _, body = call(ui, "GET", "/expliquer?symbole=snts")

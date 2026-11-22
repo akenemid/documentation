@@ -67,10 +67,10 @@ def test_ui_indices_page_flags_a_stance_changed_by_the_notes_component_only(ui_d
     ui_direct.services.evaluate_indices = evaluation
     status, _, body = call(ui_direct, "GET", "/indices")
     assert status == 200
-    assert "Position fragile : elle ne change que par le poids de la composante « notes »." in body
+    assert "Position changée par les notes : sans elles, la position serait différente." in body
     assert ("<li>BRVM Composite : NEUTRE avec les notes (score −0,44), SOUS-PONDÉRER sans (score −0,53) ; z notes "
             "+0,09</li>") in body
     assert body.count("sans notes : ") == 1 and "BRVM 30 : " not in body
     assert '<span class="muted">sans notes : <span class="nw">SOUS-PONDÉRER</span></span>' in body
-    assert "aucune pondération n&#x27;a été modifiée" in body
+    assert "une note négative que l&#x27;abaisser" in body
     assert not any(piece in body for piece in ESCAPED_BLOCK)

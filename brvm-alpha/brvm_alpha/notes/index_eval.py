@@ -31,16 +31,27 @@ avant), :func:`evaluate_indices` calcule, **uniquement avec des données datées
   si au moins une note a une contribution non nulle : des notes de score nul ne diluent pas
   les autres composantes.
 
-**Score composite** : moyenne pondérée explicite de z-scores bornés à ±3
-(:data:`COMPONENT_WEIGHTS` : tendance 0,30, valorisation 0,25, largeur 0,15, régime 0,15,
-notes 0,15 ; une composante sans donnée est retirée et les poids sont renormalisés) :
+**Score composite** : moyenne pondérée explicite de z-scores bornés à ±3 des quatre composantes
+de marché (:data:`COMPONENT_WEIGHTS` : tendance 0,30, valorisation 0,25, largeur 0,15, régime
+0,15 ; une composante sans donnée est retirée et les poids sont renormalisés) : c'est le score
+« sans notes ». La composante **notes** est une **surcouche additive** : score = score sans notes
++ 0,15 × z notes. Elle est donc monotone : une note positive ne peut que relever le score, une
+note négative que l'abaisser, et des notes de score presque nul ne le déplacent presque pas.
+(Jusqu'à la recette du 22/11/2026, les notes entraient dans la moyenne renormalisée : dès qu'une
+seule note portait un score, même négatif et de faible confiance, les autres composantes étaient
+diluées de 15 % et le BRVM Composite passait de SOUS-PONDÉRER à NEUTRE, dans le sens contraire
+de la note.) Chaque note **automatique** pèse par la **confiance** de son analyse
+(``analysis.confidence``, 1 si absente) ; une note de l'analyste pèse en entier (sa conviction est
+déjà dans son score). Choix de conception, non validé hors échantillon.
+
 
 - tendance = moyenne des z du rendement 3 mois, du rendement 12 mois et de l'écart à la
   moyenne 200 séances, chacun contre son historique ;
 - valorisation = moyenne de ``−z(PER)`` et de ``z(rendement)`` (positif = bon marché) ;
 - largeur = moyenne des z (part > MM50, part > MM200, log hausses/baisses 20 séances) ;
 - régime = +1 haussier, 0 neutre, −1 baissier, −2 stress ;
-- notes = score des notes / 0,5 (une note récente de score 0,5 vaut z = 1), borné.
+- notes = score des notes (les notes automatiques pondérées par leur confiance) / 0,5 (une note
+  récente de score 0,5 et de confiance 1 vaut z = 1), borné.
 
 ``stance`` : SURPONDÉRER si composite > +0,5, SOUS-PONDÉRER si < −0,5, NEUTRE sinon.
 ``confidence`` = qualité des données × (0,3 + 0,4 × accord + 0,3 × marge), bornée à
@@ -910,6 +921,15 @@ def _notes_component(ctx: _Ctx, code: str, members: list[str], con: pd.DataFrame
     if con is None or not len(con):
         return out
     alias = index_aliases(code)
+    # Chaque note AUTOMATIQUE pèse par la confiance de son analyse (une note lue par OCR, de confiance
+    # 0,56, compte 0,56). Une note de l'analyste pèse en entier : sa conviction est déjà dans son score.
+    con = con.copy()
+    conf = pd.Series(1.0, index=con.index)
+    if "confidence" in con:
+        auto = con["author"].astype(str) != "analyste" if "author" in con else pd.Series(True, index=con.index)
+        conf = pd.to_numeric(con["confidence"], errors="coerce").fillna(1.0).clip(0.0, 1.0).where(auto, 1.0)
+    con["contribution_brute"] = con["contribution"]
+    con["contribution"] = con["contribution"] * conf
     d = con[con["target"].isin(alias) & (con["relation"] == "directe")]
     c = con[con["target"].isin(members) & (con["kind"] == "symbol") & ~con["source_target"].isin(alias)]
     v = ctx.value.loc[ctx.value.index > ctx.date - pd.DateOffset(months=LIQUIDITY_MONTHS)]
@@ -937,10 +957,20 @@ def _notes_component(ctx: _Ctx, code: str, members: list[str], con: pd.DataFrame
                 "note_id": str(r["note_id"]), "title": r.get("title") or "", "author": r.get("author"),
                 "event_type": r.get("event_type"), "note_score": float(r["note_score"]), "decay": float(r["decay"]),
                 "first_tradable_session": pd.Timestamp(r["first_tradable_session"]), "targets": [], "part": 0.0,
-                "via": rel_default})
+                "via": rel_default, "source_targets": [], "relation": str(r.get("relation") or ""),
+                "propagation": None, "confidence": _fin(r.get("confidence")),
+                "published_at": r.get("published_at"), "created_at": r.get("created_at")})
             e["part"] += val
             if r["target"] not in e["targets"]:
                 e["targets"].append(r["target"])
+            # Cible SAISIE dans la note (« IDX:BRVM-C », « PAYS:CI », « SNTS ») : pour une note propagée
+            # (indice, pays, secteur, marché, thème), ce n'est pas le constituant atteint.
+            src = str(r.get("source_target") or r["target"])
+            if src not in e["source_targets"]:
+                e["source_targets"].append(src)
+            if str(r.get("relation") or "") != "directe":
+                e["relation"] = str(r.get("relation") or "")
+                e["propagation"] = abs(float(r.get("weight") or 0.0)) or None
     ranked = sorted(detail.values(), key=lambda e: -abs(e["part"]))
     out.update({"notes_index": idx, "notes_constituents": const, "notes_n": n,
                 "notes_n_index": int(d["note_id"].nunique()), "notes_n_constituents": int(c["note_id"].nunique()),
@@ -950,6 +980,30 @@ def _notes_component(ctx: _Ctx, code: str, members: list[str], con: pd.DataFrame
         out["notes_score"] = raw
         out["z_notes"] = float(np.clip(raw / NOTES_SCALE, -Z_CLIP, Z_CLIP))
     return out
+
+
+def note_detail_text(e: Mapping[str, Any], title_len: int = 70) -> str:
+    """« Titre » (cible saisie[, propagée aux constituants × 0,25], note du JJ/MM/AAAA, score, part).
+
+    La cible affichée est celle de la **note** (``IDX:BRVM-C``), pas les premiers constituants qu'elle
+    atteint ; la date est celle de la publication (note collectée) ou de la saisie (note de l'analyste).
+    """
+    src = [str(x) for x in (e.get("source_targets") or e.get("targets") or [])][:3]
+    who = ", ".join(src) or "cible n.d."
+    if e.get("propagation") and str(e.get("relation") or "") not in ("", "directe"):
+        who += f", propagée aux constituants × {_num(float(e['propagation']), 2)}"
+    manual = str(e.get("author") or "") == "analyste"
+    when = e.get("created_at") if manual else e.get("published_at")
+    if when is None or (isinstance(when, float) and when != when) or when is pd.NaT:
+        when = e.get("published_at") if manual else e.get("created_at")
+    date_txt = ""
+    try:
+        if when is not None and when is not pd.NaT and when == when:
+            date_txt = f", note {'saisie' if manual else 'publiée'} le {_date(pd.Timestamp(when))}"
+    except (TypeError, ValueError):
+        date_txt = ""
+    return (f"« {str(e.get('title') or '(sans titre)')[:title_len]} » ({who}{date_txt}, score "
+            f"{_signed(float(e.get('note_score') or 0.0), 2)}, part {_signed(float(e.get('part') or 0.0), 3)})")
 
 
 def _stance_support(stance: str, composite: float | None, avail: Mapping[str, float],
@@ -973,6 +1027,20 @@ def _stance_support(stance: str, composite: float | None, avail: Mapping[str, fl
         agree = 0.0 if tot <= 1e-12 else sum(weights[k] * max(0.0, sgn * v) for k, v in avail.items()) / tot
         margin = (composite - STANCE_UP) if sgn > 0 else (STANCE_DOWN - composite)
     return float(np.clip(agree, 0.0, 1.0)), float(max(margin, 0.0))
+
+
+def combine_with_notes(composite_ex: float | None, z_notes: float | None, w_notes: float) -> float | None:
+    """Score composite : score des composantes de marché **plus** ``w_notes × z_notes`` (surcouche additive).
+
+    Sans composante « notes » (aucune note porteuse d'un score) : le score sans notes, inchangé. Sans
+    aucune composante de marché : le z des notes seul. La fonction est croissante en ``z_notes`` :
+    c'est la propriété contrôlée par la recette (une note négative ne relève jamais un score).
+    """
+    if z_notes is None or not np.isfinite(z_notes) or w_notes <= 0:
+        return composite_ex
+    if composite_ex is None:
+        return float(z_notes)
+    return float(composite_ex + w_notes * z_notes)
 
 
 def _stance(composite: float | None) -> str:
@@ -1064,12 +1132,14 @@ def _evaluate_one(code: str, ctx: _Ctx, con: pd.DataFrame | None, weights: Mappi
     comps = {"tendance": z_trend, "valorisation": z_val, "largeur": z_br, "regime": z_reg, "notes": nt["z_notes"]}
     avail = {k: v for k, v in comps.items() if v is not None and np.isfinite(v) and weights.get(k, 0) > 0}
     wsum = sum(weights[k] for k in avail)
-    composite = float(sum(weights[k] * avail[k] for k in avail) / wsum) if wsum > 0 else None
-    stance = _stance(composite)
-    # Score sans la composante « notes » (transparence : effet des notes sur la position).
+    # Score sans la composante « notes » : moyenne des composantes de marché disponibles (poids renormalisés).
     rest = {k: v for k, v in avail.items() if k != "notes"}
     wrest = sum(weights[k] for k in rest)
     composite_ex = float(sum(weights[k] * rest[k] for k in rest) / wrest) if wrest > 0 else None
+    # Les notes sont une surcouche additive et monotone : score = score sans notes + poids × z notes.
+    # Une note négative ne peut pas relever le score, une note presque nulle ne le déplace presque pas.
+    composite = combine_with_notes(composite_ex, avail.get("notes"), weights.get("notes", 0.0))
+    stance = _stance(composite)
     wall = sum(v for v in weights.values() if v > 0)
     coverage = wsum / wall if wall > 0 else 0.0
     agreement, margin = _stance_support(stance, composite, avail, weights)
@@ -1183,20 +1253,19 @@ def _reasons(row: dict[str, Any], info: dict[str, Any], ex: dict[str, Any], wind
                  "directionnelle) ; composante exclue du score.")
     elif nt["notes_n"]:
         notes_nd = ""
-        R.append(f"Notes{when} : score {_signed(nt['notes_score'], 3)} ({nt['notes_n']} note(s) en vigueur : "
-                 f"{_signed(nt['notes_index'], 3)} sur l'indice et ses alias, {_signed(nt['notes_constituents'], 3)} pour "
-                 f"les constituants pondérés par la valeur échangée sur 6 mois) ; z notes {_z_txt(row['z_notes'])}.")
+        R.append(f"Notes{when} : score {_signed(nt['notes_score'], 3)} ({nt['notes_n']} note(s) en vigueur, les notes "
+                 f"automatiques pondérées par leur confiance : {_signed(nt['notes_index'], 3)} sur l'indice et ses alias, "
+                 f"{_signed(nt['notes_constituents'], 3)} pour les constituants pondérés par la valeur échangée sur "
+                 f"6 mois) ; z notes {_z_txt(row['z_notes'])}.")
         top = [e for e in nt.get("notes_detail") or []][:3]
         if top:
-            R.append("Notes qui portent la composante : " + " ; ".join(
-                f"« {str(e['title'])[:70]} » ({', '.join(e['targets'][:3])}, score {_signed(e['note_score'], 2)}, "
-                f"part {_signed(e['part'], 3)})" for e in top) + ".")
+            R.append("Notes qui portent la composante : " + " ; ".join(note_detail_text(e) for e in top) + ".")
         if row.get("composite_ex_notes") is not None and row.get("composite") is not None:
             flip = "" if row["stance_ex_notes"] == row["stance"] else (
-                " : la position change à cause de cette composante (elle pèse "
-                f"{_num(100 * ex['weights'].get('notes', 0), 0)} % du score dès qu'une note porte un score, même faible)")
-            R.append(f"Effet des notes : sans la composante notes, le score composite serait "
-                     f"{_z_txt(row['composite_ex_notes'])} ({row['stance_ex_notes']}) ; avec elle, "
+                " : la position change par l'effet des notes (elles font franchir le seuil)")
+            R.append(f"Effet des notes : sans les notes, le score composite serait "
+                     f"{_z_txt(row['composite_ex_notes'])} ({row['stance_ex_notes']}) ; avec elles "
+                     f"(+ {_num(ex['weights'].get('notes', 0), 2)} × z notes), "
                      f"{_z_txt(row['composite'])} ({row['stance']}){flip}.")
     else:
         notes_nd = "n.d. : aucune note en vigueur" if nm is not None else "n.d. : aucun journal de notes"
@@ -1205,11 +1274,18 @@ def _reasons(row: dict[str, Any], info: dict[str, Any], ex: dict[str, Any], wind
     R.append(f"Composition ({row['n_constituents']} titres) : {row['composition']}.")
     w = ex["weights"]
     parts = []
+    w_rest = sum(w.get(k, 0) for k in ex["avail"] if k != "notes")
     for k, lab_k in (("tendance", "tendance"), ("valorisation", "valorisation"), ("largeur", "largeur"),
                      ("regime", "régime"), ("notes", "notes")):
         z = ex["avail"].get(k)
         nd = notes_nd if k == "notes" and notes_nd else "n.d."
-        parts.append(f"{lab_k} {_z_txt(z)} × {_num(w.get(k, 0), 2)}" if z is not None else f"{lab_k} {nd}")
+        if z is None:
+            parts.append(f"{lab_k} {nd}")
+        elif k == "notes":
+            # surcouche additive : le poids des notes ne dilue pas les autres composantes
+            parts.append(f"plus notes {_z_txt(z)} × {_num(w.get(k, 0), 2)}")
+        else:
+            parts.append(f"{lab_k} {_z_txt(z)} × {_num(w.get(k, 0) / w_rest if w_rest > 0 else 0.0, 2)}")
     comp = row["composite"]
     lean = ""
     if row["stance"] == "NEUTRE" and comp is not None:
@@ -1575,10 +1651,17 @@ def index_dossier(
                   & (con["first_tradable_session"] >= t - pd.Timedelta(days=recent_days))]
         for nid, g in rel.groupby("note_id", sort=False):
             r0 = g.iloc[0]
+            # ``source_targets`` : cibles SAISIES dans la note (« IDX:BRVM-C ») ; ``targets`` : cibles atteintes
+            # (constituants, pour une note propagée) ; ``propagation`` : poids de propagation, sinon ``None``.
+            prop_rows = g[g["relation"] != "directe"]
             recent.append({"note_id": nid, "first_tradable_session": r0["first_tradable_session"], "title": r0["title"],
                            "event_type": r0["event_type"], "author": r0["author"], "score": r0["note_score"],
                            "targets": sorted(set(g["target"])), "decay": float(g["decay"].max()),
-                           "risk_flags": r0["risk_flags"]})
+                           "risk_flags": r0["risk_flags"],
+                           "source_targets": sorted({str(x) for x in g["source_target"].dropna()}),
+                           "propagation": float(prop_rows["weight"].abs().max()) if len(prop_rows) else None,
+                           "relation": str(prop_rows["relation"].iloc[0]) if len(prop_rows) else "directe",
+                           "published_at": r0.get("published_at"), "created_at": r0.get("created_at")})
         recent.sort(key=lambda d: d["first_tradable_session"], reverse=True)
     cal = _calendar(ctx, code, members, ev.extras["div"].get("div_table"), t)
     cmm = _change_my_mind(row, ev.extras, s)

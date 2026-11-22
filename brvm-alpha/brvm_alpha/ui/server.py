@@ -11,7 +11,10 @@ Sécurité (aucune authentification : l'interface est réservée à la machine l
 - corps limité à :data:`MAX_BODY_BYTES` (413 au-delà, 411 sans ``Content-Length``), seul
   ``application/x-www-form-urlencoded`` est accepté (415), nombre de champs borné ;
 - échappement HTML systématique (:mod:`.pages`), politique CSP stricte (script autorisé par nonce,
-  aucune ressource externe), ``X-Frame-Options``, ``nosniff``, ``no-referrer``, ``no-store`` ;
+  aucune ressource externe), ``X-Frame-Options``, ``nosniff``, ``Referrer-Policy: same-origin``
+  (rien n'est envoyé à un autre site ; avec ``no-referrer`` un navigateur envoie ``Origin: null``
+  sur un POST de même origine et tous les formulaires étaient refusés : recette du 22/11/2026),
+  ``no-store`` ;
 - aucune exécution de commande système ; **aucun chemin de fichier tiré de l'entrée** : les fichiers
   servis (rapports) sont choisis dans la liste ``reports/*.html`` dressée par le serveur, les
   rapports régénérés sont écrits sous un nom construit à partir de la date du panel.
@@ -58,6 +61,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = cli.DEFAULT_PORT
 LOCAL_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 RESEARCH_MAX_REQUESTS = 150
+#: Politique de référent des pages : l'adresse n'est transmise qu'au serveur lui-même. Ne pas
+#: revenir à ``no-referrer`` : le navigateur envoie alors ``Origin: null`` sur les formulaires.
+REFERRER_POLICY = P.REFERRER_POLICY
 #: Lecture du contenu des documents après une recherche : nombre par défaut et maximum.
 RESEARCH_MAX_DOCS_DEFAULT = 20
 RESEARCH_MAX_DOCS = 60
@@ -654,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
                    "frame-ancestors 'none'; base-uri 'none'")
             frame = "DENY"
         return {"Content-Security-Policy": csp, "X-Frame-Options": frame, "X-Content-Type-Options": "nosniff",
-                "Referrer-Policy": "no-referrer", "Cache-Control": "no-store",
+                "Referrer-Policy": REFERRER_POLICY, "Cache-Control": "no-store",
                 "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Resource-Policy": "same-origin",
                 "Permissions-Policy": "camera=(), microphone=(), geolocation=()"}
 
@@ -707,12 +713,21 @@ class Handler(BaseHTTPRequestHandler):
         return (int(port) if port else 80) == self.server.port
 
     def _check_origin(self) -> bool:
-        site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+        """Vrai si la requête vient de l'interface elle-même.
+
+        ``Sec-Fetch-Site`` (posé par le navigateur, non modifiable par une page) doit valoir
+        ``same-origin`` ou ``none`` quand il est présent. ``Origin`` doit désigner le serveur ;
+        ``Origin: null`` (origine masquée par une politique de référent) n'est accepté que si le
+        navigateur atteste ``Sec-Fetch-Site: same-origin``. Le jeton anti-CSRF reste exigé ensuite.
+        """
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
         if site and site not in ("same-origin", "none"):
             return False
         origin = self.headers.get("Origin")
         if origin is None:
             return True
+        if origin.strip().lower() == "null":
+            return site == "same-origin"
         try:
             u = urlsplit(origin)
         except ValueError:
@@ -1102,7 +1117,7 @@ def post_note_add(h: Handler, form: Mapping[str, list[str]]) -> None:
     from brvm_alpha.notes.store import NoteConflictError
 
     fields = ("cibles", "titre", "texte", "avis", "conviction", "horizon", "type", "source", "url", "publie_le",
-              "heure", "etiquettes")
+              "heure", "etiquettes", "veto", "forcer")
     v = {k: _first(form, k).strip() if k != "texte" else _first(form, k) for k in fields}
     try:
         conviction = int(v["conviction"]) if v["conviction"] else None
@@ -1124,8 +1139,19 @@ def post_note_add(h: Handler, form: Mapping[str, list[str]]) -> None:
         note = cli.make_manual_note(targets=[v["cibles"]] if v["cibles"] else None, title=v["titre"], text=v["texte"],
                                     stance=v["avis"] or None, conviction=conviction, horizon=horizon,
                                     source=v["source"] or None, url=v["url"] or None, published=published,
-                                    event_type=v["type"] or None, tags=tags)
+                                    event_type=v["type"] or None, tags=tags, veto=v["veto"] == "oui")
         store = h.server.services.notes_store()
+        # Même note envoyée deux fois (double clic, retour arrière, envoi répété) : refusée, sinon elle
+        # compterait double dans l'inclinaison et dans la composante « notes » des indices.
+        dup = note.note_id if note.note_id in store else store.find_duplicate(note)
+        if dup and v["forcer"] != "oui":
+            _render_notes(h, 409, _note_filters({}), form_values={**v, "doublon": dup},
+                          form_error=P.Safe(
+                              f"note déjà enregistrée (identifiant {P.esc(dup[:12])} : mêmes cibles, titre, texte, avis "
+                              f"et conviction) ; rien n'est ajouté. {P.link('/notes/fiche?id=' + P.q(dup), 'Ouvrir la note')}"
+                              ". Pour l'enregistrer une seconde fois (elle comptera double), cocher « Enregistrer "
+                              "quand même » puis renvoyer."))
+            return
         nid = store.add(note, analyze=True)
     except NoteConflictError as exc:
         _render_notes(h, 409, _note_filters({}), form_values=v, form_error=str(exc))

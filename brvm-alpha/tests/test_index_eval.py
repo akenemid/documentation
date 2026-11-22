@@ -477,7 +477,8 @@ def test_notes_component_index_plus_value_weighted_constituents(tmp_path, panel)
     eq = panel["equities"]
     v6 = eq[eq["date"] > pd.Timestamp("2026-11-20") - pd.DateOffset(months=6)].groupby("symbol")["value"].sum()
     c = row.loc["IDX:BRVM-C"]
-    exp_const = -0.6 * v6["SNTS"] / v6.sum()
+    # Note automatique : pondérée par la confiance de son analyse (0,7) ; note de l'analyste : en entier.
+    exp_const = -0.6 * 0.7 * v6["SNTS"] / v6.sum()
     assert c["notes_n"] == 2
     assert c["notes_score"] == pytest.approx(0.4 + exp_const)
     assert c["z_notes"] == pytest.approx(np.clip((0.4 + exp_const) / ie.NOTES_SCALE, -3, 3))
@@ -485,7 +486,7 @@ def test_notes_component_index_plus_value_weighted_constituents(tmp_path, panel)
     p = row.loc["IDX:PRESTIGE"]
     prest = [s for s in SYMS if SYMS[s][1] == "PRESTIGE"]
     s_i = pd.Series({s: 0.25 * 0.4 for s in prest})
-    s_i["SNTS"] += -0.6
+    s_i["SNTS"] += -0.6 * 0.7
     exp_p = float((v6[prest] * s_i).sum() / v6[prest].sum())
     assert p["notes_score"] == pytest.approx(exp_p)
     no = ie.evaluate_indices(panel, asof="2026-11-20", indices=["IDX:BRVM-C"]).loc["IDX:BRVM-C"]

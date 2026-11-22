@@ -31,6 +31,11 @@ import pandas as pd
 
 from brvm_alpha.cli import BANNER, RULES_POLITENESS, fr_date, fr_num, fr_pct
 
+#: Politique de référent (balise ``meta`` et en-tête HTTP). ``same-origin`` : l'adresse des pages
+#: n'est jamais transmise à un autre site, et le navigateur envoie la vraie origine sur les
+#: formulaires (avec ``no-referrer`` il envoie ``Origin: null`` et le serveur les refusait).
+REFERRER_POLICY = "same-origin"
+
 # ---------------------------------------------------------------------------
 # Échappement et petits composants
 # ---------------------------------------------------------------------------
@@ -396,7 +401,7 @@ def layout(ctx: PageContext, title: str, body: Any, *, active: str = "", flash: 
     return (
         "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
-        "<meta name=\"color-scheme\" content=\"light dark\">\n<meta name=\"referrer\" content=\"no-referrer\">\n"
+        "<meta name=\"color-scheme\" content=\"light dark\">\n<meta name=\"referrer\" content=\"" + REFERRER_POLICY + "\">\n"
         f"<title>{esc(title)} — BRVM Alpha</title>\n<style nonce=\"{n}\">{CSS}</style>\n"
         f"<script nonce=\"{n}\">{HEAD_JS}</script>\n</head>\n<body>\n"
         f"<header class=\"top\"><div class=\"in\"><a class=\"brand\" href=\"/\">BRVM Alpha</a>"
@@ -600,7 +605,7 @@ def notes_in_force_section(status: Mapping[str, Any] | None, indices: Any = None
             if det:
                 who: Any = Safe("<ul>" + "".join(
                     f"<li>{link('/notes/fiche?id=' + q(e.get('note_id')), str(e.get('title') or '(sans titre)')[:80])} "
-                    f"({esc(', '.join(map(str, (e.get('targets') or [])[:3])))}) : score "
+                    f"({esc(note_targets_text(e))} ; {esc(note_date_text(e))}) : score "
                     f"{esc(fr_num(e.get('note_score'), 2, True))}, part {esc(fr_num(e.get('part'), 3, True))}</li>"
                     for e in det) + "</ul>")
             else:
@@ -612,13 +617,43 @@ def notes_in_force_section(status: Mapping[str, Any] | None, indices: Any = None
                          fr_num(r.get("composite_ex_notes"), 2, True) + " → " + fr_num(r.get("composite"), 2, True),
                          who])
         parts += [Safe("<h3>Composante « notes » de chaque indice</h3>"
-                       '<p class="muted">z notes = score des notes / 0,5, borné à ±3, poids 0,15 du score composite ; '
-                       "« sans → avec » : score composite sans puis avec cette composante. Aide à la décision, pas "
-                       "un signal validé.</p>"),
+                       '<p class="muted">z notes = score des notes (les notes automatiques pondérées par leur confiance) / 0,5, borné à '
+                       "±3 ; les notes s'ajoutent au score des autres composantes (+ 0,15 × z notes) : une note "
+                       "positive ne peut que relever le score, une note négative que l'abaisser. « sans → avec » : "
+                       "score composite sans puis avec les notes. Aide à la décision, pas un signal validé.</p>"),
                   table(["Indice", "z notes", "Score des notes", "Composite sans → avec",
                          "Notes qui portent la composante"], rows)]
     parts.append(Safe("</section>"))
     return join(parts)
+
+
+#: Avertissement quand la position d'un indice diffère avec et sans les notes (pages et rapport).
+STANCE_FLIP_TITLE = "Position changée par les notes : sans elles, la position serait différente."
+STANCE_FLIP_TEXT = ("Les notes s'ajoutent au score des autres composantes (+ 0,15 × z notes ; une note automatique pèse par "
+                    "la confiance de son analyse) : une note positive ne peut que relever le score, une note négative que "
+                    "l'abaisser. Ici elles font franchir un seuil : lire ces indices avec leur position « sans "
+                    "notes ». Aide à la décision, pas un signal validé.")
+
+
+def note_targets_text(n: Any) -> str:
+    """Cible(s) saisie(s) dans la note ; pour une note propagée : « IDX:BRVM-C, propagée aux constituants × 0,25 »."""
+    src = [str(x) for x in (n.get("source_targets") or n.get("targets") or [])]
+    txt = ", ".join(src[:4]) + (" …" if len(src) > 4 else "")
+    prop = _val(n.get("propagation"))
+    if prop is not None and str(n.get("relation") or "directe") != "directe":
+        txt += f", propagée aux constituants × {fr_num(prop, 2)}"
+    return txt or "—"
+
+
+def note_date_text(n: Any) -> str:
+    """« saisie le … » (note de l'analyste) ou « publiée le … » (note collectée)."""
+    manual = str(n.get("author") or "") == "analyste"
+    for key, word in ((("created_at", "saisie"), ("published_at", "publiée")) if manual
+                      else (("published_at", "publiée"), ("created_at", "collectée"))):
+        v = _val(n.get(key))
+        if v is not None:
+            return f"{word} le {fr_date(v)}"
+    return "date n.d."
 
 
 def stance_flip(r: Any) -> str | None:
@@ -751,6 +786,12 @@ def note_form(ctx: PageContext, values: Mapping[str, Any] | None = None, error: 
           "(agit à la séance suivante)</div></div>"
         + f'<div><label for="etiquettes">Étiquettes</label><input type="text" id="etiquettes" name="etiquettes" '
           f'value="{esc(v.get("etiquettes", ""))}" placeholder="mots séparés par des virgules"></div>'
+        + '<div class="wide"><input type="checkbox" id="veto" name="veto" value="oui"'
+          + (" checked" if v.get("veto") == "oui" else "") + '> <label class="inline" for="veto">Veto (exclure le titre) : '
+          "aucun achat de la ou des cibles pendant l'horizon de la note ; pour le lever, archiver la note</label></div>"
+        + ('<div class="wide"><input type="checkbox" id="forcer" name="forcer" value="oui"> '
+           '<label class="inline" for="forcer">Enregistrer quand même (la note existe déjà : elle comptera double)'
+           "</label></div>" if v.get("doublon") else "")
         + '<div class="wide"><button type="submit">Enregistrer et analyser la note</button></div></form>'
         + TARGET_HELP
     )
@@ -992,11 +1033,9 @@ def page_indices(ctx: PageContext, *, evaluation: pd.DataFrame | None, asof: Any
                          fr_num(r.get("composite"), 2, True), notes_z_text(r)])
         if fragile:
             parts.append(box("warn", join([
-                Safe("<strong>Position fragile : elle ne change que par le poids de la composante « notes ».</strong>"
+                Safe(f"<strong>{esc(STANCE_FLIP_TITLE)}</strong>"
                      "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in fragile) + "</ul>"),
-                "La composante « notes » entre dans le score avec son poids entier dès qu'une note en vigueur porte un "
-                "score, même faible : elle rapproche alors le score de zéro sans apporter de signal fort. Lire ces "
-                "indices avec leur position « sans notes » ; aucune pondération n'a été modifiée."])))
+                STANCE_FLIP_TEXT])))
         parts.append(table(["Indice", "Niveau", "1 mois", "3 mois", "12 mois", "Depuis 31/12", "PER", "Rdt %",
                             "Position", "Confiance", "Score", "Notes (z)"], rows))
         parts.append(Safe("</section>"))
@@ -1025,14 +1064,18 @@ def page_dossier(ctx: PageContext, *, dossier: Mapping[str, Any] | None, code: s
                         Safe("<h3>Raisons</h3><ul>" + "".join(f"<li>{esc(s)}</li>" for s in d.get("reasons") or [])
                              + "</ul></section>")]
     notes = d.get("recent_notes") or []
-    nrows = [[fr_date(n.get("first_tradable_session")), link(f"/notes/fiche?id={q(n.get('note_id'))}", n.get("title") or "—"),
-              ", ".join(n.get("targets") or []), n.get("event_type") or "", n.get("author") or "",
+    nrows = [[nw(note_date_text(n)), nw(fr_date(n.get("first_tradable_session"))),
+              link(f"/notes/fiche?id={q(n.get('note_id'))}", n.get("title") or "—"),
+              note_targets_text(n), n.get("event_type") or "", n.get("author") or "",
               fr_num(n.get("score"), 2, True), fr_num(n.get("decay"), 2), ", ".join(n.get("risk_flags") or [])]
              for n in notes]
-    parts += [Safe('<section class="card"><h2>Notes qui l\'influencent</h2><p class="muted">Notes sur l\'indice, ses '
-                   "alias (MARCHE, secteur) et ses constituants, depuis 90 jours ; décroissance exp(−Δ/10 séances).</p>"),
-              table(["Négociable dès", "Titre", "Cibles", "Type", "Auteur", "Score", "Décroissance", "Filtres"], nrows,
-                    empty="Aucune note récente."), Safe("</section>")]
+    parts += [Safe(f'<section class="card"><h2>Notes récentes qui l\'influencent ({len(notes)})</h2><p class="muted">'
+                   "Notes de moins de 90 jours sur l'indice, ses alias (MARCHE, secteur) et ses constituants (les "
+                   "notes en vigueur sur les autres titres du marché ne sont pas listées ici) ; « Cible(s) de la "
+                   "note » : la cible saisie, et le poids de propagation quand la note vise un indice, un pays, un "
+                   "secteur ou le marché ; décroissance exp(−Δ/10 séances).</p>"),
+              table(["Note", "Agit depuis", "Titre", "Cible(s) de la note", "Type", "Auteur", "Score", "Décroissance",
+                     "Filtres"], nrows, empty="Aucune note récente."), Safe("</section>")]
     cons = d.get("constituents")
     if isinstance(cons, pd.DataFrame) and len(cons):
         crow = []

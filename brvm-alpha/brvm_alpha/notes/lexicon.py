@@ -14,7 +14,9 @@ jour, document 07 §3.6 et §7) : ses poids sont des hypothèses de départ.
 
 Règles de calcul (§3.4) appliquées par :func:`scan` :
 1. négation (« pas de », « absence de », « aucun », « sans », « non ») dans les 3 mots qui
-   précèdent le terme, dans la même proposition, ou négation verbale « ne / n' … pas |
+   précèdent le terme, dans la même proposition (le passage du titre au texte et un saut de
+   ligne suivi d'une majuscule, d'une puce ou d'un nombre terminent la proposition :
+   :func:`_hard_breaks`), ou négation verbale « ne / n' … pas |
    plus | jamais » entre le sujet et le verbe (« le résultat net ne progresse pas »,
    « le bénéfice n'est pas en hausse ») : signe inversé ; « ne … que » n'est pas une négation ;
 2. contraste : avec « malgré », « en dépit de », « bien que », la proposition concédée
@@ -38,7 +40,7 @@ from typing import Any
 
 from .model import fold, fold_with_map
 
-LEXICON_VERSION = "BRVM-FR v0 (document 07 §3.3, 22/11/2026) + ext v0.1"
+LEXICON_VERSION = "BRVM-FR v0 (document 07 §3.3, 22/11/2026) + ext v0.3"
 
 # ---------------------------------------------------------------------------
 # Briques d'expressions (texte normalisé)
@@ -152,7 +154,28 @@ TERMS: tuple[Term, ...] = (
          r"(?:baisse|diminution|recul|repli)\s+du\s+cout\s+du\s+risque|"
          r"cout\s+du\s+risque\s+(?:est\s+|reste\s+)?en\s+(?:baisse|recul|repli|diminution)|"
          r"(?:baisse|diminution|recul|repli)\s+des\s+creances\s+(?:en\s+souffrance|douteuses|improductives)|"
-         r"amelioration\s+du\s+coefficient\s+d'exploitation", 1, "pos"),
+         r"(?:amelioration|baisse|diminution|recul|repli)\s+du\s+coefficient\s+d'exploitation|"
+         r"coefficient\s+d'exploitation\s+(?:s'ameliore|en\s+(?:amelioration|baisse|recul|repli))", 1, "pos"),
+    # Extensions v0.3 (recette du 22/11/2026 : tournures directionnelles courantes restées sans score).
+    # Hypothèses de départ, non validées, comme le reste du lexique.
+    Term("réduction de la perte",
+         r"(?:reduction|diminution|baisse|recul|repli|resorption|allegement)\s+(?:de\s+la|de\s+sa|des|de\s+ses|d'une)\s+"
+         r"pertes?(?:\s+nettes?)?|pertes?(?:\s+nettes?)?\s+(?:se\s+redui(?:t|sent)|se\s+resorbe(?:nt)?|"
+         r"(?:est\s+|sont\s+)?(?:reduites?|divisees?|ramenees?)|en\s+(?:baisse|recul|repli|diminution|reduction))",
+         1, "pos", "rn", source="ext v0.3"),
+    Term("désendettement",
+         r"desendettement|(?:reduction|baisse|diminution|recul|repli|allegement)\s+"
+         r"(?:de\s+l'endettement(?:\s+net)?|de\s+la\s+dette(?:\s+(?:nette|financiere|bancaire))*)|"
+         r"(?:endettement(?:\s+net)?|dette\s+(?:nette|financiere))\s+en\s+(?:baisse|recul|repli|diminution)",
+         1, "pos", source="ext v0.3"),
+    Term("baisse des charges",
+         r"(?:baisse|reduction|diminution|recul|repli|maitrise)\s+des\s+(?:charges|frais\s+generaux|couts)"
+         r"(?:\s+(?:d'exploitation|generales?|operationnelles?|de\s+structure|de\s+personnel))?|"
+         r"charges(?:\s+(?:d'exploitation|generales?|operationnelles?))?\s+en\s+(?:baisse|recul|repli|diminution)",
+         1, "pos", source="ext v0.3"),
+    Term("levée des sanctions",
+         r"(?:levee|fin|suspension|allegement)\s+des\s+sanctions(?:\s+(?:economiques|financieres))?"
+         r"(?:\s+de\s+la\s+cedeao|\s+cedeao|\s+de\s+l'uemoa)?", 1, "pos", source="ext v0.3"),
     Term("levée de la suspension",
          r"levee\s+de\s+(?:la\s+)?suspension(?:\s+(?:de\s+(?:la\s+)?cotation|du\s+titre|des\s+titres))?|"
          r"reprise\s+de\s+(?:la\s+)?cotation", 1, "pos"),
@@ -207,8 +230,28 @@ TERMS: tuple[Term, ...] = (
     Term("perte nette",
          r"pertes?\s+nettes?|resultats?\s+nets?\s+negatifs?|resultats?\s+(?:nets?\s+)?deficitaires?|"
          r"(?:reste|demeure|devient|est)\s+deficitaire|deficitaires?|deficits?(?:\s+nets?)?", -2, "neg", "rn"),
+    Term("passage du bénéfice à la perte",
+         r"pass(?:age|e|ent)\s+(?:du|d'un)\s+benefice(?:\s+net)?\s+a\s+(?:la|une)\s+perte(?:\s+nette)?|"
+         r"(?:passe|bascule|tombe|plonge)(?:nt)?\s+dans\s+le\s+rouge|devient\s+deficitaire", -2, "neg", "rn",
+         source="ext v0.3"),
+    Term("hausse de l'endettement",
+         r"(?:hausse|augmentation|alourdissement|accroissement|progression|envolee)\s+"
+         r"(?:de\s+l'endettement(?:\s+net)?|du\s+niveau\s+d'endettement|de\s+la\s+dette(?:\s+(?:nette|financiere|bancaire))*)|"
+         r"(?:endettement(?:\s+net)?|dette\s+(?:nette|financiere))\s+en\s+(?:hausse|progression|augmentation)|surendettement",
+         -1, "neg", source="ext v0.3"),
+    Term("hausse des charges",
+         r"(?:hausse|augmentation|alourdissement|envolee|derapage)\s+des\s+(?:charges|frais\s+generaux|couts)"
+         r"(?:\s+(?:d'exploitation|generales?|operationnelles?|de\s+structure|de\s+personnel))?|"
+         r"charges(?:\s+(?:d'exploitation|generales?|operationnelles?))?\s+en\s+(?:hausse|progression|augmentation)",
+         -1, "neg", source="ext v0.3"),
+    Term("dégradation du coefficient d'exploitation",
+         r"(?:deterioration|degradation|hausse|augmentation)\s+du\s+coefficient\s+d'exploitation|"
+         r"coefficient\s+d'exploitation\s+(?:se\s+degrade|se\s+deteriore|en\s+(?:hausse|degradation|deterioration))",
+         -1, "neg", source="ext v0.3"),
     Term("absence de dividende",
          r"(?:absence|suspension|suppression)\s+(?:de\s+|du\s+)(?:versement\s+(?:de\s+|du\s+|d'un\s+)?)?dividendes?|"
+         r"dividendes?(?:\s+(?:nets?|bruts?|par\s+action|ordinaires?))*\s+(?:est\s+|a\s+ete\s+|sera\s+|sont\s+)?"
+         r"(?:supprimes?|suspendus?|annules?)|"
          r"pas\s+de\s+dividendes?|aucun\s+dividende|sans\s+dividende|"
          r"ne\s+(?:pas\s+)?(?:verser|distribuer)\s+(?:de\s+)?dividendes?|"
          r"ne\s+(?:versera|distribuera|verse|distribue)\s+(?:pas|aucun)\s+(?:de\s+)?dividendes?",
@@ -429,6 +472,51 @@ def _conceded_spans(norm: str, a: int, b: int) -> list[tuple[int, int]]:
     return spans
 
 
+def _hard_breaks(full: str, norm: str, idx: list[int], junction: int | None = None) -> list[int]:
+    """Positions (dans ``norm``) des sauts de ligne qui terminent une proposition.
+
+    La normalisation remplace le saut de ligne par une espace : sans ce repère, une négation
+    passait du titre au texte, ou d'une ligne à la suivante (« Etats financiers non audités » +
+    « Dividende relevé » était lu « non … dividende relevé », signe inversé : recette du
+    22/11/2026). Un saut de ligne termine la proposition quand il sépare le titre du texte
+    (``junction`` : indice du saut dans ``full``), quand il est double (paragraphe), ou quand la
+    ligne suivante ne commence pas par une minuscule (titre, puce, nombre). Une ligne qui reprend
+    en minuscule est la suite d'une phrase coupée par la mise en page (texte de PDF) : pas de
+    coupure, « aucune / baisse du résultat » reste une négation.
+    """
+    out: list[int] = []
+    n = len(norm)
+    for k in range(n):
+        if norm[k] != " ":
+            continue
+        a = idx[k]
+        b = idx[k + 1] if k + 1 < n else len(full)
+        run = full[a:b]
+        if "\n" not in run:
+            continue
+        nxt = full[b:b + 1]
+        if (junction is not None and a <= junction < b) or run.count("\n") >= 2 or not nxt.islower():
+            out.append(k)
+    return out
+
+
+def _split_at(spans: list[tuple[int, int]], cuts: list[int]) -> list[tuple[int, int]]:
+    """Découpe des intervalles aux positions ``cuts`` (le caractère de coupure est retiré)."""
+    if not cuts:
+        return spans
+    out: list[tuple[int, int]] = []
+    for a, b in spans:
+        last = a
+        for c in cuts:
+            if a <= c < b:
+                if c > last:
+                    out.append((last, c))
+                last = c + 1
+        if last < b:
+            out.append((last, b))
+    return out
+
+
 def _tokens_before(norm: str, clause_start: int, pos: int, n: int) -> list[tuple[str, int]]:
     toks = [(m.group(0), m.start()) for m in _TOKEN.finditer(norm, clause_start, pos)]
     return toks[-n:] if n else toks
@@ -440,11 +528,12 @@ def scan(text: str, title: str = "") -> list[TermHit]:
     Les chevauchements sont résolus au profit du terme le plus long (une forme neutre
     plus longue neutralise un terme trompeur qu'elle contient).
     """
-    full = (title.strip() + "\n" if title and title.strip() else "") + (text or "")
+    head = title.strip() if title and title.strip() else ""
+    full = (head + "\n" if head else "") + (text or "")
     norm, idx = fold_with_map(full)
     if not norm:
         return []
-    sentences = _sentences(norm)
+    sentences = _split_at(_sentences(norm), _hard_breaks(full, norm, idx, len(head) if head else None))
 
     def _sentence_of(pos: int) -> tuple[int, int]:
         for a, b in sentences:
@@ -482,7 +571,7 @@ def scan(text: str, title: str = "") -> list[TermHit]:
         hit = TermHit(t.label, t.kind, float(t.weight), float(t.weight), t.indicator, t.risk, surface, s, e, si, source=t.source)
         if t.kind in ("pos", "neg"):
             _apply_modifiers(hit, norm, sa, sb, t)
-            _apply_context_guards(hit, norm[sa:sb])
+            _apply_context_guards(hit, norm[sa:sb], norm[sa:s])
         hits.append(hit)
     return hits
 
@@ -502,10 +591,20 @@ _COMPLETED_OPERATION_RX = re.compile(
 )
 
 
-def _apply_context_guards(hit: TermHit, sentence: str) -> None:
-    """Neutralise un terme à filtre de risque quand la phrase n'affirme rien : clause type d'un rapport
-    d'audit (R3) ou opération sur le capital déjà achevée (R5). Le terme reste listé, avec un poids nul."""
+#: « Retour aux bénéfices après deux exercices déficitaires », « redevient bénéficiaire après une perte
+#: nette en 2024 » : la perte introduite par « après » décrit la situation antérieure, pas la nouvelle.
+_PAST_STATE_RX = re.compile(r"(?<![a-z])apres(?:\s+[a-z0-9']+){0,4}\s*$")
+
+
+def _apply_context_guards(hit: TermHit, sentence: str, before: str = "") -> None:
+    """Neutralise un terme quand la phrase n'affirme rien : clause type d'un rapport d'audit (R3),
+    opération sur le capital déjà achevée (R5), ou perte introduite par « après » (situation antérieure ;
+    ``before`` = texte de la phrase qui précède le terme). Le terme reste listé, avec un poids nul."""
     if hit.weight == 0:
+        return
+    if hit.kind == "neg" and hit.indicator == "rn" and hit.risk is None and before and _PAST_STATE_RX.search(before):
+        hit.weight = 0.0
+        hit.modifiers.append("situation antérieure (« après … ») : sans portée")
         return
     if hit.risk == "R3" and _AUDIT_BOILERPLATE_RX.search(sentence):
         hit.weight = 0.0

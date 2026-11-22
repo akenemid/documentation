@@ -586,7 +586,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="date (ou date et heure UTC) de publication : AAAA-MM-JJ, « AAAA-MM-JJ HH:MM », JJ/MM/AAAA")
     na.add_argument("--type", dest="event_type", default=None, metavar="TYPE",
                     help="type d'événement (DIV_NOTICE, RES_ANNUAL, PROFIT_WARNING, MACRO…) ; défaut : détecté")
-    na.add_argument("--etiquette", action="append", default=None, metavar="MOT", help="étiquette (répétable)")
+    na.add_argument("--etiquette", action="append", default=None, metavar="MOT",
+                    help="étiquette (répétable) ; l'étiquette « veto » exclut la cible des achats (voir --veto)")
+    na.add_argument("--veto", action="store_true",
+                    help="veto manuel : la ou les cibles sont exclues des achats pendant l'horizon de la note "
+                         "(20 séances par défaut, --horizon) ; pour le lever : archiver la note")
+    na.add_argument("--forcer", action="store_true",
+                    help="enregistre la note même si une note active identique existe déjà (elle comptera deux fois)")
     na.add_argument("--format", choices=("texte", "json"), default="texte",
                     help="format de sortie (défaut : texte)")
 
@@ -1066,16 +1072,20 @@ def _split_targets(values: Sequence[str] | None) -> list[str]:
 def make_manual_note(*, targets: Sequence[str] | None = None, title: str = "", text: str = "",
                      stance: str | None = None, conviction: int | None = None, horizon: int | None = None,
                      source: str | None = None, url: str | None = None, published: str | None = None,
-                     event_type: str | None = None, tags: Sequence[str] | None = None) -> Any:
+                     event_type: str | None = None, tags: Sequence[str] | None = None, veto: bool = False) -> Any:
     """Construit une ``Note`` de l'analyste à partir d'une saisie (CLI ou interface web).
 
     ``source`` : texte libre (« rapport annuel », « presse ») conservé en étiquette ``source:…`` ;
     un code du contrat (``manual``, ``url``…) est appliqué tel quel. ``url`` : http(s) seulement.
+    ``veto=True`` pose l'étiquette ``veto`` : le titre visé est exclu des achats pendant l'horizon
+    de la note (:func:`brvm_alpha.notes.signals.manual_overlays`) ; il faut alors au moins une cible.
     Lève ``ValueError`` (message en français) pour une saisie invalide.
     """
     from brvm_alpha.notes.model import SOURCES, Note
 
-    title = str(title or "").strip()
+    # Un titre tient sur une ligne : sauts de ligne et blancs répétés ramenés à une espace (un titre
+    # sur plusieurs lignes cassait les listes et les avertissements de l'ordre de bataille en Markdown).
+    title = " ".join(str(title or "").split())
     text = str(text or "")
     if not title and not text.strip():
         raise ValueError("une note doit avoir un titre ou un texte")
@@ -1086,6 +1096,10 @@ def make_manual_note(*, targets: Sequence[str] | None = None, title: str = "", t
         raise ValueError("adresse invalide : http:// ou https:// attendu")
     src = "manual"
     tag_list = [str(t).strip() for t in (tags or []) if str(t).strip()]
+    if veto and not any(t.lower() == "veto" for t in tag_list):
+        tag_list.append("veto")
+    if any(t.lower() == "veto" for t in tag_list) and not _split_targets(targets):
+        raise ValueError("veto : donner au moins une cible (le titre à exclure), par exemple --cible ORAC")
     s = str(source or "").strip()
     if s:
         if s.lower() in SOURCES:
@@ -1119,6 +1133,12 @@ def make_manual_note(*, targets: Sequence[str] | None = None, title: str = "", t
     return Note(**kw)
 
 
+def duplicate_message(note_id: str) -> str:
+    """Refus d'une note manuelle saisie deux fois (même contenu qu'une note active récente)."""
+    return (f"refusé : note déjà enregistrée (identifiant {str(note_id)[:12]} : mêmes cibles, titre, texte, avis et "
+            "conviction) ; rien n'est ajouté, sinon la note compterait double.")
+
+
 def _analysis_lines(an: dict[str, Any] | None) -> list[str]:
     if not an:
         return ["Analyse : non disponible."]
@@ -1136,10 +1156,44 @@ def _analysis_lines(an: dict[str, Any] | None) -> list[str]:
     return lines
 
 
+#: Libellés français des codes du journal (statut, source, opération) : affichage seulement.
+STATUS_FR = {"active": "active", "archived": "archivée"}
+SOURCE_FR = {"manual": "saisie manuelle", "brvm_list": "liste brvm.org", "brvm_issuer": "page de l'émetteur (brvm.org)",
+             "boc": "BOC", "url": "page fournie (URL)"}
+OP_FR = {"add": "ajout", "update": "modification", "archive": "archivage", "enrich": "lecture du document"}
+
+
+def status_fr(code: Any) -> str:
+    return STATUS_FR.get(str(code or ""), str(code or "n.d."))
+
+
+def source_fr(code: Any) -> str:
+    return SOURCE_FR.get(str(code or ""), str(code or "n.d."))
+
+
+def op_fr(code: Any) -> str:
+    return OP_FR.get(str(code or ""), str(code or ""))
+
+
+def is_veto_note(n: Any) -> bool:
+    """Note de l'analyste étiquetée « veto » (même règle que ``signals._is_veto``)."""
+    tags = [str(t).lower() for t in (getattr(n, "tags", None) or [])]
+    return getattr(n, "author", "") == "analyste" and any(t == "veto" or t.startswith("veto:") for t in tags)
+
+
+def veto_line(n: Any) -> str | None:
+    """« Veto posé sur ORAC … (horizon 20 séances) » pour une note de veto, sinon ``None``."""
+    if not is_veto_note(n):
+        return None
+    syms = ", ".join(n.targets or []) or "aucune cible reconnue"
+    return (f"Veto posé sur {syms} : aucun achat à partir de la séance du {fr_date(n.first_tradable_session)}, "
+            f"pendant {int(n.horizon_days)} séances (horizon de la note) ; pour le lever : archiver la note.")
+
+
 def _note_summary(n: Any) -> list[str]:
-    lines = [f"Note {n.note_id[:12]} (version {n.version}, {n.status}) — {n.title or '(sans titre)'}",
+    lines = [f"Note {n.note_id[:12]} (version {n.version}, {status_fr(n.status)}) — {n.title or '(sans titre)'}",
              f"Publiée le {fr_date(n.published_at)} ; négociable à partir du {fr_date(n.first_tradable_session)} ; "
-             f"auteur {n.author} ; source {n.source}" + (f" ({n.url})" if n.url else "")]
+             f"auteur {n.author} ; source {source_fr(n.source)}" + (f" ({n.url})" if n.url else "")]
     if n.targets:
         lines.append("Cibles saisies : " + ", ".join(n.targets))
     if n.targets_unknown:
@@ -1149,6 +1203,9 @@ def _note_summary(n: Any) -> list[str]:
                      + f", horizon {n.horizon_days} séances")
     if n.tags:
         lines.append("Étiquettes : " + ", ".join(n.tags))
+    v = veto_line(n)
+    if v:
+        lines.append(v)
     return lines
 
 
@@ -1196,7 +1253,13 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         text = args.texte if args.texte is not None else (_read_text_file(args.fichier) if args.fichier else "")
         note = make_manual_note(targets=args.cible, title=args.titre, text=text, stance=args.avis,
                                 conviction=args.conviction, horizon=args.horizon, source=args.source, url=args.url,
-                                published=args.publie_le, event_type=args.event_type, tags=args.etiquette)
+                                published=args.publie_le, event_type=args.event_type, tags=args.etiquette,
+                                veto=bool(getattr(args, "veto", False)))
+        existed = note.note_id in store
+        dup = None if existed else store.find_duplicate(note)
+        if dup and not getattr(args, "forcer", False):
+            _say(duplicate_message(dup) + " Pour l'enregistrer quand même : --forcer.")
+            return 2
         try:
             nid = store.add(note, analyze=True)
         except NoteConflictError as exc:
@@ -1204,9 +1267,10 @@ def _cmd_notes(args: argparse.Namespace) -> int:
             return 2
         saved = store.get(nid)
         if args.format == "json":
-            _print_json({"bandeau": BANNER, "note": saved.to_dict()})
+            _print_json({"bandeau": BANNER, "note": saved.to_dict(), "deja_enregistree": bool(existed)})
             return 0
-        print(f"Note enregistrée : {nid}")
+        print(f"Note déjà enregistrée : {nid} (même identifiant ; rien n'est ajouté au journal)" if existed
+              else f"Note enregistrée : {nid}")
         print("\n".join(_note_summary(saved) + _analysis_lines(saved.analysis)))
         print(_note_effect_line(saved))
         print(BANNER)
@@ -1226,7 +1290,7 @@ def _cmd_notes(args: argparse.Namespace) -> int:
             print("Aucune note.")
             return 0
         rows = [[r.note_id[:12], fr_date(r.published_at), ", ".join(r.all_targets or [])[:28] or "—",
-                 (r.title or "(sans titre)")[:48], fr_num(r.score, 2, True), r.status] for r in df.itertuples()]
+                 (r.title or "(sans titre)")[:48], fr_num(r.score, 2, True), status_fr(r.status)] for r in df.itertuples()]
         print(_table(rows, ["Id", "Publiée", "Cibles", "Titre", "Score", "Statut"]))
         print(f"{len(df)} note(s). {BANNER}")
         return 0
@@ -1244,7 +1308,7 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         print("\n".join(_analysis_lines(n.analysis)))
         print("Versions :")
         for v in versions:
-            print(f"  v{v.version}  écrite le {fr_date(v.recorded_at)}  statut {v.status}  {v.title[:50]}")
+            print(f"  v{v.version}  écrite le {fr_date(v.recorded_at)}  statut {status_fr(v.status)}  {v.title[:50]}")
         print(BANNER)
         return 0
     if cmd == "archive":
@@ -1387,6 +1451,25 @@ def _notes_cell(r: Any) -> str:
     return "score nul" if _ok(n) and int(n) > 0 else "aucune note"
 
 
+def note_date_text(n: Any) -> str:
+    """Date de la note : saisie pour une note de l'analyste, publication pour une note collectée."""
+    manual = str(n.get("author") or "") == "analyste"
+    for key in (("created_at", "published_at") if manual else ("published_at", "created_at")):
+        v = n.get(key)
+        if _ok(v):
+            return fr_date(v)
+    return "n.d."
+
+
+def note_targets_text(n: Any) -> str:
+    """Cible(s) saisie(s) dans la note ; pour une note propagée : « IDX:BRVM-C, propagée × 0,25 »."""
+    src = [str(x) for x in (n.get("source_targets") or n.get("targets") or [])]
+    txt = ", ".join(src[:4]) + (" …" if len(src) > 4 else "")
+    if _ok(n.get("propagation")) and str(n.get("relation") or "directe") != "directe":
+        txt += f", propagée aux constituants × {fr_num(n['propagation'], 2)}"
+    return txt or "—"
+
+
 def _print_dossier(d: dict[str, Any], notes_line: str | None = None, status: dict[str, Any] | None = None) -> None:
     ev = d["evaluation"]
     print(f"Dossier {d['label']} ({d['index']}) au {fr_date(ev.get('date'))} : {ev.get('stance')}, confiance "
@@ -1410,10 +1493,18 @@ def _print_dossier(d: dict[str, Any], notes_line: str | None = None, status: dic
         print(f"Constituants ({len(cons)}, 15 premiers par poids) :")
         print(_table(rows, ["Titre", "Nom", "Poids", "Cours", "12 mois", "Contrib. 12 m", "Notes", "Filtres"]))
     notes = d.get("recent_notes") or []
-    print(f"Notes qui l'influencent ({len(notes)}) :" if notes else "Aucune note récente sur l'indice ou ses constituants.")
-    for n in notes[:15]:
-        print(f"  {str(n['note_id'])[:12]}  {fr_date(n['first_tradable_session'])}  score "
-              f"{fr_num(n.get('score'), 2, True)}  {', '.join(n.get('targets') or [])[:24]}  {str(n.get('title'))[:50]}")
+    if notes:
+        n_force = (status or {}).get("n_in_force")
+        extra = (f" sur les {n_force} en vigueur sur l'ensemble du marché" if n_force is not None and n_force != len(notes)
+                 else "")
+        print(f"Notes récentes qui l'influencent ({len(notes)} note(s) de moins de 90 jours visant l'indice ou ses "
+              f"constituants{extra} ; les 15 plus récentes) :")
+        rows = [[str(n["note_id"])[:12], note_date_text(n), fr_date(n["first_tradable_session"]),
+                 fr_num(n.get("score"), 2, True), note_targets_text(n)[:44], str(n.get("title"))[:50]]
+                for n in notes[:15]]
+        print(_table(rows, ["Id", "Note du", "Agit depuis", "Score", "Cible(s) de la note", "Titre"]))
+    else:
+        print("Aucune note récente sur l'indice ou ses constituants.")
     cmm = d.get("change_my_mind") or []
     if cmm:
         print("Ce qui ferait changer d'avis :")

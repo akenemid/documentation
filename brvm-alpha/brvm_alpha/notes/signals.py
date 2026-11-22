@@ -992,7 +992,7 @@ def _target_weights(
 CONTRIBUTION_COLUMNS = [
     "target", "kind", "note_id", "version", "source_target", "relation", "weight", "first_tradable_session",
     "sessions_elapsed", "decay", "note_score", "contribution", "author", "source", "event_type", "title",
-    "materiality", "confidence", "risk_flags", "stance", "conviction",
+    "materiality", "confidence", "risk_flags", "stance", "conviction", "published_at", "created_at",
 ]
 
 
@@ -1051,6 +1051,7 @@ def note_contributions(
                 "materiality": _finite(an.get("materiality")), "confidence": _finite(an.get("confidence")),
                 "risk_flags": list(an.get("risk_flags") or []), "stance": row.get("stance"),
                 "conviction": _finite(row.get("conviction")),
+                "published_at": row.get("published_at"), "created_at": row.get("created_at"),
             })
     out = pd.DataFrame(rows, columns=CONTRIBUTION_COLUMNS)
     return out

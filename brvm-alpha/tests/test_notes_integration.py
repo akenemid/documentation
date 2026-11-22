@@ -262,5 +262,5 @@ def test_order_markdown_shows_the_fragile_position(synth, tmp_path, monkeypatch)
     md = o.to_markdown()
     assert "| BRVM Composite | NEUTRE (sans les notes : SOUS-PONDÉRER) |" in md
     assert "| BRVM 30 | SOUS-PONDÉRER |" in md
-    assert "Position fragile : BRVM Composite — la position ne change que par le poids" in md
+    assert "Position changée par les notes : BRVM Composite — les notes s'ajoutent au score" in md
     assert R.BANNER in md

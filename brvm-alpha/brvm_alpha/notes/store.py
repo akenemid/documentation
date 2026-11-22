@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -42,6 +43,7 @@ from .model import (
     _as_list,
     asof_utc,
     first_tradable_session,
+    fold,
     is_backdated,
     normalize_targets,
     to_day,
@@ -80,6 +82,14 @@ COLUMNS = [
 #: perdrait sa correction ; les étiquettes n'en font pas partie).
 MANUAL_CONTENT_FIELDS = ("title", "text", "targets", "targets_unknown", "event_type", "stance", "conviction",
                          "horizon_days", "published_at", "url")
+
+
+#: Fenêtre (jours depuis la saisie) dans laquelle une note de l'analyste de même contenu est un doublon.
+DUPLICATE_WINDOW_DAYS = 30.0
+
+
+def _norm_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", fold(str(value or ""))).strip()
 
 
 class NoteConflictError(ValueError):
@@ -361,6 +371,43 @@ class NoteStore:
                 f"l'identifiant {note.note_id[:12]} existe déjà avec un contenu différent ({', '.join(diff)}) : "
                 "utiliser update() pour écrire une nouvelle version, ou créer une note distincte."
             )
+
+    def find_duplicate(self, note: Note, max_age_days: float = DUPLICATE_WINDOW_DAYS, now: Any = None) -> str | None:
+        """Identifiant d'une note de l'analyste **active** et récente de même contenu, ou ``None``.
+
+        Même contenu : mêmes cibles (reconnues et non reconnues), titre et texte normalisés (casse,
+        accents, espaces), avis, conviction et adresse. La date de publication n'est pas comparée :
+        sans date saisie, elle vaut l'instant de la saisie et l'identifiant change à chaque envoi, si
+        bien que la même note saisie deux fois comptait double (inclinaison et composante « notes »
+        des indices : recette du 22/11/2026). ``max_age_days`` : âge maximal (jours) de la note
+        existante, compté depuis sa saisie. Le journal n'est pas modifié ; c'est à l'appelant (ligne
+        de commande, interface) de refuser ou de faire confirmer le doublon.
+        """
+        if note.author != "analyste":
+            return None
+        ref = to_utc(now) or utc_now()
+
+        def key(d: dict[str, Any]) -> tuple:
+            conv = d.get("conviction")
+            return (tuple(sorted(str(t) for t in (d.get("targets") or []))),
+                    tuple(sorted(str(t) for t in (d.get("targets_unknown") or []))),
+                    _norm_text(d.get("title")), _norm_text(d.get("text")), d.get("stance") or None,
+                    None if conv is None or conv != conv else int(conv), str(d.get("url") or "").strip())
+
+        want = key(note.to_dict())
+        best: tuple[str, str] | None = None
+        for nid, r in self._latest_raw().items():
+            if r.get("author") != "analyste" or (r.get("status") or "active") != "active":
+                continue
+            if key(Note.from_dict(r).to_dict()) != want:
+                continue
+            created = to_utc(r.get("created_at")) or to_utc(r.get("recorded_at"))
+            if created is not None and abs((ref - created).total_seconds()) > max_age_days * 86400.0:
+                continue
+            stamp = str(r.get("created_at") or "")
+            if best is None or stamp > best[1]:
+                best = (nid, stamp)
+        return best[0] if best else None
 
     def add(self, note: Note, analyze: bool = False, panels: dict | None = None, now: Any = None) -> str:
         """Ajoute une note (version 1) et renvoie son ``note_id``.

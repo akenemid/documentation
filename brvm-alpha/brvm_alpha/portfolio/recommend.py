@@ -49,6 +49,7 @@ des **faits**.
 from __future__ import annotations
 
 import copy
+import datetime as _dt
 import html
 import importlib
 import inspect
@@ -397,15 +398,63 @@ def future_sessions(asof: Any, n: int, sessions: Any = None) -> list[pd.Timestam
     return out
 
 
-def expected_missing_sessions(last_session: Any, today: Any) -> list[pd.Timestamp]:
-    """Séances attendues **après** le dernier BOC du panel et **avant** ``today`` (exclu : le BOC du jour
-    n'est publié qu'après la clôture) : jours ouvrés hors fériés à date fixe (hypothèse, fêtes mobiles
-    inconnues). Une liste non vide signale un panel en retard (lancer ``update``)."""
+#: Fin de la séance de la BRVM (UTC = heure d'Abidjan) : fixing de clôture à 14h30, négociation au
+#: dernier cours jusqu'à 15h00 (brvm.org/horaires). Passé cette heure, la séance du jour est close.
+SESSION_CLOSE_UTC = _dt.time(15, 0)
+
+
+def expected_missing_sessions(last_session: Any, today: Any, include_today: bool = False) -> list[pd.Timestamp]:
+    """Séances attendues **après** le dernier BOC du panel et **avant** ``today`` : jours ouvrés hors
+    fériés à date fixe (hypothèse, fêtes mobiles inconnues). Le jour même est exclu tant que sa séance
+    n'est pas close ; ``include_today=True`` (clôture passée, voir :func:`panel_staleness`) le compte :
+    ses cours ne sont plus ceux du panel. Une liste non vide signale un panel en retard (lancer ``update``)."""
     a = pd.Timestamp(last_session).normalize() + pd.Timedelta(days=1)
-    b = pd.Timestamp(today).normalize() - pd.Timedelta(days=1)
+    b = pd.Timestamp(today).normalize() - (pd.Timedelta(0) if include_today else pd.Timedelta(days=1))
     if b < a:
         return []
     return [pd.Timestamp(d) for d in pd.bdate_range(a, b) if not _is_fixed_holiday(pd.Timestamp(d))]
+
+
+def panel_staleness(last_session: Any, now: Any) -> tuple[list[pd.Timestamp], bool, pd.Timestamp]:
+    """Retard du panel à l'instant ``now`` : ``(séances manquantes, séance du jour close ?, jour)``.
+
+    ``now`` est une date seule (minuit, sans fuseau : le jour même n'est jamais compté) ou un instant
+    (UTC si un fuseau est donné). Un jour de séance dont la clôture (:data:`SESSION_CLOSE_UTC`) est
+    passée compte comme séance attendue : le lundi soir, un panel arrêté au vendredi est en retard
+    d'une séance et aucun ordre ne peut plus être daté du lundi (recette du 22/11/2026). Le BOC du jour
+    paraît en soirée : s'il n'est pas encore en ligne, ``update`` ne le trouvera pas tout de suite.
+    """
+    tt = pd.Timestamp(now)
+    has_time = tt.tzinfo is not None or tt != tt.normalize()
+    if tt.tzinfo is not None:
+        tt = tt.tz_convert("UTC").tz_localize(None)
+    day = tt.normalize()
+    closed = bool(has_time and day.weekday() < 5 and not _is_fixed_holiday(day) and tt.time() >= SESSION_CLOSE_UTC)
+    return expected_missing_sessions(last_session, day, include_today=closed), closed, day
+
+
+def stale_panel_message(last_session: Any, now: Any, *, orders: bool = True) -> str | None:
+    """« PANEL EN RETARD de N séance(s) … Lancer python -m brvm_alpha update » ou ``None`` (panel à jour).
+
+    ``orders=True`` ajoute que les ordres sont périmés (ordre de bataille) ; ``False`` : message court
+    pour les autres sorties (indices, explication, tableau de bord, rapport)."""
+    stale, closed, day = panel_staleness(last_session, now)
+    if not stale:
+        return None
+    last = pd.Timestamp(last_session).normalize()
+    msg = (f"PANEL EN RETARD de {len(stale)} séance(s) : dernier BOC du panel le {_d(last)}, "
+           f"séance(s) attendue(s) {'jusqu\'à' if closed else 'avant'} aujourd'hui : "
+           f"{', '.join(_d(x) for x in stale[:5])}" + ("…" if len(stale) > 5 else "")
+           + " (jours ouvrés hors fériés fixes, hypothèse")
+    if closed and stale and stale[-1] == day:
+        msg += f" ; la séance du {_d(day)} est close depuis {SESSION_CLOSE_UTC:%Hh%M} UTC, son BOC paraît en soirée"
+    msg += "). Lancer `python -m brvm_alpha update` puis recalculer"
+    if orders:
+        msg += (f" : les ordres ci-dessous sont PÉRIMÉS (cours, bornes et prix limites du {_d(last)}), à ne pas "
+                "transmettre.")
+    else:
+        msg += f" : les chiffres ci-dessous sont ceux du {_d(last)}."
+    return msg
 
 
 def _session_calendar(asof: Any, sessions: Any, horizon_days: int = 800) -> pd.DatetimeIndex:
@@ -1535,6 +1584,10 @@ class OrdreDeBataille:
         items.append(dd.get("texte", ""))
         for x in dd.get("revues_lignes", []):
             items.append(f"Revue obligatoire {x['symbole']} : {_pct(x['relatif_63'], 1, True)} contre le TR sur 63 séances")
+        for x in dd.get("revues_avant_achat", []) or []:
+            items.append(f"À revoir avant achat {x['symbole']} : {_pct(x['relatif_63'], 1, True)} contre le TR sur 63 "
+                         f"séances (seuil de revue {_pct(REVIEW_REL_UNDERPERF_63, 0, True)}, §9.1) ; l'achat reste "
+                         "proposé, la revue est à faire par l'utilisateur avant de transmettre l'ordre")
         nt = T.get("notes", {})
         items.append(nt.get("texte", ""))
         if nt.get("ligne"):
@@ -1564,9 +1617,9 @@ class OrdreDeBataille:
                                   _num(x["confiance"]), _num(x["score"], 2, True), x["lecture"]] for x in ix])))
             changed = [x["libelle"] for x in ix if x.get("position_changee_par_les_notes")]
             if changed:
-                B.append(("p", "Position fragile : " + ", ".join(changed) + " — la position ne change que par le poids "
-                               "donné à la composante « notes » dans le score (voir « Effet des notes » dans la "
-                               "lecture), pas par un signal fort des notes. À lire avec la position « sans les "
+                B.append(("p", "Position changée par les notes : " + ", ".join(changed) + " — les notes s'ajoutent "
+                               "au score des autres composantes (+ 0,15 × z notes) et font ici franchir un seuil "
+                               "(voir « Effet des notes » dans la lecture). À lire avec la position « sans les "
                                "notes »."))
         elif T.get("indices_message"):
             B.append(("p", T["indices_message"]))
@@ -2090,21 +2143,27 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
                        "achats_bloques": bool(risk.loc[s, "block_buys"])})
     # Drawdown relatif : lignes détenues (§9.1) et règle de portefeuille (D5).
     reviews = []
+    reviews_buy = []  # lignes à ACHETER (non détenues) sous le même seuil : « à revoir avant achat »
     tr = _wide_upto(panels, "tr_index", t)
     mtr = _get(panels, "market_tr")
     held = [s for s, w in plan.held_w.items() if w > 0]
-    if held and isinstance(tr, pd.DataFrame) and mtr is not None and len(tr) > 63:
+    try:
+        to_buy = [str(r.symbole) for r in L.itertuples(index=False)
+                  if r.sens == "achat" and int(r.quantite) > 0 and str(r.symbole) not in held]
+    except Exception:  # tableau des lignes inattendu : la revue des lignes détenues reste calculée
+        to_buy = []
+    if (held or to_buy) and isinstance(tr, pd.DataFrame) and mtr is not None and len(tr) > 63:
         m = pd.Series(mtr, dtype=float)
         m = m[m.index <= t]
         if len(m) > 63:
             m_ret = float(m.iloc[-1] / m.iloc[-64])
-            for s in held:
+            for s in list(held) + to_buy:
                 if s in tr.columns:
                     col = tr[s].dropna()
                     if len(col) > 63:
                         rel = float(col.iloc[-1] / col.iloc[-64]) / m_ret - 1.0
                         if rel <= REVIEW_REL_UNDERPERF_63:
-                            reviews.append({"symbole": s, "relatif_63": rel})
+                            (reviews if s in held else reviews_buy).append({"symbole": s, "relatif_63": rel})
     rdd = dec.diagnostics.get("relative_drawdown") or {}
     if rdd.get("dd") is not None and np.isfinite(rdd.get("dd")):
         dd_txt = f"Drawdown relatif du suivi contre le TR : {_pct(rdd['dd'], 1, True)} (seuils −10 % alerte, −15 % actif ÷ 2, −20 % arrêt)"
@@ -2184,7 +2243,8 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
         "drapeaux": {k: [str(x.get("code", x)) if isinstance(x, Mapping) else str(x) for x in v]
                      for k, v in flags.items()}}
     notes_out.update(_notes_trigger(notes_state, notes_effect, L, dec))
-    return {"filtres_r": fr, "drawdown": {"texte": dd_txt, "revues_lignes": reviews, "etat_modele": rdd},
+    return {"filtres_r": fr, "drawdown": {"texte": dd_txt, "revues_lignes": reviews, "revues_avant_achat": reviews_buy,
+                                          "etat_modele": rdd},
             "notes": notes_out,
             "pays": {"texte": p_txt, "regles_actives": {c: st.get("rule") for c, st in cs.items()}},
             "evenements": ev,
@@ -2635,21 +2695,28 @@ def recommend(
     full_close = _get(panels, "close_raw")
     full_close = full_close if isinstance(full_close, pd.DataFrame) and len(full_close) else _get(panels, "close")
     last_panel = pd.Timestamp(pd.DatetimeIndex(full_close.index).max()).normalize()
-    if today is not None or not panels_given:
-        tt = pd.Timestamp(today) if today is not None else pd.Timestamp.now()
-        if tt.tzinfo is not None:
-            tt = tt.tz_convert("UTC").tz_localize(None)
-        today_ts = tt.normalize()
-        if t >= last_panel and t_req >= last_panel:
-            stale = expected_missing_sessions(last_panel, today_ts)
-            exec_after = max(t, today_ts - pd.Timedelta(days=1))
     stale_msg = None
-    if stale:
-        stale_msg = (f"PANEL EN RETARD de {len(stale)} séance(s) : dernier BOC du panel le {_d(last_panel)}, "
-                       f"séance(s) attendue(s) avant aujourd'hui : {', '.join(_d(x) for x in stale[:5])}"
-                       + ("…" if len(stale) > 5 else "") + " (jours ouvrés hors fériés fixes, hypothèse). Lancer "
-                       "`python -m brvm_alpha update` puis recalculer : les ordres ci-dessous sont PÉRIMÉS (cours, "
-                       f"bornes et prix limites du {_d(t)}), à ne pas transmettre.")
+    if today is not None or not panels_given:
+        now_ts = pd.Timestamp(today) if today is not None else pd.Timestamp.now(tz="UTC")
+        if t >= last_panel and t_req >= last_panel:
+            # Le jour même compte dès que sa séance est close (15h00 UTC) : le lundi soir, aucun ordre
+            # n'est plus daté du lundi et le panel du vendredi est signalé en retard.
+            stale, closed_today, today_ts = panel_staleness(last_panel, now_ts)
+            exec_after = max(t, today_ts if closed_today else today_ts - pd.Timedelta(days=1))
+            stale_msg = stale_panel_message(last_panel, now_ts) if stale else None
+    # Mode direct des notes : la première séance d'exécution n'est jamais antérieure à la séance où les
+    # notes s'appliquent (une information connue après la coupure de 09h00 UTC se négocie à la séance
+    # suivante) : l'ordre et la ligne « Notes connues au …, appliquées à la séance du … » disent la même séance.
+    if notes_known_at is not None and t >= last_panel:
+        try:
+            from brvm_alpha.notes import signals as _sg
+
+            moment = _sg.notes_moment(t, notes_known_at, sessions)
+            if moment.direct and moment.session is not None:
+                floor_exec = pd.Timestamp(moment.session).normalize() - pd.Timedelta(days=1)
+                exec_after = floor_exec if exec_after is None else max(exec_after, floor_exec)
+        except Exception:  # module des notes absent ou calendrier illisible : l'exécution reste datée du panel
+            pass
     choice = choose_variant(variant, validation_dir, registry_path)
     warn = ([stale_msg] if stale_msg else []) + list(choice["avertissements"]) + warn
     from brvm_alpha.strategy import VARIANT_SPECS

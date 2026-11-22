@@ -172,7 +172,7 @@ def test_notes_add_list_show_archive_export(tmp_path, capsys):
     assert cli.main(["notes", "list", "--racine", root]) == 0
     assert "Aucune note" in capsys.readouterr().out
     assert cli.main(["notes", "list", "--racine", root, "--statut", "toutes"]) == 0
-    assert "archived" in capsys.readouterr().out
+    assert "archivée" in capsys.readouterr().out  # statut affiché en français
 
     md = tmp_path / "export.md"
     assert cli.main(["notes", "export", "--racine", root, "--statut", "toutes", "--sortie", str(md)]) == 0
@@ -312,7 +312,7 @@ def test_indices_dossier(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(index_eval, "index_dossier", fake)
     assert cli.main(["indices", "dossier", "IDX:BRVM-30", "--date", "2026-11-20", "--racine", str(tmp_path)]) == 0
     out = capsys.readouterr().out
-    assert "Dossier BRVM 30" in out and "Sonatel" in out and "Notes qui l'influencent (1)" in out
+    assert "Dossier BRVM 30" in out and "Sonatel" in out and "Notes récentes qui l'influencent (1 note(s)" in out
 
 
 def test_explain_text(capsys, monkeypatch):
