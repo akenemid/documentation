@@ -990,6 +990,8 @@ def pbo_cscv(
     periods_per_year: int = TRADING_DAYS,
     max_combinations: int | None = None,
     seed: int = 0,
+    split: str = "trim_oldest",
+    ties: str = "le",
 ) -> dict[str, Any]:
     """Probabilité de sur-ajustement du backtest par CSCV.
 
@@ -1059,6 +1061,16 @@ def pbo_cscv(
         ``seed``) de ce nombre de combinaisons distinctes.
     seed
         Graine du tirage de combinaisons.
+    split
+        ``"trim_oldest"`` (défaut, convention figée avant S1) : blocs de ``T // S``
+        lignes, les plus anciennes lignes en surnombre ignorées ; ``"array_split"`` :
+        toutes les lignes gardées, blocs de tailles ``⌊T/S⌋`` ou ``⌈T/S⌉``
+        (``numpy.array_split``). Sensibilité publiée : la PBO dépend de ce découpage.
+    ties
+        ``"le"`` (défaut, Bailey et al. 2017) : ``PBO = P(λ ≤ 0)`` ; avec un nombre
+        impair de configurations, le rang médian donne ``λ = 0`` compté comme
+        sur-ajustement (PBO nulle = 5/9 pour N = 9) ; ``"half"`` : ``λ = 0`` compté pour ½
+        (PBO nulle = 0,5 pour tout N).
 
     Returns
     -------
@@ -1082,11 +1094,25 @@ def pbo_cscv(
         raise ValueError("au moins deux configurations sont nécessaires")
     if n_splits < 2 or n_splits % 2:
         raise ValueError("n_splits doit être un entier pair >= 2")
+    if split not in ("trim_oldest", "array_split"):
+        raise ValueError("split doit valoir 'trim_oldest' ou 'array_split'")
+    if ties not in ("le", "half"):
+        raise ValueError("ties doit valoir 'le' ou 'half'")
     block = T // n_splits
     if block < 2:
         raise ValueError("trop peu d'observations pour n_splits blocs (>= 2 par bloc)")
-    X = X[T - n_splits * block :]
-    blocks = X.reshape(n_splits, block, N)
+    if split == "array_split" and T % n_splits:
+        # Blocs de tailles inégales (aucune ligne ignorée) : complétés par des NaN, ignorés par
+        # les métriques (masques des métriques nommées, filtre des valeurs finies sinon).
+        parts = np.array_split(X, n_splits, axis=0)
+        width = max(len(b) for b in parts)
+        blocks = np.full((n_splits, width, N), np.nan)
+        for i, b in enumerate(parts):
+            blocks[i, : len(b)] = b
+        block = width
+    else:
+        X = X[T - n_splits * block :]
+        blocks = X.reshape(n_splits, block, N)
     combos = _cscv_combinations(n_splits, max_combinations, seed)
     C = combos.shape[0]
     member = np.zeros((C, n_splits), dtype=float)
@@ -1164,7 +1190,12 @@ def pbo_cscv(
         logits = np.log(omega / (1.0 - omega))
 
     finite_logits = logits[np.isfinite(logits)]
-    pbo = float(np.mean(finite_logits <= 0.0)) if finite_logits.size else math.nan
+    if not finite_logits.size:
+        pbo = math.nan
+    elif ties == "half":
+        pbo = float(np.mean(np.where(np.isclose(finite_logits, 0.0, atol=1e-12), 0.5, finite_logits < 0.0)))
+    else:
+        pbo = float(np.mean(finite_logits <= 0.0))
 
     pair = np.isfinite(is_perf) & np.isfinite(oos_perf)
     slope = intercept = r2 = math.nan

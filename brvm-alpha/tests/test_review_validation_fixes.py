@@ -59,14 +59,23 @@ def test_weekly_returns_excludes_2021_window_by_default():
     assert pd.Timestamp("2021-07-16") in w.index
 
 
-def test_weekly_returns_drops_weeks_covering_a_boc_gap():
+def test_weekly_returns_keeps_multi_session_weeks_for_chaining_and_flags_them():
+    """§3.1.3 : un rendement sur plusieurs séances est exclu des statistiques de dispersion « mais gardé pour
+    chaîner le TR » (correction du 22/11/2026 : il était retiré de tout, chaînage compris)."""
     days = pd.bdate_range("2030-08-05", "2030-10-04")
     days = days[(days < "2030-08-28") | (days > "2030-09-12")]  # 11 séances sans BOC
     daily = pd.Series(0.001, index=days)
     w = mt.weekly_returns(daily)
-    assert pd.Timestamp("2030-09-13") not in w.index and "2030-09-13" in {str(d.date()) for d in w.attrs["weeks_dropped"]}
+    assert pd.Timestamp("2030-09-13") in w.index  # gardée pour le chaînage
+    assert "2030-09-13" in {str(d.date()) for d in w.attrs["multi_session_weeks"]}
+    assert w.attrs["weeks_dropped"] == []
+    disp = mt.weekly_returns(daily, max_sessions=mt.MAX_WEEKLY_SESSIONS)  # échantillon de dispersion
+    assert pd.Timestamp("2030-09-13") not in disp.index
+    assert "2030-09-13" in {str(d.date()) for d in disp.attrs["weeks_dropped"]}
+    assert list(mt.dispersion_sample(w, w.attrs["multi_session_weeks"]).index) == list(disp.index)
     sess = pd.Series(np.arange(len(days)), index=days)  # numéros contigus : aucun trou réel
-    assert pd.Timestamp("2030-09-13") in mt.weekly_returns(daily, session_no=sess).index
+    assert len(mt.multi_session_weeks(days, session_no=sess)) == 0
+    assert list(mt.multi_session_weeks(days)) == [pd.Timestamp("2030-09-13")]
 
 
 def test_bootstrap_ci_needs_two_mean_blocks():

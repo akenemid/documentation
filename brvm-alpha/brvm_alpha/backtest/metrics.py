@@ -9,7 +9,11 @@ rendements quotidiens) ; l'annualisation suit la convention de 52 semaines.
 Contenu
 -------
 * :func:`weekly_returns` : composition des rendements quotidiens en semaines
-  W-FRI, avec exclusion des fenêtres sans BOC (2021) ;
+  W-FRI, avec exclusion de la seule fenêtre du §8.1 (06/05 → 25/06/2021) ; les semaines
+  dont l'observation couvre plusieurs séances (trou de BOC) sont **gardées** pour chaîner
+  les rendements (§3.1.3) et listées par :func:`multi_session_weeks` ;
+  :func:`dispersion_sample` les retire des statistiques de dispersion (IR, TE, Sharpe,
+  PSR/DSR, PBO, CVaR, bootstrap) ;
 * :func:`sharpe_triplet` : trois Sharpe (naïf, Lo avec ``q = 4`` en
   hebdomadaire, GLM) et le signal de divergence de plus de 25 % ;
 * :func:`glm_smoothing`, :func:`glm_sharpe` : modèle de lissage de
@@ -88,6 +92,7 @@ __all__ = [
     "cvar",
     "cvar_bootstrap",
     "cvar_ratio",
+    "dispersion_sample",
     "dsr",
     "family_pbo",
     "glm_sharpe",
@@ -105,6 +110,8 @@ __all__ = [
     "first_investment_date",
     "monthly_ic",
     "monthly_one_way_turnover",
+    "multi_session_weeks",
+    "pbo_null_reference",
     "rebase_at",
     "weekly_observation_mask",
     "weekly_returns",
@@ -219,13 +226,56 @@ def weekly_observation_mask(
     return keep
 
 
+def multi_session_weeks(
+    daily_index: pd.DatetimeIndex | Sequence[Any],
+    week_index: pd.DatetimeIndex | Sequence[Any] | None = None,
+    *,
+    freq: str = WEEKLY_FREQ,
+    max_sessions: int = MAX_WEEKLY_SESSIONS,
+    session_no: pd.Series | None = None,
+) -> pd.DatetimeIndex:
+    """Semaines dont l'observation couvre **plus** de ``max_sessions`` séances (trou de BOC, §3.1.3).
+
+    ``daily_index`` : séances observées (calendrier des BOC) ; ``week_index`` : semaines à
+    examiner (défaut : toutes les semaines W-FRI observées). Comptage par ``session_no`` s'il est
+    fourni, sinon en jours ouvrés (:func:`weekly_observation_mask`). Ces semaines sont
+    **gardées** pour chaîner les rendements (rendement annualisé, actif, drawdowns) et retirées
+    des seules statistiques de dispersion (:func:`dispersion_sample`).
+    """
+    days = pd.DatetimeIndex(pd.to_datetime(list(daily_index))).sort_values().unique()
+    if week_index is None:
+        week_index = pd.DatetimeIndex(days.to_period(freq).unique().end_time.normalize()) if len(days) \
+            else pd.DatetimeIndex([])
+    weeks = pd.DatetimeIndex(pd.to_datetime(list(week_index)))
+    if not len(weeks) or not len(days):
+        return pd.DatetimeIndex([], name="week")
+    keep = weekly_observation_mask(days, weeks, freq=freq, exclude_windows=None, max_sessions=int(max_sessions),
+                                   session_no=session_no)
+    return pd.DatetimeIndex(weeks[~keep], name="week")
+
+
+def dispersion_sample(x: Any, multi_weeks: Sequence[Any] | pd.DatetimeIndex | None) -> Any:
+    """``x`` (``Series`` ou ``DataFrame`` hebdomadaire) sans les semaines multi-séances ``multi_weeks``.
+
+    À utiliser pour les statistiques de **dispersion** seulement (IR, TE, volatilité, Sharpe,
+    PSR/DSR, PBO, CVaR, bootstrap) : une observation qui couvre 7 à 49 séances n'a pas la
+    variance d'une semaine. Les critères **chaînés** (rendement annualisé, actif, drawdowns)
+    gardent toutes les semaines (§3.1.3 : « gardé pour chaîner le TR »).
+    """
+    if multi_weeks is None or not len(multi_weeks) or x is None or not len(x):
+        return x
+    drop = pd.DatetimeIndex(pd.to_datetime(list(multi_weeks)))
+    idx = pd.DatetimeIndex(x.index)
+    return x.loc[~idx.isin(drop)]
+
+
 def weekly_returns(
     daily: pd.Series | pd.DataFrame,
     *,
     freq: str = WEEKLY_FREQ,
     exclude_windows: Sequence[tuple[Any, Any]] | None = EXCLUDE_STATS_WINDOWS,
     min_days: int = 1,
-    max_sessions: int | None = MAX_WEEKLY_SESSIONS,
+    max_sessions: int | None = None,
     session_no: pd.Series | None = None,
 ) -> pd.Series | pd.DataFrame:
     """Rendements hebdomadaires composés : ``R_w = Π_{t ∈ w} (1 + r_t) − 1``.
@@ -247,15 +297,21 @@ def weekly_returns(
     min_days
         Nombre minimal de séances observées dans la semaine.
     max_sessions
-        Une semaine dont l'observation couvre plus de ``max_sessions`` séances
-        (trou de BOC : 7 à 18 séances de juillet à novembre 2021) est retirée,
-        comme les rendements ``multi_session`` le sont des statistiques de signaux
-        (:func:`weekly_observation_mask`) ; ``None`` : aucun contrôle.
+        **Défaut ``None``** : toutes les semaines sont gardées, y compris celles dont
+        l'observation couvre plusieurs séances après un trou de BOC (7 à 18 séances de
+        juillet à novembre 2021) : la spécification §3.1.3 les exclut des estimations de
+        volatilité, de bêta et de covariance « mais [les garde] pour chaîner le TR ».
+        Un entier retire ces semaines (échantillon de **dispersion** seulement,
+        :func:`weekly_observation_mask`). Avant la correction du 22/11/2026, le défaut
+        valait 6 : 7 semaines de 2018-2021 étaient retirées du chaînage (TR, actif,
+        drawdowns faussés).
     session_no
         Numéro global de séance par date (calendrier des BOC) pour un comptage
         exact ; à défaut, jours ouvrés.
 
-    Les semaines retirées sont listées dans ``attrs["weeks_dropped"]``.
+    Les semaines retirées sont listées dans ``attrs["weeks_dropped"]`` ; les semaines
+    multi-séances (plus de :data:`MAX_WEEKLY_SESSIONS` séances), gardées ou non, dans
+    ``attrs["multi_session_weeks"]``.
     """
     frame = daily.to_frame() if isinstance(daily, pd.Series) else daily
     if not isinstance(frame.index, pd.DatetimeIndex):
@@ -275,14 +331,18 @@ def weekly_returns(
                                    max_sessions=max_sessions, session_no=session_no)
     dropped = [d for d, k, has in zip(out.index, keep, out.notna().any(axis=1).to_numpy(), strict=True)
                if not k and has]
+    multi = list(multi_session_weeks(observed, out.index[out.notna().any(axis=1).to_numpy()], freq=freq,
+                                     session_no=session_no)) if len(observed) else []
     out = out.loc[keep]
     if isinstance(daily, pd.Series):
         res = out.iloc[:, 0].dropna()
         res.name = daily.name
         res.attrs["weeks_dropped"] = dropped
+        res.attrs["multi_session_weeks"] = multi
         return res
     res_df = out.dropna(how="all")
     res_df.attrs["weeks_dropped"] = dropped
+    res_df.attrs["multi_session_weeks"] = multi
     return res_df
 
 
@@ -729,17 +789,39 @@ def family_pbo(
     n_splits: int = 10,
     lo_q: int = 4,
     periods_per_year: int = WEEKS_PER_YEAR,
+    split: str = "trim_oldest",
+    ties: str = "le",
 ) -> dict[str, Any]:
     """PBO (CSCV) de la famille des variantes, critère = Sharpe de Lo des rendements actifs nets.
 
     ``weekly_active`` : matrice semaines × variantes (9 variantes A-I depuis l'additif v1.1, §3.4).
     ``n_splits = 10`` blocs en hebdomadaire (C(10, 5) = 252 combinaisons).
-    Renvoie le dictionnaire de ``stats.pbo_cscv`` (``pbo``,
+    ``split`` et ``ties`` : conventions de ``stats.pbo_cscv`` (défauts = convention figée avant
+    S1 : blocs égaux, plus anciennes semaines en surnombre ignorées ; ``λ = 0`` compté comme
+    sur-ajustement). Renvoie le dictionnaire de ``stats.pbo_cscv`` (``pbo``,
     ``degradation_slope``…).
     """
     frame = weekly_active.dropna(how="any")
     return stats.pbo_cscv(frame, n_splits=n_splits, metric=_lo_metric(lo_q, periods_per_year),
-                          periods_per_year=periods_per_year)
+                          periods_per_year=periods_per_year, split=split, ties=ties)
+
+
+def pbo_null_reference(n_configs: int, ties: str = "le") -> float:
+    """PBO attendue sous l'hypothèse nulle (configurations i.i.d., aucun signal) pour ``N`` configurations.
+
+    Le rang OOS de la configuration choisie est uniforme sur ``1..N`` ; ``ω = rang/(N + 1)``.
+    Avec ``ties="le"`` (``λ ≤ 0`` compté comme sur-ajustement), la PBO nulle vaut
+    ``⌊(N + 1)/2⌋ / N`` : **5/9 ≈ 0,556** pour N = 9 (et non 0,5) ; avec ``ties="half"``
+    (``λ = 0`` compté pour ½), elle vaut 0,5 pour tout N.
+    """
+    n = int(n_configs)
+    if n < 2:
+        raise ValueError("au moins deux configurations")
+    if ties == "half":
+        return 0.5
+    if ties != "le":
+        raise ValueError("ties doit valoir 'le' ou 'half'")
+    return float(((n + 1) // 2) / n)
 
 
 # ---------------------------------------------------------------------------
@@ -867,6 +949,7 @@ def monthly_ic(
     min_names: int = 15,
     end: Any = None,
     eligible: Mapping[Any, pd.Series] | pd.DataFrame | None = None,
+    one_per_month: bool = True,
 ) -> pd.Series:
     """IC mensuel de Spearman d'un score (spéc. §3.5, entrée du filtre G7 du §8.3).
 
@@ -876,11 +959,21 @@ def monthly_ic(
     fourni) ; NaN sous ``min_names`` titres. Une date dont la fenêtre à terme dépasse ``end``
     (fin de l'échantillon) ou la dernière séance est **omise** : aucun rendement hors de
     l'échantillon évalué n'est lu. Index = dates de décision.
+
+    ``one_per_month`` (défaut, correction du 22/11/2026) : une seule date par mois civil, la
+    **dernière** décision du mois (fin de mois, §3.1.5). En mode « evenementiel », les
+    décisions d'événement (règle pays, poche S1…) donnaient plusieurs IC par mois, à horizons
+    de 21 séances qui se chevauchent (67 IC sur 64 mois au test S1) ; le seuil de G7
+    (« au moins 36 mois ») compte alors des mois distincts.
     """
     frame = pd.DataFrame(scores).T if isinstance(scores, Mapping) else pd.DataFrame(scores)
     out: dict[pd.Timestamp, float] = {}
     if frame.empty or tr_index is None or not len(tr_index):
         return pd.Series(out, dtype=float, name="ic")
+    frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index))
+    if one_per_month and len(frame):
+        frame = frame.sort_index()
+        frame = frame[~frame.index.to_period("M").duplicated(keep="last")]
     tr = tr_index.sort_index().astype(float)
     tr.index = pd.DatetimeIndex(pd.to_datetime(tr.index))
     frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index))

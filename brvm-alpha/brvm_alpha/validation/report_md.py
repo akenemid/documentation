@@ -86,6 +86,39 @@ def _capital(x: Any) -> str:
     return _fcfa(c)
 
 
+def _pbo_sens_text(sens: Mapping[str, Any], fam: Mapping[str, Any]) -> str:
+    parts = [f"convention figée (blocs égaux, semaines anciennes en surnombre ignorées) "
+             f"{fmt_num(sens.get('convention_figee'), 3)}",
+             f"toutes les semaines (`array_split`) {fmt_num(sens.get('toutes_semaines_array_split'), 3)}",
+             f"λ = 0 compté pour ½ {fmt_num(sens.get('lambda0_compte_demi'), 3)}"]
+    if "sans_clones" in sens:
+        parts.append(f"famille sans clone ({', '.join(sens.get('sans_clones_variantes') or [])}) "
+                     f"{fmt_num(sens.get('sans_clones'), 3)}")
+    if "famille_de_quasi_clones_simulee" in sens:
+        parts.append(f"famille simulée de quasi-clones de A {fmt_num(sens.get('famille_de_quasi_clones_simulee'), 3)}")
+    parts.append(f"PBO nulle de référence pour N = {len(fam.get('variantes') or [])} : "
+                 f"{fmt_num(sens.get('reference_nulle_n'), 3)} (0,5 si λ = 0 compte pour ½)")
+    return " ; ".join(parts) + "."
+
+
+def _fp_text(fc: Mapping[str, Any] | None) -> str:
+    """Contrôle d'empreinte sans autoréférence : état figé a2bfeb4 et référence 751d1be (v1.0)."""
+    if not fc:
+        return ""
+    ref = fc.get("reference_preenregistrement") or {}
+    fixed = fc.get("etat_fige") or {}
+    if not ref:  # verrou antérieur à la correction du 22/11/2026
+        return (" (identique à l'empreinte du registre S1-I / REF-ID, écrite dans le même commit que l'état figé : "
+                "contrôle autoréférentiel)" if fc.get("conforme") else " (**différente** de l'empreinte du registre)")
+    same = fc.get("conforme_etat_fige", fc.get("conforme"))
+    return ((f" (identique à l'empreinte de l'état figé `{str(fixed.get('commit'))[:7]}`" if same else
+             f" (**différente** de l'empreinte de l'état figé `{str(fixed.get('commit'))[:7]}` "
+             f"`{fixed.get('empreinte')}`")
+            + f" ; référence de pré-enregistrement : commit `{str(ref.get('commit'))[:7]}`, YAML "
+              f"{ref.get('version_yaml')}, empreinte `{ref.get('empreinte_v1_0')}` ; l'empreinte de l'état figé n'est "
+              "pas une valeur pré-enregistrée indépendante)")
+
+
 def _run_label(rid: str, runs: Mapping[str, Any]) -> str:
     r = runs.get(rid) or {}
     costs = _COSTS.get(str(r.get("couts")), r.get("couts"))
@@ -119,11 +152,7 @@ def build_report(m: Mapping[str, Any]) -> str:
         ["Arbre `brvm_alpha/` et `configs/` identique à HEAD, sans fichier non suivi",
          "oui" if ex.get("arbre_propre") else "non"],
         ["Fichiers non suivis (refusés sur S1, listés)", ", ".join(ex.get("fichiers_non_suivis") or []) or "aucun"],
-        ["Empreinte de configuration", f"`{ex.get('empreinte_config')}`" + (
-            "" if not ex.get("empreinte_controle") else
-            (" (identique au pré-enregistrement v1.1)" if (ex.get("empreinte_controle") or {}).get("conforme")
-             else " (**différente** du pré-enregistrement v1.1 : "
-                  + ", ".join((ex.get("empreinte_controle") or {}).get("preenregistree_v11") or ["absente"]) + ")"))],
+        ["Empreinte de configuration", f"`{ex.get('empreinte_config')}`" + _fp_text(ex.get("empreinte_controle"))],
         ["Version du YAML", str(ex.get("version_yaml"))],
         ["Horodatage (UTC)", str(ex.get("horodatage_utc"))],
         ["Durée totale / des runs", f"{fmt_num(ex.get('duree_totale_s'), 1)} s / {fmt_num(ex.get('duree_runs_s'), 1)} s"
@@ -152,10 +181,17 @@ def build_report(m: Mapping[str, Any]) -> str:
           "le rendement de t0, qui porte les frais d'achat initiaux, est compté).",
           "- Sous-périodes : " + " ; ".join(f"[{_date(a)} ; {_date(b)}]" for a, b in subs) + ".",
           f"- Fréquence : hebdomadaire ({m.get('frequence')}), nette de tous les coûts ; annualisation à 52 semaines.",
-          "- Exclusions des statistiques : fenêtre(s) " + ", ".join(f"{_date(a)} → {_date(b)}" for a, b in
-                                                                     m.get("fenetres_exclues") or [])
-          + " et semaines couvrant plus de 6 séances (trous de BOC) : "
-          + (", ".join(_date(x) for x in m.get("semaines_exclues") or []) or "aucune") + ".",
+          "- Semaines retirées de toutes les mesures : fenêtre(s) du §8.1 " + ", ".join(
+              f"{_date(a)} → {_date(b)}" for a, b in m.get("fenetres_exclues") or [])
+          + " (" + (", ".join(_date(x) for x in m.get("semaines_exclues") or []) or "aucune") + ").",
+          ("- Semaines multi-séances (observation de plus de 6 séances après un trou de BOC) : "
+           + (", ".join(_date(x) for x in m.get("semaines_multi_seances") or []) or "aucune")
+           + ". Elles sont **gardées** pour les critères chaînés (rendement annualisé, actif R1/R2/C1/C3, drawdowns "
+             "R4/R5/C4) et **retirées** des seules statistiques de dispersion (volatilité, IR, TE, Sharpe, PSR, DSR, "
+             "PBO, CVaR, bootstrap) : §3.1.3, « exclu des estimations de volatilité […] mais gardé pour chaîner le "
+             "TR »." if "semaines_multi_seances" in m else
+           "- Semaines couvrant plus de 6 séances (trous de BOC) : retirées de toutes les mesures (lecture antérieure "
+           "à la correction du 22/11/2026)."),
           "- La fenêtre complète (depuis la première séance simulée, liquidités de démarrage comprises) est "
           "publiée en section 10 **pour information seulement**.", ""]
 
@@ -198,7 +234,15 @@ def build_report(m: Mapping[str, Any]) -> str:
                  "Rotation /mois", "Coûts /an", "Lignes", "Investi"], rows)
     L += ["", "⚠ : écart entre Sharpe de Lo et Sharpe GLM supérieur à 25 % (prix périmés à examiner, §8.2). "
           "PSR, DSR, IR et Sharpe portent sur les rendements **actifs** nets contre le TR (sauf la colonne Sharpe, "
-          "rendements absolus). Coûts /an : coûts payés rapportés à la NAV moyenne.", ""]
+          "rendements absolus). Coûts /an : coûts payés rapportés à la NAV moyenne, annualisés par les années "
+          "calendaires de la fenêtre.", ""]
+    if any(_ok(d.get("dsr_registre_variance_registre")) for d in variants.values()):
+        rows = [[v, fmt_num(d.get("dsr_registre"), 4), fmt_num(d.get("dsr_registre_variance_registre"), 4),
+                 fmt_num(d.get("dsr_famille_n9"), 4)] for v, d in variants.items()]
+        L += [f"**DSR sous deux conventions de variance** (N = {fam.get('n_registre')} ; §8.5) : variance des Sharpe "
+              f"hebdomadaires de la famille ({fmt_num(fam.get('variance_sharpe_hebdo'), 6)}, utilisée pour G3) ou de "
+              f"tous les essais exécutés du registre ({fmt_num(fam.get('variance_sharpe_registre'), 4)}, prudente).", ""]
+        L += _table(["Var.", "DSR (variance famille)", "DSR (variance registre)", "DSR (N = 9)"], rows) + [""]
 
     # 5. Statuts
     L += ["## 5. Statuts du §8.3 (règles exactes, estimations)", ""]
@@ -214,6 +258,17 @@ def build_report(m: Mapping[str, Any]) -> str:
                      fmt_num(d.get("ic_t_nw")), fmt_num(d.get("hsr_bhy"))])
     L += _table(["Var.", "Statut", "Rejets déclenchés (R1-R5)", "Critères candidat non vérifiés (C1-C7)",
                  "Actif central", "Actif stress", "IR sous-périodes", "t NW de l'IC", "HSR (BHY)"], rows)
+    cov = [(v, (d.get("mesures_statut") or {})) for v, d in variants.items()]
+    if any(_ok(ms.get("couverture_dispersion")) for _, ms in cov):
+        ms_a = dict(cov).get("A") or (cov[0][1] if cov else {})
+        L += ["", f"Couverture de la période attendue (calendrier W-FRI de [t0 ; fin] moins la fenêtre du §8.1, "
+                  f"{ms_a.get('semaines_attendues')} semaines ; seuil 95 %, §8.5) : "
+                  f"**{fmt_pct(ms_a.get('couverture'))}** sur les séries chaînées (critère) ; "
+                  f"{fmt_pct(ms_a.get('couverture_dispersion'))} sans les semaines multi-séances (lecture antérieure à "
+                  "la correction du 22/11/2026, sous le seuil : elle aurait rendu le statut INDÉTERMINÉ)."]
+    untested = [v for v, d in variants.items() if d.get("testee") is False]
+    if untested:
+        L += ["", "**Non testée(s) sur S1** : " + " ; ".join(str(variants[v].get("note_test")) for v in untested)]
     L += ["", "REJETÉ : l'une des conditions R1-R5 est vraie. CANDIDAT : C1-C7 toutes vraies (paper trading "
           "autorisé). INDÉTERMINÉ : ni l'un ni l'autre, ou données insuffisantes (aucun suivi réel autorisé). "
           "**PROMU est impossible sans suivi réel S2** (au moins 12 mois ; G7 sur les IC S1 puis S2 bout à bout, "
@@ -229,6 +284,10 @@ def build_report(m: Mapping[str, Any]) -> str:
           f"- **PBO (CSCV, S = {fam.get('n_blocs')} blocs hebdomadaires, {fam.get('critere')})** : "
           f"{fmt_num(fam.get('pbo'), 3)} ; pente de dégradation : {fmt_num(fam.get('pente_degradation'), 3)}"
           + (f" ({fam.get('note_pbo')})" if fam.get("note_pbo") else "") + ".",
+          *(["- **Sensibilité de la PBO** (publiée ; C6 reste évalué avec la convention figée) : "
+             + _pbo_sens_text(fam.get("pbo_sensibilite") or {}, fam)] if fam.get("pbo_sensibilite") else []),
+          *([f"- Clones exacts dans la famille : {', '.join(f'{a} = {b}' for a, b in fam.get('clones_exacts'))} "
+             "(variantes identiques : la PBO perd son pouvoir discriminant)."] if fam.get("clones_exacts") else []),
           f"- Registre : N = {fam.get('n_registre')} essais (DSR « registre » et haircut BHY) ; G1 (registre "
           f"complet) : {'vert' if fam.get('registre_complet') else 'rouge'} ; variance des Sharpe hebdomadaires "
           f"entre variantes : {fmt_num(fam.get('variance_sharpe_hebdo'), 6)}.",
@@ -297,6 +356,16 @@ def build_report(m: Mapping[str, Any]) -> str:
         L += _table(["Run", "Contrôles verts", "Cash min.", "Exposition max.", "Identité VL", "Identité de flux",
                      "Ventes borne basse / achats borne haute", "Coût par aller (médiane)",
                      "Coût par aller (moyenne pondérée)", "Exécutions"], rows)
+        drows = []
+        for rid, r in runs.items():
+            dc = r.get("cout_aller_decomposition_ponderee") or {}
+            if _ok(dc.get("total")):
+                drows.append([_run_label(rid, runs), fmt_pct(dc.get("frais"), 3), fmt_pct(dc.get("demi_spread"), 3),
+                              fmt_pct(dc.get("impact"), 3), fmt_pct(dc.get("total"), 3)])
+        if drows:
+            L += ["", "Décomposition **pondérée** du coût par aller sur [t0 ; fin] (somme des composantes = coût moyen "
+                      "pondéré ; le demi-spread médian mesuré n'entre pas dans cette somme) :", ""]
+            L += _table(["Run", "Frais (courtage, taxe, BRVM, DC/BR)", "Demi-spread", "Impact", "Total"], drows)
         L += ["", "Cash réglé ≥ 0 à chaque séance (aucun levier) ; identités `VL = cash − frais dus + créances + "
               "Σ q·P` et `ΔVL = Σ q·ΔP + exécutions + dividendes − coûts` (écart maximal en fraction de la VL, "
               f"tolérance {ctl.get('tolerance_identites')}) ; aucune vente à la borne basse ni achat à la borne "
@@ -337,8 +406,9 @@ def build_report(m: Mapping[str, Any]) -> str:
           "reconstruit avant le premier niveau officiel ; secteurs de 2025 appliqués à tout l'historique ; "
           "chronologie des événements pays [NON VÉRIFIÉ] en partie (D10) ; étalon « fonds actions » non "
           "disponible.", "",
-          "**Limites** : 129 séances sans BOC (dont 96 en 2021) ; rendements multi-séances exclus des statistiques ; "
-          "annualisation conventionnelle (52 semaines) ; aucun suivi réel (S2) : le statut PROMU est impossible.",
+          "**Limites** : 129 séances sans BOC (dont 96 en 2021) ; semaines multi-séances gardées pour le chaînage et "
+          "exclues des seules statistiques de dispersion ; annualisation conventionnelle (52 semaines observées) ; "
+          "aucun suivi réel (S2) : le statut PROMU est impossible.",
           ""]
 
     # 12. Prédiction

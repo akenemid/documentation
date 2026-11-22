@@ -857,7 +857,8 @@ def weekly_tr_returns(tr_index: pd.DataFrame, market_tr: pd.Series | None, symbo
     daily = frame.pct_change(fill_method=None).iloc[1:]
     if not len(daily):
         return pd.DataFrame(columns=list(cols) + ([_BENCH] if market_tr is not None else []))
-    weekly = bm.weekly_returns(daily)
+    # Tirages du bootstrap = statistiques de dispersion : semaines multi-séances (trous de BOC) retirées.
+    weekly = bm.weekly_returns(daily, max_sessions=bm.MAX_WEEKLY_SESSIONS)
     if isinstance(weekly, pd.Series):
         weekly = weekly.to_frame()
     monday = weekly.index - pd.Timedelta(days=4)

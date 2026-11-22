@@ -36,6 +36,7 @@ __all__ = [
     "archive_previous",
     "check_rerun",
     "config_identity",
+    "fingerprint_check",
     "git_tree_state",
     "read_lock",
     "require_clean_tree",
@@ -48,6 +49,47 @@ LOCK_NAME = "lock.json"
 LOCKED_PATHS: tuple[str, ...] = ("brvm_alpha", "configs")
 #: Racine du dépôt (dossier qui contient ``brvm_alpha/``).
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+#: Référence de pré-enregistrement de l'additif v1.1 (spécification §8.4) : commit où les décisions
+#: D1-D12 ont été figées, AVANT l'état figé du test S1. À ce commit, le YAML était en version 1.0 et
+#: les essais S1-A à S1-H portaient l'empreinte ``dcdf1fb7db530c44`` (registre de ce commit).
+PREREGISTRATION_COMMIT = "751d1be729ac1501fe672eb47be084c794dac7a9"
+PREREGISTERED_FINGERPRINT_V10 = "dcdf1fb7db530c44"
+#: État figé exécuté au premier test S1 (commit a2bfeb4, 09:56:15 UTC) : l'empreinte ``f1582ed8e9fa1c85``
+#: y apparaît pour la première fois dans le registre (essais S1-I et REF-ID), 11 s avant le run. Ce n'est
+#: donc PAS une valeur pré-enregistrée indépendante, mais l'empreinte de l'état figé lui-même.
+FROZEN_STATE_COMMIT = "a2bfeb4c9b09c6a97f1208dfd7d585146455b651"
+FROZEN_STATE_FINGERPRINT = "f1582ed8e9fa1c85"
+
+
+def fingerprint_check(current: str | None, registry_fingerprints: Sequence[str] = ()) -> dict[str, Any]:
+    """Contrôle de l'empreinte de configuration, sans autoréférence (revue du 22/11/2026).
+
+    ``conforme_etat_fige`` compare l'empreinte courante à celle de l'état figé ``a2bfeb4`` (même
+    YAML que le premier test S1, donc mêmes paramètres pour une relance). La référence de
+    pré-enregistrement citée est le commit ``751d1be`` (spécification, YAML v1.0, empreinte
+    ``dcdf1fb7db530c44``) : le YAML a changé entre les deux commits (clés v1.1 reprenant D1-D12),
+    si bien qu'aucune empreinte v1.1 n'a été enregistrée dans un commit antérieur à l'état figé.
+    ``conforme`` (clé historique) vaut ``conforme_etat_fige`` ; ``preenregistree_independante``
+    vaut toujours faux pour cette empreinte. À l'avenir (S2) : enregistrer l'empreinte dans un
+    commit antérieur à l'état figé.
+    """
+    reg = sorted({str(x) for x in registry_fingerprints if x})
+    same = current == FROZEN_STATE_FINGERPRINT
+    return {
+        "actuelle": current,
+        "etat_fige": {"commit": FROZEN_STATE_COMMIT, "empreinte": FROZEN_STATE_FINGERPRINT},
+        "conforme_etat_fige": bool(same),
+        "conforme": bool(same),
+        "registre_s1_i_ref": reg,
+        "preenregistree_v11": reg,
+        "preenregistree_independante": False,
+        "reference_preenregistrement": {
+            "commit": PREREGISTRATION_COMMIT, "version_yaml": "1.0", "empreinte_v1_0": PREREGISTERED_FINGERPRINT_V10,
+            "note": "spécification inchangée depuis 751d1be ; YAML passé de 1.0 à 1.1 entre 751d1be et a2bfeb4 "
+                    "(clés v1.1 = valeurs D1-D12 du §8.4) ; l'empreinte f1582ed8e9fa1c85 est celle de l'état figé "
+                    "a2bfeb4, écrite dans le même commit que le run (11 s avant), pas une valeur pré-enregistrée "
+                    "indépendante"},
+    }
 
 
 class ValidationRefused(RuntimeError):

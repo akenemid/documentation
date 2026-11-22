@@ -16,8 +16,12 @@ Fenêtre d'évaluation (D2) : ``t0`` = première séance où A (centrale, 10 M) 
 titres ; toutes les métriques, tous les critères du §8.3 et tous les étalons sur
 ``[t0 ; fin]``, rebasés à ``t0`` ; sous-période 1 = ``[t0 ; 2019-12-31]``, sous-période 2 =
 ``[2020-01-01 ; 2022-11-16]`` ; semaines du 06/05 au 25/06/2021 exclues (défaut de
-``metrics.weekly_returns`` et de ``evaluate_status``). La fenêtre complète est publiée pour
-information.
+``metrics.weekly_returns`` et de ``evaluate_status``). Les semaines dont l'observation couvre
+plusieurs séances après un trou de BOC sont **gardées** pour les critères chaînés (rendement,
+actif, drawdowns : §3.1.3, « gardé pour chaîner le TR ») et retirées des seules statistiques de
+dispersion (IR, TE, volatilité, Sharpe, PSR/DSR, PBO, CVaR, bootstrap) ; la couverture se mesure
+sur le calendrier W-FRI moins la fenêtre du §8.1 (correction du 22/11/2026, §8.5 de la
+spécification). La fenêtre complète est publiée pour information.
 
 S1 exige le verrou (:mod:`brvm_alpha.validation.lock`) ; S0 écrit dans
 ``reports/diagnostic_S0/`` sans verrou, avec la mention « contaminé, aucune valeur de
@@ -478,9 +482,35 @@ def _session_series(panels: Mapping[str, Any], calendar: pd.DatetimeIndex) -> pd
 
 
 def _weekly(daily: pd.Series, t0: Any, end: Any, sess: pd.Series | None) -> pd.Series:
+    """Rendements hebdomadaires **chaînés** de ``[t0 ; fin]`` : seule la fenêtre du §8.1 est retirée ;
+    les semaines multi-séances (trous de BOC) sont gardées (§3.1.3)."""
     d = mt.evaluation_window(pd.Series(daily, dtype=float), t0, end)
-    w = mt.weekly_returns(d, session_no=sess)
+    w = mt.weekly_returns(d, session_no=sess, max_sessions=None)
     return pd.Series(w, dtype=float)
+
+
+def _calendar_years(t0: Any, end: Any) -> float:
+    """Années calendaires de la fenêtre ``[t0 ; fin]`` (jours / 365,25)."""
+    a, b = pd.Timestamp(t0), pd.Timestamp(end)
+    return max((b - a).days + 1, 1) / 365.25
+
+
+def _cost_decomposition(trades: Any) -> dict[str, float]:
+    """Coût par aller pondéré par les montants, décomposé (frais, demi-spread, impact) : la somme des
+    trois composantes vaut le coût moyen pondéré par aller (``cost / value``)."""
+    out = {"frais": math.nan, "demi_spread": math.nan, "impact": math.nan, "total": math.nan}
+    if not isinstance(trades, pd.DataFrame) or not len(trades) or "value" not in trades.columns:
+        return out
+    val = trades["value"].astype(float).abs()
+    tot = float(val.sum())
+    if not tot > 0:
+        return out
+    for key, col in (("frais", "commission"), ("demi_spread", "spread_cost"), ("impact", "impact")):
+        if col in trades.columns:
+            out[key] = float(trades[col].astype(float).sum() / tot)
+    if "cost" in trades.columns:
+        out["total"] = float(trades["cost"].astype(float).sum() / tot)
+    return out
 
 
 def _slice_daily(s: pd.Series | pd.DataFrame, t0: Any, end: Any) -> Any:
@@ -496,57 +526,70 @@ def _sharpes(x: pd.Series) -> dict[str, Any]:
 
 
 def _series_metrics(w: pd.Series, bench: Mapping[str, pd.Series], *, n_boot: int, seed: int,
-                    subperiods: Sequence[tuple[Any, Any]], full: bool = True) -> dict[str, Any]:
-    """Métriques hebdomadaires d'une série nette contre le TR (et le panier EW)."""
+                    subperiods: Sequence[tuple[Any, Any]], full: bool = True,
+                    multi_weeks: Sequence[Any] | pd.DatetimeIndex | None = None) -> dict[str, Any]:
+    """Métriques hebdomadaires d'une série nette contre le TR (et le panier EW).
+
+    ``w`` et les étalons sont **chaînés** (semaines multi-séances comprises) : rendement annualisé,
+    actif, drawdowns. ``multi_weeks`` : semaines multi-séances retirées des seules statistiques de
+    dispersion (volatilité, IR, TE, Sharpe, PSR, bootstrap, CVaR), §3.1.3."""
     tr = bench.get("TR")
+    wd = mt.dispersion_sample(w, multi_weeks)
     out: dict[str, Any] = {"n_semaines": int(w.dropna().size),
+                           "n_semaines_dispersion": int(wd.dropna().size),
                            "rendement_an": mt.annualized_return(w) if w.size else math.nan,
-                           "volatilite_an": float(w.std(ddof=1) * math.sqrt(mt.WEEKS_PER_YEAR)) if w.size > 1
+                           "volatilite_an": float(wd.std(ddof=1) * math.sqrt(mt.WEEKS_PER_YEAR)) if wd.size > 1
                            else math.nan,
                            "drawdown_absolu": mt.max_drawdown(w) if w.size else math.nan}
     if tr is not None and len(tr):
         both = pd.concat({"s": w, "b": tr}, axis=1, join="inner").dropna()
+        both_d = mt.dispersion_sample(both, multi_weeks)
         a = (both["s"] - both["b"]).rename("actif")
+        ad = (both_d["s"] - both_d["b"]).rename("actif")
         out.update(
             actif_tr_an=mt.annualized_active_return(both["s"], both["b"]) if len(both) else math.nan,
-            ir_tr=mt.information_ratio(a) if a.size > 1 else math.nan,
-            te_tr=float(a.std(ddof=1) * math.sqrt(mt.WEEKS_PER_YEAR)) if a.size > 1 else math.nan,
+            ir_tr=mt.information_ratio(ad) if ad.size > 1 else math.nan,
+            te_tr=float(ad.std(ddof=1) * math.sqrt(mt.WEEKS_PER_YEAR)) if ad.size > 1 else math.nan,
             drawdown_relatif_tr=mt.relative_drawdown(both["s"], both["b"]) if len(both) else math.nan,
             drawdown_tr=mt.max_drawdown(both["b"]) if len(both) else math.nan,
         )
         if full:
-            out["sharpe"] = _sharpes(w)
-            out["sharpe_actif"] = _sharpes(a)
-            out["psr_actif"] = mt.psr(a) if a.size >= 3 else math.nan
-            out["bootstrap_ir"] = mt.bootstrap_ci(a, "ir", n_boot=n_boot, mean_block=mt.WEEKLY_MEAN_BLOCK, seed=seed)
-            out["bootstrap_actif_moyen_an"] = mt.bootstrap_ci(a, "mean", n_boot=n_boot,
+            out["sharpe"] = _sharpes(wd)
+            out["sharpe_actif"] = _sharpes(ad)
+            out["psr_actif"] = mt.psr(ad) if ad.size >= 3 else math.nan
+            out["bootstrap_ir"] = mt.bootstrap_ci(ad, "ir", n_boot=n_boot, mean_block=mt.WEEKLY_MEAN_BLOCK, seed=seed)
+            out["bootstrap_actif_moyen_an"] = mt.bootstrap_ci(ad, "mean", n_boot=n_boot,
                                                               mean_block=mt.WEEKLY_MEAN_BLOCK, seed=seed)
             try:
-                out["cvar"] = mt.cvar_ratio(both["s"], both["b"], n_boot=n_boot, mean_block=mt.WEEKLY_MEAN_BLOCK,
-                                            seed=seed)
+                out["cvar"] = mt.cvar_ratio(both_d["s"], both_d["b"], n_boot=n_boot,
+                                            mean_block=mt.WEEKLY_MEAN_BLOCK, seed=seed)
             except ValueError as exc:
                 out["cvar"] = {"ratio": math.nan, "note": str(exc)}
         subs = []
         for a0, b0 in subperiods:
             sa = a[(a.index >= pd.Timestamp(a0)) & (a.index <= pd.Timestamp(b0))]
+            sd = ad[(ad.index >= pd.Timestamp(a0)) & (ad.index <= pd.Timestamp(b0))]
             sb = both["b"].reindex(sa.index)
             subs.append({"debut": pd.Timestamp(a0), "fin": pd.Timestamp(b0), "n_semaines": int(sa.size),
+                         "n_semaines_dispersion": int(sd.size),
                          "actif_tr_an": mt.annualized_active_return(sa + sb, sb) if sa.size else math.nan,
-                         "ir_tr": mt.information_ratio(sa) if sa.size > 1 else math.nan})
+                         "ir_tr": mt.information_ratio(sd) if sd.size > 1 else math.nan})
         out["sous_periodes"] = subs
     ew = bench.get("EW")
     if ew is not None and len(ew):
         both = pd.concat({"s": w, "b": ew}, axis=1, join="inner").dropna()
-        a = both["s"] - both["b"]
+        both_d = mt.dispersion_sample(both, multi_weeks)
+        ad = both_d["s"] - both_d["b"]
         out.update(actif_ew_an=mt.annualized_active_return(both["s"], both["b"]) if len(both) else math.nan,
-                   ir_ew=mt.information_ratio(a) if a.size > 1 else math.nan,
-                   te_ew=float(a.std(ddof=1) * math.sqrt(mt.WEEKS_PER_YEAR)) if a.size > 1 else math.nan)
+                   ir_ew=mt.information_ratio(ad) if ad.size > 1 else math.nan,
+                   te_ew=float(ad.std(ddof=1) * math.sqrt(mt.WEEKS_PER_YEAR)) if ad.size > 1 else math.nan)
     return out
 
 
 def _run_metrics(r: Mapping[str, Any], w: pd.Series, bench: Mapping[str, pd.Series], t0: Any, end: Any, *,
-                 n_boot: int, seed: int, subperiods: Sequence[tuple[Any, Any]]) -> dict[str, Any]:
-    out = _series_metrics(w, bench, n_boot=n_boot, seed=seed, subperiods=subperiods)
+                 n_boot: int, seed: int, subperiods: Sequence[tuple[Any, Any]],
+                 multi_weeks: Sequence[Any] | pd.DatetimeIndex | None = None) -> dict[str, Any]:
+    out = _series_metrics(w, bench, n_boot=n_boot, seed=seed, subperiods=subperiods, multi_weeks=multi_weeks)
     to = _slice_daily(r["turnover_daily"], t0, end)
     out["rotation_mensuelle_aller"] = mt.monthly_one_way_turnover(to)
     cd = _slice_daily(r["costs_daily"], t0, end)
@@ -554,8 +597,19 @@ def _run_metrics(r: Mapping[str, Any], w: pd.Series, bench: Mapping[str, pd.Seri
     n_days = len(eq)
     total = float(cd.sum())
     out["couts_payes_fcfa"] = total
-    out["couts_an_pct_nav_moyenne"] = (total / float(eq.mean()) * 252.0 / n_days) if n_days and eq.mean() > 0 \
+    # Annualisation par les années CALENDAIRES de la fenêtre (correction du 22/11/2026) : la fenêtre de S1
+    # compte environ 228 séances observées par an (BOC manquants), et non 252.
+    years = _calendar_years(eq.index[0], eq.index[-1]) if n_days else math.nan
+    out["couts_an_pct_nav_moyenne"] = (total / float(eq.mean()) / years) if n_days and eq.mean() > 0 \
         else math.nan
+    out["couts_an_pct_nav_moyenne_252_seances"] = ((total / float(eq.mean()) * 252.0 / n_days)
+                                                   if n_days and eq.mean() > 0 else math.nan)
+    out["seances_observees_par_an"] = (n_days / years) if n_days else math.nan
+    tr_w = r.get("trades")
+    if isinstance(tr_w, pd.DataFrame) and len(tr_w) and "date" in tr_w.columns:
+        dd = pd.DatetimeIndex(tr_w["date"])
+        tr_w = tr_w[(dd >= pd.Timestamp(t0)) & (dd <= pd.Timestamp(end))]
+    out["cout_aller_decomposition_ponderee"] = _cost_decomposition(tr_w)
     bd = _slice_daily(r["cost_breakdown"], t0, end)
     out["couts_detail_fcfa"] = {str(k): float(v) for k, v in bd.sum().items()} if isinstance(bd, pd.DataFrame) \
         else {}
@@ -579,9 +633,11 @@ def _run_metrics(r: Mapping[str, Any], w: pd.Series, bench: Mapping[str, pd.Seri
     return out
 
 
-def _benchmark_metrics(w: pd.Series, tr: pd.Series | None) -> dict[str, Any]:
+def _benchmark_metrics(w: pd.Series, tr: pd.Series | None,
+                       multi_weeks: Sequence[Any] | pd.DatetimeIndex | None = None) -> dict[str, Any]:
+    wd = mt.dispersion_sample(w, multi_weeks)
     out = {"n_semaines": int(w.dropna().size), "rendement_an": mt.annualized_return(w) if w.size else math.nan,
-           "volatilite_an": float(w.std(ddof=1) * math.sqrt(mt.WEEKS_PER_YEAR)) if w.size > 1 else math.nan,
+           "volatilite_an": float(wd.std(ddof=1) * math.sqrt(mt.WEEKS_PER_YEAR)) if wd.size > 1 else math.nan,
            "drawdown_absolu": mt.max_drawdown(w) if w.size else math.nan}
     if tr is not None and len(tr) and w.size:
         both = pd.concat({"s": w, "b": tr}, axis=1, join="inner").dropna()
@@ -752,12 +808,13 @@ def run_validation(
     registry = TrialRegistry.initialize(reg_path, save=False, addendum_v11=True)
     git = lk.git_tree_state(repo_root)
     ident = lk.config_identity()
-    # Empreinte du YAML au pré-enregistrement de l'additif v1.1 (essais S1-I et REF-ID) : un écart signale une
-    # modification des paramètres figés après le pré-enregistrement (non bloquant, consigné et publié).
+    # Empreinte du YAML : comparée à celle de l'état figé a2bfeb4 (premier test S1) ; la référence de
+    # pré-enregistrement citée est le commit 751d1be (YAML v1.0, empreinte dcdf1fb7db530c44). Le registre
+    # (S1-I, REF-ID) porte l'empreinte écrite dans le même commit que l'état figé : ce n'est pas une valeur
+    # pré-enregistrée indépendante (revue du 22/11/2026). Un écart est consigné et publié (non bloquant).
     pre_fp = sorted({str(x) for x in registry.frame.loc[registry.frame["id"].isin(["S1-I", REFERENCE_TRIAL_ID]),
                                                         "empreinte_config"].dropna()})
-    fp_check = {"preenregistree_v11": pre_fp, "actuelle": ident.get("empreinte_config"),
-                "conforme": bool(pre_fp) and ident.get("empreinte_config") in pre_fp}
+    fp_check = lk.fingerprint_check(ident.get("empreinte_config"), pre_fp)
     rerun: dict[str, Any] = {"relance": False, "motif": None}
     lock_path = out / lk.LOCK_NAME
     if code == "S1":
@@ -815,9 +872,9 @@ def run_validation(
         "bandeau": BANNER,
     }
     if not fp_check["conforme"]:
-        say(f"ATTENTION : empreinte de configuration {ident.get('empreinte_config')} différente de celle du "
-            f"pré-enregistrement de l'additif v1.1 ({', '.join(pre_fp) or 'absente'}) : paramètres modifiés après le "
-            "pré-enregistrement ?")
+        say(f"ATTENTION : empreinte de configuration {ident.get('empreinte_config')} différente de celle de l'état "
+            f"figé {lk.FROZEN_STATE_COMMIT[:7]} ({lk.FROZEN_STATE_FINGERPRINT}) : paramètres modifiés depuis le premier "
+            "test S1 ?")
     if code == "S1":
         lk.write_lock(lock_path, lock_payload)
         say(f"verrou S1 écrit : {lock_path} (commit {git.get('commit')}, empreinte {ident.get('empreinte_config')})")
@@ -907,9 +964,16 @@ def run_validation(
         bench_w = {c: _weekly(bench_daily(levels[c]), t0, end, sess) for c in levels.columns}
         bench_w = {c: s for c, s in bench_w.items() if s.dropna().size}
         ew_w = {k: _weekly(bench_daily(s), t0, end, sess) for k, s in ew_by_capital.items()}
-        excluded = sorted({str(pd.Timestamp(x).date()) for x in
-                           getattr(mt.weekly_returns(mt.evaluation_window(a_run["returns"], t0, end), session_no=sess),
-                                   "attrs", {}).get("weeks_dropped", [])})
+        # Semaines retirées du chaînage : la seule fenêtre du §8.1. Semaines multi-séances (trous de BOC) :
+        # gardées pour les critères chaînés, retirées des statistiques de dispersion (§3.1.3).
+        a_win = mt.weekly_returns(mt.evaluation_window(a_run["returns"], t0, end), session_no=sess, max_sessions=None)
+        excluded = sorted({str(pd.Timestamp(x).date()) for x in getattr(a_win, "attrs", {}).get("weeks_dropped", [])})
+        cal_win = calendar[(calendar >= t0) & (calendar <= end)]
+        multi_weeks = mt.multi_session_weeks(cal_win, session_no=sess)
+        multi_weeks = multi_weeks[multi_weeks.isin(pd.DatetimeIndex(a_win.index))]
+        multi_full = mt.multi_session_weeks(calendar[calendar <= end], session_no=sess)
+        say(f"semaines multi-séances gardées pour le chaînage, retirées de la dispersion : {len(multi_weeks)} "
+            f"({', '.join(str(d.date()) for d in multi_weeks) or 'aucune'})")
 
         # -- séries hebdomadaires et métriques par run ---------------------------------------------
         weekly: dict[str, pd.Series] = {}
@@ -925,11 +989,14 @@ def run_validation(
             ew = ew_w.get(float(spec.capital))
             if ew is not None:
                 bench["EW"] = ew
-            m = _run_metrics(r, w, bench, t0, end, n_boot=n_boot, seed=seed, subperiods=subperiods)
-            full_w = mt.weekly_returns(pd.Series(r["returns"], dtype=float), session_no=sess)
-            full_tr = mt.weekly_returns(bench_daily(levels["TR"]).loc[calendar[0]:end], session_no=sess)
+            m = _run_metrics(r, w, bench, t0, end, n_boot=n_boot, seed=seed, subperiods=subperiods,
+                             multi_weeks=multi_weeks)
+            full_w = mt.weekly_returns(pd.Series(r["returns"], dtype=float), session_no=sess, max_sessions=None)
+            full_tr = mt.weekly_returns(bench_daily(levels["TR"]).loc[calendar[0]:end], session_no=sess,
+                                        max_sessions=None)
             m["fenetre_complete"] = _series_metrics(pd.Series(full_w, dtype=float), {"TR": pd.Series(full_tr)},
-                                                    n_boot=n_boot, seed=seed, subperiods=[], full=False)
+                                                    n_boot=n_boot, seed=seed, subperiods=[], full=False,
+                                                    multi_weeks=multi_full)
             m["fenetre_complete"]["debut"] = calendar[0]
             m.update(run_id=spec.run_id, variante=spec.variant, couts=spec.costs, capital=float(spec.capital),
                      role=spec.role, duree_s=r.get("duration_s"), avertissements_moteur=r.get("warnings", []),
@@ -962,10 +1029,10 @@ def run_validation(
 
         # -- famille : PBO, variance des Sharpe, IC --------------------------------------------------
         tr_w = bench_w["TR"]
-        # Semaines attendues = celles de l'étalon TR, calculées avec les mêmes règles (fenêtre exclue de
-        # 2021, observations couvrant plus de 6 séances après un trou de BOC) : ces retraits légitimes ne
-        # comptent pas comme des manques dans la couverture du §8.3.
-        expected_weeks = pd.DatetimeIndex(tr_w.dropna().index)
+        # Couverture (§8.3, seuil de 95 % documenté au §8.5) : semaines W-FRI de [t0 ; fin] moins la seule
+        # fenêtre du §8.1, mesurée sur les séries chaînées (evaluate_status, expected_period). Les semaines
+        # de l'étalon ne servent plus de semaines attendues : calculées avec les mêmes retraits, elles
+        # donnaient une couverture de 100 % par construction (garde-fou tautologique, corrigé le 22/11/2026).
         active: dict[str, pd.Series] = {}
         for spec in plan:
             if spec.is_trial and spec.run_id in weekly:
@@ -974,21 +1041,59 @@ def run_validation(
                 active[spec.variant] = (both["s"] - both["b"]).rename(spec.variant)
         fam_cols = [v for v in FAMILY_V11 if v in active]
         fam_frame = pd.DataFrame({v: active[v] for v in fam_cols}).dropna(how="any")
+        fam_disp = mt.dispersion_sample(fam_frame, multi_weeks)
         family: dict[str, Any] = {"variantes": fam_cols, "n_famille": len(FAMILY_V11), "complete": len(fam_cols) == len(
-            FAMILY_V11), "n_semaines_communes": len(fam_frame), "pbo": math.nan, "pente_degradation": math.nan,
-            "n_blocs": 10, "critere": "Sharpe de Lo (q = 4) des rendements actifs nets contre le TR"}
-        if len(fam_cols) >= 2 and len(fam_frame) >= 20:
+            FAMILY_V11), "n_semaines_communes": len(fam_frame), "n_semaines_dispersion": len(fam_disp),
+            "pbo": math.nan, "pente_degradation": math.nan,
+            "n_blocs": 10, "critere": "Sharpe de Lo (q = 4) des rendements actifs nets contre le TR (semaines "
+                                      "multi-séances exclues)"}
+        # Clones exacts dans la famille (p. ex. E = A faute d'avis de dividende daté à l'avance) : déclarés.
+        clones: list[list[str]] = []
+        for i, v in enumerate(fam_cols):
+            for u in fam_cols[:i]:
+                if np.allclose(fam_frame[v].to_numpy(), fam_frame[u].to_numpy(), rtol=0.0, atol=1e-12):
+                    clones.append([v, u])
+        family["clones_exacts"] = clones
+        if len(fam_cols) >= 2 and len(fam_disp) >= 20:
             try:
-                pb = mt.family_pbo(fam_frame, n_splits=10)
+                pb = mt.family_pbo(fam_disp, n_splits=10)
                 family["pbo"] = _f(pb.get("pbo"))
                 family["pente_degradation"] = _f(pb.get("degradation_slope"))
             except Exception as exc:  # noqa: BLE001 - échantillon trop court
                 family["note_pbo"] = f"PBO non calculée ({exc.__class__.__name__} : {exc})"
+            # Sensibilité de la PBO (publiée ; C6 reste évalué avec la convention figée ci-dessus).
+            sens: dict[str, Any] = {"convention_figee": family["pbo"],
+                                    "reference_nulle_n": mt.pbo_null_reference(len(fam_cols)),
+                                    "reference_nulle_lambda0_demi": mt.pbo_null_reference(len(fam_cols), "half")}
+
+            def _pbo_of(frame: pd.DataFrame, **kw: Any) -> float:
+                try:
+                    return _f(mt.family_pbo(frame, n_splits=10, **kw).get("pbo"))
+                except Exception:  # noqa: BLE001 - publiée NaN
+                    return math.nan
+
+            sens["toutes_semaines_array_split"] = _pbo_of(fam_disp, split="array_split")
+            sens["lambda0_compte_demi"] = _pbo_of(fam_disp, ties="half")
+            no_clone = [v for v in fam_cols if not any(v == c[0] for c in clones)]
+            if len(no_clone) < len(fam_cols) and len(no_clone) >= 2:
+                sens["sans_clones"] = _pbo_of(fam_disp[no_clone])
+                sens["sans_clones_variantes"] = no_clone
+            if "A" in fam_disp.columns:
+                rng = np.random.default_rng(seed)
+                base = fam_disp["A"].to_numpy(dtype=float)
+                clone_fam = pd.DataFrame({f"C{k}": base + rng.normal(0.0, 1e-4, base.size) for k in
+                                          range(len(fam_cols))}, index=fam_disp.index)
+                sens["famille_de_quasi_clones_simulee"] = _pbo_of(clone_fam)
+            sens["note"] = ("Sensibilité publiée (correction du 22/11/2026) : la PBO dépend du découpage et de la "
+                            "convention λ = 0 ; avec N impair, la PBO nulle vaut ⌊(N + 1)/2⌋/N (5/9 pour N = 9). Une "
+                            "famille de quasi-clones donne une PBO élevée mécaniquement : la PBO n'a alors pas de "
+                            "pouvoir discriminant. C6 reste évalué avec la convention figée avant S1.")
+            family["pbo_sensibilite"] = sens
         else:
             family["note_pbo"] = "famille ou échantillon insuffisant pour la CSCV"
         srs = []
         for v in fam_cols:
-            x = active[v].dropna()
+            x = fam_disp[v].dropna() if v in fam_disp.columns else pd.Series(dtype=float)
             sd = float(x.std(ddof=1)) if len(x) > 1 else math.nan
             if sd and math.isfinite(sd) and sd > 0:
                 srs.append(float(x.mean()) / sd)
@@ -1039,6 +1144,17 @@ def run_validation(
         n_reg = registry.n_trials()
         g1 = registry.is_complete(sample=code, variants=FAMILY_V11, min_trials=N_TRIALS_START_V11)
         family.update(n_registre=n_reg, registre_complet=g1)
+        # Variance des Sharpe pour le DSR du registre : deux conventions publiées (§8.5) ; G3 reste évalué
+        # avec la variance de la famille (convention du code figé avant S1).
+        try:
+            sr_var_reg = float(registry.sharpe_variance())
+        except Exception:  # noqa: BLE001 - publiée NaN
+            sr_var_reg = math.nan
+        family["variance_sharpe_registre"] = sr_var_reg
+        family["note_dsr"] = ("DSR « registre » : N = essais du registre ; variance des Sharpe hebdomadaires de la "
+                              "famille (convention utilisée pour G3 sur S1) et, à côté, variance des Sharpe de tous "
+                              "les essais exécutés du registre (rendements absolus de S0 et de S1 mélangés). La "
+                              "première déflate peu (variantes presque identiques) ; la seconde est prudente.")
         say(f"registre : N = {n_reg} essais (G1 {'vert' if g1 else 'rouge'})")
 
         # -- DSR, haircut, statuts §8.3, promotion §3.4 -------------------------------------------
@@ -1061,8 +1177,11 @@ def run_validation(
             cv = _f((m.get("cvar") or {}).get("ratio"))
             ir = _f(m.get("ir_tr"))
             n_obs = int(a_c.dropna().size)
-            dsr_reg = mt.dsr(a_c, n_reg, sr_var) if n_obs >= 3 else math.nan
-            dsr_fam = mt.dsr(a_c, len(FAMILY_V11), sr_var) if n_obs >= 3 else math.nan
+            a_cd = mt.dispersion_sample(a_c, multi_weeks)
+            n_obs = int(a_cd.dropna().size)
+            dsr_reg = mt.dsr(a_cd, n_reg, sr_var) if n_obs >= 3 else math.nan
+            dsr_reg_var_reg = mt.dsr(a_cd, n_reg, sr_var_reg) if n_obs >= 3 else math.nan
+            dsr_fam = mt.dsr(a_cd, len(FAMILY_V11), sr_var) if n_obs >= 3 else math.nan
             hsr = math.nan
             if math.isfinite(ir) and n_obs >= 2:
                 hsr = float(stats.haircut_sharpe(ir, n_obs=n_obs, n_tests=n_reg, method="bhy",
@@ -1076,7 +1195,7 @@ def run_validation(
                                       else None,
                                       n_trials=n_reg, sr_variance=sr_var if math.isfinite(sr_var) else None,
                                       registry_complete=g1, ic_monthly=ic.get(v), n_boot=n_boot, seed=seed, start=t0,
-                                      expected_period=(t0, end), expected_weeks=expected_weeks)
+                                      expected_period=(t0, last_week), dispersion_exclude=multi_weeks)
             statut = rep.statut
             if statut == STATUT_PROMU:  # garde-fou : impossible sans suivi réel S2
                 raise AssertionError("statut PROMU sans suivi réel S2 : incohérence")
@@ -1096,16 +1215,30 @@ def run_validation(
                 "mesures_statut": {k: rep.mesures.get(k) for k in ("actif_net_central_an", "actif_net_stress_an", "ir",
                                                                     "ir_sous_periodes", "actif_sous_periodes_an",
                                                                     "drawdown_relatif", "drawdown_absolu", "drawdown_tr",
-                                                                    "rotation_mensuelle", "couverture", "n_semaines",
+                                                                    "rotation_mensuelle", "couverture",
+                                                                    "couverture_dispersion", "semaines_attendues",
+                                                                    "n_semaines", "n_semaines_dispersion",
                                                                     "semaines_sous_periodes")},
                 "dsr_registre": dsr_reg,
+                "dsr_registre_variance_registre": dsr_reg_var_reg,
                 "dsr_famille_n9": dsr_fam,
                 "hsr_bhy": hsr,
                 "ic_mensuel": ic.get(v, pd.Series(dtype=float)),
                 "ic_t_nw": rep.mesures.get("promotion_S1_ic_t_nw"),
                 "avertissements": rep.avertissements,
             }
-            run_metrics[spec.run_id].update(dsr_registre=dsr_reg, dsr_famille_n9=dsr_fam, hsr_bhy=hsr, statut=statut)
+            clone_of = [c[1] for c in family.get("clones_exacts", []) if c[0] == v]
+            if clone_of:
+                variants_out[v]["testee"] = False
+                variants_out[v]["note_test"] = (
+                    f"{v} non testée sur S1 : rendements identiques à ceux de {clone_of[0]} (clone exact). Pour E, "
+                    "aucun avis de dividende n'est daté à l'avance dans les données (première vue environ un jour "
+                    "avant la date ex) : la poche S1 ne s'ouvre jamais. Statut publié pour information.")
+                variants_out[v]["avertissements"] = [variants_out[v]["note_test"]] + list(rep.avertissements)
+            else:
+                variants_out[v]["testee"] = True
+            run_metrics[spec.run_id].update(dsr_registre=dsr_reg, dsr_registre_variance_registre=dsr_reg_var_reg,
+                                            dsr_famille_n9=dsr_fam, hsr_bhy=hsr, statut=statut)
 
         promotion: dict[str, Any] = {"principal": "A", "regle": "§3.4 : X remplace A seulement si X bat A en actif net "
                                      "ET DSR ≥ 0,95 avec N = 9 ET PBO ≤ 0,25"}
@@ -1115,7 +1248,8 @@ def run_validation(
                     warnings.simplefilter("ignore")
                     pr = variant_promotion(fam_frame, benchmark=tr_w.reindex(fam_frame.index),
                                            pbo=family["pbo"] if math.isfinite(family["pbo"]) else None, baseline="A",
-                                           n_trials=len(FAMILY_V11), sr_variance=sr_var if math.isfinite(sr_var) else None)
+                                           n_trials=len(FAMILY_V11), sr_variance=sr_var if math.isfinite(sr_var) else None,
+                                           dispersion_exclude=multi_weeks)
                 promotion.update(principal=pr.principal, criteres=pr.criteres.reset_index().to_dict("records"),
                                  avertissements=pr.avertissements, n_trials=pr.n_trials)
             except Exception as exc:  # noqa: BLE001
@@ -1133,6 +1267,8 @@ def run_validation(
                     "actif_tr_an": m.get("actif_tr_an"), "actif_ew_an": m.get("actif_ew_an"), "ir_tr": m.get("ir_tr"),
                     "te_tr": m.get("te_tr"), "psr_actif": m.get("psr_actif"), "dsr_registre": m.get("dsr_registre"),
                     "dsr_famille_n9": m.get("dsr_famille_n9"), "hsr_bhy": m.get("hsr_bhy"),
+                    "dsr_registre_variance_registre": m.get("dsr_registre_variance_registre"),
+                    "semaines_multi_seances": [str(d.date()) for d in multi_weeks],
                     "drawdown_relatif_tr": m.get("drawdown_relatif_tr"), "drawdown_absolu": m.get("drawdown_absolu"),
                     "rotation_mensuelle_aller": m.get("rotation_mensuelle_aller"), "statut": vout.get("statut"),
                     "pbo_famille": family.get("pbo"), "n_registre": n_reg, "sensibilites": sens,
@@ -1146,14 +1282,14 @@ def run_validation(
             note = bnotes.get(c, {"disponible": False, "note": "non disponible"})
             entry = {"libelle": lab, "role": role, **note}
             if c in bench_w:
-                entry["mesures"] = _benchmark_metrics(bench_w[c], tr_w if c != "TR" else None)
+                entry["mesures"] = _benchmark_metrics(bench_w[c], tr_w if c != "TR" else None, multi_weeks)
             bench_metrics[c] = entry
         for k, s in ew_w.items():
             if float(k) != CAPITAL_REFERENCE and s.dropna().size:
                 bench_metrics[f"EW_{capital_label(k)}"] = {"libelle": f"panier équipondéré TR des éligibles de A à "
                                                                       f"{capital_label(k)} FCFA", "role": "capacité",
                                                            "disponible": True,
-                                                           "mesures": _benchmark_metrics(s, tr_w)}
+                                                           "mesures": _benchmark_metrics(s, tr_w, multi_weeks)}
         previous = None
         if previous_dir is not None and (previous_dir / "metrics.json").exists():
             try:
@@ -1177,6 +1313,13 @@ def run_validation(
             "sous_periodes": [[a, b] for a, b in subperiods],
             "fenetres_exclues": [list(x) for x in mt.EXCLUDE_STATS_WINDOWS],
             "semaines_exclues": excluded,
+            "semaines_multi_seances": [str(d.date()) for d in multi_weeks],
+            "regle_semaines": ("Critères chaînés (rendement annualisé, actif R1/R2/C1/C3, drawdowns R4/R5/C4) : toutes "
+                               "les semaines sauf la fenêtre du §8.1 ; statistiques de dispersion (volatilité, IR R3/C2, "
+                               "TE, Sharpe, PSR/DSR, PBO, CVaR, bootstrap) : sans les semaines multi-séances "
+                               f"(observation de plus de {mt.MAX_WEEKLY_SESSIONS} séances, §3.1.3). Couverture : "
+                               "calendrier W-FRI de [t0 ; fin] moins la fenêtre du §8.1 (seuil 95 %, §8.5). "
+                               "Correction du 22/11/2026."),
             "frequence": mt.WEEKLY_FREQ,
             "n_boot": int(n_boot),
             "bloc_moyen_semaines": mt.WEEKLY_MEAN_BLOCK,
@@ -1214,6 +1357,7 @@ def run_validation(
                            **{f"ETALON_EW_{capital_label(k)}": s for k, s in ew_w.items()
                               if float(k) != CAPITAL_REFERENCE}}).sort_index()
         wk.index.name = "semaine"
+        wk["SEMAINE_MULTI_SEANCES"] = pd.Series(wk.index.isin(multi_weeks), index=wk.index, dtype=bool)
         wk.to_parquet(out / "weekly_returns.parquet")
         files["weekly_returns.parquet"] = out / "weekly_returns.parquet"
         nav_rows = []

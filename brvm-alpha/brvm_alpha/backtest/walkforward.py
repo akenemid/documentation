@@ -1215,6 +1215,15 @@ class TrialRegistry:
                     "enregistrer un nouvel essai sous un autre nom"
                 )
             self._frame = f.astype(object)
+            # L'empreinte du pré-enregistrement n'est jamais effacée sans trace (revue du 22/11/2026 : celle des
+            # essais S1-A à S1-H, dcdf1fb7db530c44, avait été remplacée par celle de l'exécution).
+            old_fp = f.at[i, "empreinte_config"]
+            new_fp = payload.get("empreinte_config")
+            if isinstance(old_fp, str) and old_fp and new_fp is not None and str(new_fp) != old_fp:
+                prev_note = f.at[i, "note"]
+                prev_note = prev_note if isinstance(prev_note, str) else ""
+                payload = {**payload, "note": (prev_note + " ; " if prev_note else "")
+                           + f"empreinte au pré-enregistrement : {old_fp} ; empreinte à l'exécution : {new_fp}"}
             for k, v in payload.items():
                 if k == "empreinte_config" and v is None:
                     continue
@@ -1626,6 +1635,7 @@ def evaluate_status(
     exclude_windows: Sequence[tuple[Any, Any]] | None = None,
     rules: str = "v1.1",
     expected_weeks: Sequence[Any] | pd.DatetimeIndex | None = None,
+    dispersion_exclude: Sequence[Any] | pd.DatetimeIndex | None = None,
 ) -> StatusReport:
     """Statut REJETÉ / CANDIDAT / PROMU selon les critères **exacts** du §8.3.
 
@@ -1659,12 +1669,22 @@ def evaluate_status(
       signalée : elle crée un rendement actif mécanique sans lien avec l'alpha. Le choix
       de l'option (fenêtre commune, ou détention du TR pendant le démarrage) doit être
       pré-enregistré avant le test S1 ;
-    * ``expected_period`` : période attendue (S1 en validation) ; si la couverture des
-      semaines est inférieure à ``min_coverage`` (95 %), l'échantillon est **incomplet** ;
-    * ``expected_weeks`` : semaines attendues explicites (prioritaires sur ``expected_period``
-      pour la couverture), p. ex. celles de l'étalon calculé avec les mêmes règles : les
-      semaines **légitimement** retirées (fenêtre exclue, observation couvrant plus de 6
-      séances après un trou de BOC, §3.1.3) ne comptent alors pas comme des manques ;
+    * ``expected_period`` : période attendue (S1 en validation) ; semaines attendues =
+      calendrier **W-FRI** de la période, moins la seule fenêtre du §8.1. Si la couverture
+      des semaines (série chaînée, semaines multi-séances comprises) est inférieure à
+      ``min_coverage`` (95 %, seuil de mise en œuvre documenté au §8.5 de la
+      spécification), l'échantillon est **incomplet** ; la couverture de l'échantillon de
+      dispersion (sans les semaines multi-séances) est publiée à côté
+      (``couverture_dispersion``) ;
+    * ``expected_weeks`` : semaines attendues explicites (prioritaires sur ``expected_period``).
+      **Ne jamais** les dériver d'une série calculée avec les mêmes retraits que les
+      entrées (p. ex. les semaines de l'étalon) : la couverture vaudrait 100 % par
+      construction (garde-fou tautologique corrigé le 22/11/2026) ;
+    * ``dispersion_exclude`` : semaines dont l'observation couvre plusieurs séances (trou
+      de BOC, :func:`metrics.multi_session_weeks`). Elles restent dans les critères
+      **chaînés** (actif net R1, R2, C1, C3 ; drawdowns R4, R5, C4) et sont retirées des
+      statistiques de **dispersion** (IR R3, C2 ; Sharpe ; G2-G9) : §3.1.3, « exclu des
+      estimations de volatilité […] mais gardé pour chaîner le TR » ;
     * ``exclude_windows`` : semaines exclues des statistiques (défaut :
       ``metrics.EXCLUDE_STATS_WINDOWS``, §8.1) retirées de toutes les entrées.
 
@@ -1731,9 +1751,15 @@ def evaluate_status(
     a_c = a_c.loc[a_c.index.isin(b.index)]
     b_c = b.reindex(a_c.index)
     r_c = a_c + b_c
+    # Échantillon de dispersion : sans les semaines multi-séances (§3.1.3).
+    multi = (pd.DatetimeIndex(pd.to_datetime(list(dispersion_exclude))) if dispersion_exclude is not None
+             else pd.DatetimeIndex([]))
+    a_d = a_c.loc[~a_c.index.isin(multi)] if len(multi) else a_c
     periods: Sequence[tuple[Any, Any]] = list(mt.S1_SUBPERIODS) if subperiods is None else subperiods
     subperiods = [(pd.Timestamp(x), pd.Timestamp(y)) for x, y in periods]
-    mesures: dict[str, Any] = {"n_semaines": int(a_c.size), "debut_evaluation": start_ts}
+    mesures: dict[str, Any] = {"n_semaines": int(a_c.size), "n_semaines_dispersion": int(a_d.size),
+                               "semaines_multi_seances": [d for d in a_c.index if d in set(multi)],
+                               "debut_evaluation": start_ts}
     # Longueur et couverture de l'échantillon : en dessous, aucun statut favorable.
     min_w = int(th["min_weeks_per_subperiod"])
     sub_n = [int(_slice(a_c, x, y).size) for x, y in subperiods]
@@ -1755,6 +1781,9 @@ def evaluate_status(
                                                              max_sessions=None)]
         cov = float(a_c.index.isin(exp_weeks).sum() / len(exp_weeks)) if len(exp_weeks) else math.nan
         mesures["couverture"] = cov
+        mesures["couverture_dispersion"] = (float(a_d.index.isin(exp_weeks).sum() / len(exp_weeks))
+                                            if len(exp_weeks) else math.nan)
+        mesures["semaines_attendues"] = int(len(exp_weeks))
         if not (_finite(cov) and cov >= float(th["min_coverage"])):
             too_short = True
             avert.append(f"couverture de la période attendue {cov:.1%} < {float(th['min_coverage']):.0%} : critères "
@@ -1775,12 +1804,13 @@ def evaluate_status(
         a_s = a_s.loc[a_s.index.isin(b.index)]
         if a_s.size:
             act_stress = mt.annualized_active_return(a_s + b.reindex(a_s.index), b.reindex(a_s.index))
-    ir = mt.information_ratio(a_c) if a_c.size >= 2 else math.nan
+    ir = mt.information_ratio(a_d) if a_d.size >= 2 else math.nan
     sub_ir, sub_act = [], []
     for x, y in subperiods:
         sa = _slice(a_c, x, y)
+        sd = _slice(a_d, x, y)
         sb = b_c.reindex(sa.index)
-        sub_ir.append(mt.information_ratio(sa) if sa.size >= 2 else math.nan)
+        sub_ir.append(mt.information_ratio(sd) if sd.size >= 2 else math.nan)
         sub_act.append(mt.annualized_active_return(sa + sb, sb) if sa.size else math.nan)
     rel_dd = mt.relative_drawdown(r_c, b_c) if a_c.size else math.nan
     abs_dd = mt.max_drawdown(r_c) if a_c.size else math.nan
@@ -1800,7 +1830,7 @@ def evaluate_status(
             "pbo": pbo,
             "pbo_pente": pbo_slope,
             "cvar_ratio": cvar_ratio,
-            "sharpe_actif": mt.sharpe_triplet(a_c, lo_q=lo_q) if a_c.size > 2 * (lo_q + 2) else None,
+            "sharpe_actif": mt.sharpe_triplet(a_d, lo_q=lo_q) if a_d.size > 2 * (lo_q + 2) else None,
         }
     )
     sub_ir_ok = [v for v in sub_ir if _finite(v)]
@@ -1881,7 +1911,7 @@ def evaluate_status(
         "lo_q": lo_q,
         "mesures": mesures,
     }
-    rows += _g_filters("promotion_S1", a_c, subperiods, th, pbo=pbo if pbo is not None else math.nan,
+    rows += _g_filters("promotion_S1", a_d, subperiods, th, pbo=pbo if pbo is not None else math.nan,
                        pbo_slope=pbo_slope, ic_monthly=ic_monthly, **common)
     s2_ok = False
     if s2_active_weekly_returns is not None:
@@ -1982,6 +2012,7 @@ def variant_promotion(
     sr_variance: float | None = None,
     params: Mapping[str, Any] | None = None,
     exclude_windows: Sequence[tuple[Any, Any]] | None = None,
+    dispersion_exclude: Sequence[Any] | pd.DatetimeIndex | None = None,
 ) -> PromotionReport:
     """Règle de promotion pré-enregistrée du §3.4 (« A reste le principal »).
 
@@ -1997,7 +2028,9 @@ def variant_promotion(
     3. PBO de la famille ≤ 0,25 (:func:`metrics.family_pbo` si ``pbo`` n'est pas fourni).
 
     ``weekly_active`` : rendements actifs hebdomadaires nets (semaines × variantes, ``A``
-    compris), sur les semaines communes. Si plusieurs variantes satisfont la règle, la
+    compris), sur les semaines communes. ``dispersion_exclude`` : semaines multi-séances
+    gardées pour l'actif net (chaîné) et retirées du DSR, de la variance des Sharpe et de la
+    PBO (dispersion, §3.1.3). Si plusieurs variantes satisfont la règle, la
     principale devient celle dont le rendement actif net est le plus élevé (choix
     documenté). Un critère non évaluable (NaN) empêche la promotion. Estimations
     seulement : aucune promesse de gain.
@@ -2029,24 +2062,26 @@ def variant_promotion(
             raise ValueError("benchmark : semaines manquantes sur l'échantillon commun")
     act: dict[str, float] = {}
     sr: dict[str, float] = {}
+    disp = mt.dispersion_sample(frame, dispersion_exclude)
     for v in frame.columns:
         a = frame[v]
         act[v] = (mt.annualized_active_return(a + b, b) if b is not None
                   else float(a.mean() * mt.WEEKS_PER_YEAR))
-        sd = float(a.std(ddof=1))
-        sr[v] = float(a.mean() / sd) if sd > 0 else math.nan
+        ad = disp[v]
+        sd = float(ad.std(ddof=1))
+        sr[v] = float(ad.mean() / sd) if sd > 0 else math.nan
     sr_vals = np.array([x for x in sr.values() if _finite(x)])
     sr_var = float(sr_variance) if sr_variance is not None else (
         float(np.var(sr_vals, ddof=1)) if sr_vals.size > 1 else math.nan)
     pbo_v = math.nan if pbo is None else float(pbo)
     if pbo is None:
         try:
-            pbo_v = float(mt.family_pbo(frame)["pbo"])
+            pbo_v = float(mt.family_pbo(disp)["pbo"])
         except Exception as exc:  # pragma: no cover - historique trop court
             avert.append(f"PBO non calculée ({exc.__class__.__name__} : {exc})")
     rows = []
     for v in frame.columns:
-        d = mt.dsr(frame[v], int(n_trials), sr_var) if frame[v].size >= 3 else math.nan
+        d = mt.dsr(disp[v], int(n_trials), sr_var) if disp[v].size >= 3 else math.nan
         beats = None if v == baseline else (bool(act[v] > act[baseline]) if _finite(act[v]) else None)
         dsr_ok = _check(d, lambda x: x >= th["dsr_min"])
         pbo_ok = _check(pbo_v, lambda x: x <= th["pbo_max_promoted"])

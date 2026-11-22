@@ -263,9 +263,11 @@ def test_2021_window_excluded_by_default_in_weekly_returns_and_status():
     assert not ((w.index >= "2021-05-07") & (w.index <= "2021-06-25")).any()
 
 
-def test_coverage_excuses_weeks_dropped_by_boc_gaps():
-    """Les semaines retirées légitimement (observation couvrant plus de 6 séances après un trou de BOC)
-    ne rendent pas l'échantillon « incomplet » quand les semaines attendues sont celles de l'étalon."""
+def test_coverage_explicit_expected_weeks_are_honoured():
+    """``expected_weeks`` explicites priment sur ``expected_period``. Depuis la correction du 22/11/2026,
+    l'exécuteur ne les dérive plus des semaines du TR (mêmes retraits : couverture de 100 % par
+    construction) ; les semaines multi-séances sont gardées pour le chaînage (``dispersion_exclude``) et
+    la couverture se mesure sur le calendrier W-FRI (tests/test_fix_all_s1.py)."""
     weeks = pd.date_range("2030-01-04", periods=290, freq="W-FRI")
     rng = np.random.default_rng(8)
     b = pd.Series(rng.normal(0.001, 0.01, 290), index=weeks)
