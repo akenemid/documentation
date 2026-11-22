@@ -392,6 +392,16 @@ def _details(summary: Any, body: Any, open_: bool = False) -> H:
              f'<div class="dbody">{_h(body)}</div></details>')
 
 
+def _fiche(head: Any, fields: Sequence[tuple[str, Any]]) -> H:
+    """Fiche d'un élément à champs longs (filtre, blocage) : en-tête puis lignes « libellé : texte ».
+
+    Préférée à un tableau quand les cellules sont des phrases : rien n'est coupé ni caché derrière un
+    défilement horizontal, à 390 px comme à 1 280 px.
+    """
+    rows = "".join(f"<li><b>{esc(k)} :</b> {_h(v)}</li>" for k, v in fields if v not in (None, ""))
+    return H(f'<div class="note fiche"><div class="nh">{_h(head)}</div><ul class="facts small">{rows}</ul></div>')
+
+
 def _card(*parts: Any, cls: str = "") -> H:
     return H(f'<div class="card{(" " + esc(cls)) if cls else ""}">' + "".join(_h(p) for p in parts) + "</div>")
 
@@ -1692,18 +1702,17 @@ def _sec_ordre(ctx: _Ctx) -> H:
     blocs = nt.get("blocages") or []
     eff = nt.get("effet") or {}
     if blocs or eff.get("lignes"):
-        brow = [[H(f"<b>{esc(b.get('symbole'))}</b>"), H(f"<b>{esc(b.get('code'))}</b> {esc(b.get('libelle') or '')}"),
-                 _note_ref(b), esc(f"depuis le {fmt_date(b.get('depuis'))}, {b.get('duree') or 'durée ouverte'}"
-                                   + (f" (encore {fmt_int(b.get('seances_restantes'))} séance(s))"
-                                      if b.get("seances_restantes") is not None else "")),
-                 esc(b.get("effet_poids") or "—"), esc(b.get("lever") or "")] for b in blocs]
+        brow = [_fiche(H(f"<b>{esc(b.get('symbole'))}</b> {_chip('achats bloqués', 'no')} "
+                         f"<span><b>{esc(b.get('code'))}</b> {esc(b.get('libelle') or '')}</span>"),
+                       [("Note", _note_ref(b)), ("Blocage", _filter_span(b)),
+                        ("Effet sur l'ordre", b.get("effet_poids") or "—"),
+                        ("Pour lever le blocage", b.get("lever") or "")]) for b in blocs]
         erow = [[H(f"<b>{esc(x.get('symbole'))}</b>"), fmt_pct(x.get("poids_sans_notes"), 2),
                  fmt_pct(x.get("poids_avec_notes"), 2), _num_cell(x.get("ecart"), decimals=2, signed=True),
                  esc(x.get("motif") or "redistribution (construction)")] for x in eff.get("lignes") or []]
         parts.append(_card(
             H("<h3>Achats bloqués par les notes de l'analyste et effet sur les poids</h3>"),
-            _table(["Titre", "Règle", "Note", "Blocage", "Effet sur l'ordre", "Pour lever le blocage"], brow,
-                   left=(0, 1, 2, 3, 4, 5)) if brow else "",
+            H('<div class="grid2">' + "".join(brow) + "</div>") if brow else "",
             _p(eff.get("texte", ""), "small") if eff.get("texte") else "",
             _details(f"Poids cibles sans et avec les notes ({len(erow)} ligne(s))",
                      _table(["Titre", "Sans les notes", "Avec les notes", "Écart", "Motif"], erow, left=(0, 4)),
@@ -2004,14 +2013,29 @@ def _sec_indices(ctx: _Ctx) -> H:
         parts.append(_box("empty", "Notes de l'analyste : aucun journal.",
                           "La composante « notes » est exclue du score de chaque indice."))
     rows = []
+    fragile = []
     for code, r in ev.iterrows():
-        rows.append([H(f"<b>{esc(r.get('label', code))}</b><div class='muted small'>{esc(code)}</div>"),
+        flip = _stance_flip(r)
+        if flip:
+            fragile.append(f"{r.get('label', code)} ({r.get('stance')} avec les notes, score "
+                           f"{fmt_num(r.get('composite'), 2, True)} ; {flip} sans, score "
+                           f"{fmt_num(r.get('composite_ex_notes'), 2, True)} ; z notes {fmt_num(r.get('z_notes'), 2, True)})")
+        pos = _stance_chip(r.get("stance")) + (H(f"<div class='muted small'>sans notes : {esc(flip)}</div>")
+                                                if flip else "")
+        rows.append([H(f"<b class='cn'>{esc(r.get('label', code))}</b><div class='muted small'>{esc(code)}</div>"),
                      fmt_num(r.get("level"), 2), _num_cell(r.get("ret_1m"), signed=True),
                      _num_cell(r.get("ret_3m"), signed=True), _num_cell(r.get("ret_12m"), signed=True),
                      _num_cell(r.get("ytd"), signed=True), fmt_num(r.get("per"), 1), esc(r.get("regime") or "n.d."),
                      esc(_notes_z_txt(r)),
-                     fmt_num(r.get("composite"), 2, True), _stance_chip(r.get("stance")),
+                     fmt_num(r.get("composite"), 2, True), H(pos),
                      fmt_pct(r.get("confidence"), 0)])
+    if fragile:
+        parts.append(_box("warn", "Position fragile : elle ne change que par le poids de la composante « notes ».",
+                          H(_ul(fragile) + esc(
+                              "La composante « notes » entre dans le score avec son poids entier dès qu'une note en "
+                              "vigueur porte un score, même faible : elle rapproche alors le score de zéro sans "
+                              "apporter de signal fort. Lire ces indices avec leur position « sans notes » ; aucune "
+                              "pondération n'a été modifiée."))))
     parts.append(_card(_table(["Indice", "Niveau", "1 mois", "3 mois", "12 mois", "Depuis le 31/12", "PER", "Régime",
                                "Notes (z)", "Score", "Position", "Confiance"], rows)))
     det = []
@@ -2039,6 +2063,21 @@ def _ts_txt(x: Any) -> str:
 
 #: Lignes affichées au plus dans le tableau des notes automatiques en vigueur.
 NOTES_TABLE_MAX = 60
+
+
+def _stance_flip(r: Any) -> str | None:
+    """Position **sans** la composante « notes » quand elle diffère de la position affichée (sinon ``None``)."""
+    ex = r.get("stance_ex_notes")
+    if not isinstance(ex, str) or not ex or not _ok(r.get("z_notes")) or not _ok(r.get("composite_ex_notes")):
+        return None
+    return ex if ex != str(r.get("stance") or "") else None
+
+
+def _filter_span(f: Mapping[str, Any]) -> str:
+    """Durée d'un filtre : « depuis le …, jusqu'au … (encore N séance(s)) »."""
+    return (f"depuis le {fmt_date(f.get('depuis'))}, {f.get('duree') or 'durée ouverte'}"
+            + (f" (encore {fmt_int(f.get('seances_restantes'))} séance(s))"
+               if f.get("seances_restantes") is not None else ""))
 
 
 def _notes_z_txt(r: Any) -> str:
@@ -2079,16 +2118,19 @@ def _notes_rows(tab: pd.DataFrame, limit: int | None = None) -> list[list[Any]]:
             H(f"{esc(_ts_txt(r.get('published_at')))}<div class='muted small'>séance "
               f"{esc(_ts_txt(r.get('first_tradable_session')))}</div>"),
             esc(", ".join(map(str, r.get("targets") or [])) or "n.d."),
-            H(f"{esc(r.get('event_type') or 'n.d.')}<div class='muted small'>{esc(str(r.get('title') or '')[:90])}"
-              f"{esc(avis)}</div>"),
-            _num_cell(r.get("score"), "num", 2, True), fmt_num(r.get("confidence"), 2),
+            _num_cell(r.get("score"), "num", 2, True),
+            H(f"{esc(r.get('event_type') or 'n.d.')}<div class='muted small desc'>"
+              f"{esc(str(r.get('title') or '')[:90])}{esc(avis)}</div>"),
+            fmt_num(r.get("confidence"), 2),
             fmt_num(r.get("decay"), 2), src, esc(", ".join(map(str, r.get("filters") or [])) or "—"),
         ])
     return rows
 
 
-_NOTES_HEAD = ["Date (publication)", "Cible", "Type et titre", "Score", "Confiance", "Décroissance", "Source",
+#: En-têtes des tableaux de notes : le score suit la cible, pour rester visible sans défilement horizontal.
+_NOTES_HEAD = ["Date (publication)", "Cible", "Score", "Type et titre", "Confiance", "Décroissance", "Source",
                "Filtre"]
+_NOTES_LEFT = (0, 1, 3, 6, 7)
 
 
 def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
@@ -2103,15 +2145,13 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
     # Filtres actifs.
     flt = st.get("filters") or []
     if flt:
-        rows = [[H(f"<b>{esc(f.get('symbole'))}</b>"), H(f"<b>{esc(f.get('code'))}</b> {esc(f.get('libelle') or '')}"),
-                 _chip("achats bloqués", "no") if f.get("bloque_achats") else _chip("surveillance", "warn"),
-                 esc(f"depuis le {fmt_date(f.get('depuis'))}, {f.get('duree') or 'durée ouverte'}"
-                     + (f" (encore {fmt_int(f.get('seances_restantes'))} séance(s))"
-                        if f.get("seances_restantes") is not None else "")),
-                 _note_ref(f), esc(f.get("lever") or "")] for f in flt]
+        rows = [_fiche(H(f"<b>{esc(f.get('symbole'))}</b> "
+                         f"{_chip('achats bloqués', 'no') if f.get('bloque_achats') else _chip('surveillance', 'warn')} "
+                         f"<span><b>{esc(f.get('code'))}</b> {esc(f.get('libelle') or '')}</span>"),
+                       [("Durée", _filter_span(f)), ("Note", _note_ref(f)),
+                        ("Pour lever le filtre", f.get("lever") or "")]) for f in flt]
         parts.append(_card(H(f"<h3>Filtres de risque actifs issus des notes ({len(flt)})</h3>"),
-                           _table(["Titre", "Filtre", "Effet", "Durée", "Note", "Pour lever le filtre"], rows,
-                                  left=(0, 1, 2, 3, 4, 5))))
+                           H('<div class="grid2">' + "".join(rows) + "</div>")))
     else:
         parts.append(_box("empty", "Aucun filtre de risque actif issu des notes."))
     if not isinstance(tab, pd.DataFrame) or not n_in:
@@ -2119,7 +2159,7 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
     manual, auto = tab[tab["manual"]], tab[~tab["manual"]]
     parts.append(_card(
         H(f"<h3>Notes manuelles en vigueur ({len(manual)})</h3>"),
-        _table(_NOTES_HEAD, _notes_rows(manual), left=(0, 1, 2, 6, 7)) if len(manual) else
+        _table(_NOTES_HEAD, _notes_rows(manual), left=_NOTES_LEFT) if len(manual) else
         _box("empty", "Aucune note manuelle en vigueur.",
              "Saisie : python -m brvm_alpha notes add, ou page Notes de l'interface.")))
     more = f" ; les {NOTES_TABLE_MAX} plus récentes sont affichées" if len(auto) > NOTES_TABLE_MAX else ""
@@ -2128,16 +2168,16 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
         _p("Collectées sur www.brvm.org et dans les BOC ; âge compté depuis la publication (décroissance "
            f"exp(−Δ/10 séances)){more}.", "muted small"),
         _details(f"Tableau des notes automatiques ({min(len(auto), NOTES_TABLE_MAX)} ligne(s))",
-                 _table(_NOTES_HEAD, _notes_rows(auto, NOTES_TABLE_MAX), left=(0, 1, 2, 6, 7))) if len(auto) else
+                 _table(_NOTES_HEAD, _notes_rows(auto, NOTES_TABLE_MAX), left=_NOTES_LEFT)) if len(auto) else
         _box("empty", "Aucune note automatique en vigueur.")))
     pos, neg = top_notes(tab, 10)
     if len(pos) or len(neg):
         parts.append(H('<div class="grid2">'
                        + _card(H(f"<h3>Les {len(pos)} notes les plus positives</h3>"),
-                               _table(_NOTES_HEAD, _notes_rows(pos), left=(0, 1, 2, 6, 7)) if len(pos) else
+                               _table(_NOTES_HEAD, _notes_rows(pos), left=_NOTES_LEFT) if len(pos) else
                                _box("empty", "Aucune note de score positif."))
                        + _card(H(f"<h3>Les {len(neg)} notes les plus négatives</h3>"),
-                               _table(_NOTES_HEAD, _notes_rows(neg), left=(0, 1, 2, 6, 7)) if len(neg) else
+                               _table(_NOTES_HEAD, _notes_rows(neg), left=_NOTES_LEFT) if len(neg) else
                                _box("empty", "Aucune note de score négatif.")) + "</div>"))
     else:
         parts.append(_box("empty", "Aucune note positive ni négative à classer.", st.get("scores_message", "")))
@@ -2152,11 +2192,14 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
                        for e in det], "facts small") if det else esc(
                 "aucune note en vigueur" if not (_ok(r.get("notes_n")) and int(r.get("notes_n")) > 0)
                 else "notes en vigueur de score nul : composante exclue")
-            rows.append([H(f"<b>{esc(r.get('label', code))}</b><div class='muted small'>{esc(code)}</div>"),
+            flip = _stance_flip(r)
+            rows.append([H(f"<b class='cn'>{esc(r.get('label', code))}</b><div class='muted small'>{esc(code)}</div>"),
                          esc(_notes_z_txt(r)), fmt_num(r.get("notes_score"), 3, True) if _ok(r.get("notes_score"))
                          else "—", fmt_int(r.get("notes_n")),
                          H(f"{esc(fmt_num(r.get('composite_ex_notes'), 2, True))} → "
-                           f"<b>{esc(fmt_num(r.get('composite'), 2, True))}</b>"), who])
+                           f"<b>{esc(fmt_num(r.get('composite'), 2, True))}</b>"
+                           + (f"<div class='muted small'>{esc(flip)} → {esc(r.get('stance'))}</div>" if flip else "")),
+                         H(f"<div class='lst'>{who}</div>")])
         parts.append(_card(H("<h3>Composante « notes » de chaque indice</h3>"),
                            _p("z notes = score des notes / 0,5, borné à ±3, poids 0,15 dans le score composite ; « sans → "
                               "avec » : score composite sans puis avec la composante. Aide à la décision, pas un signal "
@@ -2610,6 +2653,10 @@ table.univ th, table.univ td { padding-left: 5px; padding-right: 5px; }
 table.univ td .motif { min-width: 180px; }
 table.univ td .name { max-width: 170px; }
 td .desc { white-space: normal; min-width: 170px; max-width: 260px; }
+td .lst { white-space: normal; min-width: 260px; }
+td .lst ul.facts { margin: 0; } td .lst ul.facts li { margin: 2px 0; }
+.fiche .nh { align-items: center; } .fiche ul.facts { margin: 6px 0 0; } .fiche ul.facts li { margin: 3px 0; }
+.fiche code { font-size: 12.5px; overflow-wrap: anywhere; }
 tbody tr:hover td { background: var(--chip); }
 .neg { color: var(--neg); } .pos { color: var(--pos); }
 ul.facts { margin: 6px 0 0; padding-left: 18px; } ul.facts li { margin: 6px 0; }

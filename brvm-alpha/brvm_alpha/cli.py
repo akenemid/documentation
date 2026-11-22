@@ -651,7 +651,9 @@ def build_parser() -> argparse.ArgumentParser:
     nd.add_argument("--hors-ligne", action="store_true", help="aucune requête réseau : documents du cache seulement")
     nd.add_argument("--cibles", action="append", default=None, metavar="CODES",
                     help="périmètre (codes séparés par des virgules ; défaut : toutes les notes)")
-    nd.add_argument("--simulation", action="store_true", help="liste les documents sans rien écrire (dry run)")
+    nd.add_argument("--simulation", action="store_true",
+                    help="lit les documents (téléchargement compris, sauf --hors-ligne) sans rien écrire au journal "
+                         "(dry run)")
 
     nz = nsub.add_parser("analyze", help="analyse un texte sans l'enregistrer",
                          description="Analyse un texte (type d'événement, ton, chiffres, cibles, matérialité, "
@@ -993,6 +995,22 @@ def format_enrich_report(rep: Any, limit: int = 30) -> list[str]:
     lines = [f"Lecture du contenu des documents : {n('n_candidates')} candidat(s), {n('n_read')} lu(s), "
              f"{n('n_enriched')} note(s) enrichie(s), {n('n_scanned')} document(s) scanné(s) à lire à la main, "
              f"{n('n_failed')} erreur(s), {n('n_requests')} requête(s)."]
+    # Compteurs propres à ``research.enrich_documents`` (absents d'un bilan réduit) : ce qui a été lu sans
+    # chiffre, ce qui manque au cache hors ligne, ce qui a été écrit au journal.
+    more: list[str] = []
+    if n("n_no_figure"):
+        more.append(f"{n('n_no_figure')} document(s) lu(s) sans chiffre retenu (score fondé sur le ton seul)")
+    if n("n_skipped"):
+        more.append(f"{n('n_skipped')} document(s) absent(s) du cache, non lu(s) (hors ligne : une lecture en ligne "
+                    "les téléchargera)")
+    if rep.get("dry_run"):
+        more.append("simulation : aucune version écrite au journal")
+    elif "n_written" in rep:
+        more.append(f"{n('n_written')} nouvelle(s) version(s) écrite(s) au journal (les anciennes restent)")
+    if more:
+        lines.append("Détail : " + " ; ".join(more) + ".")
+    if "n_candidates" in rep and not n("n_candidates"):
+        lines.append("Aucun document à lire : les documents utiles ont déjà été lus (rien n'est relu).")
     if rep.get("stopped"):
         lines.append(f"Arrêt de la lecture : {rep['stopped']}")
     details = [d for d in (rep.get("details") or []) if isinstance(d, dict)]
@@ -1279,7 +1297,7 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         targets = _split_targets(args.cibles) or None
         print(f"Lecture du contenu d'au plus {args.max_docs} document(s)"
               f"{' (hors ligne : cache seulement)' if args.hors_ligne else ' de www.brvm.org'}"
-              f"{' — simulation, rien ne sera écrit' if args.simulation else ''}…", flush=True)
+              f"{' — simulation, rien ne sera écrit au journal' if args.simulation else ''}…", flush=True)
         rep, lines = run_enrich(store, max_docs=args.max_docs, targets=targets, offline=bool(args.hors_ligne),
                                 dry_run=bool(args.simulation))
         print("\n".join(lines))

@@ -76,6 +76,11 @@ def ext_link(url: Any, text: Any = None) -> Safe:
     return Safe(f'<a href="{esc(u)}" rel="noopener noreferrer nofollow" target="_blank">{_c(text or u)}</a>')
 
 
+def nw(text: Any) -> Safe:
+    """Texte court insécable (date, symbole, code) : jamais coupé au milieu d'un mot dans un tableau étroit."""
+    return Safe(f'<span class="nw">{_c(text)}</span>')
+
+
 def table(headers: Sequence[Any], rows: Iterable[Sequence[Any]], cls: str = "", empty: str = "Aucune ligne.") -> Safe:
     rows = list(rows)
     if not rows:
@@ -284,6 +289,7 @@ th,td{border-bottom:1px solid var(--line);padding:5px 7px;text-align:left;vertic
 th{font-weight:600;white-space:nowrap}
 td.num,th.num{text-align:right;white-space:nowrap}
 td:first-child{white-space:nowrap}
+.nw{white-space:nowrap}
 .box{border:1px solid var(--line);border-left-width:4px;border-radius:6px;padding:8px 12px;margin:8px 0;background:var(--surface)}
 .box.info{border-left-color:var(--accent)}.box.warn{border-left-color:var(--warn)}.box.error{border-left-color:var(--bad)}
 .box.ok{border-left-color:var(--ok)}.box.fact{border-left-color:var(--ok)}.box.estimate{border-left-color:var(--warn)}
@@ -510,8 +516,9 @@ def _in_force_rows(tab: Any, limit: int | None = None) -> list[list[Any]]:
         if isinstance(n.get("stance"), str) and n["stance"]:
             c = n.get("conviction")
             avis = f" ({n['stance']}" + (f" {int(c)}/5" if c is not None and c == c else "") + ")"
-        rows.append([fr_date(n.get("published_at")), fr_date(n.get("first_tradable_session")),
-                     ", ".join(map(str, n.get("targets") or [])) or "—", (n.get("event_type") or "n.d.") + avis,
+        rows.append([fr_date(n.get("published_at")), nw(fr_date(n.get("first_tradable_session"))),
+                     join([nw(t) for t in (n.get("targets") or [])], ", ") or "—",
+                     join([nw(n.get("event_type") or "n.d."), avis]),
                      link(f"/notes/fiche?id={q(n.get('note_id'))}", str(n.get("title") or "(sans titre)")[:90]),
                      fr_num(n.get("score"), 2, True), fr_num(n.get("confidence"), 2), fr_num(n.get("decay"), 2),
                      _src_cell(n), ", ".join(map(str, n.get("filters") or [])) or "—"])
@@ -527,7 +534,7 @@ def _filters_table(status: Mapping[str, Any]) -> Safe:
                     f"<br><span class=\"muted\">{esc(fr_date(f.get('note_date')))} · "
                     f"{_src_cell({'source': f.get('note_source'), 'url': f.get('note_url')})}</span>")
         rows.append([f.get("symbole"), Safe(f"<strong>{esc(f.get('code'))}</strong> {esc(f.get('libelle') or '')}"),
-                     "achats bloqués" if f.get("bloque_achats") else "surveillance",
+                     nw("achats bloqués" if f.get("bloque_achats") else "surveillance"),
                      f"depuis le {fr_date(f.get('depuis'))}, {fin}", note, f.get("lever") or ""])
     return table(["Titre", "Filtre", "Effet", "Durée", "Note", "Pour lever le filtre"], rows,
                  empty="Aucun filtre de risque actif issu des notes.")
@@ -553,7 +560,8 @@ def notes_in_force_section(status: Mapping[str, Any] | None, indices: Any = None
     """Section « Notes en vigueur » de la page Notes : synthèse, filtres, notes manuelles et
     automatiques, 10 plus positives et 10 plus négatives, composante « notes » de chaque indice."""
     if not status or status.get("erreur"):
-        return Safe('<section class="card"><h2>Notes en vigueur</h2>') + notes_status_block(status) + Safe("</section>")
+        return join([Safe('<section class="card"><h2>Notes en vigueur</h2>'), notes_status_block(status),
+                     Safe("</section>")])
     from brvm_alpha.notes.signals import top_notes
 
     tab = status.get("table")
@@ -574,8 +582,9 @@ def notes_in_force_section(status: Mapping[str, Any] | None, indices: Any = None
     if arows:
         more = (f" (les {NOTES_AUTO_MAX} plus récentes sur {len(auto)})" if auto is not None and len(auto) > NOTES_AUTO_MAX
                 else "")
-        parts.append(Safe(f"<details><summary>Afficher le tableau{esc(more)}</summary>") + table(NOTES_HEAD, arows)
-                     + Safe("</details>"))
+        # ``Safe + Safe`` rend une chaîne ordinaire, que ``join`` échapperait : le bloc est assemblé par ``join``.
+        parts.append(join([Safe(f"<details><summary>Afficher le tableau{esc(more)}</summary>"), table(NOTES_HEAD, arows),
+                           Safe("</details>")]))
     else:
         parts.append(Safe('<p class="muted">Aucune note automatique en vigueur.</p>'))
     parts += [Safe("<h3>Les 10 notes les plus positives</h3>"),
@@ -922,8 +931,9 @@ def page_research(ctx: PageContext, *, job: Mapping[str, Any] | None, blocked: M
         blk, Safe("</section>"),
         Safe('<section class="card"><h2>Lancer une recherche</h2>'), form, Safe("</section>"),
         job_panel(job, result_link=link("/notes", "Voir les notes")),
-        (Safe('<section class="card"><h2>Lecture du contenu des documents (dernière recherche)</h2><pre class="log">')
-         + esc("\n".join(map(str, documents))) + Safe("</pre></section>")) if documents else Safe(""),
+        join([Safe('<section class="card"><h2>Lecture du contenu des documents (dernière recherche)</h2>'
+                   '<pre class="log">'), esc("\n".join(map(str, documents))), Safe("</pre></section>")])
+        if documents else Safe(""),
         Safe('<section class="card"><h2>Nouvelles notes de la dernière recherche</h2>') if rows else Safe(""),
         table(["Publiée", "Titre", "Cibles", "Avis", "Score", "Matérialité", "Confiance", "Source", "Statut"], rows)
         if rows else Safe(""), Safe("</section>") if rows else Safe(""),

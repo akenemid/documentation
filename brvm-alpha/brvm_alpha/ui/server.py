@@ -441,8 +441,9 @@ class Services:
 
         kw: dict[str, Any] = {"boc_dir": self.boc_dir, "panel_dir": self.panel_dir}
         kw.update(self.research_kwargs)
-        sess = kw.pop("session", None) or _LoggedSession(delay_s=10.0, max_requests=max_requests, offline=offline,
-                                                         cache_dir=root / "cache", log_path=root / "fetch_log.jsonl")
+        injected = kw.pop("session", None)
+        sess = injected or _LoggedSession(delay_s=10.0, max_requests=max_requests, offline=offline,
+                                          cache_dir=root / "cache", log_path=root / "fetch_log.jsonl")
         log(("hors ligne : cache disque et BOC locaux, aucune requête réseau" if offline else
              f"en ligne : au plus {max_requests} requêtes vers www.brvm.org, au moins 10 s entre deux"))
         res = rs.run_research(store, targets=targets, since=since, max_requests=max_requests, offline=offline,
@@ -457,7 +458,13 @@ class Services:
             else:
                 log(f"lecture du contenu d'au plus {int(max_docs)} document(s) récent(s)"
                     + (" (hors ligne : cache seulement)" if offline else " (au moins 10 s entre deux requêtes)"))
-                rep, lines = cli.run_enrich(store, max_docs=int(max_docs), targets=targets, offline=offline)
+                # Même panel (calendrier des séances) que la collecte : celui de l'interface, pas celui du dépôt.
+                # Session propre à la lecture (quota : un document par requête, plus robots.txt), journalisée
+                # comme la collecte : chaque téléchargement apparaît dans le journal de la tâche.
+                doc_sess = injected or _LoggedSession(delay_s=10.0, max_requests=int(max_docs) + 10, offline=offline,
+                                                      cache_dir=root / "cache", log_path=root / "fetch_log.jsonl")
+                rep, lines = cli.run_enrich(store, max_docs=int(max_docs), targets=targets, offline=offline,
+                                            panel_dir=kw.get("panel_dir", self.panel_dir), session=doc_sess)
                 for line in lines:
                     log(line)
                 out["documents"] = {"bilan": rep, "lignes": lines}

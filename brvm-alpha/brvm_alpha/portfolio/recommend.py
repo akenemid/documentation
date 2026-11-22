@@ -1559,8 +1559,15 @@ class OrdreDeBataille:
         if ix:
             B.append(("h3", "Évaluation des indices (notes.index_eval, information)"))
             B.append(("table", (["Indice", "Position", "Confiance", "Score", "Lecture"],
-                                [[x["libelle"], x["position"], _num(x["confiance"]), _num(x["score"], 2, True),
-                                  x["lecture"]] for x in ix])))
+                                [[x["libelle"], x["position"] + (f" (sans les notes : {x['position_sans_notes']})"
+                                                                 if x.get("position_changee_par_les_notes") else ""),
+                                  _num(x["confiance"]), _num(x["score"], 2, True), x["lecture"]] for x in ix])))
+            changed = [x["libelle"] for x in ix if x.get("position_changee_par_les_notes")]
+            if changed:
+                B.append(("p", "Position fragile : " + ", ".join(changed) + " — la position ne change que par le poids "
+                               "donné à la composante « notes » dans le score (voir « Effet des notes » dans la "
+                               "lecture), pas par un signal fort des notes. À lire avec la position « sans les "
+                               "notes »."))
         elif T.get("indices_message"):
             B.append(("p", T["indices_message"]))
         return B
@@ -2231,13 +2238,17 @@ def _notes_effect(plan: _Plan, variant: str, t: pd.Timestamp, panels: Mapping[st
     w1 = plan.decision.weights.astype(float).fillna(0.0)
     w0 = base.weights.astype(float).fillna(0.0)
     syms = sorted(set(w1[w1 > 0].index) | set(w0[w0 > 0].index))
+    # Indice discipliné (REF) : sélection par capitalisation, l'inclinaison n'y entre pas (seuls le veto et
+    # les filtres R qui bloquent les achats agissent) ; ni l'inclinaison ni un filtre de simple surveillance
+    # (R10 : malus de qualité, sans effet sur un poids de capitalisation) n'y sont donc cités comme motif
+    # d'un écart de poids : l'écart d'un tel titre vient de la redistribution.
+    by_cap = getattr(getattr(plan.model, "spec", None), "kind", "") == "reference"
     reasons: dict[str, list[str]] = {}
     for f in state.get("filters") or []:
+        if by_cap and not f.get("bloque_achats"):
+            continue
         reasons.setdefault(str(f["symbole"]), []).append(str(f["code"]))
     tilt = pd.Series(state.get("overlays", {}).get("tilt"), dtype=float)
-    # Indice discipliné (REF) : sélection par capitalisation, l'inclinaison n'y entre pas (seuls le veto et
-    # les filtres R agissent) ; elle n'est donc pas citée comme motif d'un écart de poids.
-    by_cap = getattr(getattr(plan.model, "spec", None), "kind", "") == "reference"
     rows = []
     for s in syms:
         a, b = float(w0.get(s, 0.0)), float(w1.get(s, 0.0))
@@ -2331,9 +2342,21 @@ def _index_evaluation(t: pd.Timestamp, panel_dir: Path | None, panels_given: boo
         r = res.loc[code]
         reasons = list(r.get("reasons") or [])
         lecture = next((x for x in reasons if x.startswith("Score composite")), reasons[0] if reasons else "")
+        # Position qui change par la seule composante « notes » : dit en clair dans la lecture (transparence ;
+        # aucune pondération n'est modifiée).
+        ex_stance = r.get("stance_ex_notes")
+        ex_stance = str(ex_stance) if isinstance(ex_stance, str) and ex_stance else None
+        ex_score = r.get("composite_ex_notes")
+        ex_score = float(ex_score) if ex_score is not None and np.isfinite(float(ex_score)) else None
+        flips = bool(ex_stance and ex_score is not None and r.get("z_notes") is not None
+                     and np.isfinite(float(r.get("z_notes"))) and ex_stance != str(r.get("stance", "")))
+        if flips:
+            effet = next((x for x in reasons if x.startswith("Effet des notes")), "")
+            lecture = f"{lecture} {effet}".strip()
         rows.append({"indice": code, "libelle": str(r.get("label", code)), "position": str(r.get("stance", "")),
                      "confiance": float(r.get("confidence", np.nan)), "score": float(r.get("composite", np.nan)),
-                     "lecture": lecture})
+                     "lecture": lecture, "position_sans_notes": ex_stance, "score_sans_notes": ex_score,
+                     "position_changee_par_les_notes": flips})
     return rows, ""
 
 

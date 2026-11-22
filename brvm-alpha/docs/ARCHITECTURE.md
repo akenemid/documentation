@@ -216,8 +216,15 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
   actif(s) »), `mode`, `connues_au`, `seance_application`, `filtres`, `blocages` (titre, règle, note — date,
   titre, source, adresse —, fin du blocage, `lever` : archiver la note) et `effet` (poids cibles sans et avec
   les notes, même décision recalculée sans aucune note : montre si le poids d'un titre bloqué est redistribué
-  ou laissé en liquidités par les règles de construction, inchangées) ; un achat bloqué qui change l'ordre
-  ajoute un avertissement « ACHAT BLOQUÉ par une note » ;
+  ou laissé en liquidités par les règles de construction, inchangées ; `motif` d'une ligne : filtre ou
+  inclinaison qui agit sur ce titre, vide si l'écart vient de la redistribution — en indice discipliné
+  (REF), seul un filtre qui **bloque les achats** est un motif : un filtre de surveillance comme R10 n'y
+  change aucun poids) ; un achat bloqué qui change l'ordre ajoute un avertissement « ACHAT BLOQUÉ par une
+  note » ; `declencheurs["indices"]` : une ligne par indice (`indice`, `libelle`, `position`, `confiance`,
+  `score`, `lecture`, `position_sans_notes`, `score_sans_notes`, `position_changee_par_les_notes`) ; quand la
+  position ne change que par la composante « notes », le tableau écrit « NEUTRE (sans les notes :
+  SOUS-PONDÉRER) », la lecture reprend la raison « Effet des notes » et un paragraphe « Position fragile »
+  suit (affichage seul : aucune pondération n'est modifiée) ;
   `holdings` : symbole → nombre de titres ; un titre connu du panel mais absent du BOC à t est gardé
   « bloqué, hors BOC », valorisé au dernier cours − 10 % (§7.1.7), seuls les symboles jamais vus sont refusés ;
   `cash=None` : `capital − titres détenus` ; `notes_store=None` : journal du dépôt, `False` : aucune note ;
@@ -460,7 +467,12 @@ Codes de sortie : 0 succès, 1 échec (données absentes, collecte arrêtée), 2
   `notes.research.enrich_documents(store, max_docs=, targets=, offline=, dry_run=)`, **importée au moment de
   l'appel** (`load_enrich_documents`, `run_enrich`) : fonction absente → message clair, code 1 pour `notes
   lire` ; bilan affiché par `format_enrich_report` (candidats, lus, notes enrichies, documents scannés à lire
-  à la main avec leur adresse, erreurs, requêtes, arrêt éventuel).
+  à la main avec leur adresse, erreurs, requêtes, arrêt éventuel ; ligne « Détail » quand le bilan porte les
+  compteurs de la vraie fonction : documents lus sans chiffre retenu, documents absents du cache hors ligne,
+  nouvelles versions écrites au journal, ou « simulation : aucune version écrite » ; « Aucun document à
+  lire » quand tout est déjà lu). `--simulation` lit les documents (téléchargement compris, sauf
+  `--hors-ligne`) sans rien écrire au journal. Un deuxième appel ne relit rien (les notes lues portent
+  `analysis.extracted.doc_sha256`).
 - Analyse : `indices [--date] [--detail] [--format] [--notes-au]` et `indices dossier CODE` (`evaluate_indices`,
   `index_dossier`) ; `universe [--date]` ; `explain SYMBOLE [--date] [--variante] [--racine] [--notes-au]` (`explain_symbol` :
   variante par défaut = `choose_variant`) ; `recommend --capital K [--portefeuille fichier.csv] [--cash]
@@ -504,7 +516,9 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   `evaluate_indices`, `index_dossier`, `explain`, `recommend` et `build_report` ; `Services.notes_status(asof)` :
   état daté des notes (`notes.signals.notes_in_force`, mis en cache par journal, panel et séance
   d'application) ; `Services.run_research(..., read_docs=False, max_docs=20)` : après la collecte, lecture du
-  contenu des documents (`cli.run_enrich`), bilan dans le journal du travail et `result["documents"]` ;
+  contenu des documents (`cli.run_enrich`, avec le **même panel** que la collecte et une `PoliteSession`
+  propre à la lecture, journalisée comme la collecte, quota `max_docs + 10`), bilan dans le journal du
+  travail et `result["documents"]` ;
   `JobManager` : **une** opération longue à la fois
   (recherche, rapport, ordre de bataille) dans un fil, `Job.snapshot()` (statut, progression, journal),
   `JobBusy` → 409.
@@ -567,7 +581,9 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   tirages **recalculés à l'identique** par `recommend.return_distribution(..., with_draws=True)` : même fenêtre,
   mêmes poids, même graine, même renormalisation des lignes pas encore cotées ; médiane/P10/P90, P(battre le TR), P(perte) ; stress du §9.3 **en tête** si la prime
   du BOC classe le marché « cher », §4.5), `indices` (`notes.index_eval.evaluate_indices` : position, confiance,
-  raisons, ligne datée des notes et colonne « Notes (z) » ; « aide à la décision, pas un signal validé »),
+  raisons, ligne datée des notes et colonne « Notes (z) » ; « aide à la décision, pas un signal validé » ;
+  encadré « Position fragile » et mention « sans notes : … » sous la position quand elle ne change que par
+  le poids de la composante « notes », `_stance_flip`),
   `notes` (ligne « Notes connues au …, appliquées à la séance du … : N en vigueur (dont M manuelles), F
   filtre(s) de risque actif(s) » ; texte clair si aucune note ne porte de score ; filtres actifs avec la note
   qui les porte et la façon de les lever ; notes en vigueur, manuelles et automatiques séparées : date, cible,
@@ -576,7 +592,9 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   `NoteStore(notes_root)` avec score, matérialité, confiance, lecture ; une adresse n'est un lien
   (`class="src"`) que vers `https://www.brvm.org/`, sinon elle est en texte ; vetos et inclinaisons de la
   décision ; encadré « aucune note » si le journal est absent ; la section `ordre` affiche la même ligne et
-  les achats bloqués par une note), `risques` (filtres R actifs de
+  les achats bloqués par une note ; filtres et blocages sont des **fiches** (`_fiche` : en-tête puis lignes
+  « libellé : texte »), lisibles à 390 px comme à 1 280 px ; dans les tableaux de notes le score suit la
+  cible), `risques` (filtres R actifs de
   `BrvmAlpha.decide`, règles et événements pays, événements à venir, drawdown, valorisation §4.5), `univers`
   (tous les titres : éligible, motif U1-U10, score final, rang, blocs z, poids, filtres R), `methode` (§10,
   trous de données comptés dans `sessions.parquet`, hypothèses de coûts, protocole, sources).
@@ -658,6 +676,17 @@ sécurité, eurobond…) ; `MARCHE`.
 ### `notes/analyze.py`
 - `analyze_note(note, panels=None, asof=None) -> NoteAnalysis`
 - `analyze_text(text, title="") -> NoteAnalysis` (raccourci)
+- `read_document(text, title="", event_type=None, max_chars=1500, ocr_layer=False) -> dict` : lecture
+  **contrôlée** du texte d'un document (`pdftotext -layout`), appelée par `research.enrich_documents` :
+  `figures` (agrégats retenus — chiffre d'affaires, PNB, résultat avant impôt, résultat net, dividende —,
+  chacun avec sa ligne ou phrase `source`), `rejected` (chiffres vus mais écartés, avec le motif), `period`
+  et `period_ok`, `excerpt` (extrait borné), `has_figures`. Garde-fous : une variation n'est retenue que si
+  elle est écrite ou recalculée sur deux montants de même unité et de même périmètre ; une variation écrite
+  est recoupée avec les montants à 1 point près ; base négative ou nulle, ou variation au-delà de ±300 % :
+  montants gardés, aucun score numérique (« base non comparable ») ; période du document cohérente avec la
+  note ; comptes consolidés préférés aux sociaux, jamais mélangés ; en-tête, unité ou appariement ambigus :
+  **aucun chiffre** (score fondé sur le ton seul). `ocr_layer=True` (texte issu de l'OCR d'un scanner) : seuls
+  les chiffres recoupés sont retenus. Le résultat avant impôt est lu et affiché, il n'entre pas dans le score.
 
 ### `notes/research.py`
 - `run_research(store, targets=None, since=None, max_requests=150,
@@ -673,6 +702,31 @@ sécurité, eurobond…) ; `MARCHE`.
   à chaque saut ; hôte normalisé (port, casse, point final). `created_at` d'une note
   collectée = instant où la page a été vue (borne de connaissance) ; `published_at` =
   publication sur le marché.
+- **Lecture du contenu** : `enrich_documents(store, *, max_docs=20, targets=None, offline=False, session=None,
+  delay_s=10.0, max_requests=None, panel_dir=DEFAULT_PANEL_DIR, dry_run=False, now=None, reread=False) -> dict`
+  (`store` : `NoteStore` ou dossier du journal). Pour chaque note choisie par `select_documents`, le PDF de
+  www.brvm.org est téléchargé poliment (`PoliteSession`, cache `<journal>/cache/docs` ; jamais retéléchargé),
+  son texte lu par `analyze.read_document`, puis une **nouvelle version** de la note est écrite
+  (`store.update` : journal en ajout seul, même titre, `text` = extrait de 1 500 caractères au plus, analyse
+  recalculée ; étiquette `doc_lu`, `doc_sans_chiffre`, `doc_scan` — PDF image sans texte, aucun OCR lancé, à
+  lire à la main — ou `doc_illisible`, plus `ocr` si le texte vient de l'OCR d'un scanner,
+  `pdf_text_layer_is_ocr`). Marques dans `analysis["extracted"]` : `doc_sha256`, `doc_pages`, `doc_method`,
+  `doc_chars`, `doc_status`, `<agrégat>_source` (ligne exacte de chaque chiffre), `doc_rejected`. Une lecture
+  stricte à une date passée voit toujours l'ancienne version. `offline=True` : cache seul (documents absents
+  comptés dans `n_skipped`) ; `dry_run=True` : tout sauf l'écriture ; `reread=True` : relit aussi, depuis le
+  cache seulement, les documents déjà lus (nouvelle version seulement si le résultat change). Un
+  téléchargement en erreur n'écrit rien (nouvel essai au prochain appel) ; arrêt propre au quota, au premier
+  403 ou 429, ou si le site ne répond plus. Retour : `n_candidates`, `n_selected`, `n_read`, `n_enriched`,
+  `n_no_figure`, `n_scanned`, `n_failed`, `n_skipped`, `n_written`, `n_requests`, `stopped`, `dry_run`,
+  `offline`, `details` (par document : `note_id`, `symbol`, `title`, `url`, `status` parmi `enrichie`, `scan`,
+  `illisible`, `sans_chiffre`, `erreur`, `score_before`, `score_after`, `extracted`, `reason`, `version`,
+  `written`).
+- `select_documents(store, *, targets=None, now=None, panel_dir=DEFAULT_PANEL_DIR, calendar=None,
+  reread=False) -> list[dict]` : notes actives, hors BOC, portant l'URL d'un PDF de www.brvm.org, pas encore
+  lues, d'un type lu (`DOC_PRIORITY` : alerte sur résultats, résultats annuels et semestriels, rapports
+  trimestriels, notation, puis communiqués) et encore utiles (`DOC_USEFUL_SESSIONS = 70` séances, 120 pour
+  une notation) ; ordre en largeur d'abord (le meilleur document de chaque émetteur avant le deuxième d'un
+  émetteur), puis par priorité, puis du plus récent au plus ancien.
 
 ### `notes/signals.py`
 - `note_scores(store_or_frame, asof, half_life=10·ln 2, calendar=None, ..., tau=None) -> pd.DataFrame`
