@@ -121,8 +121,9 @@ python -m brvm_alpha notes lire --hors-ligne --relire    # relit les documents d
 python -m brvm_alpha validate --sample S0
 ```
 
-Ordres de bataille publiés pour le 20/11/2026 (aucun titre détenu), régénérés le 22/11/2026 à 16h02 UTC
-avec les notes connues à cet instant (mode direct, séance d'application du 23/11/2026) :
+Ordres de bataille publiés pour le 20/11/2026 (aucun titre détenu), régénérés le 22/11/2026 après la
+recette finale, avec les notes connues à cet instant (mode direct, séance d'application du 23/11/2026 ;
+l'instant exact est écrit en tête de chaque ordre) :
 [10 M FCFA](reports/ordre_de_bataille_2026-11-20.md),
 [1 M FCFA](reports/ordre_de_bataille_2026-11-20_1M.md),
 [50 M FCFA](reports/ordre_de_bataille_2026-11-20_50M.md). Le rapport HTML
@@ -286,8 +287,8 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
     validés**, à confirmer par l'utilisateur ; quand la position diffère avec et sans les notes, le
     rapport, l'ordre de bataille et la page Indices le signalent (« Position changée par les notes »).
 - **Effet sur la position** : les notes ne pilotent jamais seules le portefeuille. Un **veto** manuel
-  exclut un titre. Une **inclinaison** est bornée à ±0,5 écart-type et s'ajoute au score des variantes
-  factorielles. Les **filtres R** issus des notes bloquent les achats ou réduisent les plafonds. En
+  exclut un titre (`notes add --veto`). Une **inclinaison** est bornée à ±0,5 écart-type et s'ajoute au
+  score des variantes factorielles ; l'ordre de bataille cite la note qui la porte. Les **filtres R** issus des notes bloquent les achats ou réduisent les plafonds. En
   mode « indice discipliné » (REF), la sélection se fait par capitalisation : l'inclinaison n'y change
   pas la sélection, mais le veto et les filtres R s'appliquent. Les notes n'ont **aucun rôle sur S1**
   (D11) : aucune note n'existait en temps réel sur 2017-2022.
@@ -345,8 +346,11 @@ le 23/11/2026, pour un brut de 9 650 560 FCFA (96,51 % investis), 160 588 FCFA d
 (1,61 %) et 124 126 FCFA de frais fixes par an. **Achat bloqué par une note** : ETIT (filtre R2,
 annulation de l'assemblée générale, note du 23/10/2026, jusqu'au 19/01/2027) ; son poids cible de 6,16 %
 est redistribué par les règles de construction et TTLC entre comme vingtième ligne. Notes prises en
-compte : celles connues le 22/11/2026 à 16h02 UTC, appliquées à la séance du 23/11/2026 (114 en vigueur,
-aucune manuelle, 6 filtres de risque actifs). Revenu de dividendes net attendu sur 12 mois :
+compte : celles connues le 22/11/2026 au moment de la régénération, appliquées à la séance du 23/11/2026
+(114 en vigueur, aucune manuelle, 8 filtres de risque actifs, dont les filtres R10 de surveillance nés de
+la lecture des documents). Deux lignes à acheter sont signalées **« à revoir avant achat »** (plus de 25 %
+de retard sur le TR en 63 séances, §9.1) : NSBC et CIEC ; l'achat reste proposé, la revue revient à
+l'utilisateur. Revenu de dividendes net attendu sur 12 mois :
 435 988 FCFA (4,36 %), sous l'hypothèse du dernier dividende reconduit. La distribution historique à
 12 mois n'est pas une prévision : médiane +11,8 %, P10 −9,9 %, P90 +37,6 %, P(perte) 25,6 %. Elle est
 tirée de toute l'histoire 2017-2026 avec les poids actuels, donc avec un biais rétrospectif. Le détail
