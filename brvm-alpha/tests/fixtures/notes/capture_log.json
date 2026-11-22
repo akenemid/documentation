@@ -1,0 +1,233 @@
+[
+ {
+  "url": "https://www.brvm.org/robots.txt",
+  "final_url": "https://www.brvm.org/robots.txt",
+  "status": 200,
+  "len": 2189,
+  "etag": "\"61619ef4-88d\"",
+  "last_modified": "Sat, 09 Oct 2021 13:53:56 GMT",
+  "content_type": "text/plain",
+  "fetched_at": "2026-11-22T03:38:41+00:00",
+  "n": 1
+ },
+ {
+  "url": "https://www.brvm.org/fr/emetteurs/type-annonces/communiques",
+  "final_url": "https://www.brvm.org/fr/emetteurs/type-annonces/communiques",
+  "status": 200,
+  "len": 62799,
+  "etag": "\"1795318732-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:38:52 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:38:53+00:00",
+  "n": 2
+ },
+ {
+  "url": "https://www.brvm.org/fr/emetteurs/type-annonces/convocations-assemblees-generales",
+  "final_url": "https://www.brvm.org/fr/emetteurs/type-annonces/convocations-assemblees-generales",
+  "status": 200,
+  "len": 64412,
+  "etag": "\"1795318743-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:39:03 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:39:04+00:00",
+  "n": 3
+ },
+ {
+  "url": "https://www.brvm.org/fr/emetteurs/type-annonces/changements-de-dirigeants",
+  "final_url": "https://www.brvm.org/fr/emetteurs/type-annonces/changements-de-dirigeants",
+  "status": 200,
+  "len": 63672,
+  "etag": "\"1795318755-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:39:15 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:39:16+00:00",
+  "n": 4
+ },
+ {
+  "url": "https://www.brvm.org/fr/emetteurs/type-annonces/franchissements-de-seuil",
+  "final_url": "https://www.brvm.org/fr/emetteurs/type-annonces/franchissements-de-seuil",
+  "status": 200,
+  "len": 62736,
+  "etag": "\"1795318767-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:39:27 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:39:28+00:00",
+  "n": 5
+ },
+ {
+  "url": "https://www.brvm.org/fr/emetteurs/type-annonces/notations-financieres",
+  "final_url": "https://www.brvm.org/fr/emetteurs/type-annonces/notations-financieres",
+  "status": 200,
+  "len": 63032,
+  "etag": "\"1795318779-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:39:39 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:39:39+00:00",
+  "n": 6
+ },
+ {
+  "url": "https://www.brvm.org/fr/emetteurs/type-annonces/projets-de-resolution",
+  "final_url": "https://www.brvm.org/fr/emetteurs/type-annonces/projets-de-resolution",
+  "status": 200,
+  "len": 64005,
+  "etag": "\"1795318790-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:39:50 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:39:51+00:00",
+  "n": 7
+ },
+ {
+  "url": "https://www.brvm.org/fr/esv/paiement-de-dividendes",
+  "final_url": "https://www.brvm.org/fr/esv/paiement-de-dividendes",
+  "status": 200,
+  "len": 59045,
+  "etag": "\"1795318802-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:40:02 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:40:03+00:00",
+  "n": 8
+ },
+ {
+  "url": "https://www.brvm.org/fr/esv/augmentation-de-capital",
+  "final_url": "https://www.brvm.org/fr/esv/augmentation-de-capital",
+  "status": 200,
+  "len": 57347,
+  "etag": "\"1795318585-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:36:25 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:40:14+00:00",
+  "n": 9
+ },
+ {
+  "url": "https://www.brvm.org/fr/esv/fractionnement",
+  "final_url": "https://www.brvm.org/fr/esv/fractionnement",
+  "status": 200,
+  "len": 56541,
+  "etag": "\"1795318575-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:36:15 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:40:25+00:00",
+  "n": 10
+ },
+ {
+  "url": "https://www.brvm.org/fr/esv/radiation",
+  "final_url": "https://www.brvm.org/fr/esv/radiation",
+  "status": 200,
+  "len": 51916,
+  "etag": "\"1795318596-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:36:36 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:40:36+00:00",
+  "n": 11
+ },
+ {
+  "url": "https://www.brvm.org/fr/marche/avis-et-publications/avis",
+  "final_url": "https://www.brvm.org/fr/marche/avis-et-publications/avis",
+  "status": 200,
+  "len": 49544,
+  "etag": "\"1795318590-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:36:30 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:40:47+00:00",
+  "n": 12
+ },
+ {
+  "url": "https://www.brvm.org/fr/rapports-societes-cotees",
+  "final_url": "https://www.brvm.org/fr/rapports-societes-cotees",
+  "status": 200,
+  "len": 54784,
+  "etag": "\"1795318804-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:40:04 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:40:59+00:00",
+  "n": 13
+ },
+ {
+  "url": "https://www.brvm.org/fr/rapports-societe-cotes/bank-africa-ci",
+  "final_url": "https://www.brvm.org/fr/rapports-societe-cotes/bank-africa-ci",
+  "status": 200,
+  "len": 52877,
+  "etag": "\"1795318577-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:36:17 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:41:10+00:00",
+  "n": 14
+ },
+ {
+  "url": "https://www.brvm.org/fr/emetteurs/type-annonces/communiques?page=1",
+  "final_url": "https://www.brvm.org/fr/emetteurs/type-annonces/communiques?page=1",
+  "status": 200,
+  "len": 63339,
+  "etag": "\"1795318803-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:40:03 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:41:21+00:00",
+  "n": 15
+ },
+ {
+  "url": "https://www.brvm.org/fr/esv/paiement-de-dividendes?page=1",
+  "final_url": "https://www.brvm.org/fr/esv/paiement-de-dividendes?page=1",
+  "status": 200,
+  "len": 59245,
+  "etag": "\"1795318803-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:40:03 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:41:32+00:00",
+  "n": 16
+ },
+ {
+  "url": "https://www.brvm.org/fr/rapports-societe-cotes/fctc-sonatel",
+  "final_url": "https://www.brvm.org/fr/rapports-societe-cotes/fctc-sonatel",
+  "status": 200,
+  "len": 40669,
+  "etag": "\"1795318903-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:41:43 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:41:44+00:00",
+  "n": 17
+ },
+ {
+  "url": "https://www.brvm.org/fr/rapports-societes-cotees?page=1",
+  "final_url": "https://www.brvm.org/fr/rapports-societes-cotees?page=1",
+  "status": 200,
+  "len": 54869,
+  "etag": "\"1795318985-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:43:05 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:43:05+00:00",
+  "n": 18
+ },
+ {
+  "url": "https://www.brvm.org/fr/rapports-societes-cotees?page=2",
+  "final_url": "https://www.brvm.org/fr/rapports-societes-cotees?page=2",
+  "status": 200,
+  "len": 48212,
+  "etag": "\"1795318996-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:43:16 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:43:17+00:00",
+  "n": 19
+ },
+ {
+  "url": "https://www.brvm.org/fr/rapports-societe-cotes/sonatel",
+  "final_url": "https://www.brvm.org/fr/rapports-societe-cotes/sonatel",
+  "status": 200,
+  "len": 52810,
+  "etag": "\"1795319008-1\"",
+  "last_modified": "Sun, 22 Nov 2026 03:43:28 GMT",
+  "content_type": "text/html; charset=utf-8",
+  "fetched_at": "2026-11-22T03:43:29+00:00",
+  "n": 20
+ },
+ {
+  "url": "https://www.brvm.org/sites/default/files/20261023_-_communique_-_annulation_ago_-_eti_tg.pdf",
+  "final_url": "https://www.brvm.org/sites/default/files/20261023_-_communique_-_annulation_ago_-_eti_tg.pdf",
+  "status": 200,
+  "len": 58447,
+  "etag": "\"6adee0e8-e44f\"",
+  "last_modified": "Mon, 26 Oct 2026 05:11:04 GMT",
+  "content_type": "application/pdf",
+  "fetched_at": "2026-11-22T03:43:40+00:00",
+  "n": 21
+ }
+]
