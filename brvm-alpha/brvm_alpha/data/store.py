@@ -955,8 +955,8 @@ def _find_ex_date(g: pd.DataFrame, i: int, amount: float, payment_date: pd.Times
         if 1 <= s < len(g) and days[s] != target and not _has_gap(sess, exact, s - 1, s):
             s -= 1  # cible un jour férié : séance précédente
         # Sinon (cible dans un trou de BOC) : première séance après le trou, jamais une
-        # séance où le titre est encore cum-dividende.
-        if 1 <= s < i:
+        # séance où le titre est encore cum-dividende (éventuellement la séance i).
+        if 1 <= s <= i:
             return s, "payment_date_estimate"
     return i, "first_seen"
 
