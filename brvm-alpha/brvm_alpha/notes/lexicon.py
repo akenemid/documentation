@@ -248,7 +248,7 @@ TERMS: tuple[Term, ...] = (
          r"augmentation\s+de\s+capital\s+(?:par\s+(?:apport\s+en\s+)?|en\s+)numeraire|"
          r"droits?\s+preferentiels?\s+de\s+souscription|\bdps\b", -1, "neg", risk="R5"),
     Term("réduction de capital, radiation",
-         r"reduction\s+de\s+(?:son\s+)?capital(?:\s+pour\s+(?:apurer|resorber|absorber)\s+(?:des|les)\s+pertes)?|"
+         r"reduction\s+(?:de\s+(?:son\s+)?|du\s+)capital(?:\s+social)?(?:\s+pour\s+(?:apurer|resorber|absorber)\s+(?:des|les)\s+pertes)?|"
          r"radiations?(?:\s+de\s+la\s+cote)?|retrait\s+de\s+la\s+cote|retrait\s+obligatoire", -2, "neg"),
     Term("baisse du PNB", rf"{DOWN}{DET}\s+{PNB}|{PNB}\s+{COPULA}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})", -1, "neg", "pnb", source="ext v0.1"),
     Term("baisse du chiffre d'affaires", rf"{DOWN}{DET}\s+{CA}|{CA}\s+{COPULA}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})", -1, "neg", "ca",
@@ -283,6 +283,9 @@ TERMS: tuple[Term, ...] = (
          r"(?:\s+(?:negati\w+|defavorable\w*|significati\w+|majeur\w*|notable\w*))?"
          r"(?:\s+sur(?:\s+\S+){1,5})?", 0, "neutral"),
     Term("provision seule (neutre)", r"provisions?\s+pour\s+(?:risques?|charges?)", 0, "neutral"),
+    Term("fractionnement d'un fonds (neutre)",
+         r"fractionnement\s+(?:de\s+la\s+)?valeur\s+liquidative|fractionnement\s+des\s+(?:parts|actions)\s+de\s+(?:la\s+)?(?:sicav|fcp)",
+         0, "neutral", source="ext v0.2"),
 )
 
 NEGATIONS = frozenset({"pas", "aucun", "aucune", "sans", "non", "ni", "jamais", "absence", "nullement"})
@@ -573,6 +576,13 @@ class EventRule:
     source: str = "§6.4"
 
 
+#: Documents qui ressemblent à une publication de résultats sans en être une : bilan
+#: semestriel du contrat de liquidité (56 notes sur 1 097 classées RES_S1 lors de l'essai
+#: réel du 22/11/2026), rapport RSE.
+_NOT_RESULTS = r"contrat\s+de\s+liquidite|\brse\b|responsabilite\s+societale"
+#: Fonds (SICAV, FCP, OPCVM, FCTC) : un « fractionnement de la valeur liquidative » n'est
+#: pas un fractionnement d'actions (essai réel du 22/11/2026).
+_FUND_CONTEXT = r"\bsicav\b|\bfcp\b|\bfcpr\b|\bopcvm\b|\bfctc\b|valeur\s+liquidative"
 #: Objets d'une « suspension » qui ne sont pas la cotation d'un titre.
 _NOT_LISTING = (
     r"(?:paiements?|activites?|production|exportations?|importations?|aides?|cooperation|financements?|"
@@ -604,32 +614,33 @@ EVENT_RULES: tuple[EventRule, ...] = (
     EventRule("DIV_NOTICE",
               r"paiement\s+(?:de|des|du)\s+dividendes?|calendrier\s+de\s+paiement\s+(?:des\s+)?dividendes?|"
               r"montant\s+du\s+dividende|mise\s+en\s+paiement|date\s+ex-?\s?dividende|detachement\s+du\s+dividende"),
-    EventRule("REVERSE_SPLIT", r"regroupement|consolidation\s+(?:des\s+|d')actions"),
-    EventRule("SPLIT", r"fractionnement"),
+    EventRule("REVERSE_SPLIT", r"regroupement|consolidation\s+(?:des\s+|d')actions", exclude=_FUND_CONTEXT),
+    EventRule("SPLIT", r"fractionnement", exclude=_FUND_CONTEXT),
     EventRule("NOTATION_SOUVERAINE",
               r"notations?\s+souveraines?|notes?\s+souveraines?|moody'?s|fitch|standard\s+(?:&|and|et)\s+poor'?s",
               source="notes"),
     EventRule("RATING", r"notations?\s+financieres?|\bnotation\b|\brating\b"),
     EventRule("MGMT_CHANGE",
               r"changements?\s+importants?\s+(?:dans|a)\s+la\s+direction|changements?\s+de\s+dirigeants?|\bnomination\b|"
-              r"\bdemission\b|nouve(?:au|lle)\s+(?:directeur|directrice)\s+general"),
+              r"\bdemission\b|nouve(?:au|lle)\s+(?:directeur|directrice)\s+general",
+              exclude=r"amf-umoa|\bamf\b|crepmf|\bbceao\b|commission\s+bancaire"),
     EventRule("THRESHOLD", r"franchissements?\s+de\s+seuils?"),
     EventRule("INDEX_CHANGE",
               r"composition\s+(?:de\s+l'|des\s+)?indices?|composition.*(?:brvm\s?30|prestige|brvm\s?10|principal)|"
               r"revision\s+(?:des\s+|de\s+l')indices?"),
-    EventRule("ACT_Q1", r"1\s?er\s+trimestre|premier\s+trimestre|\bt1\b|31\s+mars|(?:first|1st)\s+quar?ter(?:ly)?|\bq1\b"),
+    EventRule("ACT_Q1", r"1\s?er\s+trimestre|premier\s+trimestre|\bt1\b|31\s+mars|(?:first|1st)\s+quar?ter(?:ly)?|\bq1\b", exclude=_NOT_RESULTS),
     EventRule("ACT_Q3",
               r"3\s?(?:e|eme|ieme)\s+trimestre|troisieme\s+trimestre|\bt3\b|\b9\s+mois\b|neuf\s+mois|30\s+septembre|"
-              r"(?:third|3rd)\s+quar?ter(?:ly)?|\bq3\b"),
+              r"(?:third|3rd)\s+quar?ter(?:ly)?|\bq3\b", exclude=_NOT_RESULTS),
     EventRule("RES_S1",
               r"semestre|semestriel(?:le)?s?|examen\s+limite|\bs1\b|30\s+juin|2\s?(?:e|eme|ieme)\s+trimestre|"
-              r"deuxieme\s+trimestre|half[\s-]year|(?:first|1st)\s+half|semi[\s-]annual|\bh1\b"),
+              r"deuxieme\s+trimestre|half[\s-]year|(?:first|1st)\s+half|semi[\s-]annual|\bh1\b", exclude=_NOT_RESULTS),
     EventRule("RES_ANNUAL",
               r"etats\s+financiers|commissaires\s+aux\s+comptes|comptes\s+annuels|rapport\s+annuel|resultats?\s+annuels?|"
               r"exercice\s+clos|31\s+decembre|rapport\s+de\s+gestion|attestation\s+(?:d'execution\s+de\s+la\s+mission\s+de\s+)?commissari|"
               r"rapports?\s+d'activites?\s+annuel|rapports?\s+d'activites?\s+(?:de\s+l'(?:exercice|annee)\s+)?20\d\d\b|"
               r"4\s?(?:e|eme|ieme)\s+trimestre|quatrieme\s+trimestre|rapport\s+du\s+conseil\s+d'administration|"
-              r"financial\s+statements|annual\s+report|\bcac\b"),
+              r"financial\s+statements|annual\s+report|\bcac\b", exclude=_NOT_RESULTS),
     EventRule("REGULATOR",
               r"amf-umoa|\bamf\b|crepmf|commission\s+bancaire|mise\s+en\s+demeure|"
               r"sanctions?\s+(?:pecuniaires?|disciplinaires?|de\s+l'amf|du\s+regulateur)",

@@ -39,7 +39,16 @@ from brvm_alpha.config import Constraints, CostModel, ExecutionModel, PlatformCo
 ROOT = Path(__file__).resolve().parents[1]
 PANEL = ROOT / "data" / "panel" / "equities.parquet"
 
-NO_IMPACT = CostModel(impact_coef=0.0)
+#: Coûts « historiques » de ces tests, fixés explicitement depuis le calibrage
+#: v1 de ``config.py`` (spéc. §7.2) : ni impact, ni droits de garde, ni
+#: demi-spread, ni frais de tenue de compte par ligne. Les nouveaux coûts sont
+#: testés dans ``tests/test_engine_v1.py``.
+NO_IMPACT = CostModel(impact_coef=0.0, annual_custody=0.0, half_spread_mult=0.0, account_fee_per_line_fcfa=0.0)
+
+#: Options « historiques » du moteur, fixées explicitement depuis le moteur v1
+#: (spéc. §7.1) : règlement immédiat (au lieu de J+3 / J+2) et dividende versé
+#: en cash dès le détachement (au lieu de la date de paiement).
+LEGACY = {"settlement": 0, "dividend_payment_lag": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +132,8 @@ def test_buy_and_hold_matches_asset_return_minus_costs() -> None:
     vwap.iloc[1] = close.iloc[1]
     panels = make_panels(close, vwap=vwap)
     capital = 1e8
-    bt = Backtester(panels, NO_IMPACT, capital=capital)
+    # ancien défaut explicite : reliquat reporté jusqu'au rebalancement suivant
+    bt = Backtester(panels, NO_IMPACT, capital=capital, max_order_age=None)
     res = bt.run(const_strategy({"SNTS": 1.0}), rebalance=None)
 
     rate = NO_IMPACT.rate()
@@ -509,7 +519,7 @@ def test_dividends_credited_on_ex_date() -> None:
     close = pd.DataFrame({"SNTS": [1000.0] * 5 + [950.0] * 5}, index=dates)
     div = pd.DataFrame({"SNTS": [0.0] * 5 + [50.0] + [0.0] * 4}, index=dates)
     panels = make_panels(close, dividend=div)
-    res = Backtester(panels, NO_IMPACT, capital=1e6).run(const_strategy({"SNTS": 0.5}), rebalance=None)
+    res = Backtester(panels, NO_IMPACT, capital=1e6, **LEGACY).run(const_strategy({"SNTS": 0.5}), rebalance=None)
     q = int(res.positions.iloc[4, 0])
     assert q == 500
     assert float(res.dividends.iloc[5]) == pytest.approx(q * 50.0)
@@ -535,7 +545,7 @@ def test_dividend_withholding_when_amounts_are_gross() -> None:
     div = pd.DataFrame({"SNTS": [0, 0, 0, 100.0, 0, 0], "BOAB": [0, 0, 0, 100.0, 0, 0]}, index=dates, dtype=float)
     panels = make_panels(close, dividend=div)
     panels["country"] = pd.Series({"SNTS": "SN"})  # BOAB : déduit du suffixe (B -> BJ)
-    taxes = TaxModel(dividend_withholding={"SN": 0.10, "BJ": 0.05}, dividends_reported_net=False)
+    taxes = TaxModel(dividend_withholding={"SN": 0.10, "BJ": 0.05}, issuer_withholding={}, dividends_reported_net=False)
     res = Backtester(panels, NO_IMPACT, taxes, capital=1e6).run(
         const_strategy({"SNTS": 0.4, "BOAB": 0.4}), rebalance=None
     )
@@ -555,7 +565,9 @@ def test_dividend_withholding_when_amounts_are_gross() -> None:
 def test_cash_never_negative_under_stress(seed: int) -> None:
     panels = random_market(n=200, n_sym=8, seed=seed, zero_frac=0.4)
     rng = np.random.default_rng(seed + 100)
-    costs = CostModel(impact_coef=0.8, min_ticket_fcfa=2500.0, annual_custody=0.05)
+    costs = CostModel(
+        impact_coef=0.8, min_ticket_fcfa=2500.0, annual_custody=0.05, half_spread_mult=0.0, account_fee_per_line_fcfa=0.0
+    )
 
     def chaos(asof: pd.Timestamp, view: PanelView) -> pd.Series:
         cols = view["close"].columns
@@ -579,7 +591,7 @@ def test_sells_fund_same_day_buys() -> None:
     def switch(asof: pd.Timestamp, view: PanelView) -> pd.Series:
         return pd.Series({"AAAC": 0.98}) if asof == dates[0] else pd.Series({"BBBS": 0.97})
 
-    res = Backtester(panels, NO_IMPACT, capital=1e6).run(switch, rebalance=[dates[0], dates[2]])
+    res = Backtester(panels, NO_IMPACT, capital=1e6, **LEGACY).run(switch, rebalance=[dates[0], dates[2]])
     day = res.trades[res.trades["date"] == dates[3]]
     assert day["symbol"].tolist() == ["AAAC", "BBBS"]  # vente puis achat
     # cible dimensionnée sur la NAV de décision (nette des frais du premier achat)
@@ -619,6 +631,9 @@ def test_costs_match_cost_model_trade_by_trade() -> None:
         vat_on_commission=0.18,
         min_ticket_fcfa=1500.0,
         impact_coef=0.35,
+        annual_custody=0.0,
+        half_spread_mult=0.0,
+        account_fee_per_line_fcfa=0.0,
     )
     ex = ExecutionModel(max_volume_participation=0.25)
     res = Backtester(panels, costs, ex, capital=4e6).run(
@@ -676,7 +691,7 @@ def test_turnover_and_capital_gains_tax_and_custody() -> None:
     assert res.turnover == pytest.approx(expected_to)
 
     # droits de garde : payés même investi à 100 %, sans découvert
-    costs = CostModel(impact_coef=0.0, annual_custody=0.252)
+    costs = CostModel(impact_coef=0.0, annual_custody=0.252, half_spread_mult=0.0, account_fee_per_line_fcfa=0.0)
     r2 = Backtester(panels, costs, capital=1e6).run(const_strategy({"AAAC": 1.0}), rebalance=None)
     assert (r2.cash >= 0).all()
     q = int(r2.positions.iloc[-1, 0])
@@ -907,7 +922,7 @@ def test_panels_from_equities_split_builds_adj_factor() -> None:
     af = panels["adj_factor"]["SNTS"]  # type: ignore[index]
     assert np.allclose(af.iloc[:40], 1.0 / k) and np.allclose(af.iloc[40:], 1.0)
 
-    bt = Backtester(panels, NO_IMPACT, capital=1e7)
+    bt = Backtester(panels, NO_IMPACT, ExecutionModel(max_volume_participation=0.2), capital=1e7)
     res = bt.run(const_strategy({"SNTS": 0.5}), rebalance=None)
     q = int(res.positions.iloc[19, 0])  # titres « ajustés »
     assert float(res.dividends.sum()) == pytest.approx(q / k * 1000.0)  # et non q × 1000
@@ -934,7 +949,8 @@ def test_panels_from_equities_adjusts_raw_prices_by_default_and_view_is_point_in
             assert np.allclose(c, 20000.0)
         return pd.Series({"SNTS": 0.9})
 
-    res = Backtester(panels, capital=1e7).run(strat, rebalance="D")
+    no_daily_fees = CostModel(annual_custody=0.0, account_fee_per_line_fcfa=0.0)
+    res = Backtester(panels, no_daily_fees, capital=1e7).run(strat, rebalance="D")
     assert abs(float(res.returns.iloc[40])) < 1e-9  # jour de la division : rendement nul
     assert float(res.equity.iloc[-1]) > 0.9e7
     for day, (last_close, factor, _) in obs.items():

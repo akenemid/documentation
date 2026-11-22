@@ -1114,6 +1114,19 @@ def build_reading(
         s1 = f"{_cap_first(etype)} ({a.event_type}) sans cible identifiée (ni titre, ni indice, ni pays reconnu)"
     if ex.get("bond_context"):
         s1 += " ; il s'agit d'une ligne obligataire, sans portée directe pour les actions"
+    cand = a.components.get("event_candidate")
+    if cand:
+        s1 += f" ; le texte évoque aussi « {EVENT_TYPES.get(cand, cand.lower())} », retenu comme contexte et non comme événement"
+    expo = a.components.get("theme_exposure") or {}
+    if expo:
+        sign = {1: "+", -1: "−", 0: "±"}
+        bits = []
+        for items in expo.values():
+            for it in items:
+                if it["target"] not in a.targets:
+                    bits.append(f"{it['target']} ({sign.get(it['sign'], '±')})")
+        if bits:
+            s1 += " ; titres exposés au thème (sens d'une hausse du facteur) : " + ", ".join(dict.fromkeys(bits))
     sentences.append(s1 + ".")
     # 2) Chiffres.
     parts = []

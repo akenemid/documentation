@@ -800,3 +800,116 @@ def test_analyze_note_warns_when_asof_precedes_knowledge():
     a = an.analyze_note(n, asof="2026-11-17T12:00:00Z")
     assert any("rétrospectif" in w for w in a.warnings)
     assert not an.analyze_note(n, asof="2026-11-18").warnings
+
+
+# ---------------------------------------------------------------------------
+# Régressions de l'essai réel du 22/11/2026 (brvm.org + BOC 2025-2026, notes d'analyste)
+# ---------------------------------------------------------------------------
+
+
+def _analyst(title: str, text: str, **kw) -> NoteAnalysis:
+    n = Note(title=title, text=text, author="analyste", source="manual", created_at="2026-11-20T15:30:00Z", **kw)
+    return an.analyze_note(n)
+
+
+def test_regression_analyst_text_event_is_context_not_type():
+    # « le fractionnement récent » dans un commentaire ne fait pas de la note un SPLIT (ni R8).
+    a = _analyst("Dividende SNTS attendu en hausse",
+                 "Nous anticipons un dividende Sonatel en hausse de 8 % au titre de l'exercice 2026, porté par "
+                 "la croissance du chiffre d'affaires et le fractionnement récent.", stance="haussier", conviction=4)
+    assert a.event_type == "MANUAL" and a.components["event_candidate"] == "SPLIT"
+    assert "R8" not in a.risk_flags and a.targets == ["SNTS"]
+    assert a.extracted.get("div_growth") == pytest.approx(0.08) and a.score > 0
+    assert "contexte" in a.reading
+    # « états financiers … publiés avec retard » : rumeur, pas une publication de comptes annuels.
+    r = _analyst("Rumeur de retard des comptes de SOGB",
+                 "Selon une source de marché non confirmée, les états financiers 2026 de SOGB CI pourraient être "
+                 "publiés avec retard.", stance="baissier", conviction=2)
+    assert r.event_type == "MANUAL" and "R7" in r.risk_flags and r.score < 0
+    assert r.components["uncertainty_terms"] >= 2  # « non confirmée », « selon une source »
+    # Une publication de résultats chiffrée garde son type, même lue dans le texte.
+    q = _analyst("BOA Côte d'Ivoire : point d'activité",
+                 "Au 30 septembre 2026, le produit net bancaire progresse de 12 % et le résultat net de 18 %.")
+    assert q.event_type == "ACT_Q3"
+    # Note automatique : le type lu dans le texte reste retenu.
+    auto = an.analyze_text("Le conseil a décidé le fractionnement des actions.", title="SONATEL : Communiqué")
+    assert auto.event_type == "SPLIT"
+
+
+def test_regression_suspension_rule_ignores_payment_suspension():
+    assert lx.detect_event_type("Coup d'État au Niger", "la suspension des paiements de la banque")[0] == "POLITIQUE"
+    assert lx.detect_event_type("La BCEAO a suspendu ses opérations bancaires")[0] == "MACRO"
+    for t in ("Suspension de cotation - SOGB CI", "AVIS DE SUSPENSION DES TITRES SOGB", "Titre suspendu",
+              "Suspension de la cotation des actions SOGB CI"):
+        assert lx.detect_event_type(t)[0] == "SUSPENSION", t
+    a = _analyst("Coup d'État au Niger : risque pour BOA Niger",
+                 "Une tentative de coup d'État a eu lieu à Niamey. Les sanctions de la CEDEAO de 2023 avaient "
+                 "entraîné la suspension des paiements.", stance="baissier", conviction=4)
+    assert a.event_type == "POLITIQUE" and "R1" not in a.risk_flags
+    assert a.primary_target == "BOAN" and {"PAYS:NE", "THEME:COUP_ETAT"} <= set(a.targets)
+    assert a.tone < 0 and a.score < 0
+
+
+@pytest.mark.parametrize(
+    "text, sign",
+    [
+        ("La BCEAO a décidé de baisser ses taux directeurs de 25 points de base.", 1),
+        ("Baisse de 25 pb des taux directeurs de la BCEAO", 1),
+        ("Cet assouplissement monétaire réduit le coût des ressources.", 1),
+        ("La BCEAO relève ses taux directeurs.", -1),
+        ("Le resserrement monétaire se poursuit.", -1),
+        ("Impact négatif attendu sur la marge de Sonatel.", -1),
+        ("Les marges des distributeurs sous pression.", -1),
+        ("Le risque de tensions politiques pèse sur les titres togolais.", -1),
+        ("Une tentative de coup d'État a eu lieu.", -1),
+        ("La loi de finances prévoit une nouvelle taxe.", -1),
+        ("Le coût du risque est en baisse.", 1),
+        ("Les valeurs bancaires profitent de la baisse des taux.", 1),
+        ("Une mesure favorable à la consommation.", 1),
+        ("Dividende SNTS attendu en hausse", 1),
+        ("Le dividende Sonatel attendu en baisse.", -1),
+        ("Pas d'impact négatif sur les comptes.", 0),
+        ("Aucun impact significatif sur le résultat.", 0),
+        ("La société profite de cette occasion pour remercier ses clients.", 0),
+    ],
+)
+def test_regression_lexicon_v02_terms(text, sign):
+    tone = lx.score_text(text)["tone"]
+    assert (tone > 0, tone < 0, tone == 0)[{1: 0, -1: 1, 0: 2}[sign]], (text, tone)
+
+
+def test_regression_rumour_is_uncertainty_not_direction():
+    r = lx.score_text("Rumeur non confirmée, selon des sources de marché : à vérifier.")
+    assert r["tone"] == 0 and r["uncertainty"] >= 3
+
+
+def test_regression_primary_target_follows_title():
+    a = _analyst("Élections au Togo en 2027 : risque",
+                 "Le risque de tensions politiques pèse sur les titres togolais cotés (Ecobank Transnational, Oragroup).",
+                 stance="baissier", conviction=2)
+    assert a.primary_target == "PAYS:TG" and {"ETIT", "ORGT", "THEME:ELECTIONS"} <= set(a.targets)
+    assert a.event_type == "POLITIQUE" and a.tone < 0
+    b = _analyst("La BCEAO baisse son taux directeur de 25 pb",
+                 "Cet assouplissement monétaire devrait réduire le coût des ressources des banques.")
+    assert b.primary_target == "THEME:TAUX_BCEAO" and "SECT:FIN" in b.targets and b.score > 0
+    # brvm.org : l'émetteur du titre reste la cible principale.
+    c = an.analyze_text("", title="BANK OF AFRICA NIGER : Communiqué - Alerte sur résultats")
+    assert c.primary_target == "BOAN"
+
+
+def test_regression_theme_exposure_propagation():
+    from brvm_alpha.notes.model import KNOWN_SYMBOLS, THEMES
+
+    for theme, items in en.THEME_EXPOSURES.items():
+        assert theme in THEMES
+        for tgt, sign, channel, source in items:
+            assert (tgt in KNOWN_SYMBOLS or tgt.startswith("SECT:")) and sign in (-1, 0, 1) and channel and source
+    cacao = {e["target"]: e["sign"] for e in en.theme_exposure("THEME:CACAO")}
+    assert cacao == {"FTSC": 1, "SDSC": 1, "NTLC": 0}
+    assert en.theme_exposure("INFLATION") == [] and en.theme_exposure("ELECTIONS") == []
+    a = _analyst("Hausse du prix du pétrole : marges des distributeurs sous pression",
+                 "Les marges de TotalEnergies Marketing CI et de Vivo Energy CI risquent de se dégrader.",
+                 stance="baissier", conviction=3)
+    assert a.primary_target == "THEME:PETROLE" and {"TTLC", "SHEC"} <= set(a.targets)
+    expo = {e["target"] for e in a.components["theme_exposure"]["THEME:PETROLE"]}
+    assert {"SMBC", "TTLS"} <= expo and "SMBC (+)" in a.reading and a.tone < 0

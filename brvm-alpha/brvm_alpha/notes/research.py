@@ -174,6 +174,8 @@ ISSUER_REPORTS_PATH = "/fr/rapports-societe-cotes/{slug}"
 #: Pages « rapports-societe-cotes/<slug> » des 48 actions (index lu le 22/11/2026,
 #: 75 émetteurs sur 3 pages). Le premier slug est la page principale ; les suivants
 #: sont d'anciennes pages (changement de nom) lues seulement avec ``all_slugs=True``.
+#: Essai réel du 22/11/2026 : 21 pages principales lues (HTTP 200) ; « sgb-ci » existe mais
+#: ne contient aucun document, les rapports de SGBC sont sur « sgci » (9 documents depuis 2025).
 ISSUER_SLUGS: dict[str, tuple[str, ...]] = {
     "ABJC": ("servair-abidjan-ci",), "BBGC": ("bbgci",), "BICB": ("biic",), "BICC": ("bici-ci",),
     "BNBC": ("bernabe-ci",), "BOAB": ("bank-africa-bn",), "BOABF": ("bank-africa-bf",),
@@ -184,7 +186,7 @@ ISSUER_SLUGS: dict[str, tuple[str, ...]] = {
     "NTLC": ("nestle-ci",), "ONTBF": ("onatel-bf",), "ORAC": ("orange-ci", "cote-divoire-telecom"),
     "ORGT": ("oragroup",), "PALC": ("palm-ci",), "PRSC": ("tractafric-ci",), "SAFC": ("safca-ci",),
     "SCRC": ("sucrivoire",), "SDCC": ("sodeci",), "SDSC": ("bollore-transport-logistics",),
-    "SEMC": ("crown-siem-ci",), "SGBC": ("sgb-ci", "sgci"), "SHEC": ("vivo-energy-ci",),
+    "SEMC": ("crown-siem-ci",), "SGBC": ("sgci", "sgb-ci"), "SHEC": ("vivo-energy-ci",),
     "SIBC": ("sib",), "SICC": ("sicor",), "SIVC": ("air-liquide-ci",), "SLBC": ("solibra",),
     "SMBC": ("smb",), "SNTS": ("sonatel",), "SOGC": ("sogb",), "SPHC": ("saph-ci",),
     "STAC": ("setao-ci",), "STBC": ("sitab",), "TTLC": ("total",),
@@ -256,6 +258,14 @@ ISSUER_ALIASES: dict[str, tuple[str, ...]] = {
     "TTRC": ("TRITURAF CI", "TRITRAF CI", "TRITURAF"),
     "UNLC": ("UNILEVER CI", "UNILEVER COTE D'IVOIRE", "UNILEVER"),
     "UNXC": ("UNIWAX CI", "UNIWAX"),
+}
+#: Libellés tronqués du calendrier des AG de certains BOC 2025 (glyphes perdus à
+#: l'extraction du PDF : « TOTALENERGIES MARKETING CI » devient « T T E E GIE ETI G I »).
+#: Relevés lors de l'essai réel du 22/11/2026 (BOC du 10/06/2025 : AGO du 19/06/2025 à
+#: l'hôtel Radisson Blu d'Abidjan, AGO du 11/06/2025 à Dakar). Forme normalisée -> symbole.
+BOC_GARBLED_LABELS: dict[str, str] = {
+    "T T E E GIE ETI G I": "TTLC",
+    "T T E E GIE ETI G": "TTLS",
 }
 #: Libellés qui ressemblent à un alias mais désignent une autre société : Coris Bank
 #: International **Côte d'Ivoire** (OPV annoncée fin 2026, document 07 §1.5) n'est pas
@@ -879,6 +889,8 @@ class IssuerResolver:
             for sym, name in pairs.itertuples(index=False):
                 self.symbols.add(str(sym))
                 self.aliases.setdefault(norm_label(name), str(sym))
+        for k, v in BOC_GARBLED_LABELS.items():
+            self.aliases.setdefault(norm_label(k), v)
         for k, v in (extra_aliases or {}).items():
             self.aliases[norm_label(k)] = v
         self._by_len = sorted(self.aliases, key=len, reverse=True)
@@ -957,6 +969,18 @@ class IssuerResolver:
         sym = self.exact(label) or self.prefix(label)
         if sym:
             return sym
+        if label:
+            # « E CI (Ex AIR LIQUIDE CI) », « AFINHAB (Ex-CRRH-UEMOA) » : l'ancien nom entre
+            # parenthèses, puis le libellé sans parenthèses.
+            for old_name in re.findall(r"\(\s*ex[\s.-]+([^)]+)\)", label, flags=re.IGNORECASE):
+                sym = self.exact(old_name) or self.prefix(old_name)
+                if sym:
+                    return sym
+            bare = re.sub(r"\(.*?\)", " ", label)
+            if bare.strip() and bare != label:
+                sym = self.exact(bare) or self.prefix(bare)
+                if sym:
+                    return sym
         if title:
             parts = re.split(r"\s+[:;]\s+|\s+[-–]\s+|\s*:\s+", clean_text(title))
             head, tail = parts[0], parts[-1]
@@ -2962,5 +2986,5 @@ __all__ = [
     "note_id_for", "content_signature", "item_to_note", "run_research", "fetch_url_note",
     "ResearchReport", "ResearchResult", "date_from_filename", "parse_date_fr", "parse_parity",
     "default_resolver", "norm_label", "dedup_event_type", "normalize_url", "item_key", "sovereign_country",
-    "DISABLED_DOMAINS", "STOP_STATUSES",
+    "DISABLED_DOMAINS", "STOP_STATUSES", "BOC_GARBLED_LABELS",
 ]

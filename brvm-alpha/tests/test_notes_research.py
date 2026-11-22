@@ -973,3 +973,26 @@ def test_run_research_respects_quota(tmp_path: Path) -> None:
     assert len(web.calls) == 5 and res.report.n_requests == 5  # robots.txt + 4 listes, puis arrêt
     assert any("Quota" in e for e in res.report.errors)
     assert any(n.source == "boc" for n in res)  # les BOC locaux sont traités quand même
+
+
+def test_regression_resolver_former_names_and_garbled_boc_labels() -> None:
+    """Essai réel du 22/11/2026 : libellés du calendrier des AG des BOC 2025 non résolus."""
+    res = r.default_resolver()
+    # Ancien nom entre parenthèses (« ERIUM CI (Ex AIR LIQUIDE CI) » tronqué en « E CI »).
+    assert res.resolve("E        CI (Ex AIR LIQUIDE CI)", None) == "SIVC"
+    assert res.resolve("MOOV BURKINA FASO (ex ONATEL BF)", None) == "ONTBF"
+    # Glyphes perdus à l'extraction : TotalEnergies Marketing CI (Abidjan) et SN (Dakar).
+    assert res.resolve("T T       E E GIE      ETI G I", None) == "TTLC"
+    assert res.resolve("T T       E E GIE      ETI G", None) == "TTLS"
+    # Émetteurs non cotés en actions : toujours non résolus.
+    assert res.resolve("AFINHAB (Ex-CRRH-UEMOA)", None) is None
+    assert res.resolve("FIDELIS FINANCE", None) is None
+    text = "\n".join([
+        "CALENDRIER DES ASSEMBLEES GENERALES",
+        "ANNEE : 2025",
+        "T T       E E GIE      ETI G I     Ordinaire   19/06/2025        10:00:00   Radisson Blu Hotel Abidjan Airport",
+        "E        CI (Ex AIR LIQUIDE CI)   Ordinaire   16/12/2025        08:30:00   SALLE DE CONFÉRENCE DE LA CRRAE-UMOA",
+    ])
+    items = [it for it in r.parse_boc_events(text, "2025-06-10", "https://www.brvm.org/boc.pdf")
+             if it["list_type"] == "boc_ag"]
+    assert {it["symbol"] for it in items} == {"TTLC", "SIVC"}

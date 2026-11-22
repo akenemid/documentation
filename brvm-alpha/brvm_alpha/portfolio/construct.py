@@ -1497,6 +1497,7 @@ PORTFOLIO_V1_DEFAULTS: dict[str, Any] = {
     "entry_pct": 0.30,  # entrée : rang dans les 30 % supérieurs
     "exit_pct": 0.50,  # sortie : rang hors des 50 % supérieurs
     "fill_beyond_exit": True,  # complément au-delà des 50 % si moins de 12 lignes (interprétation, voir select_with_band)
+    "fill_for_capacity": True,  # complément depuis les 50 % si les plafonds empêchent d'investir 98 % (interprétation)
     "weighting": "equal",  # A : "equal" ; G : "hrp_tilt" ; H : "mv_alpha"
     "max_weight": 0.10,
     "min_weight": 0.02,  # plancher : en dessous, la ligne est supprimée
@@ -1694,7 +1695,7 @@ def _held_series(held: Any) -> pd.Series:
     if isinstance(held, (pd.Series, Mapping)):
         s = pd.Series(held, dtype=float)
         s.index = s.index.astype(str)
-        s = s.groupby(level=0).sum()
+        s = s.groupby(level=0).sum(min_count=1)
         s = s.where(np.isfinite(s), np.nan)
         return s[(s > 1e-12)].rename("held")
     return pd.Series(np.nan, index=_symbols(held), dtype=float, name="held")
@@ -1729,7 +1730,7 @@ def _labels_for(labels: Any, symbols: Sequence[str], kind: str) -> pd.Series:
         fn = ref.country_of if kind == "country" else ref.sector_of
         s = pd.Series([fn(x) for x in idx], index=idx, dtype=object)
     return pd.Series(
-        [str(v) if (v is not None and not (isinstance(v, float) and np.isnan(v))) else _NA_GROUP for v in s.to_numpy()],
+        [_NA_GROUP if (v is None or (not isinstance(v, str) and pd.isna(v))) else str(v) for v in s.to_numpy()],
         index=idx,
         dtype=object,
         name=kind,
@@ -1795,8 +1796,9 @@ class BandSelection:
 
     ``selected`` : titres retenus, dans l'ordre des rangs ; ``ranks`` : rang de chaque
     éligible ; ``reasons`` : motif (français) pour chaque titre considéré ;
-    ``reserve`` : candidats de complément non retenus, par priorité (utilisés si
-    l'élagage sous le plancher de 2 % fait passer sous ``min_names``) ; ``kept`` /
+    ``reserve`` : candidats non retenus des 50 % supérieurs (achetables), par rang ;
+    ``reserve_beyond`` : candidats au-delà des 50 % (complément sous ``min_names``
+    seulement, si ``fill_beyond_exit``) ; ``kept`` /
     ``added`` / ``completed`` / ``dropped`` / ``sold`` : détail des mouvements.
     """
 
@@ -1813,6 +1815,7 @@ class BandSelection:
     completed: list[str] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
     sold: list[str] = field(default_factory=list)
+    reserve_beyond: list[str] = field(default_factory=list)
 
 
 def select_with_band(
@@ -1925,7 +1928,8 @@ def select_with_band(
             )
         if s in sold:
             sold.remove(s)
-    reserve = [s for s in pool_in + pool_out if s not in selected]
+    reserve = [s for s in pool_in if s not in selected]
+    reserve_beyond = [s for s in pool_out if s not in selected]
 
     # 4. Au plus max_names lignes
     selected.sort(key=lambda s: int(ranks[s]))
@@ -1958,6 +1962,7 @@ def select_with_band(
         completed=completed,
         dropped=dropped,
         sold=sold,
+        reserve_beyond=reserve_beyond,
     )
 
 
@@ -2566,6 +2571,8 @@ def equal_weight_with_caps(
     min_weight: float = 0.02,
     reserve: Iterable[str] = (),
     min_names: int = 0,
+    capacity_reserve: Iterable[str] = (),
+    max_names: int | None = None,
     priority: pd.Series | Mapping[str, float] | None = None,
 ) -> pd.Series:
     """Équipondération de ``selected`` projetée **exactement** sur toutes les contraintes.
@@ -2582,6 +2589,13 @@ def equal_weight_with_caps(
     3. **Complément** : si l'on passe sous ``min_names`` lignes, les candidats de
        ``reserve`` sont essayés dans l'ordre ; un candidat est retenu si toutes les
        lignes restent ≥ ``min_weight``.
+    4. **Complément de capacité** : si les plafonds empêchent d'investir ``investable``,
+       les candidats de ``capacity_reserve`` (les 50 % supérieurs dans
+       :func:`target_portfolio`) sont essayés par rang, sans dépasser ``max_names``
+       lignes ; un candidat n'est retenu que s'il **augmente** l'investissement et que
+       toutes les lignes restent ≥ ``min_weight``. *Interprétation* : la spécification
+       demande à la fois 98 % d'exposition et des entrées depuis les 30 % supérieurs ;
+       quand les deux sont incompatibles, l'exposition prime, dans la bande des 50 %.
 
     ``rates`` (optionnel) remplace l'équipondération par une pondération
     proportionnelle à ``rates`` (variante G : HRP incliné), avec la même projection.
@@ -2605,7 +2619,8 @@ def equal_weight_with_caps(
         raise ValueError("investable doit appartenir à [0, 1]")
     names = _unique(selected)
     pool = [s for s in _unique(reserve) if s not in names]
-    all_names = names + pool
+    cap_pool = [s for s in _unique(capacity_reserve) if s not in names]
+    all_names = _unique(names + pool + cap_pool)
     upper_s = _upper_series(upper, all_names, budget)
     rates_s = _rates_series(rates, all_names)
     if priority is None:
@@ -2650,7 +2665,20 @@ def equal_weight_with_caps(
             added.append(cand)
         else:
             rejected.append(cand)
-    out_index = names + [s for s in pool if s in added or s in rejected]
+    capacity_added: list[str] = []
+    limit = len(all_names) if max_names is None else int(max_names)
+    for cand in sorted(cap_pool, key=lambda s: (prio[s], s)):
+        if float(w.sum()) >= budget - _INVARIANT_TOL or len(current) >= limit:
+            break
+        if cand in current or cand in rejected or upper_s[cand] < floor - _CAP_TOL:
+            continue
+        trial = sorted(current + [cand], key=lambda s: (prio[s], s))
+        w2, info2 = run(trial)
+        if all(w2[s] >= floor - _CAP_TOL for s in trial) and w2.sum() > w.sum() + 1e-9:
+            current, w, info = trial, w2, info2
+            capacity_added.append(cand)
+    tried = set(added) | set(rejected) | set(capacity_added)
+    out_index = names + [s for s in all_names if s not in names and s in tried]
     out = pd.Series(0.0, index=pd.Index(out_index, dtype=object), dtype=float, name="weight")
     out.loc[w.index] = w.to_numpy()
     invested = float(out.sum())
@@ -2677,6 +2705,7 @@ def equal_weight_with_caps(
             "n_names": int((out > 0).sum()),
             "removed": dict(removed),
             "added": list(added),
+            "capacity_added": list(capacity_added),
             "rejected": list(rejected),
             "active_constraints": _active_constraints(out[out > 0], upper_s, groups, budget),
             "messages": messages,
@@ -2976,6 +3005,12 @@ def mv_alpha_weights(
     )
     s = float(min(1.0, max(s, 0.0)))
     info["kelly_scale"] = s
+    info["active_alpha"] = float(active.to_numpy() @ alpha.to_numpy())
+    if s <= 0.0:
+        info["message"] = (
+            "variante H : alpha actif aᵀα ≤ 0 (l'écart MV − A réduit surtout le risque) : échelle de Kelly "
+            "nulle, poids de A conservés (règle du §6 appliquée à la lettre)"
+        )
     w = base.copy()
     w.loc[mv] = base.reindex(mv).to_numpy() + s * active.to_numpy()
     w = w.clip(lower=0.0)
@@ -3006,8 +3041,14 @@ def _resolve_references(
     countries: pd.Series,
     p: Mapping[str, Any],
     messages: list[str],
-) -> tuple[pd.Series | None, float, float]:
-    """(b_c par pays ou None, référence AES siège, référence AES λ), sans anticipation."""
+) -> tuple[pd.Series | None, float, float | None]:
+    """(b_c par pays ou None, référence AES siège, référence AES λ ou None), sans anticipation.
+
+    Sans poids de référence point-in-time, la référence AES par siège est la part en
+    nombre des sièges AES parmi les éligibles, et le plafond en exposition λ n'est pas
+    appliqué (une part en nombre sous-estimerait fortement le poids de SNTS et rendrait
+    ce plafond artificiellement contraignant).
+    """
     from brvm_alpha import reference as ref
 
     aes = tuple(p["aes_countries"])
@@ -3043,16 +3084,17 @@ def _resolve_references(
         seat_aes = float(seat.reindex([c for c in seat.index if c in aes]).fillna(0.0).sum())
     else:
         seat_aes = float(lab.isin(aes).mean()) if len(lab) else 0.0
-    if expo is not None:
+    lam_aes: float | None = None
+    if ctx.get("lambda_reference") is not None:
+        lam_aes = float(ctx["lambda_reference"])
+    elif expo is not None:
         expo.index = expo.index.astype(str)
         lam_aes = float(expo.reindex([c for c in expo.index if c in aes]).fillna(0.0).sum())
     else:
-        lam = ctx.get("lambda_aes")
-        lam_s = _lambda_aes(list(elig), aes) if lam is None else pd.Series(lam, dtype=float).reindex(list(elig)).fillna(0.0)
-        lam_aes = float(lam_s.mean()) if len(lam_s) else 0.0
-        if seat is not None:
-            messages.append("référence AES en exposition λ approchée par la moyenne des λ des éligibles (hypothèse)")
-            lam_aes = max(lam_aes, seat_aes)
+        messages.append(
+            "plafond AES en exposition λ non appliqué : référence λ point-in-time absente "
+            "(fournir close et shares, ou reference_weights={'seat', 'exposure'})"
+        )
     return seat, seat_aes, lam_aes
 
 
@@ -3257,6 +3299,7 @@ def target_portfolio(
     if mode == "vide":
         selected: list[str] = []
         reserve: list[str] = []
+        cap_reserve: list[str] = []
         n_target = 0
         reasons: dict[str, str] = {}
         messages.append("univers éligible vide : portefeuille 100 % liquidités")
@@ -3277,6 +3320,7 @@ def target_portfolio(
             if s not in elig:
                 reasons[s] = "vendu : titre non éligible à la date de décision"
         reserve = []
+        cap_reserve = []
         messages.append(
             f"mode repli : {n_elig} titres éligibles < {int(p['min_eligible'])}, panier équipondéré "
             "(aucune sélection par le score ; fait de marché, pas un défaut du modèle)"
@@ -3297,7 +3341,12 @@ def target_portfolio(
             no_buy=no_buy,
             fill_beyond_exit=bool(p["fill_beyond_exit"]),
         )
-        selected, reserve, reasons = list(band.selected), list(band.reserve), dict(band.reasons)
+        selected, reasons = list(band.selected), dict(band.reasons)
+        reserve = list(band.reserve) + list(band.reserve_beyond)
+        cap_reserve = list(band.reserve) if bool(p["fill_for_capacity"]) else []
+    for s in held.index:
+        if s not in reasons and s not in elig:
+            reasons[s] = "vendu : titre non éligible à la date de décision"
     for s in sc.index:
         if s not in reasons and s not in elig:
             reasons[s] = "non éligible à la date de décision"
@@ -3307,9 +3356,15 @@ def target_portfolio(
     # 5. Pondération ----------------------------------------------------------
     weighting = str(p["weighting"])
     extra: dict[str, Any] = {}
-    w_eq = equal_weight_with_caps(
-        selected, upper, groups, budget, min_weight=floor, reserve=reserve, min_names=min_names_eff, priority=priority
-    )
+    fill_kw = {
+        "min_weight": floor,
+        "reserve": reserve,
+        "min_names": min_names_eff,
+        "capacity_reserve": cap_reserve,
+        "max_names": int(p["max_names"]) if mode == "selection" else None,
+        "priority": priority,
+    }
+    w_eq = equal_weight_with_caps(selected, upper, groups, budget, **fill_kw)
     if weighting == "equal" or not selected:
         w_sel = w_eq
     else:
@@ -3319,17 +3374,14 @@ def target_portfolio(
         names_w = [s for s in w_eq.index if w_eq[s] > 0]
         if weighting == "hrp_tilt":
             rates, info = hrp_tilt_rates(
-                names_w + [s for s in reserve if s not in names_w],
+                _unique(names_w + reserve + cap_reserve),
                 sc,
                 cov_w,
                 gamma=float(p["hrp_gamma"]),
                 linkage=str(p["hrp_linkage"]),
                 distance_of_distances=bool(p["hrp_distance_of_distances"]),
             )
-            w_sel = equal_weight_with_caps(
-                names_w, upper, groups, budget, rates=rates, min_weight=floor, reserve=reserve,
-                min_names=min_names_eff, priority=priority,
-            )
+            w_sel = equal_weight_with_caps(names_w, upper, groups, budget, rates=rates, **fill_kw)
             extra["hrp"] = info["hrp"]
             if info["no_cov"]:
                 messages.append("variante G : sans covariance (< 52 semaines), rythme équipondéré pour "
@@ -3387,7 +3439,12 @@ def target_portfolio(
     for s, why in w_sel.attrs.get("removed", {}).items():
         reasons[s] = (reasons.get(s, "") + " ; " if reasons.get(s) else "") + why
     for s in w_sel.attrs.get("added", []):
-        reasons[s] = (reasons.get(s, "") + " ; " if reasons.get(s) else "") + "ajouté en complément après l'élagage"
+        reasons[s] = f"complément après l'élagage (moins de {int(p['min_names'])} lignes), rang {int(ranks[s])}/{n_elig}"
+    for s in w_sel.attrs.get("capacity_added", []):
+        reasons[s] = (
+            f"ajouté pour la capacité : plafonds saturés sous {budget:.0%} d'exposition, rang {int(ranks[s])}/{n_elig} "
+            "dans les 50 % supérieurs"
+        )
     for s in selected:
         if s in weights.index and weights[s] > 0 and s in upper.index and weights[s] >= upper[s] - 1e-9:
             reasons[s] = reasons.get(s, "") + f" ; au plafond de ligne {upper[s]:.2%}"

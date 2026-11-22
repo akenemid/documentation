@@ -492,14 +492,27 @@ class PanelView(Mapping[str, Any]):
         révélerait une division à venir ; après remise à l'échelle,
         ``view["close"].iloc[-1]`` est le cours publié le jour ``asof``.
 
-    Attributs : ``asof``, ``nav``, ``cash``, ``positions`` (titres détenus),
-    ``weights`` (poids courants), ``pending`` (ordres en attente, en titres).
+    Attributs : ``asof``, ``nav``, ``cash`` (cash **réglé** disponible),
+    ``receivables`` (ventes non réglées et dividendes à recevoir, FCFA),
+    ``positions`` (titres détenus), ``weights`` (poids courants), ``pending``
+    (ordres en attente, en titres).
     Quand le moteur remet la vue à l'échelle (``adj_factor`` ≠ 1), ``positions``
     et ``pending`` sont aussi exprimés en titres du jour ``asof``
     (``q · f_asof``, ``float``) ; sinon ce sont des entiers.
     """
 
-    __slots__ = ("__fetch", "__keys", "_asof", "_cache", "cash", "nav", "pending", "positions", "weights")
+    __slots__ = (
+        "__fetch",
+        "__keys",
+        "_asof",
+        "_cache",
+        "cash",
+        "nav",
+        "pending",
+        "positions",
+        "receivables",
+        "weights",
+    )
 
     def __init__(
         self,
@@ -512,6 +525,7 @@ class PanelView(Mapping[str, Any]):
         weights: pd.Series | None = None,
         pending: pd.Series | None = None,
         rescale: Mapping[str, pd.Series] | None = None,
+        receivables: float | None = None,
     ) -> None:
         stamp = pd.Timestamp(asof)
         scales = dict(rescale or {})
@@ -533,6 +547,7 @@ class PanelView(Mapping[str, Any]):
         self.positions = positions
         self.weights = weights
         self.pending = pending
+        self.receivables = receivables
 
     @property
     def asof(self) -> pd.Timestamp:
@@ -969,20 +984,43 @@ class BacktestResult:
         ``Σ |exécuté| · P_déc / Σ |ordonné| · P_déc`` (valeur au cours de
         décision ``P_déc``) ; NaN sans ordre.
     cash, positions
-        Liquidités et nombres de titres détenus en fin de séance.
+        Liquidités **réglées** disponibles et nombres de titres détenus en fin
+        de séance.
     dividends, taxes
-        Dividendes crédités et impôts payés (retenue appliquée par le moteur,
-        impôt sur plus-values) par séance.
+        Dividendes nets **reconnus** à la date de détachement (créance) et
+        impôts payés (retenue appliquée par le moteur, impôt sur plus-values)
+        par séance.
     costs_daily, turnover_daily
-        Coûts et rotation de chaque séance.
+        Coûts (transactions, garde, tenue de compte) et rotation de chaque
+        séance.
     orders
-        Journal des ordres (décision, symbole, quantité, exécuté, statut).
+        Journal des ordres (décision, symbole, quantité, exécuté, statut ;
+        ``oid``, ``parent`` (ordre annulé puis ressaisi), ``entered``).
+        Statuts : ``filled``, ``expired`` (report maximal atteint),
+        ``replaced`` (nouveau rebalancement), ``cancelled_ex`` /
+        ``cancelled_split`` (annulé le jour ex ou de division, puis
+        ressaisi), ``end_of_backtest``.
     blocked
         Événements de non-exécution (``date, symbol, side, qty, reason`` avec
-        ``reason`` ∈ ``not_traded``, ``limit_up``, ``limit_down``,
-        ``volume_cap``, ``cash``).
+        ``reason`` ∈ ``not_traded``, ``suspended``, ``limit_up``,
+        ``limit_down``, ``country_shock``, ``volume_cap``, ``cash``).
     rebalance_dates
         Dates de décision effectivement utilisées.
+    dividends_paid
+        Dividendes nets versés en cash à la date de paiement.
+    receivables
+        Créances en fin de séance : produits de ventes non encore réglés et
+        dividendes détachés non encore payés (comptés dans la NAV).
+    cost_breakdown
+        Coûts quotidiens par nature (``commission, spread, impact, custody,
+        account_fees``, FCFA).
+    events
+        Journal des événements du moteur (annulations / ressaisies d'ordres,
+        chocs pays) : ``date, symbol, event, oid, new_oid, qty``.
+    suspended_value
+        Valeur des positions suspendues (cours au dernier cours connu) ; la
+        spécification (§7.1.7) prévoit une décote de risque de 10 %
+        (``meta["suspended_risk_haircut"]``).
     """
 
     equity: pd.Series
@@ -1003,6 +1041,13 @@ class BacktestResult:
     rebalance_dates: pd.DatetimeIndex
     capital: float
     meta: dict[str, Any] = field(default_factory=dict)
+    dividends_paid: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="dividends_paid"))
+    receivables: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="receivables"))
+    cost_breakdown: pd.DataFrame = field(default_factory=pd.DataFrame)
+    events: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=["date", "symbol", "event", "oid", "new_oid", "qty"])
+    )
+    suspended_value: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="suspended_value"))
 
     @property
     def total_costs(self) -> float:
@@ -1105,6 +1150,11 @@ _ENGINE_PANELS = (
     "dividend_net",
     "open",
     "adj_factor",
+    "bid",
+    "ask",
+    "half_spread",
+    "session_no",
+    "dividend_payment_date",
 )
 
 
@@ -1238,6 +1288,65 @@ class _Order:
     status: str = "pending"
     first_fill: pd.Timestamp | None = None
     last_fill: pd.Timestamp | None = None
+    entered_pos: int = -1  # séance de saisie dans le carnet (décision + 1, ou jour de ressaisie)
+    parent: int | None = None  # ordre annulé (jour ex / division) dont celui-ci est la ressaisie
+    root: int = -1  # premier ordre de la chaîne (taux d'exécution)
+
+
+#: Paramètres du moteur (spéc. §7.1) et leurs valeurs par défaut, modifiables
+#: par mot-clé ou par le dictionnaire ``params`` de :class:`Backtester`.
+ENGINE_DEFAULTS: dict[str, Any] = {
+    "settlement": "brvm",  # J+3 jusqu'au 03/12/2025, J+2 ensuite ; entier = délai fixe ; 0 = immédiat
+    "dividend_payment_lag": 2,  # séances entre détachement et paiement si la date de paiement est inconnue
+    "cancel_on_corporate_events": True,  # annulation / ressaisie des ordres le jour ex et de division
+    "band_rule": "exact_or_tolerance",  # cf. BAND_RULES
+    "spread_window": 120,  # séances du spread médian de clôture
+    "spread_min_obs": 20,  # observations minimales (deux côtés présents)
+    "suspended_risk_haircut": 0.10,  # décote de risque d'une position suspendue (§7.1.7)
+    "country_shock_block_buys": True,  # aucun achat à la séance de choc (règle pays, §4.3)
+}
+
+#: Correspondance avec les clés ``execution.*`` du fichier ``configs/strategy_v1.yaml``.
+_YAML_EXECUTION_KEYS = {
+    "carry_unfilled_max_sessions": "max_carry_sessions",
+    "cancel_orders_on_ex_and_split_days": "cancel_on_corporate_events",
+}
+
+
+def _engine_params(params: Mapping[str, Any] | None, explicit: Mapping[str, Any]) -> dict[str, Any]:
+    """Fusionne défauts, dictionnaire ``params`` (plat ou au format du YAML) et mots-clés explicites.
+
+    Ordre de priorité croissante : :data:`ENGINE_DEFAULTS`, section
+    ``execution`` d'un dictionnaire de configuration (``load_strategy_config``),
+    clés plates de ``params``, puis mots-clés passés explicitement au
+    constructeur (différents de ``None``).
+    """
+    out = dict(ENGINE_DEFAULTS)
+    extra: dict[str, Any] = {}
+    if params:
+        exe = params.get("execution")
+        if isinstance(exe, Mapping):
+            # configuration complète (format du YAML) : seule la section
+            # ``execution`` concerne le moteur ; une section ``engine``
+            # facultative porte les clés plates.
+            for k, v in exe.items():
+                if k in _YAML_EXECUTION_KEYS:
+                    extra[_YAML_EXECUTION_KEYS[k]] = v
+                elif k == "settlement" and isinstance(v, Sequence) and not isinstance(v, str):
+                    extra["settlement"] = "brvm"  # règle J+3 / J+2 de la spécification
+            eng = params.get("engine")
+            if isinstance(eng, Mapping):
+                extra.update(eng)
+        else:
+            extra.update(params)
+    unknown = set(extra) - set(out) - {"max_carry_sessions"}
+    if unknown:
+        raise KeyError(f"paramètres du moteur inconnus : {sorted(unknown)}")
+    out.update(extra)
+    out.update({k: v for k, v in explicit.items() if v is not None})
+    if out["band_rule"] not in BAND_RULES:
+        raise ValueError(f"band_rule doit valoir l'un de {BAND_RULES}")
+    return out
 
 
 class Backtester:
@@ -1272,7 +1381,18 @@ class Backtester:
           k fois trop élevé et le plafond de participation faux d'un facteur
           k. Reporté vers l'avant uniquement, 1 avant la première valeur ;
         * ``country`` (optionnel) : ``Series`` symbole → pays (retenue à la
-          source si les dividendes fournis sont bruts) ;
+          source si les dividendes fournis sont bruts, chocs pays) ;
+        * ``dividend_payment_date`` (optionnel) : panel large aligné sur
+          ``dividend_net`` (ligne de la date ex) donnant la date de paiement ;
+          à défaut, paiement ``dividend_payment_lag`` séances après la date ex ;
+        * ``bid`` / ``ask`` (optionnels, unités brutes) : meilleures limites
+          de clôture du carnet (``order_book.parquet``), pour le demi-spread
+          propre au titre (:func:`quoted_half_spread`) ; ou ``half_spread``
+          (fraction, déjà calculée) ; à défaut ``half_spread_default`` ;
+        * ``session_no`` (optionnel) : numéro global de séance (panel large ou
+          ``Series`` par date) ; il compte les séances sans BOC (2021) pour
+          le report des ordres, le règlement, le paiement des dividendes et
+          le prorata des frais ; à défaut, une ligne = une séance ;
         * toute autre entrée est transmise **tronquée** à la stratégie
           (:func:`truncate_asof` : panel large, table longue à colonne
           ``date``, ``MultiIndex`` (date, symbol), ``PeriodIndex``, index de
@@ -1291,8 +1411,45 @@ class Backtester:
     lot_size
         Quotité de négociation (1 à la BRVM).
     max_order_age
-        Nombre maximal de séances de vie d'un ordre reporté (``None`` :
-        jusqu'au rebalancement suivant).
+        Nombre maximal de séances de vie d'un ordre depuis sa décision.
+        ``"auto"`` (défaut) : ``1 + ExecutionModel.max_carry_sessions``
+        (première tentative en t+1, puis au plus 10 reports, spéc. §7.1.1) ;
+        ``None`` : jusqu'au rebalancement suivant (comportement historique) ;
+        entier : valeur explicite. Les séances sont comptées sur
+        ``session_no`` (BOC manquants compris).
+    settlement
+        ``"brvm"`` (défaut) : J+3 pour une négociation antérieure au
+        ``ExecutionModel.settlement_switch_date``, J+2 ensuite ; entier
+        ``n`` : délai fixe de ``n`` séances ; ``0`` : règlement immédiat (le
+        produit d'une vente finance les achats du jour, comportement
+        historique).
+    dividend_payment_lag
+        Séances entre la date ex et le paiement quand la date de paiement
+        est inconnue (2 par défaut, médiane observée, spéc. §5.2.3) ; ``0`` :
+        cash crédité dès le détachement (comportement historique).
+    cancel_on_corporate_events
+        Annuler puis ressaisir le jour même les ordres en attente le jour ex
+        et le jour de division (spéc. §7.1.4).
+    band_rule
+        Détection de la clôture à la borne : voir :data:`BAND_RULES`.
+    spread_window, spread_min_obs
+        Fenêtre (séances) et observations minimales du spread médian.
+    country_shocks
+        Chocs pays sévères (spéc. §4.3, §7.1.8) : ``DataFrame`` à colonnes
+        ``country, date`` (+ ``sessions`` facultatif, 1 par défaut) ou liste
+        de tuples ``(pays, date[, séances])``. Les ``sessions`` premières
+        séances **strictement postérieures** à la date d'annonce sont
+        supposées au plancher pour les titres du pays (pays du siège) :
+        valorisation au plus à la borne basse, aucun vendeur servi, et aucun
+        achat si ``country_shock_block_buys``. Hypothèse de stress.
+    order_book
+        Table longue ``order_book.parquet`` (``date, symbol, bid, ask``) si
+        les panels ``bid`` / ``ask`` ne sont pas fournis.
+    params
+        Dictionnaire optionnel de paramètres du moteur : clés de
+        :data:`ENGINE_DEFAULTS`, ou configuration complète
+        (``settings.load_strategy_config()``, section ``execution``). Les
+        mots-clés explicites l'emportent.
     vwap_tolerance
         Si ``|VWAP / clôture − 1|`` dépasse ce seuil (incohérence
         d'ajustement), le prix d'exécution retenu est la clôture du jour.
@@ -1335,11 +1492,20 @@ class Backtester:
         taxes: Any = None,
         *,
         lot_size: int = 1,
-        max_order_age: int | None = None,
+        max_order_age: int | str | None = "auto",
         vwap_tolerance: float = 0.20,
         max_plausible_move: float = 0.20,
         periods_per_year: int = TRADING_DAYS,
         jump_warning: float | None = 0.40,
+        settlement: str | int | None = None,
+        dividend_payment_lag: int | None = None,
+        cancel_on_corporate_events: bool | None = None,
+        band_rule: str | None = None,
+        spread_window: int | None = None,
+        spread_min_obs: int | None = None,
+        country_shocks: Any = None,
+        order_book: pd.DataFrame | None = None,
+        params: Mapping[str, Any] | None = None,
     ) -> None:
         models = _dispatch_models(costs, constraints, capital, execution, taxes)
         self.costs: CostModel = models.get("costs", CostModel())
@@ -1351,12 +1517,44 @@ class Backtester:
             raise ValueError("capital doit être > 0")
         if int(lot_size) < 1:
             raise ValueError("lot_size doit être >= 1")
-        if max_order_age is not None and int(max_order_age) < 1:
-            raise ValueError("max_order_age doit être >= 1")
         if not 0.0 < self.execution.max_volume_participation <= 1.0:
             raise ValueError("max_volume_participation doit être dans ]0, 1]")
         if self.execution.price not in ("vwap", "close", "open"):
             raise ValueError("ExecutionModel.price doit valoir 'vwap', 'close' ou 'open'")
+        opts = _engine_params(
+            params,
+            {
+                "settlement": settlement,
+                "dividend_payment_lag": dividend_payment_lag,
+                "cancel_on_corporate_events": cancel_on_corporate_events,
+                "band_rule": band_rule,
+                "spread_window": spread_window,
+                "spread_min_obs": spread_min_obs,
+            },
+        )
+        carry_max = int(opts.pop("max_carry_sessions", self.execution.max_carry_sessions))
+        if isinstance(max_order_age, str):
+            if max_order_age != "auto":
+                raise ValueError("max_order_age doit valoir 'auto', None ou un entier >= 1")
+            max_order_age = 1 + max(0, carry_max)
+        if max_order_age is not None and int(max_order_age) < 1:
+            raise ValueError("max_order_age doit être >= 1")
+        self.options: dict[str, Any] = opts
+        sett = opts["settlement"]
+        if not (sett == "brvm" or (isinstance(sett, (int, np.integer)) and not isinstance(sett, bool) and sett >= 0)):
+            raise ValueError("settlement doit valoir 'brvm' ou un entier >= 0")
+        if int(opts["dividend_payment_lag"]) < 0:
+            raise ValueError("dividend_payment_lag doit être >= 0")
+        self.settlement = sett
+        self.dividend_payment_lag = int(opts["dividend_payment_lag"])
+        self.cancel_on_corporate_events = bool(opts["cancel_on_corporate_events"])
+        self.band_rule = str(opts["band_rule"])
+        self.spread_window = int(opts["spread_window"])
+        self.spread_min_obs = int(opts["spread_min_obs"])
+        self.suspended_risk_haircut = float(opts["suspended_risk_haircut"])
+        self.country_shock_block_buys = bool(opts["country_shock_block_buys"])
+        self._order_book = order_book
+        self._country_shocks_raw = country_shocks
         self.lot_size = int(lot_size)
         self.max_order_age = None if max_order_age is None else int(max_order_age)
         self.vwap_tolerance = float(vwap_tolerance)
@@ -1417,12 +1615,13 @@ class Backtester:
         return arr
 
     def _prepare_arrays(self) -> None:
-        """Pré-calcule prix d'exécution, exécutabilité, limites et dividendes."""
+        """Pré-calcule prix d'exécution, exécutabilité, bandes, spreads, dividendes et calendrier."""
         ex = self.execution
         close = self._panels["close"]
         c = close.to_numpy(dtype=float)
         c = np.where(c > 0, c, np.nan)
         self._close = c
+        T = c.shape[0]
 
         af = self._wide("adj_factor")
         self._has_adj_factor = af is not None
@@ -1436,6 +1635,23 @@ class Backtester:
         self._af = af
         # La vue n'est remise à l'échelle que si un facteur diffère de 1.
         self._rescale_view = bool(np.any(np.abs(af - 1.0) > 1e-12))
+        # Jour de division / d'ajustement du nombre de titres : le facteur change.
+        split_day = np.zeros(c.shape, dtype=bool)
+        if T > 1:
+            split_day[1:] = np.abs(af[1:] / af[:-1] - 1.0) > 1e-9
+        self._split_day = split_day
+
+        # Calendrier des séances (BOC manquants compris) et délai de règlement.
+        self._sess = self._session_numbers()
+        steps = np.ones(T, dtype=float)
+        if T > 1:
+            steps[1:] = np.maximum(np.diff(self._sess), 1)
+        self._steps = steps
+        if self.settlement == "brvm":
+            switch = pd.Timestamp(ex.settlement_switch_date)
+            self._lag_rows = np.where(self.dates < switch, 3, 2).astype(np.int64)
+        else:
+            self._lag_rows = np.full(T, int(self.settlement), dtype=np.int64)
 
         vol_in = self._wide("volume", fill=0.0)
         assert vol_in is not None  # panel obligatoire (contrôlé à l'initialisation)
@@ -1459,22 +1675,26 @@ class Backtester:
         self._px_exec = px
 
         tradeable = (self._volume > 0) & np.isfinite(px) & (px > 0)
+        suspended = np.zeros(c.shape, dtype=bool)
         if "status" in self._panels and self._panels["status"] is not None:
             st = _as_wide(self._panels["status"], "status").reindex(index=self.dates, columns=self.symbols)
             st_low = st.astype(object).where(st.notna(), "").astype(str)
             st_low = st_low.apply(lambda col: col.str.strip().str.lower())
             tradeable &= ~st_low.isin(_BLOCKING_STATUS).to_numpy(dtype=bool)
+            suspended = (st_low == "suspended").to_numpy(dtype=bool)
         self._tradeable = tradeable
+        self._suspended = suspended
 
         # Valorisation : dernier cours de clôture connu (à défaut, dernier prix
         # d'exécution observé si la clôture manque un jour d'échange).
         val_src = np.where(np.isfinite(c), c, np.where(tradeable, px, np.nan))
-        self._px_val = pd.DataFrame(val_src).ffill().to_numpy(dtype=float)
+        px_val0 = pd.DataFrame(val_src).ffill().to_numpy(dtype=float)
 
         # Dividendes (montant par titre ajusté) et retenue éventuelle ; une date
         # de détachement hors calendrier est reportée à la séance suivante.
         div = self._dividend_array()
         div = np.zeros_like(c) if div is None else np.clip(div, 0.0, None)
+        self._ex_day = div > 0
         div_adj = div * af
         if not self.taxes.dividends_reported_net:
             rates = self._withholding_rates()
@@ -1483,29 +1703,278 @@ class Backtester:
         else:
             self._div = div_adj
             self._div_tax = np.zeros_like(div_adj)
+        self._div_pay_pos = self._payment_positions(self._ex_day)
 
-        # Variation de la séance pour les limites de prix.
+        # Variation de la séance (règle de tolérance, comportement historique).
         move = np.full_like(c, np.nan)
         chg = self._wide("change_pct")
         if chg is not None:
             move = chg / 100.0
         prev = self._wide("prev_close")
+        refp = self._wide("ref_price")
         with np.errstate(divide="ignore", invalid="ignore"):
             if prev is not None:
                 ref = (prev - div) * af
                 m = np.where(ref > 0, c / ref - 1.0, np.nan)
                 move = np.where(np.isfinite(move), move, m)
-            refp = self._wide("ref_price")
             if refp is not None:
                 ref = np.vstack([np.full((1, c.shape[1]), np.nan), refp[:-1]]) * af
                 m = np.where(ref > 0, c / ref - 1.0, np.nan)
                 move = np.where(np.isfinite(move), move, m)
-            prev_c = np.vstack([np.full((1, c.shape[1]), np.nan), self._px_val[:-1]]) - div_adj
+            prev_c = np.vstack([np.full((1, c.shape[1]), np.nan), px_val0[:-1]]) - div_adj
             m = np.where(prev_c > 0, c / prev_c - 1.0, np.nan)
             move = np.where(np.isfinite(move), move, m)
         self._move = move
-        self._lim_up, self._lim_down = limit_flags(move, ex.price_limit, ex.limit_tolerance, self.max_plausible_move)
+        tol_up, tol_down = limit_flags(move, ex.price_limit, ex.limit_tolerance, self.max_plausible_move)
+
+        # Bornes exactes au pas autour de la référence ajustée (unités brutes du jour).
+        raw_close = c / af
+        ref_raw = self._reference_raw(raw_close, div, af, px_val0, chg, prev, refp)
+        self._ref_raw = ref_raw
+        ex_up, ex_down = band_flags(raw_close, ref_raw, ex.price_limit, self.max_plausible_move)
+        if self.band_rule == "exact":
+            self._lim_up, self._lim_down = ex_up, ex_down
+        elif self.band_rule == "tolerance":
+            self._lim_up, self._lim_down = tol_up, tol_down
+        else:
+            self._lim_up, self._lim_down = ex_up | tol_up, ex_down | tol_down
+        floor_raw = price_band_limits(ref_raw, ex.price_limit)[0]
+        self._floor_adj = floor_raw * af
+
+        # Chocs pays sévères : première(s) séance(s) au plancher, sans vendeur servi.
+        self._shock_events: list[tuple[Any, ...]] = []
+        shock = self._shock_mask()
+        self._shock = shock
+        if shock.any():
+            floor_val = np.where(np.isfinite(self._floor_adj), self._floor_adj, val_src)
+            shocked = np.where(np.isfinite(val_src), np.minimum(val_src, floor_val), floor_val)
+            val_src = np.where(shock, shocked, val_src)
+        self._px_val = pd.DataFrame(val_src).ffill().to_numpy(dtype=float)
+
+        # Demi-spread propre à chaque titre (fraction du montant, par côté).
+        self._hs = self._half_spreads(px, af)
         self._check_price_jumps(c, div_adj)
+
+    def _session_numbers(self) -> np.ndarray:
+        """Numéro global de séance par ligne (``session_no``), sinon ``0..T-1``.
+
+        Les séances sans BOC (2021) sont comptées : entre deux lignes, l'écart
+        de numéro mesure les séances réellement écoulées (report des ordres,
+        règlement, paiement des dividendes, prorata des frais).
+        """
+        T = len(self.dates)
+        raw = self._panels.get("session_no")
+        s: pd.Series | None = None
+        if isinstance(raw, pd.DataFrame):
+            df = _as_wide(raw, "session_no").reindex(self.dates)
+            s = df.apply(pd.to_numeric, errors="coerce").max(axis=1)
+        elif isinstance(raw, pd.Series):
+            ser = raw.copy()
+            if not isinstance(ser.index, pd.DatetimeIndex):
+                parsed = _parse_date_index(ser.index)
+                if parsed is None:
+                    raise TypeError("session_no : index de dates attendu")
+                ser = ser.set_axis(parsed)
+            ser = ser[~ser.index.duplicated(keep="last")]
+            s = pd.to_numeric(ser, errors="coerce").reindex(self.dates)
+        if s is None or not s.notna().any():
+            return np.arange(T, dtype=np.int64)
+        vals = s.to_numpy(dtype=float)
+        # numéros manquants : séance précédente + 1 (jamais de remplissage arrière)
+        out = np.empty(T, dtype=float)
+        last = math.nan
+        for i, v in enumerate(vals):
+            if math.isfinite(v):
+                last = v
+            else:
+                last = (last + 1.0) if math.isfinite(last) else float(i)
+            out[i] = last
+        if np.any(np.diff(out) <= 0):
+            warnings.warn("session_no non strictement croissant : une ligne = une séance", stacklevel=4)
+            return np.arange(T, dtype=np.int64)
+        return out.astype(np.int64)
+
+    def _payment_positions(self, ex_mask: np.ndarray) -> np.ndarray:
+        """Ligne de paiement de chaque dividende (``T`` si au-delà du panel ; −1 sans dividende).
+
+        Date de paiement lue dans ``dividend_payment_date`` (ligne de la date
+        ex, reportée comme ``dividend_net`` sur la séance suivante si elle est
+        hors calendrier) ; à défaut, première ligne dont la séance est
+        ``≥ séance_ex + dividend_payment_lag``. Un paiement daté avant la date
+        ex (donnée incohérente) est ramené à la date ex.
+        """
+        T, N = ex_mask.shape
+        pos = np.full((T, N), -1, dtype=np.int64)
+        ti, ji = np.nonzero(ex_mask)
+        if ti.size == 0:
+            return pos
+        known: dict[tuple[int, int], pd.Timestamp] = {}
+        raw = self._panels.get("dividend_payment_date")
+        if isinstance(raw, pd.DataFrame) and len(self.dates):
+            df = _as_wide(raw, "dividend_payment_date")
+            for col in df.columns:
+                if col not in self.symbols:
+                    continue
+                ser = pd.to_datetime(df[col], errors="coerce").dropna()
+                if ser.empty:
+                    continue
+                jj = int(self.symbols.get_loc(col))
+                rows = self.dates.searchsorted(pd.DatetimeIndex(ser.index), side="left")
+                for r, pay in zip(rows, ser.to_numpy(), strict=True):
+                    if 0 <= r < T:
+                        cur = known.get((int(r), jj))
+                        pay_ts = pd.Timestamp(pay)
+                        known[(int(r), jj)] = pay_ts if cur is None else max(cur, pay_ts)
+        for t, j in zip(ti, ji, strict=True):
+            pay = known.get((int(t), int(j)))
+            if pay is not None:
+                p = int(self.dates.searchsorted(pay.normalize(), side="left"))
+            elif self.dividend_payment_lag == 0:
+                p = int(t)
+            else:
+                target = self._sess[t] + self.dividend_payment_lag
+                p = int(np.searchsorted(self._sess, target, side="left"))
+            pos[t, j] = max(int(t), p)
+        return pos
+
+    def _reference_raw(
+        self,
+        raw_close: np.ndarray,
+        div_raw: np.ndarray,
+        af: np.ndarray,
+        px_val0: np.ndarray,
+        chg: np.ndarray | None,
+        prev: np.ndarray | None,
+        refp: np.ndarray | None,
+    ) -> np.ndarray:
+        """Référence ajustée de la séance ``t`` en unités **brutes** du jour (bornes exactes).
+
+        Par ordre de préférence :
+
+        1. ``ref_price`` publié la veille (BOC de t − 1, déjà ajusté du
+           détachement ou de la division du jour), si t − 1 est la séance
+           immédiatement précédente (pas de BOC manquant) ;
+        2. ``clôture / (1 + change_pct)`` arrondi au pas (variation publiée,
+           calculée par la BRVM sur la référence ajustée) ;
+        3. ``prev_close − dividende`` du jour ;
+        4. dernier cours connu, ramené aux unités du jour, moins le dividende.
+        """
+        T, N = raw_close.shape
+        ref = np.full((T, N), np.nan)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if refp is not None and T > 1:
+                prior = np.vstack([np.full((1, N), np.nan), refp[:-1]])
+                contiguous = np.concatenate([[False], np.diff(self._sess) == 1])[:, None]
+                ref = np.where(contiguous & np.isfinite(prior) & (prior > 0), prior, np.nan)
+            if chg is not None:
+                implied = raw_close / (1.0 + chg / 100.0)
+                step = tick_size(implied)
+                implied = np.round(implied / step) * step
+                ref = np.where(np.isfinite(ref), ref, np.where(np.isfinite(implied) & (implied > 0), implied, np.nan))
+            if prev is not None:
+                cand = prev - div_raw
+                ref = np.where(np.isfinite(ref), ref, np.where(cand > 0, cand, np.nan))
+            last = np.vstack([np.full((1, N), np.nan), px_val0[:-1]]) / af - div_raw
+            ref = np.where(np.isfinite(ref), ref, np.where(last > 0, last, np.nan))
+        return ref
+
+    def _symbol_countries(self) -> np.ndarray:
+        """Pays du siège de chaque symbole (panel ``country``, sinon ``reference.country_of``)."""
+        country = self._panels.get("country")
+        if isinstance(country, pd.Series):
+            ctry = country.reindex(self.symbols).astype(object)
+        else:
+            ctry = pd.Series(np.nan, index=self.symbols, dtype=object)
+        missing = ctry.isna()
+        if missing.any():
+            from brvm_alpha.reference import country_of
+
+            ctry[missing] = [country_of(str(s)) for s in self.symbols[missing.to_numpy()]]
+        return np.array([str(x).upper() for x in ctry], dtype=object)
+
+    def _shock_mask(self) -> np.ndarray:
+        """Séances de choc pays sévère (spéc. §4.3, §7.1.8) par (séance, titre)."""
+        T, N = len(self.dates), len(self.symbols)
+        mask = np.zeros((T, N), dtype=bool)
+        spec = self._country_shocks_raw
+        if spec is None or T == 0:
+            return mask
+        rows: list[tuple[str, pd.Timestamp, int]] = []
+        if isinstance(spec, pd.DataFrame):
+            if not {"country", "date"}.issubset(spec.columns):
+                raise KeyError("country_shocks : colonnes 'country' et 'date' attendues")
+            for rec in spec.to_dict("records"):
+                n = rec.get("sessions", 1)
+                n = 1 if n is None or (isinstance(n, float) and math.isnan(n)) else int(n)
+                rows.append((str(rec["country"]).upper(), pd.Timestamp(rec["date"]), n))
+        else:
+            for item in spec:
+                if len(item) not in (2, 3):
+                    raise ValueError("country_shocks : tuples (pays, date[, séances]) attendus")
+                n = int(item[2]) if len(item) == 3 else 1
+                rows.append((str(item[0]).upper(), pd.Timestamp(item[1]), n))
+        ctry = self._symbol_countries()
+        for country, when, n in rows:
+            if n < 1:
+                raise ValueError("country_shocks : au moins une séance de choc")
+            cols = ctry == country
+            start = int(self.dates.searchsorted(when, side="right"))  # séance suivant l'annonce
+            stop = min(T, start + n)
+            if start >= T or not cols.any():
+                continue
+            mask[start:stop, cols] = True
+            for t in range(start, stop):
+                for j in np.flatnonzero(cols):
+                    self._shock_events.append((self.dates[t], self.symbols[j], "choc_pays_plancher", -1, -1, 0))
+        return mask
+
+    def _quote_panels(self) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+        """Panels larges ``bid`` / ``ask`` (panels, sinon table longue ``order_book``)."""
+        bid, ask = self._panels.get("bid"), self._panels.get("ask")
+        if isinstance(bid, pd.DataFrame) and isinstance(ask, pd.DataFrame):
+            return bid, ask
+        book = self._order_book if self._order_book is not None else self._panels.get("order_book")
+        if isinstance(book, pd.DataFrame) and {"date", "symbol", "bid", "ask"}.issubset(book.columns):
+            b = book.loc[:, ["date", "symbol", "bid", "ask"]].copy()
+            b["date"] = pd.to_datetime(b["date"])
+            b = b.drop_duplicates(["date", "symbol"], keep="last")
+            return (
+                b.pivot(index="date", columns="symbol", values="bid").sort_index(),
+                b.pivot(index="date", columns="symbol", values="ask").sort_index(),
+            )
+        return None, None
+
+    def _half_spreads(self, px_exec: np.ndarray, af: np.ndarray) -> np.ndarray:
+        """Demi-spread par (séance, titre) : ``mult × max(mesure ou défaut ; pas / (2·cours))``.
+
+        La mesure (:func:`quoted_half_spread`, ou le panel ``half_spread``)
+        n'utilise que le carnet publié jusqu'à la veille ; le plancher est
+        calculé au cours d'exécution brut du jour (un pas de cotation est le
+        plus petit spread possible).
+        """
+        T, N = px_exec.shape
+        self.half_spread_measured_share = 0.0
+        mult = float(self.costs.half_spread_mult)
+        if mult <= 0.0:
+            return np.zeros((T, N))
+        base = self._wide("half_spread")
+        if base is None:
+            bid, ask = self._quote_panels()
+            if bid is not None and ask is not None:
+                hs = quoted_half_spread(
+                    bid, ask, window=self.spread_window, min_obs=self.spread_min_obs, lag=1
+                ).reindex(index=self.dates, columns=self.symbols)
+                base = hs.to_numpy(dtype=float)
+        measured = np.zeros((T, N), dtype=bool) if base is None else (np.isfinite(base) & (base >= 0))
+        if measured.size:
+            self.half_spread_measured_share = float(measured.mean())
+        b = np.full((T, N), float(self.costs.half_spread_default))
+        if base is not None:
+            b = np.where(measured, base, b)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            raw_px = px_exec / af
+            floor = np.where(np.isfinite(raw_px) & (raw_px > 0), tick_size(raw_px) / (2.0 * raw_px), 0.0)
+        return mult * np.maximum(b, np.nan_to_num(floor))
 
     def _dividend_array(self) -> np.ndarray | None:
         """``dividend_net`` aligné sur (séances, symboles), dates hors calendrier reportées."""
@@ -1568,7 +2037,11 @@ class Backtester:
             ctry = ctry.astype(object)
             ctry[missing] = [country_of(str(s)) for s in self.symbols[missing.to_numpy()]]
         table = self.taxes.dividend_withholding
-        return np.array([float(table.get(str(x), 0.0)) for x in ctry], dtype=float)
+        issuer = getattr(self.taxes, "issuer_withholding", {}) or {}
+        return np.array(
+            [float(issuer.get(str(s), table.get(str(x), 0.0))) for s, x in zip(self.symbols, ctry, strict=True)],
+            dtype=float,
+        )
 
     # -- exécution ------------------------------------------------------------
 
@@ -1576,12 +2049,19 @@ class Backtester:
         lot = self.lot_size
         return (np.floor(np.asarray(q, dtype=float) / lot + 1e-9) * lot).astype(np.int64)
 
-    def _buy_totals(self, q: np.ndarray, px: np.ndarray, vol: np.ndarray) -> np.ndarray:
+    def _buy_totals(self, q: np.ndarray, px: np.ndarray, vol: np.ndarray, hs: np.ndarray | None = None) -> np.ndarray:
         amount = q * px
         part = np.where(vol > 0, q / np.where(vol > 0, vol, 1.0), 0.0)
-        return amount + trade_cost(amount, part, self.costs)
+        return amount + trade_cost(amount, part, self.costs, hs)
 
-    def _affordable(self, desired: np.ndarray, px: np.ndarray, vol: np.ndarray, cash: float) -> np.ndarray:
+    def _affordable(
+        self,
+        desired: np.ndarray,
+        px: np.ndarray,
+        vol: np.ndarray,
+        cash: float,
+        hs: np.ndarray | None = None,
+    ) -> np.ndarray:
         """Réduction au prorata des achats pour respecter ``Σ coût total ≤ cash``.
 
         Cherche par dichotomie le plus grand ``f ∈ [0, 1]`` tel que
@@ -1590,16 +2070,30 @@ class Backtester:
         """
         if desired.size == 0:
             return desired
-        if self._buy_totals(desired, px, vol).sum() <= cash:
+        if self._buy_totals(desired, px, vol, hs).sum() <= cash:
             return desired
         lo, hi = 0.0, 1.0
         for _ in range(64):
             mid = 0.5 * (lo + hi)
-            if self._buy_totals(self._round_lot(desired * mid), px, vol).sum() <= cash:
+            if self._buy_totals(self._round_lot(desired * mid), px, vol, hs).sum() <= cash:
                 lo = mid
             else:
                 hi = mid
         return self._round_lot(desired * lo)
+
+    def _block_reason(self, t: int, j: int, side: str) -> str | None:
+        """Motif de non-exécution d'un ordre (``None`` si exécutable), par ordre de priorité."""
+        if self._suspended[t, j]:
+            return "suspended"
+        if self._shock[t, j] and (side == "sell" or self.country_shock_block_buys):
+            return "country_shock"
+        if not self._tradeable[t, j]:
+            return "not_traded"
+        if side == "sell" and self._lim_down[t, j]:
+            return "limit_down"
+        if side == "buy" and self._lim_up[t, j]:
+            return "limit_up"
+        return None
 
     # -- boucle principale ----------------------------------------------------
 
@@ -1652,61 +2146,129 @@ class Backtester:
         n_sim = i1 - i0 + 1
         equity = np.empty(n_sim)
         cash_hist = np.empty(n_sim)
+        recv_hist = np.zeros(n_sim)
+        susp_hist = np.zeros(n_sim)
         pos_hist = np.zeros((n_sim, N), dtype=np.int64)
         costs_daily = np.zeros(n_sim)
+        breakdown = np.zeros((n_sim, 5))  # commission, spread, impact, garde, tenue de compte
         div_daily = np.zeros(n_sim)
+        paid_daily = np.zeros(n_sim)
         tax_daily = np.zeros(n_sim)
         traded_value = np.zeros(n_sim)
 
         q = np.zeros(N, dtype=np.int64)
         avg_cost = np.zeros(N)
         cash = self.capital
-        payable = 0.0  # droits de garde dus non encore payés
+        payable = 0.0  # frais dus non encore payés (garde, tenue de compte)
+        sale_recv: list[tuple[int, float]] = []  # (séance de règlement, produit net)
+        div_recv: list[tuple[int, float]] = []  # (ligne de paiement, montant net)
         orders: list[_Order] = []
         pending: dict[int, _Order] = {}
         trades: list[tuple[Any, ...]] = []
         blocked: list[tuple[Any, ...]] = []
+        events: list[tuple[Any, ...]] = [e for e in self._shock_events if sim_dates[0] <= e[0] <= sim_dates[-1]]
         used_reb: list[pd.Timestamp] = []
         warned: set[str] = set()
 
         daily_cash_rate = (1.0 + ex.cash_rate_annual) ** (1.0 / self.periods_per_year) - 1.0
         custody_daily = float(costs.annual_custody) / self.periods_per_year
+        line_fee_daily = float(getattr(costs, "account_fee_per_line_fcfa", 0.0)) / self.periods_per_year
         cgt = float(self.taxes.capital_gains_tax)
         part_max = float(ex.max_volume_participation)
+        sess = self._sess
         prev_nav = self.capital
 
-        for k, t in enumerate(range(i0, i1 + 1)):
-            day = dates[t]
-            cost_today = 0.0
-            tax_today = 0.0
-            value_today = 0.0
-            # 1. rémunération du cash
-            if k > 0 and daily_cash_rate != 0.0:
-                cash *= 1.0 + daily_cash_rate
-            # 2. dividendes (positions d'ouverture)
-            if q.any():
-                d = float(q @ self._div[t])
-                if d > 0:
-                    cash += d
-                    div_daily[k] = d
-                tax_today += float(q @ self._div_tax[t])
-            # 3. droits de garde sur la valeur de la veille
-            if custody_daily > 0 and k > 0 and q.any():
-                fee = custody_daily * float(np.nansum(q * self._px_val[t - 1]))
-                payable += fee
-                cost_today += fee
+        def pay_fees() -> None:
+            nonlocal cash, payable
             if payable > 0:
                 paid = min(cash, payable)
                 cash -= paid
                 payable -= paid
 
-            # 4. exécution des ordres en attente
+        for k, t in enumerate(range(i0, i1 + 1)):
+            day = dates[t]
+            steps = float(self._steps[t]) if k > 0 else 1.0
+            cost_today = 0.0
+            tax_today = 0.0
+            value_today = 0.0
+            # 1. rémunération du cash
+            if k > 0 and daily_cash_rate != 0.0:
+                cash *= (1.0 + daily_cash_rate) ** steps
+            # 2. règlements : ventes réglées, dividendes payés
+            if sale_recv:
+                due = [a for s, a in sale_recv if s <= sess[t]]
+                if due:
+                    cash += float(sum(due))
+                    sale_recv = [(s, a) for s, a in sale_recv if s > sess[t]]
+            if div_recv:
+                due = [a for p, a in div_recv if p <= t]
+                if due:
+                    amt = float(sum(due))
+                    cash += amt
+                    paid_daily[k] += amt
+                    div_recv = [(p, a) for p, a in div_recv if p > t]
+            # 3. dividendes reconnus (positions d'ouverture du jour ex)
+            if q.any():
+                d_row = self._div[t]
+                d = float(q @ d_row)
+                if d > 0:
+                    div_daily[k] = d
+                    for j in np.flatnonzero((q != 0) & (d_row > 0)):
+                        amt = float(q[j] * d_row[j])
+                        p = int(self._div_pay_pos[t, j])
+                        if p <= t:
+                            cash += amt
+                            paid_daily[k] += amt
+                        else:
+                            div_recv.append((p, amt))
+                tax_today += float(q @ self._div_tax[t])
+            # 4. frais fixes sur les positions d'ouverture (prorata des séances)
+            if k > 0 and q.any():
+                if custody_daily > 0:
+                    fee = custody_daily * steps * float(np.nansum(q * self._px_val[t - 1]))
+                    payable += fee
+                    cost_today += fee
+                    breakdown[k, 3] += fee
+                if line_fee_daily > 0:
+                    fee = line_fee_daily * steps * int(np.count_nonzero(q > 0))
+                    payable += fee
+                    cost_today += fee
+                    breakdown[k, 4] += fee
+            pay_fees()
+
+            # 5. jour ex / jour de division : annulation et ressaisie le jour même
+            if pending and self.cancel_on_corporate_events:
+                for j, od in list(pending.items()):
+                    if od.entered_pos >= t:
+                        continue  # ordre saisi le jour même : non concerné
+                    is_ex = bool(self._ex_day[t, j])
+                    if not (is_ex or self._split_day[t, j]):
+                        continue
+                    od.status = "cancelled_ex" if is_ex else "cancelled_split"
+                    new = _Order(
+                        oid=len(orders),
+                        j=j,
+                        decision_pos=od.decision_pos,
+                        qty=od.remaining,
+                        remaining=od.remaining,
+                        ref_price=od.ref_price,
+                        entered_pos=t,
+                        parent=od.oid,
+                        root=od.root,
+                    )
+                    orders.append(new)
+                    pending[j] = new
+                    label = "annulation_ressaisie_jour_ex" if is_ex else "annulation_ressaisie_division"
+                    events.append((day, self.symbols[j], label, od.oid, new.oid, int(od.remaining)))
+
+            # 6. exécution des ordres en attente
             if pending:
                 px = self._px_exec[t]
                 vol = self._volume[t]
-                trad = self._tradeable[t]
+                hs = self._hs[t]
+                lag = int(self._lag_rows[t])
                 cap = self._round_lot(np.floor(part_max * vol + 1e-9))
-                # 4a. ventes
+                # 6a. ventes
                 for j, od in list(pending.items()):
                     if od.remaining >= 0:
                         continue
@@ -1714,11 +2276,9 @@ class Backtester:
                     if want <= 0:
                         od.remaining = 0
                         continue
-                    if not trad[j]:
-                        blocked.append((day, self.symbols[j], "sell", want, "not_traded"))
-                        continue
-                    if self._lim_down[t, j]:
-                        blocked.append((day, self.symbols[j], "sell", want, "limit_down"))
+                    why = self._block_reason(t, j, "sell")
+                    if why is not None:
+                        blocked.append((day, self.symbols[j], "sell", want, why))
                         continue
                     n = int(min(want, cap[j]))
                     if n < want:
@@ -1727,19 +2287,26 @@ class Backtester:
                         continue
                     amount = n * float(px[j])
                     part = n / float(vol[j])
-                    c_tot = float(trade_cost(amount, part, costs))
-                    impact = float(costs.impact_coef) * math.sqrt(part) * amount
+                    comm, spr, imp = (float(x) for x in _cost_parts(amount, part, costs, hs[j]))
+                    c_tot = comm + spr + imp
                     proceeds = amount - c_tot
-                    if cash + proceeds < 0.0:
-                        # vente « de poussière » dont les frais minimaux excèdent
-                        # le produit et que le cash ne peut couvrir : reportée
-                        blocked.append((day, self.symbols[j], "sell", n, "cash"))
-                        continue
                     gain = proceeds - avg_cost[j] * n
                     tax = cgt * max(gain, 0.0)
-                    cash += proceeds - tax
+                    net = proceeds - tax
+                    if lag == 0 or net <= 0.0:
+                        if cash + net < 0.0:
+                            # vente « de poussière » dont les frais minimaux excèdent
+                            # le produit et que le cash ne peut couvrir : reportée
+                            blocked.append((day, self.symbols[j], "sell", n, "cash"))
+                            continue
+                        cash += net
+                    else:
+                        sale_recv.append((int(sess[t]) + lag, net))
                     tax_today += tax
                     cost_today += c_tot
+                    breakdown[k, 0] += comm
+                    breakdown[k, 1] += spr
+                    breakdown[k, 2] += imp
                     value_today += amount
                     q[j] -= n
                     if q[j] == 0:
@@ -1757,28 +2324,26 @@ class Backtester:
                             reason,
                             dates[od.decision_pos],
                             part,
-                            impact,
+                            imp,
+                            float(hs[j]),
+                            spr,
+                            comm,
                         )
                     )
                     if od.first_fill is None:
                         od.first_fill = day
                     od.last_fill = day
-                if payable > 0:
-                    paid = min(cash, payable)
-                    cash -= paid
-                    payable -= paid
-                # 4b. achats
+                pay_fees()
+                # 6b. achats (cash réglé uniquement)
                 buy_js: list[int] = []
                 desired: list[int] = []
                 for j, od in pending.items():
                     if od.remaining <= 0:
                         continue
                     want = od.remaining
-                    if not trad[j]:
-                        blocked.append((day, self.symbols[j], "buy", want, "not_traded"))
-                        continue
-                    if self._lim_up[t, j]:
-                        blocked.append((day, self.symbols[j], "buy", want, "limit_up"))
+                    why = self._block_reason(t, j, "buy")
+                    if why is not None:
+                        blocked.append((day, self.symbols[j], "buy", want, why))
                         continue
                     n = int(min(want, cap[j]))
                     if n < want:
@@ -1789,7 +2354,7 @@ class Backtester:
                 if buy_js:
                     js = np.asarray(buy_js, dtype=np.int64)
                     want_q = np.asarray(desired, dtype=np.int64)
-                    got = self._affordable(want_q, px[js], vol[js], max(cash, 0.0))
+                    got = self._affordable(want_q, px[js], vol[js], max(cash, 0.0), hs[js])
                     for j_raw, w_n, n_raw in zip(js, want_q, got, strict=True):
                         j = int(j_raw)
                         n = int(n_raw)
@@ -1799,10 +2364,13 @@ class Backtester:
                             continue
                         amount = n * float(px[j])
                         part = n / float(vol[j])
-                        c_tot = float(trade_cost(amount, part, costs))
-                        impact = float(costs.impact_coef) * math.sqrt(part) * amount
+                        comm, spr, imp = (float(x) for x in _cost_parts(amount, part, costs, hs[j]))
+                        c_tot = comm + spr + imp
                         cash -= amount + c_tot
                         cost_today += c_tot
+                        breakdown[k, 0] += comm
+                        breakdown[k, 1] += spr
+                        breakdown[k, 2] += imp
                         value_today += amount
                         avg_cost[j] = (avg_cost[j] * q[j] + amount + c_tot) / (q[j] + n)
                         q[j] += n
@@ -1820,7 +2388,10 @@ class Backtester:
                                 reason,
                                 dates[od.decision_pos],
                                 part,
-                                impact,
+                                imp,
+                                float(hs[j]),
+                                spr,
+                                comm,
                             )
                         )
                         if od.first_fill is None:
@@ -1831,34 +2402,39 @@ class Backtester:
                         if cash < -1e-6 * max(1.0, self.capital):
                             raise AssertionError(f"cash négatif au {day.date()} : {cash}")
                         cash = 0.0
-                # 4c. ordres terminés / expirés
+                # 6c. ordres terminés / expirés (report maximal en séances)
                 for j in list(pending):
                     od = pending[j]
                     if od.remaining == 0:
                         od.status = "filled"
                         del pending[j]
                     elif not ex.carry_unfilled or (
-                        self.max_order_age is not None and t - od.decision_pos >= self.max_order_age
+                        self.max_order_age is not None and sess[t] - sess[od.decision_pos] >= self.max_order_age
                     ):
                         od.status = "expired"
                         del pending[j]
 
-            # 5. valorisation à la clôture
+            # 7. valorisation à la clôture
             px_val = self._px_val[t]
             held = q != 0
             stock_value = float(np.sum(q[held] * np.nan_to_num(px_val[held]))) if held.any() else 0.0
-            nav = cash - payable + stock_value
+            recv = float(sum(a for _, a in sale_recv)) + float(sum(a for _, a in div_recv))
+            nav = cash - payable + recv + stock_value
             equity[k] = nav
             cash_hist[k] = cash
+            recv_hist[k] = recv
             pos_hist[k] = q
             costs_daily[k] = cost_today
             tax_daily[k] = tax_today
             traded_value[k] = value_today / (2.0 * prev_nav) if prev_nav > 0 else 0.0
+            susp = held & self._suspended[t]
+            if susp.any():
+                susp_hist[k] = float(np.sum(q[susp] * np.nan_to_num(px_val[susp])))
 
-            # 6. décision
+            # 8. décision
             if t in reb_pos:
                 used_reb.append(day)
-                self._decide(fn, t, nav, cash, q, pending, orders, warned)
+                self._decide(fn, t, nav, cash, q, pending, orders, warned, receivables=recv)
             prev_nav = nav
 
         for od in pending.values():
@@ -1877,6 +2453,11 @@ class Backtester:
             orders,
             pd.DatetimeIndex(used_reb),
             i0,
+            paid=paid_daily,
+            receivables=recv_hist,
+            breakdown=breakdown,
+            events=events,
+            suspended=susp_hist,
         )
 
     @staticmethod
@@ -1933,6 +2514,8 @@ class Backtester:
         pending: dict[int, _Order],
         orders: list[_Order],
         warned: set[str],
+        *,
+        receivables: float = 0.0,
     ) -> None:
         """Appelle la stratégie sur la vue tronquée et remplace les ordres."""
         asof = self.dates[t]
@@ -1960,6 +2543,7 @@ class Backtester:
             weights=pd.Series(cur_w, index=self.symbols, name="weights"),
             pending=pend,
             rescale=rescale,
+            receivables=receivables,
         )
         w = self._parse_weights(fn(asof, view), warned)
         if w is None:
@@ -1978,13 +2562,16 @@ class Backtester:
             od.status = "replaced"
         pending.clear()
         for j in np.flatnonzero(delta):
+            oid = len(orders)
             od = _Order(
-                oid=len(orders),
+                oid=oid,
                 j=int(j),
                 decision_pos=t,
                 qty=int(delta[j]),
                 remaining=int(delta[j]),
                 ref_price=float(px[j]) if np.isfinite(px[j]) else math.nan,
+                entered_pos=t + 1,
+                root=oid,
             )
             orders.append(od)
             pending[int(j)] = od
@@ -2004,15 +2591,22 @@ class Backtester:
         orders: list[_Order],
         used_reb: pd.DatetimeIndex,
         i0: int,
+        *,
+        paid: np.ndarray | None = None,
+        receivables: np.ndarray | None = None,
+        breakdown: np.ndarray | None = None,
+        events: list[tuple[Any, ...]] | None = None,
+        suspended: np.ndarray | None = None,
     ) -> BacktestResult:
         idx = pd.DatetimeIndex(sim_dates, name="date")
+        n = len(idx)
         eq = pd.Series(equity, index=idx, name="equity")
         prev = np.concatenate([[self.capital], equity[:-1]])
         rets = pd.Series(
             np.where(prev > 0, equity / np.where(prev > 0, prev, 1.0) - 1.0, np.nan), index=idx, name="returns"
         )
         positions = pd.DataFrame(pos, index=idx, columns=self.symbols)
-        px_val = np.nan_to_num(self._px_val[i0 : i0 + len(idx)])
+        px_val = np.nan_to_num(self._px_val[i0 : i0 + n])
         with np.errstate(divide="ignore", invalid="ignore"):
             w = np.where(equity[:, None] > 0, pos * px_val / equity[:, None], 0.0)
         weights = pd.DataFrame(w, index=idx, columns=self.symbols)
@@ -2027,11 +2621,27 @@ class Backtester:
             "decision_date",
             "participation",
             "impact",
+            "half_spread",
+            "spread_cost",
+            "commission",
         ]
         tr = pd.DataFrame(trades, columns=trade_cols)
         if len(tr):
             tr["qty"] = tr["qty"].astype(np.int64)
         bl = pd.DataFrame(blocked, columns=["date", "symbol", "side", "qty", "reason"])
+        od_cols = [
+            "decision_date",
+            "symbol",
+            "qty",
+            "filled",
+            "ref_price",
+            "status",
+            "first_fill",
+            "last_fill",
+            "oid",
+            "parent",
+            "entered",
+        ]
         od = pd.DataFrame(
             [
                 {
@@ -2043,26 +2653,38 @@ class Backtester:
                     "status": o.status,
                     "first_fill": o.first_fill,
                     "last_fill": o.last_fill,
+                    "oid": o.oid,
+                    "parent": o.parent,
+                    "entered": self.dates[o.entered_pos] if 0 <= o.entered_pos < len(self.dates) else pd.NaT,
                 }
                 for o in orders
             ],
-            columns=["decision_date", "symbol", "qty", "filled", "ref_price", "status", "first_fill", "last_fill"],
+            columns=od_cols,
         )
         if len(od):
-            ref = od["ref_price"].fillna(0.0)
-            asked = float((od["qty"].abs() * ref).sum())
-            done = float((od["filled"].abs() * ref).sum())
+            # taux d'exécution : quantité demandée par l'ordre racine, exécutions
+            # cumulées sur toute la chaîne (ressaisies du jour ex comprises)
+            roots = [o for o in orders if o.parent is None]
+            asked = float(sum(abs(o.qty) * (o.ref_price if math.isfinite(o.ref_price) else 0.0) for o in roots))
+            done = float(
+                sum(abs(o.qty - o.remaining) * (o.ref_price if math.isfinite(o.ref_price) else 0.0) for o in orders)
+            )
             fill_rate = done / asked if asked > 0 else math.nan
         else:
             fill_rate = math.nan
         to_daily = pd.Series(turnover_daily, index=idx, name="turnover")
+        bd = np.zeros((n, 5)) if breakdown is None else breakdown
+        cost_breakdown = pd.DataFrame(
+            bd, index=idx, columns=["commission", "spread", "impact", "custody", "account_fees"]
+        )
+        ev = pd.DataFrame(events or [], columns=["date", "symbol", "event", "oid", "new_oid", "qty"])
         return BacktestResult(
             equity=eq,
             returns=rets,
             weights=weights,
             trades=tr,
             costs=pd.Series(np.cumsum(costs_daily), index=idx, name="costs"),
-            turnover=float(to_daily.mean() * self.periods_per_year) if len(idx) else math.nan,
+            turnover=float(to_daily.mean() * self.periods_per_year) if n else math.nan,
             fill_rate=fill_rate,
             cash=pd.Series(cash, index=idx, name="cash"),
             positions=positions,
@@ -2084,7 +2706,22 @@ class Backtester:
                 "adj_factor": self._has_adj_factor,
                 "n_dividend_dates_off_calendar": self.n_dividend_dates_off_calendar,
                 "n_price_jumps": len(self.price_jumps),
+                "settlement": self.settlement,
+                "max_order_age_sessions": self.max_order_age,
+                "dividend_payment_lag": self.dividend_payment_lag,
+                "band_rule": self.band_rule,
+                "half_spread_measured_share": self.half_spread_measured_share,
+                "suspended_risk_haircut": self.suspended_risk_haircut,
+                "n_country_shock_cells": int(self._shock.sum()),
+                "avertissement": "Performance simulée (hypothèses de coûts et d'exécution) : aucun gain n'est garanti.",
             },
+            dividends_paid=pd.Series(np.zeros(n) if paid is None else paid, index=idx, name="dividends_paid"),
+            receivables=pd.Series(np.zeros(n) if receivables is None else receivables, index=idx, name="receivables"),
+            cost_breakdown=cost_breakdown,
+            events=ev,
+            suspended_value=pd.Series(
+                np.zeros(n) if suspended is None else suspended, index=idx, name="suspended_value"
+            ),
         )
 
 
@@ -2182,6 +2819,30 @@ def _dividend_panel(table: pd.DataFrame | None, dates: pd.DatetimeIndex, symbols
     return pd.DataFrame(arr, index=dates, columns=symbols)
 
 
+def _payment_date_panel(table: pd.DataFrame, dates: pd.DatetimeIndex, symbols: pd.Index) -> pd.DataFrame:
+    """Panel large des dates de paiement, à la ligne de la date ex (même placement que :func:`_dividend_panel`).
+
+    Plusieurs événements le même jour : date de paiement la plus tardive.
+    Une date de paiement manquante reste ``NaT`` (le moteur applique alors
+    le délai par défaut).
+    """
+    out = pd.DataFrame(pd.NaT, index=dates, columns=symbols, dtype="datetime64[ns]")
+    if not len(table) or not len(dates):
+        return out
+    ev = table.loc[:, ["symbol", "ex_date", "amount", "payment_date"]].copy()
+    ev["ex_date"] = pd.to_datetime(ev["ex_date"], errors="coerce")
+    ev["payment_date"] = pd.to_datetime(ev["payment_date"], errors="coerce")
+    ev["amount"] = pd.to_numeric(ev["amount"], errors="coerce")
+    ok = ev["symbol"].isin(symbols) & ev["ex_date"].notna() & ev["payment_date"].notna() & (ev["amount"] > 0)
+    ev = ev[ok & (ev["ex_date"] >= dates[0]) & (ev["ex_date"] <= dates[-1])]
+    for rec in ev.itertuples(index=False):
+        row = dates[int(dates.searchsorted(pd.Timestamp(rec.ex_date), side="left"))]
+        cur = out.at[row, rec.symbol]
+        pay = pd.Timestamp(rec.payment_date)
+        out.at[row, rec.symbol] = pay if pd.isna(cur) else max(pd.Timestamp(cur), pay)
+    return out
+
+
 def _complete_dividend_table(table: pd.DataFrame) -> pd.DataFrame:
     """Table d'événements au format de ``store.detect_dividends`` (``first_seen`` = ``ex_date`` si absent)."""
     need = {"symbol", "ex_date", "amount"}
@@ -2246,6 +2907,7 @@ def panels_from_equities(
     corporate_actions: pd.DataFrame | None = None,
     adjust: bool = True,
     dividend_method: str = "detect",
+    order_book: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """Construit les panels larges du moteur à partir de ``equities.parquet``.
 
@@ -2298,14 +2960,20 @@ def panels_from_equities(
         chute de ``1 − 1/k``, p. ex. −83 % pour 1:6).
     dividend_method
         ``"detect"`` (défaut, date de détachement) ou ``"last_div"`` (repli).
+    order_book
+        Table ``order_book.parquet`` (``date, symbol, bid, ask``) : panels
+        ``bid`` et ``ask`` (unités brutes) pour le demi-spread propre au
+        titre (:func:`quoted_half_spread`).
 
     Returns
     -------
     dict
         ``close`` (ajusté), ``adj_factor`` (si ajusté), ``volume, value,
         status, prev_close, ref_price, change_pct, open, net_yield_pct, per,
-        last_div_net, last_div_date`` (bruts, si présents), ``dividend_net``,
-        ``country`` (``Series``) et ``sector`` (``Series``).
+        last_div_net, last_div_date, session_no`` (bruts, si présents),
+        ``dividend_net``, ``dividend_payment_date`` (si la table de
+        dividendes porte ``payment_date``), ``bid`` / ``ask`` (si
+        ``order_book``), ``country`` (``Series``) et ``sector`` (``Series``).
 
     References
     ----------
@@ -2339,6 +3007,7 @@ def panels_from_equities(
         "per",
         "last_div_net",
         "last_div_date",
+        "session_no",
     ]
     panels: dict[str, Any] = {}
     for c in cols:
@@ -2390,6 +3059,24 @@ def panels_from_equities(
         panels["dividend_net"] = _dividends_from_last_div(last_net, last_date)
     else:
         panels["dividend_net"] = pd.DataFrame(0.0, index=dates, columns=symbols)
+    if (
+        dividend_net is None
+        and div_table is not None
+        and "payment_date" in div_table.columns
+        and (dividends is not None or (infer_dividends and dividend_method == "detect"))
+    ):
+        panels["dividend_payment_date"] = _payment_date_panel(div_table, dates, symbols)
+    if order_book is not None:
+        need_ob = {"date", "symbol", "bid", "ask"}
+        if not need_ob.issubset(order_book.columns):
+            raise KeyError(f"order_book : colonnes manquantes {sorted(need_ob - set(order_book.columns))}")
+        ob = order_book.loc[:, ["date", "symbol", "bid", "ask"]].copy()
+        ob["date"] = pd.to_datetime(ob["date"])
+        ob = ob.drop_duplicates(["date", "symbol"], keep="last")
+        for side in ("bid", "ask"):
+            panels[side] = (
+                ob.pivot(index="date", columns="symbol", values=side).reindex(index=dates, columns=symbols).astype(float)
+            )
     from brvm_alpha.reference import countries
 
     panels["country"] = countries(list(symbols))
