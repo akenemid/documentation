@@ -108,10 +108,8 @@ def test_price_band_non_regression_values() -> None:
     # BOAN 2023 : planchers successifs
     lows = price_band_limits(np.array([5495.0, 5085.0, 4705.0]))[0]
     assert lows.tolist() == [5085.0, 4705.0, 4355.0]
-    try:
-        from brvm_alpha.quant.macro import price_band
-    except ImportError:  # pragma: no cover - module d'un autre agent
-        return
+    from brvm_alpha.quant.macro import price_band  # dépendance du projet : un échec doit être visible
+
     for r in (13.0, 22.0, 99.0, 100.0, 1003.0, 4385.0, 98900.0):
         assert price_band_limits(r) == pytest.approx(price_band(r))
 
@@ -496,12 +494,9 @@ def test_params_dict_and_strategy_config() -> None:
     assert bt.settlement == 2
     with pytest.raises(KeyError):
         Backtester(panels, ZERO, capital=1e6, params={"inconnu": 1})
-    try:
-        from brvm_alpha import settings
+    from brvm_alpha import settings  # dépendance du projet : un YAML invalide doit faire échouer le test
 
-        cfg = settings.load_strategy_config()
-    except Exception:  # pragma: no cover - fichier de paramètres d'un autre agent
-        return
+    cfg = settings.load_strategy_config()
     bt = Backtester(panels, ZERO, capital=1e6, params=cfg)
     assert bt.settlement == "brvm" and bt.max_order_age == 11 and bt.cancel_on_corporate_events
 

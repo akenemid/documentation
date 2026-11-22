@@ -60,6 +60,7 @@ from brvm_alpha.quant import stats
 __all__ = [
     "EXCLUDE_STATS_WINDOWS",
     "GLMSmoothing",
+    "MAX_WEEKLY_SESSIONS",
     "N_BOOT",
     "S0",
     "S1",
@@ -87,6 +88,9 @@ __all__ = [
     "psr",
     "relative_drawdown",
     "sharpe_triplet",
+    "first_investment_date",
+    "monthly_one_way_turnover",
+    "weekly_observation_mask",
     "weekly_returns",
 ]
 
@@ -136,12 +140,72 @@ def _as_series(x: Any, name: str = "returns") -> pd.Series:
     return s
 
 
+#: Séances au plus couvertes par une observation « hebdomadaire » (5 + une séance de marge
+#: pour un vendredi férié) : au-delà, l'observation couvre un trou de BOC (2021 : 7 à 49 jours).
+MAX_WEEKLY_SESSIONS = 6
+
+
+def weekly_observation_mask(
+    daily_index: pd.DatetimeIndex | Sequence[Any],
+    week_index: pd.DatetimeIndex | Sequence[Any],
+    *,
+    freq: str = WEEKLY_FREQ,
+    exclude_windows: Sequence[tuple[Any, Any]] | None = EXCLUDE_STATS_WINDOWS,
+    max_sessions: int | None = MAX_WEEKLY_SESSIONS,
+    session_no: pd.Series | None = None,
+) -> np.ndarray:
+    """Observations hebdomadaires utilisables pour les statistiques (§3.1.3, §8.1).
+
+    Une observation de la semaine ``w`` couvre les séances comprises entre la dernière
+    séance observée de la semaine précédente (exclue) et la dernière séance observée de
+    ``w`` (incluse). Elle est **retirée** si elle couvre plus de ``max_sessions`` séances
+    (trou de BOC : un BOC manquant n'est pas un jour férié ; comptage par ``session_no``
+    s'il est fourni, sinon en jours ouvrés) ou si la semaine recoupe une fenêtre de
+    ``exclude_windows`` (06/05 → 25/06/2021). Renvoie un masque booléen aligné sur
+    ``week_index`` (vrai = conservée).
+    """
+    days = pd.DatetimeIndex(pd.to_datetime(list(daily_index))).sort_values().unique()
+    weeks = pd.DatetimeIndex(pd.to_datetime(list(week_index)))
+    keep = np.ones(len(weeks), dtype=bool)
+    if not len(weeks):
+        return keep
+    if exclude_windows:
+        w_per = weeks.to_period(freq)
+        w_start = pd.DatetimeIndex(w_per.start_time.normalize())
+        w_end = pd.DatetimeIndex(w_per.end_time.normalize())
+        for a, b in exclude_windows:
+            keep &= ~((w_start <= pd.Timestamp(b)) & (w_end >= pd.Timestamp(a)))
+    if max_sessions is not None and len(days):
+        last = pd.Series(days, index=days).groupby(days.to_period(freq)).max()
+        labels = pd.DatetimeIndex(last.index.end_time.normalize())
+        last_d = pd.DatetimeIndex(last.to_numpy())
+        prev_d = last_d[:-1]
+        cur_d = last_d[1:]
+        if session_no is not None:
+            sn = pd.to_numeric(pd.Series(session_no), errors="coerce")
+            sn.index = pd.DatetimeIndex(pd.to_datetime(sn.index))
+            a = sn.reindex(prev_d).to_numpy(dtype=float)
+            b = sn.reindex(cur_d).to_numpy(dtype=float)
+            span = b - a
+            fallback = ~np.isfinite(span)
+            if fallback.any():
+                bd = np.busday_count(prev_d.to_numpy(dtype="datetime64[D]"), cur_d.to_numpy(dtype="datetime64[D]"))
+                span = np.where(fallback, bd, span)
+        else:
+            span = np.busday_count(prev_d.to_numpy(dtype="datetime64[D]"), cur_d.to_numpy(dtype="datetime64[D]"))
+        too_long = pd.Series(np.r_[False, np.asarray(span, dtype=float) > int(max_sessions)], index=labels)
+        keep &= ~too_long.reindex(weeks, fill_value=False).to_numpy(dtype=bool)
+    return keep
+
+
 def weekly_returns(
     daily: pd.Series | pd.DataFrame,
     *,
     freq: str = WEEKLY_FREQ,
-    exclude_windows: Sequence[tuple[Any, Any]] | None = None,
+    exclude_windows: Sequence[tuple[Any, Any]] | None = EXCLUDE_STATS_WINDOWS,
     min_days: int = 1,
+    max_sessions: int | None = MAX_WEEKLY_SESSIONS,
+    session_no: pd.Series | None = None,
 ) -> pd.Series | pd.DataFrame:
     """Rendements hebdomadaires composés : ``R_w = Π_{t ∈ w} (1 + r_t) − 1``.
 
@@ -157,9 +221,20 @@ def weekly_returns(
         colonnes), indexés par séance.
     exclude_windows
         Fenêtres ``(début, fin)`` dont les semaines qui les **recoupent** sont
-        retirées (p. ex. :data:`EXCLUDE_STATS_WINDOWS`, trou de 2021).
+        retirées. **Défaut** : :data:`EXCLUDE_STATS_WINDOWS` (06/05 → 25/06/2021,
+        §8.1 : rendements exclus des statistiques) ; ``None`` : aucune exclusion.
     min_days
         Nombre minimal de séances observées dans la semaine.
+    max_sessions
+        Une semaine dont l'observation couvre plus de ``max_sessions`` séances
+        (trou de BOC : 7 à 18 séances de juillet à novembre 2021) est retirée,
+        comme les rendements ``multi_session`` le sont des statistiques de signaux
+        (:func:`weekly_observation_mask`) ; ``None`` : aucun contrôle.
+    session_no
+        Numéro global de séance par date (calendrier des BOC) pour un comptage
+        exact ; à défaut, jours ouvrés.
+
+    Les semaines retirées sont listées dans ``attrs["weeks_dropped"]``.
     """
     frame = daily.to_frame() if isinstance(daily, pd.Series) else daily
     if not isinstance(frame.index, pd.DatetimeIndex):
@@ -174,19 +249,20 @@ def weekly_returns(
     growth = growth.where(counts >= int(min_days))
     out = growth.set_axis(pd.DatetimeIndex(growth.index.end_time.normalize()), axis=0)
     out.index.name = "week"
-    if exclude_windows:
-        week_start = pd.DatetimeIndex(growth.index.start_time.normalize())
-        week_end = out.index
-        drop = np.zeros(len(out), dtype=bool)
-        for a, b in exclude_windows:
-            a_ts, b_ts = pd.Timestamp(a), pd.Timestamp(b)
-            drop |= (week_start <= b_ts) & (week_end >= a_ts)
-        out = out.loc[~drop]
+    observed = frame.index[frame.notna().any(axis=1).to_numpy()]
+    keep = weekly_observation_mask(observed, out.index, freq=freq, exclude_windows=exclude_windows,
+                                   max_sessions=max_sessions, session_no=session_no)
+    dropped = [d for d, k, has in zip(out.index, keep, out.notna().any(axis=1).to_numpy(), strict=True)
+               if not k and has]
+    out = out.loc[keep]
     if isinstance(daily, pd.Series):
         res = out.iloc[:, 0].dropna()
         res.name = daily.name
+        res.attrs["weeks_dropped"] = dropped
         return res
-    return out.dropna(how="all")
+    res_df = out.dropna(how="all")
+    res_df.attrs["weeks_dropped"] = dropped
+    return res_df
 
 
 def active_returns(strategy: pd.Series, benchmark: pd.Series) -> pd.Series:
@@ -490,9 +566,12 @@ def bootstrap_ci(
     else:
         fn = stat
     point = float(fn(x)) if x.size >= 2 else math.nan
-    if x.size < 2:
+    if x.size < max(2, 2.0 * float(mean_block)):
+        # Moins de deux blocs moyens : un bootstrap par blocs rééchantillonne quasiment la même
+        # série (intervalle de largeur nulle trompeur) ; aucun intervalle n'est rendu.
         return {"point": point, "lower": math.nan, "upper": math.nan, "n_boot": int(n_boot),
-                "mean_block": float(mean_block), "alpha": float(alpha), "n_valid": 0}
+                "mean_block": float(mean_block), "alpha": float(alpha), "n_valid": 0,
+                "note": f"{x.size} observation(s) < 2 × bloc moyen ({2.0 * float(mean_block):g}) : non évaluable"}
     draws = stats.stationary_bootstrap(x, fn, n_boot=int(n_boot), mean_block=float(mean_block), seed=seed)
     draws = np.asarray(draws, dtype=float).ravel()
     ok = draws[np.isfinite(draws)]
@@ -640,3 +719,47 @@ def family_pbo(
     frame = weekly_active.dropna(how="any")
     return stats.pbo_cscv(frame, n_splits=n_splits, metric=_lo_metric(lo_q, periods_per_year),
                           periods_per_year=periods_per_year)
+
+
+# ---------------------------------------------------------------------------
+# Rotation mensuelle et début d'investissement (entrées de ``evaluate_status``)
+# ---------------------------------------------------------------------------
+
+
+def monthly_one_way_turnover(result: Any, *, skip_first_month: bool = True) -> float:
+    """Rotation moyenne **mensuelle aller** (critère C5 : ≤ 20 %/mois).
+
+    ``result`` : ``BacktestResult`` (``turnover_daily`` = ``Σ|V| / (2 · NAV_{t−1})`` par
+    séance) ou ``Series`` de rotation quotidienne aller. Rotation d'un mois = somme des
+    rotations quotidiennes du mois civil ; on renvoie la moyenne sur les mois.
+    ``skip_first_month`` : le premier mois avec des transactions (constitution initiale
+    du portefeuille depuis les liquidités, ≈ 49 % aller) est exclu. Attention :
+    ``BacktestResult.turnover`` est, lui, **annualisé** (``252 × moyenne quotidienne``).
+    """
+    daily = getattr(result, "turnover_daily", result)
+    s = pd.Series(daily, dtype=float).dropna()
+    if not len(s):
+        return math.nan
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.DatetimeIndex(pd.to_datetime(s.index))
+    monthly = s.groupby(s.index.to_period("M")).sum()
+    if skip_first_month:
+        active = monthly[monthly > 0]
+        if len(active):
+            monthly = monthly[monthly.index > active.index[0]]
+    return float(monthly.mean()) if len(monthly) else math.nan
+
+
+def first_investment_date(result: Any, min_exposure: float = 0.0) -> pd.Timestamp | None:
+    """Première séance où l'exposition actions dépasse ``min_exposure``.
+
+    ``result`` : ``BacktestResult`` (exposition = ``weights.sum(axis=1)``) ou ``Series``
+    d'exposition (fraction de la NAV investie). ``None`` si la stratégie ne s'investit
+    jamais. Sert à faire commencer la fenêtre d'évaluation (stratégie ET indice) à la
+    première décision investissable (période de démarrage en liquidités, §8.3).
+    """
+    w = getattr(result, "weights", None)
+    expo = w.sum(axis=1) if isinstance(w, pd.DataFrame) else pd.Series(result, dtype=float)
+    expo = expo.astype(float)
+    hit = expo[expo > float(min_exposure)]
+    return pd.Timestamp(hit.index[0]) if len(hit) else None

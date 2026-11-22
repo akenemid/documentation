@@ -1547,6 +1547,16 @@ _INVARIANT_TOL = 1e-9  # aucun plafond violé de plus de 1e-9
 # ---------------------------------------------------------------------------
 
 
+#: Clés de la section ``portfolio`` du YAML (§12.1) ; celles qui ne sont pas lues ici
+#: (``long_only``, ``rebalance``, ``no_trade_band``, ``max_turnover_per_rebalance``) le sont
+#: par le moteur ou la stratégie.
+_YAML_PORTFOLIO_KEYS = frozenset({
+    "long_only", "gross_equity", "n_holdings", "band", "weighting", "max_weight", "min_weight",
+    "country_multiplier", "sector_cap", "country_cap_non_ci", "aes_cap_multiple", "liquidity", "rebalance",
+    "no_trade_band", "max_turnover_per_rebalance", "kelly",
+})
+
+
 def portfolio_params_from_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
     """Paramètres de construction lus dans le dict de ``configs/strategy_v1.yaml``.
 
@@ -1561,6 +1571,12 @@ def portfolio_params_from_config(cfg: Mapping[str, Any]) -> dict[str, Any]:
     def get(dotted: str) -> Any:
         return st.get_param(cfg, dotted, None)
 
+    section = cfg.get("portfolio") if isinstance(cfg, Mapping) else None
+    if isinstance(section, Mapping):
+        bad = sorted(set(map(str, section)) - _YAML_PORTFOLIO_KEYS)
+        if bad:
+            # une clé inconnue serait ignorée en silence (faute de frappe : « max_wieght »)
+            raise ValueError("clés inconnues dans la section portfolio : " + ", ".join(bad))
     out: dict[str, Any] = {}
     simple = {
         "capital": "capital_fcfa_reference",
@@ -1763,7 +1779,13 @@ def n_holdings(
     les éligibles ; la fonction renvoie alors ``N`` (voir :func:`is_fallback`). ``round``
     est l'arrondi au plus proche (``N/3`` n'a jamais de partie fractionnaire 0,5).
     """
-    n = int(n_eligible)
+    try:
+        x = float(n_eligible)
+    except (TypeError, ValueError):
+        raise ValueError(f"n_holdings : nombre de titres éligibles non numérique ({n_eligible!r})") from None
+    if not math.isfinite(x) or x < 0:
+        raise ValueError(f"n_holdings : le nombre de titres éligibles doit être un entier fini ≥ 0 (lu : {n_eligible!r})")
+    n = int(x)
     if n <= 0:
         return 0
     if is_fallback(n, min_eligible):
@@ -3318,6 +3340,13 @@ def target_portfolio(
     # 1-2. Nombre de lignes et sélection --------------------------------------
     ranks = score_ranks(sc, elig)
     mode = "vide" if n_elig == 0 else ("repli" if is_fallback(n_elig, int(p["min_eligible"])) else "selection")
+    # Aucun score fini parmi les éligibles : une « sélection » se ferait par ordre alphabétique
+    # (tri de départage). Panier équipondéré des éligibles, comme le repli U10, et signalé.
+    no_finite_score = bool(elig) and not bool(np.isfinite(sc.reindex(elig).to_numpy(dtype=float)).any())
+    if mode == "selection" and no_finite_score:
+        mode = "repli"
+        messages.append(f"aucun score fini parmi les {n_elig} titres éligibles : aucune sélection possible, panier "
+                        "équipondéré des éligibles (mode repli)")
     band: BandSelection | None = None
     if mode == "vide":
         selected: list[str] = []

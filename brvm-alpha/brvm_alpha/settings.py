@@ -52,7 +52,9 @@ __all__ = [
     "mdv_floor_params",
     "n_holdings_params",
     "one_way_cost_estimate",
+    "OPEN_OVERRIDE_SECTIONS",
     "sector_cap_params",
+    "unknown_override_keys",
     "validate_strategy_config",
 ]
 
@@ -194,6 +196,42 @@ def get_param(cfg: Mapping[str, Any], dotted: str, default: Any = _MISSING) -> A
                 raise KeyError(dotted)
             return default
     return node
+
+
+#: Sections où une surcharge peut AJOUTER des clés absentes du YAML de référence (dictionnaires
+#: ouverts) : nouveaux symboles, pays, scénarios de coûts ; section ``engine`` (clés plates du
+#: moteur, contrôlées par ``backtest.engine``).
+OPEN_OVERRIDE_SECTIONS: tuple[str, ...] = (
+    "data.eps_override",
+    "portfolio.country_multiplier",
+    "costs.scenarios",
+    "engine",
+)
+
+#: Signaux admis comme nouvelles clés des pondérations ``composite.<variante>``.
+KNOWN_SIGNALS: frozenset[str] = frozenset(
+    {"ep", "dy", "mom6_1", "lowvol", "quality_proxy", "mom12_1", "mom3_1", "mom6_0", "mom12_7", "amihud"})
+
+
+def unknown_override_keys(base: Mapping[str, Any], extra: Mapping[str, Any], prefix: str = "") -> list[str]:
+    """Chemins pointés de ``extra`` absents de ``base`` (fautes de frappe dans une surcharge).
+
+    Les sections de :data:`OPEN_OVERRIDE_SECTIONS` acceptent de nouvelles clés ; les poids
+    ``composite.<variante>`` acceptent les signaux de :data:`KNOWN_SIGNALS`.
+    """
+    out: list[str] = []
+    for k, v in extra.items():
+        path = f"{prefix}{k}"
+        if any(path == o or path.startswith(o + ".") for o in OPEN_OVERRIDE_SECTIONS):
+            continue
+        if not isinstance(base, Mapping) or k not in base:
+            if prefix.startswith("composite.") and prefix.count(".") == 2 and str(k) in KNOWN_SIGNALS:
+                continue
+            out.append(path)
+            continue
+        if isinstance(v, Mapping) and isinstance(base[k], Mapping):
+            out += unknown_override_keys(base[k], v, path + ".")
+    return out
 
 
 def _deep_merge(base: dict, extra: Mapping) -> dict:
@@ -374,6 +412,12 @@ def load_strategy_config(path: str | Path | None = None, overrides: Mapping[str,
     ``overrides`` est un dictionnaire imbriqué fusionné en profondeur (ex.
     ``{"portfolio": {"max_weight": 0.08}}``) : toute modification d'un paramètre FIGÉ
     doit être comptée comme un essai de plus dans le registre (spéc. §8.2).
+
+    Une clé de surcharge **absente** du YAML de référence (faute de frappe :
+    ``max_wieght``, ``portfolo``, ``carry_unfilled_max_session``…) lève
+    :class:`StrategyConfigError` : elle serait sinon ignorée en silence tout en changeant
+    l'empreinte de configuration (un essai fantôme gonflerait N et fausserait le DSR).
+    Sections ouvertes : :data:`OPEN_OVERRIDE_SECTIONS`.
     """
     p = Path(path) if path is not None else DEFAULT_STRATEGY_PATH
     if not p.exists():
@@ -383,6 +427,12 @@ def load_strategy_config(path: str | Path | None = None, overrides: Mapping[str,
     if not isinstance(cfg, dict):
         raise StrategyConfigError(f"{p} ne contient pas un dictionnaire YAML")
     if overrides:
+        if not isinstance(overrides, Mapping):
+            raise StrategyConfigError("overrides doit être un dictionnaire imbriqué")
+        bad = unknown_override_keys(cfg, overrides)
+        if bad:
+            raise StrategyConfigError(
+                "clé(s) de surcharge inconnue(s) (absentes de configs/strategy_v1.yaml) : " + ", ".join(bad))
         cfg = _deep_merge(cfg, overrides)
     return validate_strategy_config(cfg)
 

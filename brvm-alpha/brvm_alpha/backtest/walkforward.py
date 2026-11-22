@@ -74,6 +74,7 @@ __all__ = [
     "CPCVResult",
     "DEFAULT_REGISTRY_PATH",
     "N_TRIALS_START",
+    "PromotionReport",
     "PurgedSplit",
     "REGISTRY_COLUMNS",
     "STATUS_THRESHOLDS",
@@ -98,6 +99,7 @@ __all__ = [
     "purged_kfold",
     "run_param_grid",
     "status_thresholds",
+    "variant_promotion",
     "walk_forward",
     "walk_forward_windows",
 ]
@@ -546,14 +548,29 @@ def _split_groups(cal: pd.DatetimeIndex, n_groups: int) -> list[np.ndarray]:
     return [np.asarray(g, dtype=np.int64) for g in np.array_split(np.arange(len(cal)), n_groups)]
 
 
-def purged_kfold(dates: Any, n_splits: int = 10, purge: int = 21, embargo: int = 21) -> list[PurgedSplit]:
+def _check_train(splits: Sequence[PurgedSplit], min_train: int, what: str) -> None:
+    """Refuse un découpage dont le jeu d'apprentissage est vide ou trop court."""
+    if min_train < 1:
+        raise ValueError("min_train doit être >= 1")
+    short = [sp.split for sp in splits if len(sp.train) < int(min_train)]
+    if short:
+        sizes = sorted({len(sp.train) for sp in splits if sp.split in short})
+        raise ValueError(
+            f"{what} : {len(short)} découpage(s) avec moins de {int(min_train)} séance(s) d'apprentissage "
+            f"(tailles {sizes[:5]}) ; calendrier trop court pour la purge et l'embargo")
+
+
+def purged_kfold(
+    dates: Any, n_splits: int = 10, purge: int = 21, embargo: int = 21, *, min_train: int = 1
+) -> list[PurgedSplit]:
     """K-fold chronologique **purgé** avec **embargo** (López de Prado, 2018, ch. 7).
 
     Le calendrier est découpé en ``n_splits`` blocs contigus ; chaque bloc
     sert une fois de test. Sont retirées de l'apprentissage les ``purge``
     séances qui précèdent le test (étiquette à ``h = purge`` séances : 21
     pour un signal mensuel) et les ``embargo`` séances qui le suivent (21,
-    mémoire mesurée de la BRVM, revue 04 §6.3).
+    mémoire mesurée de la BRVM, revue 04 §6.3). ``ValueError`` si un découpage a moins
+    de ``min_train`` séances d'apprentissage.
     """
     cal = _as_calendar(dates)
     _check_cv_args(len(cal), n_splits, purge, embargo)
@@ -563,6 +580,7 @@ def purged_kfold(dates: Any, n_splits: int = 10, purge: int = 21, embargo: int =
         out.append(
             PurgedSplit(split=i, test_groups=(i,), train=cal[tr], test=cal[g], purged=cal[pu], embargoed=cal[em])
         )
+    _check_train(out, min_train, "purged_kfold")
     return out
 
 
@@ -608,13 +626,16 @@ class CPCVResult:
         return pd.concat(cols, axis=1)
 
 
-def cpcv(dates: Any, n_groups: int = 10, k_test: int = 2, purge: int = 21, embargo: int = 21) -> CPCVResult:
+def cpcv(
+    dates: Any, n_groups: int = 10, k_test: int = 2, purge: int = 21, embargo: int = 21, *, min_train: int = 1
+) -> CPCVResult:
     """CPCV (López de Prado, 2018, ch. 12) : ``C(N, k)`` découpages, ``C(N − 1, k − 1)`` chemins.
 
     Paramètres de la spécification §8.2 : 10 groupes, ``k = 2`` (45
     découpages, 9 chemins), purge 21 séances, embargo 21 séances. Deux
     groupes de test adjacents forment un seul bloc (purge avant, embargo
-    après).
+    après). ``ValueError`` si un découpage a moins de ``min_train`` séances
+    d'apprentissage (calendrier trop court pour la purge et l'embargo).
     """
     cal = _as_calendar(dates)
     _check_cv_args(len(cal), n_groups, purge, embargo)
@@ -635,6 +656,7 @@ def cpcv(dates: Any, n_groups: int = 10, k_test: int = 2, purge: int = 21, embar
                 embargoed=cal[em],
             )
         )
+    _check_train(splits, min_train, "cpcv")
     n_paths = math.comb(n_groups - 1, k_test - 1)
     by_group = {g: [s.split for s in splits if g in s.test_groups] for g in range(n_groups)}
     paths = [{g: by_group[g][p] for g in range(n_groups)} for p in range(n_paths)]
@@ -1143,6 +1165,14 @@ STATUS_THRESHOLDS: dict[str, float] = {
     "ic_min_months": 36,
     "lo_naive_ratio_min": 0.6,
     "s2_min_weeks": 52,
+    # G7 sur S2 : IC mensuels PROPRES au suivi réel. Lecture prudente du §8.3 (« sur S1 ET sur S2,
+    # G1-G9 verts », G7 = « au moins 36 mois ») : 36 mois d'IC de S2, donc PROMU impossible avant
+    # 36 mois de suivi réel, alors que le §8.3 parle de 12 mois. Incompatibilité à trancher par
+    # addendum (abaisser cette valeur la tranche explicitement).
+    "s2_ic_min_months": 36,
+    # Longueur minimale d'un échantillon évalué (critères C1-C7 et G1-G9) : 52 semaines par sous-période.
+    "min_weeks_per_subperiod": 52,
+    "min_coverage": 0.95,
     "n_trials_start": N_TRIALS_START,
 }
 
@@ -1280,8 +1310,13 @@ def _g_filters(
     seed: int,
     lo_q: int,
     mesures: dict[str, Any],
+    ic_min_months: float | None = None,
 ) -> list[dict[str, Any]]:
-    """Filtres G1-G9 de la revue 04 §17.1 sur une série de rendements actifs hebdomadaires."""
+    """Filtres G1-G9 de la revue 04 §17.1 sur une série de rendements actifs hebdomadaires.
+
+    Toutes les entrées (IC mensuels, PBO et pente) doivent être PROPRES à l'échantillon
+    évalué : pour le suivi réel S2, celles de S1 ne sont jamais réutilisées.
+    """
     from brvm_alpha.backtest import metrics as mt
     from brvm_alpha.quant import stats
 
@@ -1330,8 +1365,9 @@ def _g_filters(
     elif _finite(pbo) and float(pbo) > th["pbo_max_promoted"]:
         g4 = False
     g7 = None
+    min_months = th["ic_min_months"] if ic_min_months is None else float(ic_min_months)
     if ic_monthly is not None:
-        g7 = bool(ic_n >= th["ic_min_months"] and _finite(ic_t) and ic_t >= min_t)
+        g7 = bool(ic_n >= min_months and _finite(ic_t) and ic_t >= min_t)
     g8 = None if (not signs or not all(_finite(x) for x in signs)) else bool(all(x > 0 for x in signs))
     g9 = None if not (_finite(lo) and _finite(naive)) else bool(lo >= th["lo_naive_ratio_min"] * naive)
     rows += [
@@ -1352,8 +1388,8 @@ def _g_filters(
          "valeur": boot["lower"], "seuil": "> 0", "verifie": _check(boot["lower"], lambda v: v > 0),
          "note": f"n_boot = {boot['n_boot']}, blocs de {boot['mean_block']:g} semaines"},
         {"code": "G7", "libelle": "t de Newey-West de l'IC mensuel sur au moins 36 mois", "valeur": ic_t,
-         "seuil": f"t ≥ {min_t} et ≥ {int(th['ic_min_months'])} mois", "verifie": g7,
-         "note": "" if ic_monthly is not None else "série d'IC non fournie"},
+         "seuil": f"t ≥ {min_t} et ≥ {int(min_months)} mois", "verifie": g7,
+         "note": (f"{ic_n} mois d'IC" if ic_monthly is not None else "série d'IC non fournie")},
         {"code": "G8", "libelle": "stabilité du signe de l'alpha (chaque sous-période)", "valeur": signs,
          "seuil": "moyenne active > 0 partout", "verifie": g8, "note": ""},
         {"code": "G9", "libelle": "Sharpe de Lo (q = 4) ≥ 0,6 × Sharpe naïf", "valeur": lo,
@@ -1363,6 +1399,27 @@ def _g_filters(
     for r in rows:
         r["groupe"] = group
     return rows
+
+
+def _prep_weekly(x: Any, name: str, windows: Sequence[tuple[Any, Any]] | None, avert: list[str]) -> pd.Series:
+    """Série hebdomadaire triée : NaN retirés (signalés), semaines des fenêtres exclues retirées (signalées)."""
+    from brvm_alpha.backtest import metrics as mt
+
+    raw = pd.Series(x, dtype=float).sort_index()
+    if not isinstance(raw.index, pd.DatetimeIndex):
+        raw.index = pd.DatetimeIndex(pd.to_datetime(raw.index))
+    n_nan = int(raw.isna().sum())
+    if n_nan:
+        avert.append(f"{name} : {n_nan} semaine(s) NaN retirée(s) (série tronquée ? à vérifier avant toute "
+                     "conclusion)")
+    out = raw.dropna()
+    if windows and len(out):
+        keep = mt.weekly_observation_mask(out.index, out.index, exclude_windows=windows, max_sessions=None)
+        if (~keep).any():
+            avert.append(f"{name} : {int((~keep).sum())} semaine(s) dans une fenêtre exclue des statistiques "
+                         "(§8.1, 06/05 → 25/06/2021) retirée(s)")
+            out = out[keep]
+    return out
 
 
 def evaluate_status(
@@ -1382,11 +1439,19 @@ def evaluate_status(
     ic_monthly: pd.Series | None = None,
     new_signal: bool = False,
     s2_active_weekly_returns: pd.Series | None = None,
+    s2_ic_monthly: pd.Series | None = None,
+    s2_pbo: float | None = None,
+    s2_pbo_slope: float | None = None,
     params: Mapping[str, Any] | None = None,
     n_boot: int = 5000,
     mean_block: float = 8,
     seed: int = 0,
     lo_q: int = 4,
+    start: Any = None,
+    result: Any = None,
+    exposure: pd.Series | None = None,
+    expected_period: tuple[Any, Any] | None = None,
+    exclude_windows: Sequence[tuple[Any, Any]] | None = None,
 ) -> StatusReport:
     """Statut REJETÉ / CANDIDAT / PROMU selon les critères **exacts** du §8.3.
 
@@ -1397,11 +1462,34 @@ def evaluate_status(
     * ``benchmark`` : rendements hebdomadaires du TR (la stratégie vaut
       ``r_w = a_w + b_w``) ;
     * ``subperiods`` : les deux sous-périodes (défaut : celles de S1) ;
-    * ``turnover`` : rotation moyenne **mensuelle aller** (fraction) ;
+    * ``turnover`` : rotation moyenne **mensuelle aller** (fraction) ; à défaut,
+      calculée depuis ``result`` (``metrics.monthly_one_way_turnover``). Attention :
+      ``BacktestResult.turnover`` est **annualisé** ; une valeur > 1 est signalée ;
     * ``pbo`` : PBO de la famille des 8 variantes (:func:`metrics.family_pbo`),
       ``pbo_slope`` sa pente de dégradation ;
     * ``cvar_ratio`` : CVaR 95 % à 5 séances stratégie / TR
-      (:func:`metrics.cvar_ratio`).
+      (:func:`metrics.cvar_ratio`) ;
+    * ``s2_active_weekly_returns``, ``s2_ic_monthly``, ``s2_pbo``, ``s2_pbo_slope`` :
+      entrées PROPRES au suivi réel S2 (jamais celles de S1). Sans IC de S2, le G7 de S2
+      n'est pas évaluable et le statut PROMU est impossible. G7 sur S2 exige
+      ``s2_ic_min_months`` mois d'IC (36 par défaut, lecture prudente ; le §8.3 ne
+      demande que 12 mois de S2 : incompatibilité à trancher par addendum) ;
+    * ``start`` : début COMMUN de la fenêtre d'évaluation (stratégie ET indice) ;
+      ``"first_investment"`` : première séance investie de ``result`` / ``exposure``
+      (:func:`metrics.first_investment_date`). Sans ``start``, une période de démarrage
+      en liquidités de plus de 4 semaines (``result`` ou ``exposure`` fournis) est
+      signalée : elle crée un rendement actif mécanique sans lien avec l'alpha. Le choix
+      de l'option (fenêtre commune, ou détention du TR pendant le démarrage) doit être
+      pré-enregistré avant le test S1 ;
+    * ``expected_period`` : période attendue (S1 en validation) ; si la couverture des
+      semaines est inférieure à ``min_coverage`` (95 %), les critères C et G valent
+      ``None`` (statut au mieux INDÉTERMINÉ) ;
+    * ``exclude_windows`` : semaines exclues des statistiques (défaut :
+      ``metrics.EXCLUDE_STATS_WINDOWS``, §8.1) retirées de toutes les entrées.
+
+    Longueur minimale : une sous-période de moins de ``min_weeks_per_subperiod`` semaines
+    (52) rend les critères C1-C7 et G1-G9 non évaluables (``None``) : 4 semaines ne
+    suffisent jamais à un statut CANDIDAT.
 
     Définitions : rendement actif net annualisé = ``CAGR(r) − CAGR(b)`` ; IR
     = ``√52 · moyenne(a) / écart-type(a)`` ; drawdown relatif = drawdown de
@@ -1419,7 +1507,7 @@ def evaluate_status(
       par mois ; (C6) PBO ≤ 0,5 ; (C7) CVaR ≤ 1,25 × celle du TR ;
     * **PROMU** si, en plus, G1-G9 (revue 04 §17.1) sont tous verts sur S1
       **et** sur au moins 12 mois (52 semaines) de suivi réel S2
-      (``s2_active_weekly_returns``).
+      (``s2_active_weekly_returns``), avec les entrées propres à S2.
 
     Un critère non évaluable (donnée manquante) vaut ``None`` : il ne
     déclenche pas de rejet mais empêche le statut candidat ou promu. Le cas
@@ -1430,20 +1518,70 @@ def evaluate_status(
     from brvm_alpha.backtest import metrics as mt
 
     th = status_thresholds(params)
-    b = pd.Series(benchmark, dtype=float).dropna().sort_index()
-    a_c = pd.Series(active_weekly_returns_central, dtype=float).dropna().sort_index()
+    avert: list[str] = []
+    windows = mt.EXCLUDE_STATS_WINDOWS if exclude_windows is None else exclude_windows
+    expo = exposure
+    if expo is None and result is not None and isinstance(getattr(result, "weights", None), pd.DataFrame):
+        expo = result.weights.sum(axis=1)
+    start_ts: pd.Timestamp | None = None
+    if isinstance(start, str) and start == "first_investment":
+        start_ts = mt.first_investment_date(expo) if expo is not None else None
+        if start_ts is None:
+            avert.append("start='first_investment' : exposition inconnue ou nulle, fenêtre non modifiée")
+    elif start is not None:
+        start_ts = pd.Timestamp(start)
+    b = _prep_weekly(benchmark, "indice", windows, avert)
+    a_c = _prep_weekly(active_weekly_returns_central, "rendements actifs (central)", windows, avert)
+    if start_ts is not None:
+        # fenêtre COMMUNE : la stratégie et le TR commencent à la même date
+        b = b[b.index >= start_ts]
+        a_c = a_c[a_c.index >= start_ts]
+    elif expo is not None:
+        first = mt.first_investment_date(expo)
+        e_start = pd.Series(expo, dtype=float).index.min() if len(pd.Series(expo, dtype=float)) else None
+        if first is not None and e_start is not None and (first - pd.Timestamp(e_start)).days > 28:
+            avert.append(f"période de démarrage en liquidités du {pd.Timestamp(e_start).date()} au {first.date()} : "
+                         "rendement actif mécanique contre le TR, sans lien avec l'alpha ; fixer start= "
+                         "(première décision investissable) ou une règle de démarrage pré-enregistrée")
     a_c = a_c.loc[a_c.index.isin(b.index)]
     b_c = b.reindex(a_c.index)
     r_c = a_c + b_c
     periods: Sequence[tuple[Any, Any]] = list(mt.S1_SUBPERIODS) if subperiods is None else subperiods
     subperiods = [(pd.Timestamp(x), pd.Timestamp(y)) for x, y in periods]
-    avert: list[str] = []
-    mesures: dict[str, Any] = {"n_semaines": int(a_c.size)}
+    mesures: dict[str, Any] = {"n_semaines": int(a_c.size), "debut_evaluation": start_ts}
+    # Longueur et couverture de l'échantillon : en dessous, aucun statut favorable.
+    min_w = int(th["min_weeks_per_subperiod"])
+    sub_n = [int(_slice(a_c, x, y).size) for x, y in subperiods]
+    mesures["semaines_sous_periodes"] = sub_n
+    too_short = (not subperiods and a_c.size < min_w) or any(n < min_w for n in sub_n)
+    if too_short:
+        avert.append(f"échantillon trop court ({sub_n or [a_c.size]} semaines ; minimum {min_w} par sous-période) : "
+                     "critères C1-C7 et G1-G9 non évaluables, aucun statut favorable possible")
+    if expected_period is not None:
+        lo, hi = (pd.Timestamp(x) for x in expected_period)
+        exp_weeks = pd.date_range(lo, hi, freq="W-FRI")
+        if windows:
+            exp_weeks = exp_weeks[mt.weekly_observation_mask(exp_weeks, exp_weeks, exclude_windows=windows,
+                                                             max_sessions=None)]
+        cov = float(a_c.index.isin(exp_weeks).sum() / len(exp_weeks)) if len(exp_weeks) else math.nan
+        mesures["couverture"] = cov
+        if not (_finite(cov) and cov >= float(th["min_coverage"])):
+            too_short = True
+            avert.append(f"couverture de la période attendue {cov:.1%} < {float(th['min_coverage']):.0%} : critères C "
+                         "et G non évaluables")
+    if turnover is None and result is not None:
+        turnover = mt.monthly_one_way_turnover(result)
+        mesures["rotation_source"] = "metrics.monthly_one_way_turnover(result)"
+    if _finite(turnover) and float(turnover) > 1.0:
+        avert.append(f"rotation mensuelle {float(turnover):.2f} > 1 (plus de 100 %/mois) invraisemblable : "
+                     "BacktestResult.turnover est annualisé ; utiliser metrics.monthly_one_way_turnover(result)")
 
     act_central = mt.annualized_active_return(r_c, b_c) if a_c.size else math.nan
     act_stress = math.nan
     if active_weekly_returns_stress is not None:
-        a_s = pd.Series(active_weekly_returns_stress, dtype=float).dropna().sort_index()
+        a_s = _prep_weekly(active_weekly_returns_stress, "rendements actifs (stress)", windows, [])
+        if start_ts is not None:
+            a_s = a_s[a_s.index >= start_ts]
         a_s = a_s.loc[a_s.index.isin(b.index)]
         if a_s.size:
             act_stress = mt.annualized_active_return(a_s + b.reindex(a_s.index), b.reindex(a_s.index))
@@ -1546,9 +1684,6 @@ def evaluate_status(
         "n_trials": n_tr,
         "sr_variance": sr_var,
         "g1": g1,
-        "pbo": pbo if pbo is not None else math.nan,
-        "pbo_slope": pbo_slope,
-        "ic_monthly": ic_monthly,
         "new_signal": new_signal,
         "n_boot": n_boot,
         "mean_block": mean_block,
@@ -1556,18 +1691,35 @@ def evaluate_status(
         "lo_q": lo_q,
         "mesures": mesures,
     }
-    rows += _g_filters("promotion_S1", a_c, subperiods, th, **common)
+    rows += _g_filters("promotion_S1", a_c, subperiods, th, pbo=pbo if pbo is not None else math.nan,
+                       pbo_slope=pbo_slope, ic_monthly=ic_monthly, **common)
     s2_ok = False
     if s2_active_weekly_returns is not None:
-        a2 = pd.Series(s2_active_weekly_returns, dtype=float).dropna().sort_index()
+        a2 = _prep_weekly(s2_active_weekly_returns, "suivi réel S2", windows, avert)
         mesures["s2_semaines"] = int(a2.size)
         if a2.size >= th["s2_min_weeks"]:
             s2_ok = True
-            rows += _g_filters("promotion_S2", a2, [(a2.index[0], a2.index[-1])], th, **common)
+            # Entrées PROPRES à S2 : jamais l'IC, la PBO ni la pente de S1 (§8.3 : G1-G9 verts « sur S1
+            # ET sur le suivi réel S2 »). Sans IC de S2, G7 vaut None : PROMU impossible.
+            rows += _g_filters("promotion_S2", a2, [(a2.index[0], a2.index[-1])], th,
+                               pbo=s2_pbo if s2_pbo is not None else math.nan, pbo_slope=s2_pbo_slope,
+                               ic_monthly=s2_ic_monthly, ic_min_months=th["s2_ic_min_months"], **common)
+            if s2_ic_monthly is None:
+                avert.append("suivi réel S2 : IC mensuels propres à S2 non fournis (G7 non évaluable) : PROMU "
+                             "impossible")
+            elif int(pd.Series(s2_ic_monthly, dtype=float).dropna().size) < th["s2_ic_min_months"]:
+                avert.append(f"suivi réel S2 : moins de {int(th['s2_ic_min_months'])} mois d'IC propres à S2 "
+                             "(G7, lecture prudente du §8.3 ; à trancher par addendum)")
         else:
             avert.append(f"suivi réel S2 de {a2.size} semaines < {int(th['s2_min_weeks'])} : promotion impossible")
     else:
         avert.append("aucun suivi réel S2 : le statut PROMU est impossible (au moins 12 mois exigés)")
+    if too_short:
+        # Échantillon trop court ou incomplet : aucun critère favorable n'est évaluable.
+        for r in rows:
+            if r["groupe"] != "rejet":
+                r["verifie"] = None
+                r["note"] = (r["note"] + " ; " if r["note"] else "") + "échantillon trop court ou incomplet"
 
     crit = pd.DataFrame(rows, columns=["groupe", "code", "libelle", "valeur", "seuil", "verifie", "note"])
     rejected = bool((crit.loc[crit["groupe"] == "rejet", "verifie"] == True).any())  # noqa: E712
@@ -1591,3 +1743,113 @@ def evaluate_status(
         avert.append("écart entre Sharpe de Lo et Sharpe GLM > 25 % : prix périmés à examiner (§8.2)")
     avert.append("Performance passée ≠ garantie. Aucun gain n'est garanti.")
     return StatusReport(statut=statut, criteres=crit, mesures=mesures, avertissements=avert)
+
+
+# ---------------------------------------------------------------------------
+# Règle de promotion d'une variante (spéc. §3.4)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PromotionReport:
+    """Résultat de :func:`variant_promotion` : variante principale et détail par variante."""
+
+    principal: str
+    criteres: pd.DataFrame
+    pbo: float
+    n_trials: int
+    sr_variance: float
+    avertissements: list[str] = field(default_factory=list)
+
+
+def variant_promotion(
+    weekly_active: pd.DataFrame | Mapping[str, pd.Series],
+    *,
+    benchmark: pd.Series | None = None,
+    pbo: float | None = None,
+    baseline: str = "A",
+    n_trials: int = 8,
+    sr_variance: float | None = None,
+    params: Mapping[str, Any] | None = None,
+    exclude_windows: Sequence[tuple[Any, Any]] | None = None,
+) -> PromotionReport:
+    """Règle de promotion pré-enregistrée du §3.4 (« A reste le principal »).
+
+    Une variante X ne remplace A que si, sur l'échantillon de validation, **les trois**
+    conditions sont vraies :
+
+    1. X bat A en rendement actif net annualisé (``CAGR(a + b) − CAGR(b)`` si
+       ``benchmark`` est fourni, sinon ``52 × moyenne(a)``) ;
+    2. DSR(X) ≥ 0,95 avec **N = 8** (famille des variantes du §3.4) ; la variance des
+       Sharpe hebdomadaires entre variantes est estimée sur la famille si
+       ``sr_variance`` n'est pas fourni ;
+    3. PBO de la famille ≤ 0,25 (:func:`metrics.family_pbo` si ``pbo`` n'est pas fourni).
+
+    ``weekly_active`` : rendements actifs hebdomadaires nets (semaines × variantes, ``A``
+    compris), sur les semaines communes. Si plusieurs variantes satisfont la règle, la
+    principale devient celle dont le rendement actif net est le plus élevé (choix
+    documenté). Un critère non évaluable (NaN) empêche la promotion. Estimations
+    seulement : aucune promesse de gain.
+    """
+    from brvm_alpha.backtest import metrics as mt
+
+    th = status_thresholds(params)
+    frame = pd.DataFrame(dict(weekly_active)) if not isinstance(weekly_active, pd.DataFrame) else weekly_active
+    frame = frame.astype(float).sort_index()
+    if baseline not in frame.columns:
+        raise KeyError(f"variante de référence {baseline!r} absente ({list(frame.columns)})")
+    avert: list[str] = []
+    windows = mt.EXCLUDE_STATS_WINDOWS if exclude_windows is None else exclude_windows
+    if windows and len(frame):
+        keep = mt.weekly_observation_mask(frame.index, frame.index, exclude_windows=windows, max_sessions=None)
+        frame = frame[keep]
+    n_all = len(frame)
+    frame = frame.dropna(how="any")
+    if len(frame) < n_all:
+        avert.append(f"{n_all - len(frame)} semaine(s) sans rendement pour toutes les variantes retirée(s)")
+    if len(frame) < 2:
+        raise ValueError("au moins deux semaines communes à toutes les variantes sont nécessaires")
+    b = None
+    if benchmark is not None:
+        b = pd.Series(benchmark, dtype=float).reindex(frame.index)
+        if b.isna().any():
+            raise ValueError("benchmark : semaines manquantes sur l'échantillon commun")
+    act: dict[str, float] = {}
+    sr: dict[str, float] = {}
+    for v in frame.columns:
+        a = frame[v]
+        act[v] = (mt.annualized_active_return(a + b, b) if b is not None
+                  else float(a.mean() * mt.WEEKS_PER_YEAR))
+        sd = float(a.std(ddof=1))
+        sr[v] = float(a.mean() / sd) if sd > 0 else math.nan
+    sr_vals = np.array([x for x in sr.values() if _finite(x)])
+    sr_var = float(sr_variance) if sr_variance is not None else (
+        float(np.var(sr_vals, ddof=1)) if sr_vals.size > 1 else math.nan)
+    pbo_v = math.nan if pbo is None else float(pbo)
+    if pbo is None:
+        try:
+            pbo_v = float(mt.family_pbo(frame)["pbo"])
+        except Exception as exc:  # pragma: no cover - historique trop court
+            avert.append(f"PBO non calculée ({exc.__class__.__name__} : {exc})")
+    rows = []
+    for v in frame.columns:
+        d = mt.dsr(frame[v], int(n_trials), sr_var) if frame[v].size >= 3 else math.nan
+        beats = None if v == baseline else (bool(act[v] > act[baseline]) if _finite(act[v]) else None)
+        dsr_ok = _check(d, lambda x: x >= th["dsr_min"])
+        pbo_ok = _check(pbo_v, lambda x: x <= th["pbo_max_promoted"])
+        promoted = None if v == baseline else (
+            None if any(x is None for x in (beats, dsr_ok, pbo_ok)) else bool(beats and dsr_ok and pbo_ok))
+        rows.append({"variante": v, "actif_net_an": act[v], "bat_reference": beats, "dsr": d,
+                     "dsr_ok": dsr_ok, "pbo": pbo_v, "pbo_ok": pbo_ok, "promue": promoted})
+    tab = pd.DataFrame(rows).set_index("variante")
+    winners = [v for v in tab.index if tab.loc[v, "promue"] is True]
+    principal = baseline
+    if winners:
+        principal = max(winners, key=lambda v: float(tab.loc[v, "actif_net_an"]))
+        if len(winners) > 1:
+            avert.append(f"plusieurs variantes satisfont la règle ({', '.join(winners)}) : la plus forte en actif "
+                         f"net est retenue ({principal})")
+    avert.append(f"règle du §3.4 : DSR avec N = {int(n_trials)}, PBO ≤ {th['pbo_max_promoted']} ; estimations, "
+                 "aucune promesse de gain")
+    return PromotionReport(principal=principal, criteres=tab, pbo=pbo_v, n_trials=int(n_trials), sr_variance=sr_var,
+                           avertissements=avert)

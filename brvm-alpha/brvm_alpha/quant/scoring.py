@@ -799,7 +799,18 @@ def rank_gauss_z(
     ``min_group_size`` membres de l'univers à la date ``t`` sont regroupés (variante
     D). Note : la formule diffère de ``cross_sectional_zscore(method="rank_gauss")``
     (positions de Blom) ; c'est celle de la spécification.
+
+    ``df`` : ``DataFrame`` (dates × titres) ; une ``Series`` (titres) est traitée comme une
+    seule date et le résultat est rendu sous forme de ``Series``.
     """
+    if isinstance(df, pd.Series):
+        uni = universe.to_frame().T if isinstance(universe, pd.Series) else universe
+        grp = groups if not isinstance(groups, pd.DataFrame) else groups
+        out = rank_gauss_z(df.to_frame().T, universe=uni, winsor_pct=winsor_pct, clip=clip, missing=missing,
+                           groups=grp, min_group_size=min_group_size)
+        return out.iloc[0].rename(df.name)
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(f"rank_gauss_z : DataFrame (dates × titres) ou Series attendu, reçu {type(df).__name__}")
     x = _finite(df)
     member = _bool_like(universe, x)
     member = x.notna() if member is None else member

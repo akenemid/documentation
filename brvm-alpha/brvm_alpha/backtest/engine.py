@@ -135,12 +135,20 @@ Limites connues (choix de prudence documentés)
 * Les dates de fin de période (``'M'``, ``'Q'``, ``'W-FRI'``) supposent le
   calendrier des séances connu à l'avance (jours fériés publiés), hypothèse
   standard ; ``anchor="first"`` l'évite.
-* Les quantités sont arrondies en titres **ajustés** : avant une division
-  future 1:k, une position peut correspondre à une fraction de titre réel
-  (écart < 1 titre réel par ligne, négligeable en valeur).
-* Seuls ``close`` et ``adj_factor`` sont remis aux unités du jour de décision
-  dans la vue ; un autre panel fourni en unités ajustées à rebours resterait
-  dépendant des divisions futures.
+* Les quantités sont arrondies en titres **réels du jour d'exécution**
+  (``q_brut = ⌊w · NAV / (P̃ / f_t) / lot⌋ · lot``, puis ``q_ajusté = q_brut / f_t``) :
+  la granularité ne dépend d'aucune division future. Une attribution non entière
+  (3:2 sur un nombre impair de titres) laisse un « rompu », crédité en cash au
+  dernier cours le jour de l'attribution (hypothèse simple).
+* ``close``, ``adj_factor``, ``close_adj`` et ``split_factor`` sont remis aux unités du
+  jour de décision dans la vue ; un autre panel fourni en unités ajustées à rebours
+  resterait dépendant des divisions futures.
+* Choc pays sévère de plusieurs séances : planchers cumulés séance après séance ;
+  après le choc, le niveau choqué persiste (option ``country_shock_recovery``).
+* Titre radié (plus aucune ligne au BOC) : position bloquée (motif ``delisted``),
+  suivie dans ``suspended_value`` ; valorisation au dernier cours sauf
+  ``delisted_writedown`` (hypothèse, scénario ST8).
+* Valeur liquidative ≤ 0 : avertissement, rendements arrêtés (``meta``).
 
 Références
 ----------
@@ -507,9 +515,9 @@ class PanelView(Mapping[str, Any]):
     ``receivables`` (ventes non réglées et dividendes à recevoir, FCFA),
     ``positions`` (titres détenus), ``weights`` (poids courants), ``pending``
     (ordres en attente, en titres).
-    Quand le moteur remet la vue à l'échelle (``adj_factor`` ≠ 1), ``positions``
-    et ``pending`` sont aussi exprimés en titres du jour ``asof``
-    (``q · f_asof``, ``float``) ; sinon ce sont des entiers.
+    ``positions`` est exprimé en titres **réels** du jour ``asof`` (``q · f_asof``,
+    entiers) ; ``pending`` aussi (entiers, ou ``float`` si une attribution non
+    entière laisse une fraction).
     """
 
     __slots__ = (
@@ -775,7 +783,10 @@ def band_flags(
     with np.errstate(divide="ignore", invalid="ignore"):
         plausible = np.isfinite(c) & np.isfinite(r) & (r > 0) & (np.abs(c / r - 1.0) <= float(max_plausible_move))
         up = plausible & (c >= high - _BAND_EPS)
-        down = plausible & (c <= low + _BAND_EPS)
+        # Bande dégénérée vers le bas (référence ≤ 13 FCFA : ceil(0,925·R) = R) : une clôture
+        # inchangée n'est pas « au plancher » (sinon toute séance inchangée bloquerait les
+        # ventes, ETIT 2019-2021). La règle de tolérance reste active pour une vraie baisse.
+        down = plausible & (c <= low + _BAND_EPS) & (low < r - _BAND_EPS)
     return up, down
 
 
@@ -986,11 +997,14 @@ class BacktestResult:
         ``price`` (prix d'exécution), ``value`` (``|qty| × price`` ≥ 0),
         ``cost`` (frais + impact), ``reason`` (``"rebalance"`` si exécuté à la
         première séance suivant la décision, ``"carry"`` pour un reliquat
-        reporté), ``decision_date``, ``participation``, ``impact``.
+        reporté), ``decision_date``, ``participation``, ``impact``, ``raw_qty``
+        (titres réels du jour, entier ; ``qty`` est en titres ajustés).
     costs
         Coûts cumulés (frais de transaction + impact + droits de garde, FCFA).
     turnover
-        Rotation annualisée aller simple ``252 · mean(Σ|V| / (2 NAV_{t-1}))``.
+        Rotation **annualisée** aller simple ``252 · mean(Σ|V| / (2 NAV_{t-1}))`` ; la
+        rotation mensuelle aller du critère C5 (§8.3) est
+        ``metrics.monthly_one_way_turnover(result)``.
     fill_rate
         ``Σ |exécuté| · P_déc / Σ |ordonné| · P_déc`` (valeur au cours de
         décision ``P_déc``) ; NaN sans ordre.
@@ -1013,7 +1027,7 @@ class BacktestResult:
         ressaisi), ``end_of_backtest``.
     blocked
         Événements de non-exécution (``date, symbol, side, qty, reason`` avec
-        ``reason`` ∈ ``not_traded``, ``suspended``, ``limit_up``,
+        ``reason`` ∈ ``delisted``, ``not_traded``, ``suspended``, ``limit_up``,
         ``limit_down``, ``country_shock``, ``volume_cap``, ``cash``).
     rebalance_dates
         Dates de décision effectivement utilisées.
@@ -1112,8 +1126,20 @@ class BacktestResult:
         else:
             out = dict(perf_summary(self.returns, bench, rf=rf, periods_per_year=periods_per_year))
         n = len(self.equity)
+        n_finite = int(np.isfinite(self.returns.to_numpy(dtype=float)).sum())
+        if n_finite < len(self.returns):
+            warnings.warn(
+                f"summary : {len(self.returns) - n_finite} rendement(s) non fini(s) exclu(s) des statistiques "
+                f"({n_finite} observations sur {len(self.returns)})"
+                + (f" ; valeur liquidative ≤ 0 depuis le {pd.Timestamp(self.meta['nav_non_positive_from']).date()}"
+                   if self.meta.get("nav_non_positive_from") is not None else ""),
+                stacklevel=2,
+            )
         mean_nav = float(self.equity.mean()) if n else math.nan
         out.update(
+            n_obs_total=int(len(self.returns)),
+            n_obs_excluded=int(len(self.returns) - n_finite),
+            nav_non_positive_from=self.meta.get("nav_non_positive_from"),
             final_equity=float(self.equity.iloc[-1]) if n else math.nan,
             total_costs=self.total_costs,
             cost_drag=(self.total_costs / mean_nav * periods_per_year / n) if n and mean_nav > 0 else math.nan,
@@ -1292,13 +1318,18 @@ def _dispatch_models(*slots: Any) -> dict[str, Any]:
 
 @dataclass
 class _Order:
-    """Ordre en attente (quantité signée restante)."""
+    """Ordre en attente (quantité signée restante, en titres **ajustés**).
+
+    Les quantités sont exprimées en titres ajustés des divisions (``float``) ; à
+    chaque exécution, la quantité négociée correspond à un nombre **entier** de
+    titres réels du jour (``q_brut = q · f_t``, quotité ``lot_size``).
+    """
 
     oid: int
     j: int
     decision_pos: int
-    qty: int  # quantité initiale signée
-    remaining: int  # reliquat signé
+    qty: float  # quantité initiale signée (titres ajustés)
+    remaining: float  # reliquat signé (titres ajustés)
     ref_price: float
     status: str = "pending"
     first_fill: pd.Timestamp | None = None
@@ -1319,13 +1350,43 @@ ENGINE_DEFAULTS: dict[str, Any] = {
     "spread_min_obs": 20,  # observations minimales (deux côtés présents)
     "suspended_risk_haircut": 0.10,  # décote de risque d'une position suspendue (§7.1.7)
     "country_shock_block_buys": True,  # aucun achat à la séance de choc (règle pays, §4.3)
+    # Après un choc pays : "persistent" (le niveau choqué persiste, rendements réels ensuite ;
+    # aucun rebond artificiel) ou "shock_only" (plancher sur les seules séances de choc).
+    "country_shock_recovery": "persistent",
+    # Radiation (plus aucune ligne au BOC) : décote de VALORISATION appliquée à partir de la
+    # séance qui suit la dernière cotation (0 = dernier cours ; 0,30 = scénario ST8). Hypothèse.
+    "delisted_writedown": 0.0,
+    # Séances minimales sans cotation jusqu'à la fin du panel pour conclure à une radiation
+    # (sauf symbole listé dans ``reference.DELISTED_SYMBOLS``).
+    "delisting_min_sessions": 5,
 }
+
+#: Modes de valorisation après un choc pays sévère (option ``country_shock_recovery``).
+SHOCK_RECOVERY_MODES = ("persistent", "shock_only")
 
 #: Correspondance avec les clés ``execution.*`` du fichier ``configs/strategy_v1.yaml``.
 _YAML_EXECUTION_KEYS = {
     "carry_unfilled_max_sessions": "max_carry_sessions",
     "cancel_orders_on_ex_and_split_days": "cancel_on_corporate_events",
 }
+
+#: Clés de la section ``execution`` du YAML : celles qui ne sont pas des paramètres du
+#: moteur sont lues ailleurs (``ExecutionModel`` via ``settings.apply_to_platform_config``).
+#: Toute autre clé (faute de frappe) est refusée.
+_YAML_EXECUTION_KNOWN = frozenset(
+    {
+        "price",
+        "carry_unfilled_max_sessions",
+        "max_volume_participation",
+        "price_limit",
+        "limit_tolerance",
+        "block_buy_at_upper_limit",
+        "block_sell_at_lower_limit",
+        "cancel_orders_on_ex_and_split_days",
+        "settlement",
+        "dividends",
+    }
+)
 
 
 def _engine_params(params: Mapping[str, Any] | None, explicit: Mapping[str, Any]) -> dict[str, Any]:
@@ -1343,7 +1404,12 @@ def _engine_params(params: Mapping[str, Any] | None, explicit: Mapping[str, Any]
         if isinstance(exe, Mapping):
             # configuration complète (format du YAML) : seule la section
             # ``execution`` concerne le moteur ; une section ``engine``
-            # facultative porte les clés plates.
+            # facultative porte les clés plates. Une clé inconnue de la section
+            # ``execution`` (faute de frappe) est refusée : elle serait sinon
+            # ignorée en silence alors que l'empreinte de configuration change.
+            bad = sorted(set(map(str, exe)) - _YAML_EXECUTION_KNOWN)
+            if bad:
+                raise KeyError(f"clés inconnues dans la section execution : {bad}")
             for k, v in exe.items():
                 if k in _YAML_EXECUTION_KEYS:
                     extra[_YAML_EXECUTION_KEYS[k]] = v
@@ -1361,6 +1427,12 @@ def _engine_params(params: Mapping[str, Any] | None, explicit: Mapping[str, Any]
     out.update({k: v for k, v in explicit.items() if v is not None})
     if out["band_rule"] not in BAND_RULES:
         raise ValueError(f"band_rule doit valoir l'un de {BAND_RULES}")
+    if out["country_shock_recovery"] not in SHOCK_RECOVERY_MODES:
+        raise ValueError(f"country_shock_recovery doit valoir l'un de {SHOCK_RECOVERY_MODES}")
+    if not 0.0 <= float(out["delisted_writedown"]) < 1.0:
+        raise ValueError("delisted_writedown doit appartenir à [0, 1[")
+    if int(out["delisting_min_sessions"]) < 1:
+        raise ValueError("delisting_min_sessions doit être >= 1")
     return out
 
 
@@ -1426,7 +1498,8 @@ class Backtester:
         ``constraints`` (facultatif) active : poids négatifs mis à 0
         (toujours appliqué : pas de vente à découvert), exposition brute
         plafonnée à ``1 − cash_buffer`` et bande de non-transaction
-        ``no_trade_band`` (|Δw| < bande ⇒ pas d'ordre, sauf sortie totale).
+        ``no_trade_band`` (|Δw| < bande ⇒ pas d'ordre, sauf entrée sur un titre
+        non détenu ou sortie totale, §6).
     lot_size
         Quotité de négociation (1 à la BRVM).
     max_order_age
@@ -1572,6 +1645,9 @@ class Backtester:
         self.spread_min_obs = int(opts["spread_min_obs"])
         self.suspended_risk_haircut = float(opts["suspended_risk_haircut"])
         self.country_shock_block_buys = bool(opts["country_shock_block_buys"])
+        self.country_shock_recovery = str(opts["country_shock_recovery"])
+        self.delisted_writedown = float(opts["delisted_writedown"])
+        self.delisting_min_sessions = int(opts["delisting_min_sessions"])
         self._order_book = order_book
         self._country_shocks_raw = country_shocks
         self.lot_size = int(lot_size)
@@ -1724,55 +1800,55 @@ class Backtester:
             self._div_tax = np.zeros_like(div_adj)
         self._div_pay_pos = self._payment_positions(self._ex_day)
 
-        # Variation de la séance (règle de tolérance, comportement historique).
-        move = np.full_like(c, np.nan)
         chg = self._wide("change_pct")
-        if chg is not None:
-            move = chg / 100.0
         prev = self._wide("prev_close")
         refp = self._wide("ref_price")
-        with np.errstate(divide="ignore", invalid="ignore"):
-            if prev is not None:
-                ref = (prev - div) * af
-                m = np.where(ref > 0, c / ref - 1.0, np.nan)
-                move = np.where(np.isfinite(move), move, m)
-            if refp is not None:
-                ref = np.vstack([np.full((1, c.shape[1]), np.nan), refp[:-1]]) * af
-                m = np.where(ref > 0, c / ref - 1.0, np.nan)
-                move = np.where(np.isfinite(move), move, m)
-            prev_c = np.vstack([np.full((1, c.shape[1]), np.nan), px_val0[:-1]]) - div_adj
-            m = np.where(prev_c > 0, c / prev_c - 1.0, np.nan)
-            move = np.where(np.isfinite(move), move, m)
-        self._move = move
-        tol_up, tol_down = limit_flags(move, ex.price_limit, ex.limit_tolerance, self.max_plausible_move)
 
         # Bornes exactes au pas autour de la référence ajustée (unités brutes du jour).
         raw_close = c / af
         ref_raw = self._reference_raw(raw_close, div, af, px_val0, chg, prev, refp)
         self._ref_raw = ref_raw
         ex_up, ex_down = band_flags(raw_close, ref_raw, ex.price_limit, self.max_plausible_move)
+
+        # Règle de tolérance (|clôture / R − 1| ≥ 7,5 % − 0,2 %) calculée sur la MÊME référence
+        # ajustée R que la règle exacte. La variation publiée ``change_pct`` est parfois calculée
+        # par la BRVM sur la clôture NON ajustée du dividende (jours ex de 2017-2019 : SOGC le
+        # 19/07/2018 publie −7,89 % pour +3,86 % contre la référence ajustée) : elle ne sert plus
+        # que de repli quand aucune référence n'est disponible.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            move = np.where(np.isfinite(ref_raw) & (ref_raw > 0), raw_close / ref_raw - 1.0, np.nan)
+            if chg is not None:
+                move = np.where(np.isfinite(move), move, chg / 100.0)
+        self._move = move
+        tol_up, tol_down = limit_flags(move, ex.price_limit, ex.limit_tolerance, self.max_plausible_move)
         if self.band_rule == "exact":
             self._lim_up, self._lim_down = ex_up, ex_down
         elif self.band_rule == "tolerance":
             self._lim_up, self._lim_down = tol_up, tol_down
         else:
             self._lim_up, self._lim_down = ex_up | tol_up, ex_down | tol_down
-        floor_raw = price_band_limits(ref_raw, ex.price_limit)[0]
-        self._floor_adj = floor_raw * af
 
-        # Chocs pays sévères : première(s) séance(s) au plancher, sans vendeur servi.
+        # Chocs pays sévères (§4.3, §7.1.8) : planchers CUMULÉS séance après séance, sans
+        # vendeur servi ; le multiplicateur s'applique à la valorisation ET au prix d'exécution
+        # (chemin de stress cohérent). La valorisation réelle est d'abord reportée vers l'avant
+        # (cours NaN), puis le multiplicateur est appliqué (aucun report du plancher par ffill).
         self._shock_events: list[tuple[Any, ...]] = []
         shock = self._shock_mask()
         self._shock = shock
-        if shock.any():
-            floor_val = np.where(np.isfinite(self._floor_adj), self._floor_adj, val_src)
-            shocked = np.where(np.isfinite(val_src), np.minimum(val_src, floor_val), floor_val)
-            val_src = np.where(shock, shocked, val_src)
-        self._px_val = pd.DataFrame(val_src).ffill().to_numpy(dtype=float)
+        mult = self._shock_multipliers(shock, px_val0, ref_raw, af)
+        self._shock_mult = mult
+        self._px_exec = np.where(np.isfinite(px), px * mult, px)
+
+        # Radiation : plus aucune cotation jusqu'à la fin du panel (spéc. §5.5).
+        self._delisted = self._delisting_mask(c)
+        val = px_val0 * mult
+        if self.delisted_writedown > 0 and self._delisted.any():
+            val = np.where(self._delisted, val * (1.0 - self.delisted_writedown), val)
+        self._px_val = val
 
         # Demi-spread propre à chaque titre (fraction du montant, par côté).
         self._hs = self._half_spreads(px, af)
-        self._check_price_jumps(c, div_adj)
+        self._check_price_jumps(c, div_adj, px_val0)
 
     def _session_numbers(self) -> np.ndarray:
         """Numéro global de séance par ligne (``session_no``), sinon ``0..T-1``.
@@ -1875,7 +1951,8 @@ class Backtester:
            immédiatement précédente (pas de BOC manquant) ;
         2. ``clôture / (1 + change_pct)`` arrondi au pas (variation publiée,
            calculée par la BRVM sur la référence ajustée) ;
-        3. ``prev_close − dividende`` du jour ;
+        3. ``prev_close − dividende`` du jour (avant le n° 2 un jour ex : la
+           variation publiée y a parfois été calculée sur la clôture non ajustée) ;
         4. dernier cours connu, ramené aux unités du jour, moins le dividende.
         """
         T, N = raw_close.shape
@@ -1885,14 +1962,21 @@ class Backtester:
                 prior = np.vstack([np.full((1, N), np.nan), refp[:-1]])
                 contiguous = np.concatenate([[False], np.diff(self._sess) == 1])[:, None]
                 ref = np.where(contiguous & np.isfinite(prior) & (prior > 0), prior, np.nan)
+            implied = np.full((T, N), np.nan)
             if chg is not None:
                 implied = raw_close / (1.0 + chg / 100.0)
                 step = tick_size(implied)
                 implied = np.round(implied / step) * step
-                ref = np.where(np.isfinite(ref), ref, np.where(np.isfinite(implied) & (implied > 0), implied, np.nan))
-            if prev is not None:
-                cand = prev - div_raw
-                ref = np.where(np.isfinite(ref), ref, np.where(cand > 0, cand, np.nan))
+            implied = np.where(np.isfinite(implied) & (implied > 0), implied, np.nan)
+            cand = np.full((T, N), np.nan) if prev is None else prev - div_raw
+            cand = np.where(np.isfinite(cand) & (cand > 0), cand, np.nan)
+            # Jour ex : la variation publiée a parfois été calculée sur la clôture NON ajustée du
+            # dividende (2017-2019) ; ``prev_close − dividende`` passe alors avant elle.
+            ex_rows = div_raw > 0
+            first = np.where(ex_rows, cand, implied)
+            second = np.where(ex_rows, implied, cand)
+            ref = np.where(np.isfinite(ref), ref, first)
+            ref = np.where(np.isfinite(ref), ref, second)
             last = np.vstack([np.full((1, N), np.nan), px_val0[:-1]]) / af - div_raw
             ref = np.where(np.isfinite(ref), ref, np.where(last > 0, last, np.nan))
         return ref
@@ -1946,6 +2030,97 @@ class Backtester:
                 for j in np.flatnonzero(cols):
                     self._shock_events.append((self.dates[t], self.symbols[j], "choc_pays_plancher", -1, -1, 0))
         return mask
+
+    def _shock_multipliers(
+        self, shock: np.ndarray, real_val: np.ndarray, ref_raw: np.ndarray, af: np.ndarray
+    ) -> np.ndarray:
+        """Multiplicateur ``m_{t,i}`` du chemin de stress d'un choc pays sévère (§4.3, §7.1.8, ST4).
+
+        Pendant les séances de choc, les planchers se **cumulent** : la référence de la
+        séance ``k`` est le niveau choqué de la séance ``k − 1`` et
+        ``plancher_k = ceil(réf_k · 0,925 / pas) · pas`` (unités brutes du jour) ; le niveau
+        choqué vaut ``min(cours réel · m, plancher_k)``. Trois séances sur un cours plat de
+        1 000 donnent 925, 860 puis 800 (arrondi au pas à chaque séance), et non −7,5 %.
+
+        Après le choc (option ``country_shock_recovery``) :
+
+        * ``"persistent"`` (défaut) : ``m`` reste constant, la valorisation et l'exécution
+          suivent les rendements **réels** à partir du niveau choqué (aucun rebond
+          artificiel vers la clôture réelle). Si le cours réel a lui-même atteint le
+          plancher, ``m = 1`` : aucun double comptage d'une baisse observée ;
+        * ``"shock_only"`` : le plancher ne s'applique qu'aux séances de choc ; la
+          valorisation revient à la clôture réelle ensuite (rebond possible, documenté).
+
+        Hypothèse de stress, pas une observation.
+        """
+        T, N = shock.shape
+        m = np.ones((T, N))
+        if not shock.any():
+            return m
+        pct = float(self.execution.price_limit)
+        persistent = self.country_shock_recovery == "persistent"
+        for j in np.flatnonzero(shock.any(axis=0)):
+            cur = 1.0
+            prev_level = math.nan  # niveau choqué de la séance précédente (unités brutes de cette séance)
+            in_shock = False
+            for t in range(T):
+                f = af[t, j]
+                real_raw = real_val[t, j] / f if f > 0 else math.nan
+                if not shock[t, j]:
+                    in_shock = False
+                    if not persistent:
+                        cur = 1.0
+                    m[t, j] = cur
+                    continue
+                if in_shock and math.isfinite(prev_level):
+                    ref = prev_level * af[t - 1, j] / f
+                else:
+                    r = ref_raw[t, j]
+                    if not (math.isfinite(r) and r > 0) and t > 0:
+                        r = real_val[t - 1, j] / f
+                    ref = r * cur
+                if not (math.isfinite(ref) and ref > 0 and math.isfinite(real_raw) and real_raw > 0):
+                    m[t, j] = cur
+                    in_shock = False
+                    continue
+                floor = float(price_band_limits(ref, pct)[0])
+                level = min(real_raw * cur, floor)
+                cur = level / real_raw
+                m[t, j] = cur
+                prev_level = level
+                in_shock = True
+        return m
+
+    def _delisting_mask(self, c: np.ndarray) -> np.ndarray:
+        """Séances postérieures à la **dernière cotation** d'un titre radié (spéc. §5.5).
+
+        Un titre est jugé radié s'il n'a plus aucune clôture jusqu'à la fin du panel
+        pendant au moins ``delisting_min_sessions`` séances, ou s'il figure dans
+        ``reference.DELISTED_SYMBOLS`` (SVOC/MOVIS le 26/06/2025, TTRC…). La position
+        reste bloquée (motif ``delisted``), est suivie dans ``suspended_value`` (décote de
+        risque) et, si ``delisted_writedown > 0``, sa valorisation est réduite.
+        """
+        T, N = c.shape
+        out = np.zeros((T, N), dtype=bool)
+        if T == 0:
+            return out
+        try:
+            from brvm_alpha.reference import DELISTED_SYMBOLS
+
+            known = {str(s) for s in DELISTED_SYMBOLS}
+        except ImportError:  # pragma: no cover - module de référence absent
+            known = set()
+        finite = np.isfinite(c)
+        for j in range(N):
+            rows = np.flatnonzero(finite[:, j])
+            if rows.size == 0:
+                continue
+            last = int(rows[-1])
+            if last >= T - 1:
+                continue
+            if (T - 1 - last) >= self.delisting_min_sessions or str(self.symbols[j]) in known:
+                out[last + 1 :, j] = True
+        return out
 
     def _quote_panels(self) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
         """Panels larges ``bid`` / ``ask`` (panels, sinon table longue ``order_book``)."""
@@ -2008,14 +2183,19 @@ class Backtester:
         arr = df.apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
         return np.where(np.isfinite(arr), arr, 0.0)
 
-    def _check_price_jumps(self, c: np.ndarray, div_adj: np.ndarray) -> None:
-        """Repère les variations de clôture invraisemblables (division non ajustée ?)."""
+    def _check_price_jumps(self, c: np.ndarray, div_adj: np.ndarray, real_val: np.ndarray | None = None) -> None:
+        """Repère les variations de clôture invraisemblables (division non ajustée ?).
+
+        ``real_val`` : valorisation **réelle** reportée (sans choc pays ni décote de
+        radiation) ; à défaut, la valorisation du moteur.
+        """
         self.price_jumps = pd.DataFrame(columns=["date", "symbol", "ratio"])
         if self.jump_warning is None or c.shape[0] < 2:
             return
         s = self.jump_warning
         lo, hi = 1.0 - s, 1.0 / (1.0 - s)
-        prev = np.vstack([np.full((1, c.shape[1]), np.nan), self._px_val[:-1]])
+        base = self._px_val if real_val is None else real_val
+        prev = np.vstack([np.full((1, c.shape[1]), np.nan), base[:-1]])
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio = (c + div_adj) / prev
             price_only = c / prev
@@ -2065,8 +2245,15 @@ class Backtester:
     # -- exécution ------------------------------------------------------------
 
     def _round_lot(self, q: np.ndarray) -> np.ndarray:
+        """Arrondi vers le bas à la quotité, en titres **réels** (``q`` en titres bruts du jour)."""
         lot = self.lot_size
         return (np.floor(np.asarray(q, dtype=float) / lot + 1e-9) * lot).astype(np.int64)
+
+    @staticmethod
+    def _raw_count(q_adj: float, f: float) -> int:
+        """Nombre entier de titres réels du jour correspondant à ``q_adj`` titres ajustés (≥ 0)."""
+        x = abs(float(q_adj)) * float(f)
+        return int(math.floor(x + 1e-6))
 
     def _buy_totals(self, q: np.ndarray, px: np.ndarray, vol: np.ndarray, hs: np.ndarray | None = None) -> np.ndarray:
         amount = q * px
@@ -2083,9 +2270,11 @@ class Backtester:
     ) -> np.ndarray:
         """Réduction au prorata des achats pour respecter ``Σ coût total ≤ cash``.
 
-        Cherche par dichotomie le plus grand ``f ∈ [0, 1]`` tel que
-        ``Σ_i T_i(⌊f · q_i⌋) ≤ cash`` où ``T_i(q) = q P_i + coût_i(q)`` est
-        croissante en ``q`` ; ``f = 0`` est toujours admissible (cash ≥ 0).
+        Quantités, prix et volumes en unités **brutes du jour** (titres réels) : l'arrondi
+        à la quotité donne un nombre entier de titres réels. Cherche par dichotomie le
+        plus grand ``f ∈ [0, 1]`` tel que ``Σ_i T_i(⌊f · q_i⌋) ≤ cash`` où
+        ``T_i(q) = q P_i + coût_i(q)`` est croissante en ``q`` ; ``f = 0`` est toujours
+        admissible (cash ≥ 0).
         """
         if desired.size == 0:
             return desired
@@ -2102,6 +2291,8 @@ class Backtester:
 
     def _block_reason(self, t: int, j: int, side: str) -> str | None:
         """Motif de non-exécution d'un ordre (``None`` si exécutable), par ordre de priorité."""
+        if self._delisted[t, j]:
+            return "delisted"
         if self._suspended[t, j]:
             return "suspended"
         if self._shock[t, j] and (side == "sell" or self.country_shock_block_buys):
@@ -2168,7 +2359,7 @@ class Backtester:
         recv_hist = np.zeros(n_sim)
         pay_hist = np.zeros(n_sim)
         susp_hist = np.zeros(n_sim)
-        pos_hist = np.zeros((n_sim, N), dtype=np.int64)
+        pos_hist = np.zeros((n_sim, N), dtype=float)
         costs_daily = np.zeros(n_sim)
         breakdown = np.zeros((n_sim, 5))  # commission, spread, impact, garde, tenue de compte
         div_daily = np.zeros(n_sim)
@@ -2176,8 +2367,12 @@ class Backtester:
         tax_daily = np.zeros(n_sim)
         traded_value = np.zeros(n_sim)
 
-        q = np.zeros(N, dtype=np.int64)
+        # Positions en titres AJUSTÉS des divisions (``float``) ; q · f_t est un nombre entier
+        # de titres réels à chaque séance (arrondis en titres bruts, rompus des attributions).
+        q = np.zeros(N, dtype=float)
         avg_cost = np.zeros(N)
+        delisted_log: list[dict[str, Any]] = []
+        delisted_seen: set[int] = set()
         cash = self.capital
         payable = 0.0  # frais dus non encore payés (garde, tenue de compte)
         sale_recv: list[tuple[int, float]] = []  # (séance de règlement, produit net)
@@ -2256,6 +2451,32 @@ class Backtester:
                     breakdown[k, 4] += fee
             pay_fees()
 
+            # 4b. jour de division ou d'attribution : la position doit rester un nombre entier
+            # de titres réels ; une fraction (attribution 3:2 sur un nombre impair…) est un
+            # « rompu », vendu au dernier cours connu et crédité en cash (hypothèse simple).
+            if k > 0 and q.any():
+                f_row = self._af[t]
+                for jr in np.flatnonzero((q > 0) & self._split_day[t]):
+                    raw_units = float(q[jr] * f_row[jr])
+                    whole = math.floor(raw_units + 1e-6)
+                    frac = raw_units - whole
+                    if frac > 1e-6:
+                        px_prev = float(self._px_val[t - 1, jr])
+                        value = frac / float(f_row[jr]) * px_prev if math.isfinite(px_prev) else 0.0
+                        q[jr] = whole / float(f_row[jr])
+                        cash += value
+                        events.append((day, self.symbols[jr], "rompus_credites", -1, -1, frac))
+
+            # 4c. report maximal (§7.1.1) contrôlé AVANT toute tentative : après un trou de BOC,
+            # un ordre plus vieux que ``max_order_age`` séances n'est jamais exécuté.
+            if pending and self.max_order_age is not None:
+                for j in list(pending):
+                    od = pending[j]
+                    if sess[t] - sess[od.decision_pos] > self.max_order_age:
+                        od.status = "expired"
+                        events.append((day, self.symbols[j], "expiration_report_maximal", od.oid, -1, od.remaining))
+                        del pending[j]
+
             # 5. jour ex / jour de division : annulation et ressaisie le jour même
             if pending and self.cancel_on_corporate_events:
                 for j, od in list(pending.items()):
@@ -2279,34 +2500,41 @@ class Backtester:
                     orders.append(new)
                     pending[j] = new
                     label = "annulation_ressaisie_jour_ex" if is_ex else "annulation_ressaisie_division"
-                    events.append((day, self.symbols[j], label, od.oid, new.oid, int(od.remaining)))
+                    events.append((day, self.symbols[j], label, od.oid, new.oid, float(od.remaining)))
 
             # 6. exécution des ordres en attente
             if pending:
                 px = self._px_exec[t]
                 vol = self._volume[t]
                 hs = self._hs[t]
+                f_t = self._af[t]
                 lag = int(self._lag_rows[t])
-                cap = self._round_lot(np.floor(part_max * vol + 1e-9))
+                # Unités brutes du jour : titres réels entiers (quotité ``lot_size``).
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    px_raw = px / f_t
+                vol_raw = vol * f_t
+                cap = self._round_lot(np.floor(part_max * vol_raw + 1e-9))
                 # 6a. ventes
                 for j, od in list(pending.items()):
                     if od.remaining >= 0:
                         continue
-                    want = min(-od.remaining, int(q[j]))
+                    fj = float(f_t[j])
+                    want = min(self._raw_count(od.remaining, fj), self._raw_count(q[j], fj))
                     if want <= 0:
-                        od.remaining = 0
+                        od.remaining = 0.0
                         continue
                     why = self._block_reason(t, j, "sell")
                     if why is not None:
-                        blocked.append((day, self.symbols[j], "sell", want, why))
+                        blocked.append((day, self.symbols[j], "sell", want / fj, why))
                         continue
-                    n = int(min(want, cap[j]))
-                    if n < want:
-                        blocked.append((day, self.symbols[j], "sell", want - n, "volume_cap"))
-                    if n <= 0:
+                    n_raw = int(min(want, cap[j]))
+                    if n_raw < want:
+                        blocked.append((day, self.symbols[j], "sell", (want - n_raw) / fj, "volume_cap"))
+                    if n_raw <= 0:
                         continue
-                    amount = n * float(px[j])
-                    part = n / float(vol[j])
+                    n = n_raw / fj  # titres ajustés
+                    amount = n_raw * float(px_raw[j])
+                    part = n_raw / float(vol_raw[j])
                     comm, spr, imp = (float(x) for x in _cost_parts(amount, part, costs, hs[j]))
                     c_tot = comm + spr + imp
                     proceeds = amount - c_tot
@@ -2329,9 +2557,12 @@ class Backtester:
                     breakdown[k, 2] += imp
                     value_today += amount
                     q[j] -= n
-                    if q[j] == 0:
+                    if abs(q[j] * fj) < 1e-6:
+                        q[j] = 0.0
                         avg_cost[j] = 0.0
                     od.remaining += n
+                    if abs(od.remaining * fj) < 1e-6:
+                        od.remaining = 0.0
                     reason = "rebalance" if t == od.decision_pos + 1 else "carry"
                     trades.append(
                         (
@@ -2348,6 +2579,7 @@ class Backtester:
                             float(hs[j]),
                             spr,
                             comm,
+                            -n_raw,
                         )
                     )
                     if od.first_fill is None:
@@ -2360,30 +2592,37 @@ class Backtester:
                 for j, od in pending.items():
                     if od.remaining <= 0:
                         continue
-                    want = od.remaining
+                    fj = float(f_t[j])
+                    want = self._raw_count(od.remaining, fj)
+                    want = int(self._round_lot(np.array([float(want)]))[0])
+                    if want <= 0:
+                        od.remaining = 0.0  # reliquat inférieur à un titre réel (rompu)
+                        continue
                     why = self._block_reason(t, j, "buy")
                     if why is not None:
-                        blocked.append((day, self.symbols[j], "buy", want, why))
+                        blocked.append((day, self.symbols[j], "buy", want / fj, why))
                         continue
-                    n = int(min(want, cap[j]))
-                    if n < want:
-                        blocked.append((day, self.symbols[j], "buy", want - n, "volume_cap"))
-                    if n > 0:
+                    n_raw = int(min(want, cap[j]))
+                    if n_raw < want:
+                        blocked.append((day, self.symbols[j], "buy", (want - n_raw) / fj, "volume_cap"))
+                    if n_raw > 0:
                         buy_js.append(j)
-                        desired.append(n)
+                        desired.append(n_raw)
                 if buy_js:
                     js = np.asarray(buy_js, dtype=np.int64)
                     want_q = np.asarray(desired, dtype=np.int64)
-                    got = self._affordable(want_q, px[js], vol[js], max(cash, 0.0), hs[js])
-                    for j_raw, w_n, n_raw in zip(js, want_q, got, strict=True):
+                    got = self._affordable(want_q, px_raw[js], vol_raw[js], max(cash, 0.0), hs[js])
+                    for j_raw, w_n, n_got in zip(js, want_q, got, strict=True):
                         j = int(j_raw)
-                        n = int(n_raw)
-                        if n < w_n:
-                            blocked.append((day, self.symbols[j], "buy", int(w_n - n), "cash"))
-                        if n <= 0:
+                        fj = float(f_t[j])
+                        n_raw = int(n_got)
+                        if n_raw < w_n:
+                            blocked.append((day, self.symbols[j], "buy", (int(w_n) - n_raw) / fj, "cash"))
+                        if n_raw <= 0:
                             continue
-                        amount = n * float(px[j])
-                        part = n / float(vol[j])
+                        n = n_raw / fj  # titres ajustés
+                        amount = n_raw * float(px_raw[j])
+                        part = n_raw / float(vol_raw[j])
                         comm, spr, imp = (float(x) for x in _cost_parts(amount, part, costs, hs[j]))
                         c_tot = comm + spr + imp
                         cash -= amount + c_tot
@@ -2396,6 +2635,8 @@ class Backtester:
                         q[j] += n
                         od = pending[j]
                         od.remaining -= n
+                        if abs(od.remaining * fj) < 1e-6:
+                            od.remaining = 0.0
                         reason = "rebalance" if t == od.decision_pos + 1 else "carry"
                         trades.append(
                             (
@@ -2412,6 +2653,7 @@ class Backtester:
                                 float(hs[j]),
                                 spr,
                                 comm,
+                                n_raw,
                             )
                         )
                         if od.first_fill is None:
@@ -2448,9 +2690,17 @@ class Backtester:
             costs_daily[k] = cost_today
             tax_daily[k] = tax_today
             traded_value[k] = value_today / (2.0 * prev_nav) if prev_nav > 0 else 0.0
-            susp = held & self._suspended[t]
+            # Positions bloquées pour le risque (§7.1.7) : suspensions ET titres radiés (plus
+            # aucune ligne au BOC), suivies pour la décote de 10 %.
+            susp = held & (self._suspended[t] | self._delisted[t])
             if susp.any():
                 susp_hist[k] = float(np.sum(q[susp] * np.nan_to_num(px_val[susp])))
+            for jd in np.flatnonzero(held & self._delisted[t]):
+                if int(jd) not in delisted_seen:
+                    delisted_seen.add(int(jd))
+                    delisted_log.append({"symbol": str(self.symbols[jd]), "date": day, "qty": float(q[jd]),
+                                         "value": float(q[jd] * np.nan_to_num(px_val[jd]))})
+                    events.append((day, self.symbols[jd], "radiation_position_bloquee", -1, -1, float(q[jd])))
 
             # 8. décision
             if t in reb_pos:
@@ -2460,6 +2710,16 @@ class Backtester:
 
         for od in pending.values():
             od.status = "end_of_backtest"
+        if delisted_log:
+            warnings.warn(
+                f"{len(delisted_log)} position(s) détenue(s) au moment d'une radiation (plus aucune cotation) : "
+                f"p. ex. {delisted_log[0]['symbol']} le {pd.Timestamp(delisted_log[0]['date']).date()} ; "
+                "position bloquée, suivie dans suspended_value"
+                + (f", valorisation décotée de {self.delisted_writedown:.0%}" if self.delisted_writedown > 0 else
+                   ", valorisée au dernier cours (hypothèse ; delisted_writedown pour un stress)"),
+                stacklevel=2,
+            )
+        self._delisted_log = delisted_log
         return self._build_result(
             sim_dates,
             equity,
@@ -2544,18 +2804,26 @@ class Backtester:
         px = self._px_val[t]
         val = np.where(np.isfinite(px), q * np.nan_to_num(px), 0.0)
         cur_w = val / nav if nav > 0 else np.zeros_like(val)
-        pend = pd.Series({self.symbols[j]: od.remaining for j, od in pending.items()}, dtype="int64", name="pending")
-        positions = pd.Series(q.copy(), index=self.symbols, name="positions")
+        f_view = pd.Series(self._af[t], index=self.symbols)
+        # Titres réels du jour ``asof`` (entiers) ; identiques aux titres ajustés sans division.
+        positions = pd.Series(np.round(q * self._af[t]).astype(np.int64), index=self.symbols, name="positions")
+        pend_raw = {self.symbols[j]: float(od.remaining) * float(self._af[t, j]) for j, od in pending.items()}
+        pend = pd.Series(pend_raw, dtype=float, name="pending")
+        if len(pend) and np.allclose(pend.to_numpy(), np.round(pend.to_numpy()), atol=1e-6):
+            pend = pend.round().astype("int64")
+        elif not len(pend):
+            pend = pend.astype("int64")
         rescale = None
         if self._rescale_view:
             # Vue « point-in-time » : cours, facteurs et quantités exprimés en
             # unités du jour de décision (f_s / f_asof ne dépend que des
             # divisions intervenues dans ]s, asof]) ; sans cela, le cours
-            # ajusté à rebours révélerait les divisions futures.
-            f_now = pd.Series(self._af[t], index=self.symbols)
-            rescale = {"close": 1.0 / f_now, "adj_factor": 1.0 / f_now}
-            positions = (positions * f_now).rename("positions")
-            pend = (pend.astype(float) * f_now.reindex(pend.index)).rename("pending")
+            # ajusté à rebours révélerait les divisions futures. ``close_adj`` et
+            # ``split_factor`` (panels de la stratégie, ``strategy.build_panels``)
+            # sont remis à l'échelle de la même façon : ``split_factor`` vaut 1 en
+            # ``asof`` et ``close_adj`` y égale le cours publié.
+            rescale = {"close": 1.0 / f_view, "adj_factor": 1.0 / f_view, "close_adj": 1.0 / f_view,
+                       "split_factor": f_view}
         view = PanelView(
             self._panels,
             asof,
@@ -2570,27 +2838,37 @@ class Backtester:
         w = self._parse_weights(fn(asof, view), warned)
         if w is None:
             return
+        f_now = self._af[t]
         ok = np.isfinite(px) & (px > 0)
-        target = np.zeros(len(w), dtype=np.int64)
+        # Cible en titres RÉELS du jour (quotité ``lot_size``), puis en titres ajustés :
+        # q*_brut = ⌊w · NAV / (P̃ / f_t) / lot⌋ · lot et q*_ajusté = q*_brut / f_t. La
+        # granularité ne dépend donc d'aucune division postérieure à la décision.
+        target_raw = np.zeros(len(w), dtype=np.int64)
         if nav > 0:
-            raw = np.where(ok, w * nav / np.where(ok, px, 1.0), 0.0)
-            target = self._round_lot(raw)
-        delta = target - q
+            raw = np.where(ok, w * nav / np.where(ok, px / f_now, 1.0), 0.0)
+            target_raw = self._round_lot(raw)
+        held_raw = np.round(q * f_now).astype(np.int64)
+        delta_raw = target_raw - held_raw
         if self.constraints is not None and self.constraints.no_trade_band > 0:
             band = float(self.constraints.no_trade_band)
-            small = (np.abs(w - cur_w) < band) & ~((w == 0) & (q > 0))
-            delta = np.where(small, 0, delta)
+            # §6 : pas d'ordre si |w_cible − w_actuel| < bande, SAUF pour une entrée
+            # (titre non détenu) ou une sortie complète.
+            full_exit = (w == 0) & (held_raw > 0)
+            entry = (w > 0) & (held_raw == 0)
+            small = (np.abs(w - cur_w) < band) & ~full_exit & ~entry
+            delta_raw = np.where(small, 0, delta_raw)
         for od in pending.values():
             od.status = "replaced"
         pending.clear()
-        for j in np.flatnonzero(delta):
+        for j in np.flatnonzero(delta_raw):
             oid = len(orders)
+            d_adj = float(delta_raw[j]) / float(f_now[j])
             od = _Order(
                 oid=oid,
                 j=int(j),
                 decision_pos=t,
-                qty=int(delta[j]),
-                remaining=int(delta[j]),
+                qty=d_adj,
+                remaining=d_adj,
                 ref_price=float(px[j]) if np.isfinite(px[j]) else math.nan,
                 entered_pos=t + 1,
                 root=oid,
@@ -2625,9 +2903,26 @@ class Backtester:
         n = len(idx)
         eq = pd.Series(equity, index=idx, name="equity")
         prev = np.concatenate([[self.capital], equity[:-1]])
-        rets = pd.Series(
-            np.where(prev > 0, equity / np.where(prev > 0, prev, 1.0) - 1.0, np.nan), index=idx, name="returns"
-        )
+        r_arr = np.where(prev > 0, equity / np.where(prev > 0, prev, 1.0) - 1.0, np.nan)
+        nav_meta: dict[str, Any] = {"nav_non_positive_from": None, "n_returns_excluded": 0}
+        bad_nav = np.flatnonzero(equity <= 0)
+        if bad_nav.size:
+            # Valeur liquidative ≤ 0 (frais fixes supérieurs au capital…) : la série de
+            # rendements s'arrête (perte totale de −100 % à la séance de franchissement,
+            # NaN ensuite) au lieu de rendements absurdes (−1 295 %, puis signes inversés).
+            k0 = int(bad_nav[0])
+            r_arr[k0] = -1.0
+            r_arr[k0 + 1 :] = np.nan
+            nav_meta = {"nav_non_positive_from": idx[k0], "n_returns_excluded": int(n - k0 - 1)}
+            warnings.warn(
+                f"valeur liquidative ≤ 0 à partir du {idx[k0].date()} ({equity[k0]:,.0f} FCFA) : rendements "
+                f"arrêtés (−100 % ce jour-là, {n - k0 - 1} séance(s) exclue(s)) ; capital trop faible pour les "
+                "frais fixes ?",
+                stacklevel=3,
+            )
+        rets = pd.Series(r_arr, index=idx, name="returns")
+        if np.allclose(pos, np.round(pos), atol=1e-9):
+            pos = np.round(pos).astype(np.int64)
         positions = pd.DataFrame(pos, index=idx, columns=self.symbols)
         px_val = np.nan_to_num(self._px_val[i0 : i0 + n])
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -2647,11 +2942,20 @@ class Backtester:
             "half_spread",
             "spread_cost",
             "commission",
+            "raw_qty",
         ]
         tr = pd.DataFrame(trades, columns=trade_cols)
         if len(tr):
-            tr["qty"] = tr["qty"].astype(np.int64)
+            # ``qty`` en titres ajustés ; ``raw_qty`` en titres réels du jour (entier).
+            tr["raw_qty"] = tr["raw_qty"].astype(np.int64)
+            qv = tr["qty"].to_numpy(dtype=float)
+            if np.allclose(qv, np.round(qv), atol=1e-9):
+                tr["qty"] = np.round(qv).astype(np.int64)
         bl = pd.DataFrame(blocked, columns=["date", "symbol", "side", "qty", "reason"])
+        if len(bl):
+            bq = bl["qty"].to_numpy(dtype=float)
+            if np.allclose(bq, np.round(bq), atol=1e-9):
+                bl["qty"] = np.round(bq).astype(np.int64)
         od_cols = [
             "decision_date",
             "symbol",
@@ -2684,6 +2988,11 @@ class Backtester:
             ],
             columns=od_cols,
         )
+        for col in ("qty", "filled"):
+            if len(od):
+                v = od[col].to_numpy(dtype=float)
+                if np.allclose(v, np.round(v), atol=1e-9):
+                    od[col] = np.round(v).astype(np.int64)
         if len(od):
             # taux d'exécution : quantité demandée par l'ordre racine, exécutions
             # cumulées sur toute la chaîne (ressaisies du jour ex comprises)
@@ -2736,6 +3045,12 @@ class Backtester:
                 "half_spread_measured_share": self.half_spread_measured_share,
                 "suspended_risk_haircut": self.suspended_risk_haircut,
                 "n_country_shock_cells": int(self._shock.sum()),
+                "country_shock_recovery": self.country_shock_recovery,
+                "delisted_positions": list(getattr(self, "_delisted_log", [])),
+                "delisted_writedown": self.delisted_writedown,
+                "nav_non_positive_from": nav_meta["nav_non_positive_from"],
+                "n_returns_excluded": nav_meta["n_returns_excluded"],
+                "quantity_units": "qty et positions en titres ajustés ; raw_qty en titres réels du jour (entiers)",
                 "avertissement": "Performance simulée (hypothèses de coûts et d'exécution) : aucun gain n'est garanti.",
             },
             dividends_paid=pd.Series(np.zeros(n) if paid is None else paid, index=idx, name="dividends_paid"),

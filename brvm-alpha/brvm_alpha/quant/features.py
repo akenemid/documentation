@@ -195,6 +195,9 @@ __all__ = [
     "traded_mask",
     "turnover",
     "turnover_proxy",
+    "WINDOW_BASES",
+    "on_session_grid",
+    "session_numbers",
     "valid_return_mask",
     "vol_scaling",
     "volatility",
@@ -1642,6 +1645,91 @@ def valid_return_mask(
     return ok.astype(bool)
 
 
+#: Bases de comptage des fenêtres glissantes (§3.1.3, §3.2, U2-U7). ``"boc"`` : lignes du
+#: panel, c'est-à-dire BOC **disponibles** (convention des calculs de l'annexe
+#: ``docs/annexes-spec/univ_breadth.py``, qui a produit les tableaux du §2) ; ``"sessions"`` :
+#: séances du calendrier contigu des numéros de BOC (``session_no``), BOC manquants compris
+#: (lecture littérale de « en séances » et de « un BOC absent n'est pas un jour férié »).
+#: Les deux lectures ne diffèrent que là où des BOC manquent (96 en 2021, 33 ailleurs) ; le
+#: choix pour le test S1 doit être tranché par un addendum pré-enregistré.
+WINDOW_BASES: tuple[str, ...] = ("boc", "sessions")
+
+
+def _check_basis(window_basis: str) -> str:
+    b = str(window_basis)
+    if b not in WINDOW_BASES:
+        raise ValueError(f"window_basis doit valoir l'un de {WINDOW_BASES} (lu : {window_basis!r})")
+    return b
+
+
+def session_numbers(panels: Panels, like: pd.DataFrame | None = None) -> np.ndarray | None:
+    """Numéro global de séance de chaque ligne (calendrier des BOC, séances manquantes comprises).
+
+    Sources, par ordre de préférence : panel ``session_no`` (large : maximum par ligne,
+    le numéro est commun à tous les titres d'une date ; ou ``Series`` par date) ; à défaut
+    ``missing_sessions`` (BOC manquants avant chaque ligne : ``n_t = n_{t-1} + 1 + manque``).
+    ``None`` si aucune source n'est disponible ou si les numéros ne sont pas strictement
+    croissants (une ligne = une séance, signalé par l'appelant).
+    """
+    ref = like if like is not None else _grid(panels)
+    idx = pd.DatetimeIndex(ref.index)
+    if not len(idx):
+        return None
+    raw = panels.get("session_no") if hasattr(panels, "get") else None
+    s: pd.Series | None = None
+    if isinstance(raw, pd.DataFrame):
+        s = raw.reindex(idx).apply(pd.to_numeric, errors="coerce").max(axis=1)
+    elif isinstance(raw, pd.Series):
+        s = pd.to_numeric(raw, errors="coerce")
+        s = s[~s.index.duplicated(keep="last")].reindex(idx)
+    if s is not None and s.notna().any():
+        vals = s.to_numpy(dtype=float)
+        out = np.empty(len(vals))
+        last = math.nan
+        for i, v in enumerate(vals):
+            last = v if math.isfinite(v) else (last + 1.0 if math.isfinite(last) else float(i))
+            out[i] = last
+    else:
+        ms = panels.get("missing_sessions") if hasattr(panels, "get") else None
+        if not isinstance(ms, pd.DataFrame):
+            return None
+        gap = ms.reindex(idx).apply(pd.to_numeric, errors="coerce").max(axis=1).fillna(0.0).clip(lower=0.0)
+        out = np.cumsum(1.0 + gap.to_numpy(dtype=float))
+    if len(out) > 1 and np.any(np.diff(out) <= 0):
+        return None
+    return out.astype(np.int64)
+
+
+def on_session_grid(
+    df: pd.DataFrame,
+    sess: np.ndarray | None,
+    fn: Callable[[pd.DataFrame], pd.DataFrame],
+    *,
+    ffill: bool = False,
+) -> pd.DataFrame:
+    """Applique ``fn`` (fenêtre glissante, décalage) sur le calendrier **contigu** des séances.
+
+    Les séances sans BOC deviennent des lignes NaN (``ffill=True`` : dernier niveau
+    connu reporté, pour un niveau comme le TR) ; le résultat est ramené aux lignes de
+    ``df``. ``sess=None`` : ``fn(df)`` sur les lignes (base ``"boc"``). Exemple :
+    ``on_session_grid(valid, sess, lambda x: x.rolling(63, min_periods=1).sum())``
+    compte les rendements valides des 63 dernières **séances**.
+    """
+    if sess is None:
+        return fn(df)
+    s = np.asarray(sess, dtype=np.int64)
+    if len(s) != len(df):
+        raise ValueError("on_session_grid : un numéro de séance par ligne est attendu")
+    if not len(s):
+        return fn(df)
+    work = df.astype(float) if any(dt == bool or dt == object for dt in df.dtypes) else df
+    full = work.set_axis(pd.Index(s), axis=0).reindex(pd.RangeIndex(int(s.min()), int(s.max()) + 1))
+    if ffill:
+        full = full.ffill()
+    out = fn(full)
+    return out.reindex(pd.Index(s)).set_axis(df.index, axis=0)
+
+
 def mom_sessions(
     panels: Panels,
     lookback_sessions: int = 126,
@@ -1651,6 +1739,7 @@ def mom_sessions(
     gap_days: int = MULTI_SESSION_GAP_DAYS,
     exclude_windows: Iterable[tuple[str, str]] = EXCLUDED_STAT_WINDOWS,
     params: Mapping[str, Any] | None = None,
+    window_basis: str = "boc",
 ) -> pd.DataFrame:
     """Momentum en **séances** : ``TR(t - skip) / TR(t - lookback) - 1`` (§3.2).
 
@@ -1661,16 +1750,24 @@ def mom_sessions(
     suspensions et fenêtre 2021 exclus du comptage). Choix documenté : le comptage
     porte sur toute la fenêtre de ``lookback`` séances (126, au moins 100), comme
     pour LOWVOL (250, au moins 200).
+
+    ``window_basis`` (:data:`WINDOW_BASES`) : ``"boc"`` compte les lignes du panel (BOC
+    disponibles) ; ``"sessions"`` compte les séances du calendrier des numéros de BOC
+    (:func:`session_numbers`) : le décalage de 21 / 126 séances prend le dernier TR
+    connu à cette séance, et les BOC manquants réduisent le nombre de rendements
+    valides de la fenêtre (signal NaN sous ``min_obs``).
     """
     a = _merge(params, lookback_sessions=lookback_sessions, skip_sessions=skip_sessions, min_obs=min_obs)
     lb, sk, mo = int(a["lookback_sessions"]), int(a["skip_sessions"]), int(a["min_obs"])
     if not 0 <= sk < lb:
         raise ValueError("il faut 0 <= skip_sessions < lookback_sessions")
     _check_window(lb, mo)
+    basis = _check_basis(window_basis)
     p = _price(panels, price)
-    mom = p.shift(sk) / p.shift(lb) - 1.0
+    sess = session_numbers(panels, like=p) if basis == "sessions" else None
+    mom = on_session_grid(p, sess, lambda x: x.shift(sk) / x.shift(lb) - 1.0, ffill=True)
     valid = valid_return_mask(panels, like=p, price=price, gap_days=gap_days, exclude_windows=exclude_windows)
-    cnt = valid.astype(float).rolling(lb, min_periods=1).sum()
+    cnt = on_session_grid(valid.astype(float), sess, lambda x: x.rolling(lb, min_periods=1).sum())
     return mom.where((cnt >= mo) & p.notna())
 
 
@@ -1707,6 +1804,7 @@ def lowvol(
     gap_days: int = MULTI_SESSION_GAP_DAYS,
     exclude_windows: Iterable[tuple[str, str]] = EXCLUDED_STAT_WINDOWS,
     params: Mapping[str, Any] | None = None,
+    window_basis: str = "boc",
 ) -> pd.DataFrame:
     """Faible volatilité : ``lv = -σ`` (§3.2, Blitz, Pang & van Vliet 2013).
 
@@ -1716,16 +1814,22 @@ def lowvol(
     Rendements calendaires : un cours périmé compte pour 0 (convention §3.1.3) ;
     un titre très peu échangé paraît donc peu volatil (le filtre U3 de l'univers
     limite ce biais). ``annualize=True`` multiplie par ``sqrt(252)`` (rangs inchangés).
+    ``window_basis`` : fenêtres comptées en BOC disponibles (``"boc"``) ou en séances du
+    calendrier des numéros de BOC (``"sessions"``, voir :data:`WINDOW_BASES`).
     """
     a = _merge(params, window_sessions=window_sessions, min_obs=min_obs, fallback_window=fallback_window,
                fallback_min_obs=fallback_min_obs, sign=sign)
     _check_window(int(a["window_sessions"]), int(a["min_obs"]))
     _check_window(int(a["fallback_window"]), int(a["fallback_min_obs"]))
+    basis = _check_basis(window_basis)
     p = _price(panels, price)
+    sess = session_numbers(panels, like=p) if basis == "sessions" else None
     r = (p / p.shift(1) - 1.0).where(
         valid_return_mask(panels, like=p, price=price, gap_days=gap_days, exclude_windows=exclude_windows))
-    s_long = r.rolling(int(a["window_sessions"]), min_periods=int(a["min_obs"])).std(ddof=1)
-    s_short = r.rolling(int(a["fallback_window"]), min_periods=int(a["fallback_min_obs"])).std(ddof=1)
+    s_long = on_session_grid(
+        r, sess, lambda x: x.rolling(int(a["window_sessions"]), min_periods=int(a["min_obs"])).std(ddof=1))
+    s_short = on_session_grid(
+        r, sess, lambda x: x.rolling(int(a["fallback_window"]), min_periods=int(a["fallback_min_obs"])).std(ddof=1))
     sigma = _annualize(s_long.where(s_long.notna(), s_short), annualize)
     return (float(a["sign"]) * sigma).where(p.notna())
 

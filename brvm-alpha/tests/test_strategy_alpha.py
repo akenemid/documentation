@@ -333,11 +333,17 @@ def test_panel_risk_flags(synth):
                                             "ratio": np.nan, "confidence": "low"}])
     risk = model().risk_flags(t, p, notes=None)
     assert risk.loc[SYMS[7], "R8"] and not risk.loc[SYMS[7], "R8_fail"]
-    assert risk.loc[SYMS[8], "R5"] and risk.loc[SYMS[8], "block_buys"]
+    # Drapeau EX-D du BOC (veille du détachement) : information seulement. Un ordre décidé ce
+    # jour-là s'exécute le jour du détachement, après lui : R5 ne s'y applique pas (revue R5).
+    assert risk.loc[SYMS[8], "EX-D_boc"] and not risk.loc[SYMS[8], "R5"]
     assert risk.loc[SYMS[9], "R8_fail"] and risk.loc[SYMS[9], "block_buys"]
     r1 = model().risk_flags(idx[310], synth, notes=None)
     assert r1.loc[SYMS[3], "R1"] and r1.loc[SYMS[3], "block_buys"]
-    dec = model().decide(t, p)
+    # R5 daté de l'annonce de l'augmentation de capital en numéraire jusqu'à la veille du détachement.
+    ci = pd.DataFrame([{"date": idx[370], "symbol": SYMS[8], "detachment_date": idx[381], "kind": "cash"}])
+    m5 = BrvmAlpha(notes=None, capital_increases=ci)
+    assert m5.risk_flags(t, p, notes=None).loc[SYMS[8], "block_buys"]
+    dec = m5.decide(t, p)
     assert dec.weights[SYMS[9]] == 0.0  # contrôle de facteur échoué : signaux bloqués
     assert dec.weights[SYMS[8]] == 0.0  # R5 : pas d'achat
 
@@ -642,7 +648,9 @@ def test_spec_12_3_n6_universe_2020(real):
 
 def test_spec_12_3_n5_signals(real):
     """§12.3 n° 5 : DY(FTSC, 20/11/2026) = 0 ; EP(ETIT) = 10/57."""
-    s = BrvmAlpha(notes=None).signals("2026-11-20", real)
+    # history_start = S0 : DY et EP n'en dépendent pas, et aucun spread de performance du momentum
+    # n'est calculé sur l'échantillon vierge S1 (revue : échantillon vierge).
+    s = BrvmAlpha(notes=None, history_start=S0_START).signals("2026-11-20", real)
     assert s["DY"]["FTSC"] == 0.0
     assert float(real["close_raw"].loc["2026-11-20", "ETIT"]) == 57.0
     assert s["EP"]["ETIT"] == pytest.approx(10.0 / 57.0)
@@ -770,3 +778,14 @@ def test_payout_proxies_optional(synth):
     off = model(payout_proxies=False).risk_flags(t, synth, notes=None)
     assert (off["R11"] <= on["R11"]).all()
     assert not any("payout" in x for lst in off["detail_panel"] for x in lst)
+
+
+def test_dividend_amounts_point_in_time_real_panel_s0(real):
+    """ONTBF 2024 (S0) : 226,45 publié sur la ligne (d) le 26/07, corrigé en 266,45 le 30/07 seulement."""
+    m = BrvmAlpha(notes=None, history_start=S0_START)
+    for day, expected in (("2024-07-26", 226.45), ("2024-07-29", 226.45), ("2024-07-30", 266.45)):
+        d = m._prepare(real, day)
+        row = d.dividends[(d.dividends["symbol"] == "ONTBF") & (d.dividends["ex_date"] == "2024-07-29")]
+        assert float(row["amount"].iloc[0]) == pytest.approx(expected)
+    # le moteur crédite le montant retenu (baisse de la référence de 265 : flux versé, hypothèse documentée)
+    assert float(real["dividend_net"].loc["2024-07-29", "ONTBF"]) == pytest.approx(266.45)

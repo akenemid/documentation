@@ -16,7 +16,7 @@ brvm-alpha/
       boc_parser.py        # extraction d'un BOC -> BocDay
       store.py             # panel parquet + ajustements (splits, total return)
       live.py              # cours du jour depuis www.brvm.org (page publique)
-      news.py              # actualités / communiqués (brvm.org) + sentiment
+      news.py              # (à venir) actualités / communiqués (brvm.org) + sentiment
     quant/
       features.py          # caractéristiques par titre et par date
       scoring.py           # normalisation transversale, composites, IC
@@ -30,9 +30,11 @@ brvm-alpha/
       walkforward.py       # validation walk-forward / CSCV
     strategy/
       alpha.py             # le modèle BRVM Alpha (signaux de la spécification)
-    report/
-      html.py              # rapport HTML autonome (graphiques SVG inline)
-    cli.py                 # commandes : update, panel, analyze, backtest, report
+    report/                # (à venir)
+      html.py              # (à venir) rapport HTML autonome (graphiques SVG inline)
+    cli.py                 # commandes v1 : universe, backtest (S1 refusé sans --validation-s1) ;
+                           # update, panel, live, news, analyze, report : à venir
+    __main__.py            # python -m brvm_alpha
   tests/
   docs/
 ```
@@ -149,6 +151,22 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
 - Exécution en t+1 au prix moyen pondéré (value/volume) si le titre est
   échangé, avec plafond de participation au volume ; pas d'achat à la limite
   haute ni de vente à la limite basse ; dividendes nets d'impôt crédités.
+- Quantités : `qty` et `positions` en titres ajustés (`float` seulement si une
+  attribution non entière l'impose), `trades["raw_qty"]` en titres réels du jour
+  (entiers) ; l'arrondi à la quotité se fait en titres réels (aucune dépendance à une
+  division future). Bande de non-transaction : entrée et sortie complète exemptées (§6).
+- Options du moteur (`ENGINE_DEFAULTS`, `params`) : `country_shock_recovery`
+  (`"persistent"` / `"shock_only"`), `delisted_writedown`, `delisting_min_sessions` ; une clé
+  inconnue (dict plat ou section `execution` du YAML) lève `KeyError`.
+
+### `backtest/metrics.py` et `backtest/walkforward.py` (validation, §8)
+- `weekly_returns(daily, exclude_windows=EXCLUDE_STATS_WINDOWS, max_sessions=6, session_no=None)`,
+  `weekly_observation_mask(...)`, `monthly_one_way_turnover(result)`, `first_investment_date(result)`
+- `evaluate_status(..., s2_ic_monthly=None, s2_pbo=None, s2_pbo_slope=None, start=None, result=None,
+  exposure=None, expected_period=None, exclude_windows=None) -> StatusReport`
+- `variant_promotion(weekly_active, benchmark=None, pbo=None, baseline="A", n_trials=8) -> PromotionReport`
+  (règle du §3.4)
+- `cpcv(..., min_train=1)`, `purged_kfold(..., min_train=1)` : `ValueError` si un apprentissage est trop court
 
 ### `strategy/alpha.py`
 - `BrvmAlpha(config).signals(asof, panels) -> dict[str, pd.Series]`
@@ -157,8 +175,11 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
 
 Modèle v1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §9.1 ; paramètres = `configs/strategy_v1.yaml`) :
 - `BrvmAlpha(config=None, variant="A", capital=None, params=None, *, notes="auto", country_events=None,
-  dividend_calendar=None, history_start=None, risk_overlay=True, defer_sales=None, sectors=None)`
-  (`variant` ∈ A…H ; `params` = surcharges du YAML, validées par `settings.load_strategy_config`)
+  dividend_calendar=None, history_start=None, risk_overlay=True, defer_sales=None, sectors=None,
+  window_basis=None, validation_s1=False, capital_increases=None)`
+  (`variant` ∈ A…H ; `params` = surcharges du YAML, validées par `settings.load_strategy_config`, clé
+  inconnue refusée ; `window_basis` ∈ `"boc"`, `"sessions"` : comptage des fenêtres, à trancher avant S1 ;
+  hors `validation_s1`, aucune série de performance n'est calculée sur S1)
 - `.universe(asof, panels) -> DataFrame` (U1-U10 : `eligible`, `reason`, `codes`, MDV63, U6/U7…)
 - `.risk_flags(asof, panels, notes="default") -> DataFrame` (R1-R12 du panel, notes de l'analyste si
   `brvm_alpha.notes` s'importe, règles pays)
@@ -170,8 +191,11 @@ Modèle v1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §9.1 ; paramètres = `co
   `shares`, `market_tr`, tables datées `dividends_table`, `corporate_actions`, `market`)
 
 ### `cli.py`
-`python -m brvm_alpha <commande>` avec `update`, `panel`, `live`, `news`,
-`analyze`, `backtest`, `report`.
+`python -m brvm_alpha <commande>`. Disponibles (v1) : `universe --date` (contrôle de forme)
+et `backtest --start --end [--variant] [--capital] [--costs]` ; une période qui recoupe
+l'échantillon vierge S1 est refusée (code 2) sans `--validation-s1`, qui exige aussi
+`--window-basis`. **À venir** : `update`, `panel`, `live`, `news`, `analyze`, `report`
+(ainsi que `data/news.py` et `report/html.py`).
 
 ## Module « Notes de l'analyste » (`brvm_alpha/notes/`)
 

@@ -19,6 +19,7 @@ from brvm_alpha.backtest.engine import (
 )
 from brvm_alpha.backtest.walkforward import (
     CPCVResult,
+    PromotionReport,
     PurgedSplit,
     StatusReport,
     TrialRegistry,
@@ -30,6 +31,7 @@ from brvm_alpha.backtest.walkforward import (
     param_grid,
     purged_kfold,
     run_param_grid,
+    variant_promotion,
     walk_forward,
     walk_forward_windows,
 )
@@ -41,6 +43,7 @@ __all__ = [
     "BacktestResult",
     "Backtester",
     "PanelView",
+    "PromotionReport",
     "PurgedSplit",
     "StatusReport",
     "TrialRegistry",
@@ -62,6 +65,7 @@ __all__ = [
     "tick_size",
     "trade_cost",
     "truncate_asof",
+    "variant_promotion",
     "walk_forward",
     "walk_forward_windows",
 ]

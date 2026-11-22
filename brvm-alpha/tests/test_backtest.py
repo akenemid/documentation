@@ -461,9 +461,14 @@ def test_change_pct_has_priority_and_ex_dividend_reference() -> None:
     # prev_close brut = 1000 et dividende de 80 : référence 920 => variation nulle
     bt = Backtester(panels, NO_IMPACT, capital=1e6)
     assert not bt._lim_down[2, 0]
-    # variation publiée prioritaire
-    panels["change_pct"] = pd.DataFrame({"SNTS": [0.0, 0.0, -7.5, 0.0, 0.0]}, index=dates)
-    assert Backtester(panels, NO_IMPACT, capital=1e6)._lim_down[2, 0]
+    # Jour ex : une variation publiée calculée sur la clôture NON ajustée du dividende
+    # (BOC 2017-2019, SOGC 19/07/2018) ne doit plus créer un faux « plancher » ; la référence
+    # ajustée (prev_close − dividende) l'emporte (revue : règle de tolérance, engine.py).
+    panels["change_pct"] = pd.DataFrame({"SNTS": [0.0, 0.0, -7.5, 0.0, -7.5]}, index=dates)
+    bt = Backtester(panels, NO_IMPACT, capital=1e6)
+    assert not bt._lim_down[2, 0]
+    # Hors jour ex, la variation publiée reste prioritaire sur prev_close (référence BRVM).
+    assert bt._lim_down[4, 0]
 
 
 # ---------------------------------------------------------------------------

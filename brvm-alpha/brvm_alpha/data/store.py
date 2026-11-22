@@ -717,7 +717,13 @@ def load_corporate_actions(panel_dir: str | Path) -> pd.DataFrame:
 # Dividendes
 # ---------------------------------------------------------------------------
 
-DIVIDEND_COLUMNS = ["symbol", "ex_date", "amount", "payment_date", "first_seen", "evidence", "close_before", "yield_pct"]
+#: ``amount`` : montant retenu (celui qui explique le mieux la baisse de la référence, voir
+#: :func:`_correct_dividend_amount`) ; ``amount_first`` : montant publié à la première
+#: apparition (ligne (d) du BOC le plus souvent, connu dès ``first_seen``) ;
+#: ``revised_seen`` : première séance où le montant corrigé a été publié (NaT sans
+#: correction). Un usage point-in-time doit lire ``amount_first`` avant ``revised_seen``.
+DIVIDEND_COLUMNS = ["symbol", "ex_date", "amount", "payment_date", "first_seen", "evidence", "close_before",
+                    "yield_pct", "amount_first", "revised_seen"]
 
 
 #: Preuves de détachement jugées fortes (marqueur, baisse de la référence ou du cours
@@ -824,6 +830,8 @@ def detect_dividends(equities: pd.DataFrame) -> pd.DataFrame:
                 "evidence": evidence,
                 "close_before": close_before,
                 "yield_pct": float(amount / close_before * 100) if close_before and close_before > 0 else np.nan,
+                "amount_first": float(amount),
+                "revised_seen": pd.NaT,
             }
             out.append(last_event)
     return pd.DataFrame(out, columns=DIVIDEND_COLUMNS)
@@ -897,6 +905,8 @@ def _correct_dividend_amount(g: pd.DataFrame, event: dict[str, Any], new: float,
         better = 2.0 / 3.0 <= new / old <= 1.5
     if better:
         event["amount"] = new
+        if pd.isna(event.get("revised_seen", pd.NaT)):
+            event["revised_seen"] = pd.Timestamp(g.at[i, "date"])  # première publication du montant corrigé
         event["evidence"] = f"{event['evidence']}+amount_corrected"
         cb = event["close_before"]
         event["yield_pct"] = float(new / cb * 100) if cb and cb > 0 else np.nan

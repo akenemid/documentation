@@ -412,10 +412,21 @@ def test_status_promoted_requires_g1_g9_on_s1_and_12_months_of_s2() -> None:
         "ic_monthly": ic,
         "n_boot": 500,
     }
+    # Revue : les filtres G de S2 n'utilisent plus l'IC, la PBO ni la pente de S1 ; sans entrées
+    # propres à S2, G4 et G7 de S2 ne sont pas évaluables et PROMU est impossible.
+    s1_only = evaluate_status(a, a - 0.0001, b, SUBS, s2_active_weekly_returns=s2, **kw)
+    assert s1_only.critere("promotion_S2", "G7")["verifie"] is None
+    assert s1_only.critere("promotion_S2", "G4")["verifie"] is None and s1_only.statut == STATUT_CANDIDAT
+    # Entrées propres à S2 (14 mois d'IC) ; le seuil de 36 mois d'IC de S2 (lecture prudente) est
+    # fixé explicitement à 12 mois, la valeur qu'un addendum devrait trancher.
+    s2_ic = pd.Series(0.05 + 0.01 * np.sin(np.arange(14)), index=pd.date_range("2036-01-31", periods=14, freq="ME"))
+    kw.update({"s2_ic_monthly": s2_ic, "s2_pbo": 0.10, "s2_pbo_slope": 0.1, "params": {"s2_ic_min_months": 12}})
     rep = evaluate_status(a, a - 0.0001, b, SUBS, s2_active_weekly_returns=s2, **kw)
     assert rep.groupe("promotion_S1")["verifie"].tolist() == [True] * 9
     assert rep.groupe("promotion_S2")["verifie"].tolist() == [True] * 9
     assert rep.statut == STATUT_PROMU
+    default_36 = evaluate_status(a, a - 0.0001, b, SUBS, s2_active_weekly_returns=s2, **{**kw, "params": None})
+    assert default_36.critere("promotion_S2", "G7")["verifie"] is False and default_36.statut == STATUT_CANDIDAT
     assert any("ERREUR" in x for x in rep.avertissements)  # IR > 1 : suspect par principe
     # moins de 52 semaines de suivi réel : pas de promotion
     rep = evaluate_status(a, a - 0.0001, b, SUBS, s2_active_weekly_returns=s2.iloc[:51], **kw)
@@ -447,12 +458,9 @@ def test_status_uses_registry_for_n_and_g1(tmp_path) -> None:
 
 def test_status_thresholds_match_strategy_yaml() -> None:
     assert STATUS_THRESHOLDS["candidate_ir_ge"] == 0.20 and STATUS_THRESHOLDS["reject_rel_dd_lt"] == -0.20
-    try:
-        from brvm_alpha import settings
+    from brvm_alpha import settings  # dépendance du projet : un YAML invalide doit faire échouer le test
 
-        cfg = settings.load_strategy_config()
-    except Exception:  # pragma: no cover - fichier de paramètres d'un autre agent
-        pytest.skip("configs/strategy_v1.yaml indisponible")
+    cfg = settings.load_strategy_config()
     assert status_thresholds(cfg) == STATUS_THRESHOLDS
     custom = status_thresholds({"candidate_ir_ge": 0.3})
     assert custom["candidate_ir_ge"] == 0.3

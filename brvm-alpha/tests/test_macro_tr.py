@@ -242,7 +242,14 @@ def test_equal_weight_tr_monthly_drift(tmp_path: Path) -> None:
 
 @needs_panel
 def test_equal_weight_tr_real_panel_form_on_s0() -> None:
-    det = store.equal_weight_tr(PANEL, detail=True).loc[S0_START:]
+    # Éligibilité limitée à S0 : aucun rendement du panier n'est calculé sur l'échantillon vierge S1.
+    eq = store.load_equities(PANEL)
+    eq = eq.reset_index() if "symbol" not in eq.columns else eq
+    status = eq.assign(date=pd.to_datetime(eq["date"])).pivot_table(index="date", columns="symbol", values="status",
+                                                                    aggfunc="last")
+    mask = status.notna() & status.ne("suspended")
+    mask.loc[mask.index < pd.Timestamp(S0_START)] = False
+    det = store.equal_weight_tr(PANEL, eligible_mask=mask, detail=True).loc[S0_START:]
     assert det["level"].notna().all() and (det["level"] > 0).all()
     assert det.loc["2026-01-01":, "n_names"].between(40, 48).all()
 
