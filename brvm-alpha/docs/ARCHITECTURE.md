@@ -39,8 +39,8 @@ brvm-alpha/
       report_md.py         # rapport resultats.md en français
     strategy/
       alpha.py             # le modèle BRVM Alpha (signaux de la spécification)
-    report/                # (à venir)
-      html.py              # (à venir) rapport HTML autonome (graphiques SVG inline)
+    report/                # rapport final (build_report)
+      html.py              # rapport HTML autonome : 11 sections, SVG inline, thème clair/sombre
     cli.py                 # commandes v1 : universe, backtest (S1 refusé sans --validation-s1) ;
                            # update, panel, live, news, analyze, report : à venir
     __main__.py            # python -m brvm_alpha
@@ -376,8 +376,50 @@ et `backtest --start --end [--variant] [--capital] [--costs]` ; une période qui
 l'échantillon vierge S1 est refusée (code 2) sans `--validation-s1`, qui exige aussi
 `--window-basis`. `validate --sample S1|S0 [--rerun-reason TEXTE] [--workers N] [--out-dir]
 [--panel-dir] [--decision-mode evenementiel|mensuel]` (défaut `evenementiel`) : exécuteur de la validation (`validation.run_validation`) ; refus du verrou → code 2,
-run en échec → code 1. **À venir** : `update`, `panel`, `live`, `news`, `analyze`, `report`
-(ainsi que `data/news.py` et `report/html.py`).
+run en échec → code 1. **À venir** : `update`, `panel`, `live`, `news`, `analyze`, `report` (commande ; la
+fonction existe : `report.build_report`), ainsi que `data/news.py`.
+
+### `report/html.py` (rapport final, exporté par `brvm_alpha.report`)
+- `build_report(asof, capital, out_path, *, panels=None, panel_dir="data/panel", notes_root="data/notes",
+  validation_dir="reports/validation_S1", diagnostic_dir="reports/diagnostic_S0", holdings=None, variant=None,
+  **kwargs) -> Path` : écrit **un seul fichier HTML** autonome (aucune ressource externe : styles et script en
+  ligne, graphiques en SVG inline générés en Python, axes et libellés en HTML ; seuls les liens de la liste des
+  sources, `class="src"`, pointent vers brvm.org). Options (`**kwargs`, transmises à `render_report`) : `cash`,
+  `costs`, `registry_path`, `n_boot` (5 000), `seed`, `recommend_kwargs` (surcharges de `recommend`), `now`.
+  Chemins de données relatifs = racine du dépôt (comme `recommend`) ; `out_path` relatif = répertoire courant.
+- `render_report(...) -> RapportHTML` (`html`, `sections` : liste de `SectionResult(id, titre, statut, message,
+  duree_s)` avec `statut` ∈ `ok` / `indisponible` / `erreur`, `meta`) ; `read_validation(dir, sample="S1")` :
+  état du test lu dans `metrics.json` / `lock.json` (`exécuté`, `non exécuté`, `en cours`, `échec`, `illisible`,
+  `autre échantillon`), statut de A et variante principale après la règle du §3.4.
+- Sections (`SECTIONS`, dans l'ordre, ancres `#id`) : `bandeau` (date des données = dernière séance ≤ `asof`,
+  capital, statut lu dans `metrics.json` ou « test S1 non exécuté », bannière « Performance passée ≠ garantie.
+  Aucun gain n'est garanti. Statut : … », phrase étude / paper trading / promu), `marche` (Composite, Composite TR
+  officiel ou reconstruit, BRVM 30, Prestige, capitalisation, PER, prime du BOC et bande chère/neutre/bon marché,
+  `macro.ref_govt_rate`), `s1` (t0, 9 variantes + REF : rendement, actif contre TR, IR et IC bootstrap, DSR N = 9
+  et registre, drawdown relatif, rotation, statut ; courbes A, I, REF, TR, EW rebasées à t0 depuis `nav.parquet`,
+  à défaut `weekly_returns.parquet` ; sous-périodes ; sensibilités coûts/capacité ; PBO ; règle du §3.4 ;
+  prédiction du §8.3 ; lecture honnête générée ; diagnostic S0 replié et marqué contaminé ; **encadré explicite
+  si le test n'est pas exécuté**), `ordre` (`portfolio.recommend.recommend(..., index_evaluation=False)` :
+  `to_dict()` pour les ordres, prix limites, coûts, séances, contraintes actives, comparaison A/REF, faits /
+  estimations / hypothèses ; `to_html_fragment()` replié ; « module indisponible » si l'import échoue),
+  `revenus` (calendrier mensuel et détail des dividendes, net après IRVM), `distribution` (histogramme des
+  tirages **recalculés à l'identique** avec `weekly_tr_returns` et `stationary_bootstrap_indices` : même fenêtre,
+  mêmes poids, même graine ; médiane/P10/P90, P(battre le TR), P(perte) ; stress du §9.3 **en tête** si la prime
+  du BOC classe le marché « cher », §4.5), `indices` (`notes.index_eval.evaluate_indices` : position, confiance,
+  raisons ; « aide à la décision, pas un signal validé »), `notes` (12 dernières notes actives de
+  `NoteStore(notes_root)` avec score, matérialité, confiance, lecture ; adresses en texte ; vetos et inclinaisons
+  de la décision ; encadré « aucune note » si le journal est absent), `risques` (filtres R actifs de
+  `BrvmAlpha.decide`, règles et événements pays, événements à venir, drawdown, valorisation §4.5), `univers`
+  (tous les titres : éligible, motif U1-U10, score final, rang, blocs z, poids, filtres R), `methode` (§10,
+  trous de données comptés dans `sessions.parquet`, hypothèses de coûts, protocole, sources).
+- Robustesse : calculs partagés paresseux (panels, ordre de bataille, décision, évaluation des indices, tirages) ;
+  chaque section dans un `try/except` : `Unavailable` → encadré « indisponible », autre exception → encadré
+  d'erreur lisible (type, message, trace repliée) ; le rapport est toujours écrit. Tout texte issu des données,
+  des notes ou des fichiers de résultats est échappé ; le bloc JSON des graphiques n'a aucun `<`, `>` ou `&` brut.
+- Mise en page : gouttière de 16 px, aucun défilement horizontal de la page (tableaux larges dans `.tablewrap`),
+  couleurs en variables CSS sur `:root` redéfinies sous `@media (prefers-color-scheme: dark)` (et
+  `:root[data-theme]`, bouton de thème), `body` à fond explicite ; info-bulles et réticule en JavaScript sans
+  dépendance. **Aucune performance n'est calculée sur S1** : le résultat du test unique est lu, jamais recalculé.
 
 ## Module « Notes de l'analyste » (`brvm_alpha/notes/`)
 
