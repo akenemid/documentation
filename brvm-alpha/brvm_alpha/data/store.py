@@ -38,6 +38,7 @@ import re
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -220,7 +221,8 @@ def build_panel(
     manifest = _read_parquet(cache_dir / "manifest.parquet")
     cached: dict[str, pd.DataFrame] = {t: _read_parquet(cache_dir / f"{t}.parquet") for t in _CACHE_TABLES}
     known: dict[str, tuple[int, int, str]] = {}
-    if not force and len(manifest):
+    # Cache antérieur au calendrier des séances (pas de numéro de BOC) : tout réanalyser.
+    if not force and len(manifest) and "issue_no" in manifest.columns:
         for r in manifest.itertuples(index=False):
             known[r.file] = (int(r.size), int(r.mtime), str(r.version))
     todo: list[Path] = []
@@ -514,7 +516,7 @@ def session_calendar(available: pd.DataFrame, markers: dict[pd.Timestamp, str] |
     cal["marker"] = ""
     avail = np.flatnonzero(cal["available"].to_numpy(bool))
     sess = cal["session_no"].to_numpy(int)
-    for a_i, b_i in zip(avail[:-1], avail[1:]):
+    for a_i, b_i in pairwise(avail):
         m = b_i - a_i - 1
         cal.iat[b_i, cal.columns.get_loc("missing_before")] = int(sess[b_i] - sess[a_i] - 1)
         if m <= 0:
@@ -925,15 +927,15 @@ def _find_ex_date(g: pd.DataFrame, i: int, amount: float, payment_date: pd.Times
         c, r = g.at[s - 1, "close"], g.at[s - 1, "ref_price"]
         return bool(pd.notna(c) and pd.notna(r) and c > r and 0.6 <= (c - r) / amount <= 1.4)
 
-    for s in order:  # 1) marqueur (d) la veille ET référence abaissée du montant
-        if bool(g.at[s - 1, "ex_div"]) and ref_drop_ok(s):
-            return s, "ex_div_flag"
     def prev_drop_ok(s: int) -> bool:
         if _has_gap(sess, exact, s - 1, s):  # précédent publié = clôture d'une séance manquante
             return False
         c, p = g.at[s - 1, "close"], prev[s]
         return bool(pd.notna(c) and np.isfinite(p) and c > p > 0 and 0.6 <= (c - p) / amount <= 1.4)
 
+    for s in order:  # 1) marqueur (d) la veille ET référence abaissée du montant
+        if bool(g.at[s - 1, "ex_div"]) and ref_drop_ok(s):
+            return s, "ex_div_flag"
     for s in order:  # 2) référence abaissée du montant la veille
         if ref_drop_ok(s):
             return s, "ref_adjusted"
