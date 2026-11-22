@@ -20,7 +20,14 @@ Règles :
 * **Robustesse** : chaque section est construite dans un ``try/except`` ; une erreur affiche un
   encadré lisible (type, message, trace repliée) au lieu de faire échouer le rapport.
 * **Échappement** : tout texte issu des données, des notes ou des fichiers de résultats est
-  échappé (:func:`esc`) ; les adresses des notes sont affichées en texte, jamais en lien.
+  échappé (:func:`esc`) ; l'adresse d'une note n'est un lien que si elle pointe vers
+  ``https://www.brvm.org/`` (``class="src"``), sinon elle est affichée en texte.
+* **Deux instants** : la date des données est celle du dernier BOC ; les notes suivent la règle
+  stricte à cette date (mode historique, défaut de :func:`render_report`) ou, avec
+  ``notes_known_at`` (mode direct, passé par la ligne de commande et l'interface à la dernière
+  séance du panel), celles connues à cet instant sont appliquées à la séance suivante. Les
+  sections indices, notes et ordre affichent la ligne « Notes connues au …, appliquées à la
+  séance du … : N en vigueur (dont M manuelles), F filtre(s) de risque actif(s) ».
 * **Honnêteté** : bannière « Performance passée ≠ garantie. Aucun gain n'est garanti. » en tête
   et en pied ; chaque bloc distingue faits, estimations et hypothèses.
 
@@ -731,8 +738,10 @@ class _Ctx:
     def __init__(self, asof: Any, capital: float, *, panels: Mapping[str, Any] | None, panel_dir: Any,
                  notes_root: Any, validation_dir: Any, diagnostic_dir: Any, holdings: Mapping[str, int] | None,
                  variant: str | None, cash: float | None, costs: Any, registry_path: Any, n_boot: int, seed: int,
-                 recommend_kwargs: Mapping[str, Any] | None, now: pd.Timestamp):
+                 recommend_kwargs: Mapping[str, Any] | None, now: pd.Timestamp, notes_known_at: Any = None):
         self.asof_req = pd.Timestamp(asof).normalize()
+        #: instant de connaissance des notes (mode direct) ; None : mode historique (règle stricte)
+        self.notes_known_at = notes_known_at
         self.capital = float(capital)
         self.panels_given = panels
         self.panel_dir = _resolve(panel_dir)
@@ -885,7 +894,9 @@ class _Ctx:
                                       panel_dir=self.panel_dir if self.panel_dir is not None and self.panel_dir.exists()
                                       else None,
                                       # Contrôle de fraîcheur du panel (retard de BOC) à la date du rapport.
-                                      today=self.now)
+                                      today=self.now,
+                                      # Mode direct des notes (None : mode historique, règle stricte).
+                                      notes_known_at=self.notes_known_at)
             kw.update(self.recommend_kwargs)
             fn = mod.recommend
             try:
@@ -922,7 +933,8 @@ class _Ctx:
                 c = close.loc[:t].iloc[-1]
                 held = pd.Series({s: q * float(c.get(s, np.nan)) / nav for s, q in self.holdings.items() if q > 0},
                                  dtype=float).dropna()
-            model = BrvmAlpha(variant=v, capital=nav, notes=st if st is not None else None)
+            model = BrvmAlpha(variant=v, capital=nav, notes=st if st is not None else None,
+                              notes_known_at=self.notes_known_at)
             return model.decide(t, P, held if held is not None and len(held) else None)
 
         return self.lazy("decision", "décision du modèle (BrvmAlpha.decide)", compute)
@@ -943,9 +955,38 @@ class _Ctx:
                 source = self.panels_given
             if source is None:
                 raise Unavailable("tables longues equities et indices introuvables (panel_dir)")
-            return index_eval.evaluate_indices(source, self.store(), self.t())
+            return index_eval.evaluate_indices(source, self.store(), self.t(), notes_known_at=self.notes_known_at)
 
         return self.lazy("indices_eval", "évaluation des indices", compute)
+
+    def notes_status(self) -> dict[str, Any] | None:
+        """État daté des notes (``notes.signals.notes_in_force``) : ligne, notes en vigueur, filtres."""
+        def compute() -> dict[str, Any] | None:
+            st = self.store()
+            if st is None:
+                return None
+            from brvm_alpha.notes import signals as sg
+
+            cal: Any = self.long("sessions")
+            if cal is None:
+                P = self.try_get("panels", "panels du moteur", self.panels)
+                close = None if P is None else (P.get("close_raw") if isinstance(P.get("close_raw"), pd.DataFrame)
+                                                else P.get("close"))
+                cal = list(pd.DatetimeIndex(close.index)) if isinstance(close, pd.DataFrame) else None
+            eq = self.long("equities")
+            return sg.notes_in_force(st, self.t(), known_at=self.notes_known_at, calendar=cal,
+                                     equities=eq if eq is not None else None)
+
+        return self.lazy("notes_status", "état des notes", compute)
+
+    def notes_line(self) -> str | None:
+        """Ligne datée des notes : celle de l'ordre de bataille si elle existe, sinon recalculée."""
+        od = self.try_get("order_dict", "ordre de bataille", self.order_dict)
+        line = _get(od, "declencheurs", "notes", "ligne")
+        if line:
+            return str(line)
+        st = self.try_get("notes_status", "état des notes", self.notes_status)
+        return None if not st else str(st.get("line"))
 
     def draws(self) -> dict[str, Any]:
         """Tirages du bootstrap de l'ordre de bataille, recalculés à l'identique (même fenêtre, mêmes
@@ -1645,6 +1686,28 @@ def _sec_ordre(ctx: _Ctx) -> H:
     ]
     for w in od.get("avertissements") or []:
         parts.append(_box("warn", "Avertissement", w))
+    nt = _get(od, "declencheurs", "notes") or {}
+    if nt.get("ligne"):
+        parts.append(_box("info", "Notes de l'analyste dans cette décision", nt["ligne"]))
+    blocs = nt.get("blocages") or []
+    eff = nt.get("effet") or {}
+    if blocs or eff.get("lignes"):
+        brow = [[H(f"<b>{esc(b.get('symbole'))}</b>"), H(f"<b>{esc(b.get('code'))}</b> {esc(b.get('libelle') or '')}"),
+                 _note_ref(b), esc(f"depuis le {fmt_date(b.get('depuis'))}, {b.get('duree') or 'durée ouverte'}"
+                                   + (f" (encore {fmt_int(b.get('seances_restantes'))} séance(s))"
+                                      if b.get("seances_restantes") is not None else "")),
+                 esc(b.get("effet_poids") or "—"), esc(b.get("lever") or "")] for b in blocs]
+        erow = [[H(f"<b>{esc(x.get('symbole'))}</b>"), fmt_pct(x.get("poids_sans_notes"), 2),
+                 fmt_pct(x.get("poids_avec_notes"), 2), _num_cell(x.get("ecart"), decimals=2, signed=True),
+                 esc(x.get("motif") or "redistribution (construction)")] for x in eff.get("lignes") or []]
+        parts.append(_card(
+            H("<h3>Achats bloqués par les notes de l'analyste et effet sur les poids</h3>"),
+            _table(["Titre", "Règle", "Note", "Blocage", "Effet sur l'ordre", "Pour lever le blocage"], brow,
+                   left=(0, 1, 2, 3, 4, 5)) if brow else "",
+            _p(eff.get("texte", ""), "small") if eff.get("texte") else "",
+            _details(f"Poids cibles sans et avec les notes ({len(erow)} ligne(s))",
+                     _table(["Titre", "Sans les notes", "Avec les notes", "Écart", "Motif"], erow, left=(0, 4)),
+                     open_=len(erow) <= 6) if erow else ""))
     mm = [str(m) for m in od.get("messages_modele") or [] if m]
     if mm:
         parts.append(_box("info", f"Messages du modèle ({len(mm)}, signalés)", _ul(mm)))
@@ -1933,16 +1996,24 @@ def _sec_indices(ctx: _Ctx) -> H:
                              "La position par indice combine tendance, valorisation, largeur, régime et notes avec des "
                              "poids non validés hors échantillon ; elle n'entre pas dans l'ordre de bataille. "
                              "Lecture factuelle, sans garantie.")]
+    st = ctx.try_get("notes_status", "état des notes", ctx.notes_status)
+    if st:
+        parts.append(_box("info", "Notes de l'analyste dans l'évaluation des indices",
+                          f"{st.get('line')} {st.get('scores_message') or ''}"))
+    else:
+        parts.append(_box("empty", "Notes de l'analyste : aucun journal.",
+                          "La composante « notes » est exclue du score de chaque indice."))
     rows = []
     for code, r in ev.iterrows():
         rows.append([H(f"<b>{esc(r.get('label', code))}</b><div class='muted small'>{esc(code)}</div>"),
                      fmt_num(r.get("level"), 2), _num_cell(r.get("ret_1m"), signed=True),
                      _num_cell(r.get("ret_3m"), signed=True), _num_cell(r.get("ret_12m"), signed=True),
                      _num_cell(r.get("ytd"), signed=True), fmt_num(r.get("per"), 1), esc(r.get("regime") or "n.d."),
+                     esc(_notes_z_txt(r)),
                      fmt_num(r.get("composite"), 2, True), _stance_chip(r.get("stance")),
                      fmt_pct(r.get("confidence"), 0)])
     parts.append(_card(_table(["Indice", "Niveau", "1 mois", "3 mois", "12 mois", "Depuis le 31/12", "PER", "Régime",
-                               "Score", "Position", "Confiance"], rows)))
+                               "Notes (z)", "Score", "Position", "Confiance"], rows)))
     det = []
     for code, r in ev.iterrows():
         reasons = list(r.get("reasons") or [])
@@ -1966,6 +2037,135 @@ def _ts_txt(x: Any) -> str:
     return t.strftime("%d/%m/%Y")
 
 
+#: Lignes affichées au plus dans le tableau des notes automatiques en vigueur.
+NOTES_TABLE_MAX = 60
+
+
+def _notes_z_txt(r: Any) -> str:
+    """Composante « notes » d'un indice : z, ou la raison de son absence (jamais « n.d. » seul)."""
+    z = r.get("z_notes")
+    if _ok(z):
+        return fmt_num(z, 2, True)
+    n = r.get("notes_n")
+    return "score nul" if _ok(n) and int(n) > 0 else "aucune note"
+
+
+def _src_link(url: Any, text: Any = "document") -> H:
+    """Adresse d'une note : lien (``class="src"``) vers www.brvm.org seulement, sinon texte non cliquable."""
+    u = str(url or "").strip()
+    if not u:
+        return H("")
+    if re.match(r"^https://www\.brvm\.org/[^\s\"'<>]*$", u):
+        return H(f'<a class="src" href="{esc(u)}" rel="noopener noreferrer">{esc(text)}</a>')
+    return H(f'<span class="muted small url">{esc(u)}</span>')
+
+
+def _note_ref(b: Mapping[str, Any]) -> H:
+    """Note qui porte un filtre : date, titre, source et lien."""
+    link = _src_link(b.get("note_url"), "document")
+    return H(f"note <code>{esc(str(b.get('note_id', ''))[:12])}</code> du {esc(_ts_txt(b.get('note_date')))} : "
+             f"« {esc(b.get('note_titre') or '')} » <span class='muted small'>(source "
+             f"{esc(b.get('note_source') or 'n.d.')})</span> {link}")
+
+
+def _notes_rows(tab: pd.DataFrame, limit: int | None = None) -> list[list[Any]]:
+    rows = []
+    for r in (tab if limit is None else tab.head(limit)).to_dict("records"):
+        src = H(f"{esc(r.get('source') or 'n.d.')} {_src_link(r.get('url'), 'document')}")
+        avis = ""
+        if isinstance(r.get("stance"), str) and r["stance"]:
+            avis = f" · avis {r['stance']}" + (f" {int(r['conviction'])}/5" if _ok(r.get("conviction")) else "")
+        rows.append([
+            H(f"{esc(_ts_txt(r.get('published_at')))}<div class='muted small'>séance "
+              f"{esc(_ts_txt(r.get('first_tradable_session')))}</div>"),
+            esc(", ".join(map(str, r.get("targets") or [])) or "n.d."),
+            H(f"{esc(r.get('event_type') or 'n.d.')}<div class='muted small'>{esc(str(r.get('title') or '')[:90])}"
+              f"{esc(avis)}</div>"),
+            _num_cell(r.get("score"), "num", 2, True), fmt_num(r.get("confidence"), 2),
+            fmt_num(r.get("decay"), 2), src, esc(", ".join(map(str, r.get("filters") or [])) or "—"),
+        ])
+    return rows
+
+
+_NOTES_HEAD = ["Date (publication)", "Cible", "Type et titre", "Score", "Confiance", "Décroissance", "Source",
+               "Filtre"]
+
+
+def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
+    """Synthèse datée, filtres actifs, notes en vigueur (manuelles / automatiques), extrêmes, indices."""
+    from brvm_alpha.notes.signals import top_notes
+
+    parts: list[Any] = [_box("info", "Notes prises en compte dans la décision", st.get("line", ""))]
+    tab = st.get("table")
+    n_in = int(st.get("n_in_force") or 0)
+    parts.append(_box("empty" if not st.get("n_scored") else "info",
+                      "Scores des notes", st.get("scores_message", "")))
+    # Filtres actifs.
+    flt = st.get("filters") or []
+    if flt:
+        rows = [[H(f"<b>{esc(f.get('symbole'))}</b>"), H(f"<b>{esc(f.get('code'))}</b> {esc(f.get('libelle') or '')}"),
+                 _chip("achats bloqués", "no") if f.get("bloque_achats") else _chip("surveillance", "warn"),
+                 esc(f"depuis le {fmt_date(f.get('depuis'))}, {f.get('duree') or 'durée ouverte'}"
+                     + (f" (encore {fmt_int(f.get('seances_restantes'))} séance(s))"
+                        if f.get("seances_restantes") is not None else "")),
+                 _note_ref(f), esc(f.get("lever") or "")] for f in flt]
+        parts.append(_card(H(f"<h3>Filtres de risque actifs issus des notes ({len(flt)})</h3>"),
+                           _table(["Titre", "Filtre", "Effet", "Durée", "Note", "Pour lever le filtre"], rows,
+                                  left=(0, 1, 2, 3, 4, 5))))
+    else:
+        parts.append(_box("empty", "Aucun filtre de risque actif issu des notes."))
+    if not isinstance(tab, pd.DataFrame) or not n_in:
+        return parts
+    manual, auto = tab[tab["manual"]], tab[~tab["manual"]]
+    parts.append(_card(
+        H(f"<h3>Notes manuelles en vigueur ({len(manual)})</h3>"),
+        _table(_NOTES_HEAD, _notes_rows(manual), left=(0, 1, 2, 6, 7)) if len(manual) else
+        _box("empty", "Aucune note manuelle en vigueur.",
+             "Saisie : python -m brvm_alpha notes add, ou page Notes de l'interface.")))
+    more = f" ; les {NOTES_TABLE_MAX} plus récentes sont affichées" if len(auto) > NOTES_TABLE_MAX else ""
+    parts.append(_card(
+        H(f"<h3>Notes automatiques en vigueur ({len(auto)})</h3>"),
+        _p("Collectées sur www.brvm.org et dans les BOC ; âge compté depuis la publication (décroissance "
+           f"exp(−Δ/10 séances)){more}.", "muted small"),
+        _details(f"Tableau des notes automatiques ({min(len(auto), NOTES_TABLE_MAX)} ligne(s))",
+                 _table(_NOTES_HEAD, _notes_rows(auto, NOTES_TABLE_MAX), left=(0, 1, 2, 6, 7))) if len(auto) else
+        _box("empty", "Aucune note automatique en vigueur.")))
+    pos, neg = top_notes(tab, 10)
+    if len(pos) or len(neg):
+        parts.append(H('<div class="grid2">'
+                       + _card(H(f"<h3>Les {len(pos)} notes les plus positives</h3>"),
+                               _table(_NOTES_HEAD, _notes_rows(pos), left=(0, 1, 2, 6, 7)) if len(pos) else
+                               _box("empty", "Aucune note de score positif."))
+                       + _card(H(f"<h3>Les {len(neg)} notes les plus négatives</h3>"),
+                               _table(_NOTES_HEAD, _notes_rows(neg), left=(0, 1, 2, 6, 7)) if len(neg) else
+                               _box("empty", "Aucune note de score négatif.")) + "</div>"))
+    else:
+        parts.append(_box("empty", "Aucune note positive ni négative à classer.", st.get("scores_message", "")))
+    # Composante « notes » de chaque indice, avec les notes qui la portent.
+    ev = ctx.try_get("indices_eval", "évaluation des indices", ctx.indices_eval)
+    if ev is not None and len(ev):
+        rows = []
+        for code, r in ev.iterrows():
+            det = list(r.get("notes_detail") or [])[:4]
+            who = _ul([f"« {str(e.get('title') or '')[:80]} » ({', '.join(map(str, (e.get('targets') or [])[:3]))}) : "
+                       f"score {fmt_num(e.get('note_score'), 2, True)}, part {fmt_num(e.get('part'), 3, True)}"
+                       for e in det], "facts small") if det else esc(
+                "aucune note en vigueur" if not (_ok(r.get("notes_n")) and int(r.get("notes_n")) > 0)
+                else "notes en vigueur de score nul : composante exclue")
+            rows.append([H(f"<b>{esc(r.get('label', code))}</b><div class='muted small'>{esc(code)}</div>"),
+                         esc(_notes_z_txt(r)), fmt_num(r.get("notes_score"), 3, True) if _ok(r.get("notes_score"))
+                         else "—", fmt_int(r.get("notes_n")),
+                         H(f"{esc(fmt_num(r.get('composite_ex_notes'), 2, True))} → "
+                           f"<b>{esc(fmt_num(r.get('composite'), 2, True))}</b>"), who])
+        parts.append(_card(H("<h3>Composante « notes » de chaque indice</h3>"),
+                           _p("z notes = score des notes / 0,5, borné à ±3, poids 0,15 dans le score composite ; « sans → "
+                              "avec » : score composite sans puis avec la composante. Aide à la décision, pas un signal "
+                              "validé.", "muted small"),
+                           _table(["Indice", "z notes", "Score des notes", "Notes en vigueur", "Composite sans → avec",
+                                   "Notes qui portent la composante"], rows, left=(0, 5))))
+    return parts
+
+
 def _sec_notes(ctx: _Ctx) -> H:
     store = ctx.store()
     if store is None:
@@ -1977,6 +2177,13 @@ def _sec_notes(ctx: _Ctx) -> H:
     parts: list[Any] = []
     if errs:
         parts.append(_box("warn", f"{len(errs)} ligne(s) du journal ignorée(s) à la lecture", "; ".join(map(str, errs[:3]))))
+    try:
+        st = ctx.notes_status()
+    except (Unavailable, DependencyError) as exc:
+        st = None
+        parts.append(_box("info", "État daté des notes non calculé", str(exc)))
+    if st:
+        parts.extend(_notes_in_force_block(ctx, st))
     if df is None or not len(df):
         parts.append(_box("empty", "Aucune note active dans le journal."))
         return _join(parts)
@@ -1987,7 +2194,9 @@ def _sec_notes(ctx: _Ctx) -> H:
     for r in df.itertuples(index=False):
         after = pd.notna(r.published_at) and pd.Timestamp(r.published_at) > t_end
         flags = ", ".join(map(str, r.risk_flags or [])) or "aucun"
-        stance = f"{r.stance or 'sans avis'}" + (f", conviction {int(r.conviction)}/5" if _ok(r.conviction) else "")
+        # pandas 3 : dans une colonne mêlant avis saisis et notes sans avis, l'absence vaut NaN (et non None).
+        stance = (r.stance if isinstance(r.stance, str) and r.stance else "sans avis") + (
+            f", conviction {int(r.conviction)}/5" if _ok(r.conviction) else "")
         cards.append(
             '<article class="note">'
             f'<div class="nh"><b>{esc(r.title or "(sans titre)")}</b>'
@@ -2003,13 +2212,14 @@ def _sec_notes(ctx: _Ctx) -> H:
             + f'<span>confiance <b>{esc(fmt_num(r.confidence, 2))}</b></span>'
             + f'<span>filtres R <b>{esc(flags)}</b></span></div>'
             + (f'<p class="small"><b>Lecture :</b> {esc(r.reading)}</p>' if r.reading else "")
-            + (f'<p class="muted small">Adresse (texte, non cliquable) : {esc(r.url)}</p>' if r.url else "")
+            + (f'<p class="muted small">Adresse : {_src_link(r.url, "document sur www.brvm.org")}</p>' if r.url else "")
             + (f'<p class="muted small">Cibles non reconnues : {esc(", ".join(map(str, r.targets_unknown)))}</p>'
                if r.targets_unknown else "")
             + "</article>")
-    parts.append(_p(f"{len(df)} dernière(s) note(s) active(s) du journal (par date de publication). Analyse automatique "
-                    "(score dans [−1 ; 1], matérialité et confiance dans [0 ; 1]) : une lecture factuelle, pas une "
-                    "garantie.", "muted small"))
+    parts.append(H("<h3>Dernières notes du journal</h3>"))
+    parts.append(_p(f"{len(df)} dernière(s) note(s) active(s) du journal (par date de publication), qu'elles soient ou "
+                    "non en vigueur à la séance d'application. Analyse automatique (score dans [−1 ; 1], matérialité et "
+                    "confiance dans [0 ; 1]) : une lecture factuelle, pas une garantie.", "muted small"))
     parts.append(H('<div class="notes">' + "".join(cards) + "</div>"))
     od = ctx.try_get("order_dict", "ordre de bataille", ctx.order_dict)
     nd = _get(od, "declencheurs", "notes")
@@ -2029,7 +2239,7 @@ def _sec_notes(ctx: _Ctx) -> H:
         try:
             from brvm_alpha.notes.signals import manual_overlays
 
-            ov = manual_overlays(store, t)
+            ov = (st or {}).get("overlays") or manual_overlays(store, t, known_at=ctx.notes_known_at)
             reasons = list(ov.get("reasons") or [])
             parts.append(_card(H("<h3>Vetos et inclinaisons actifs</h3>"),
                                _ul(reasons) if reasons else _box("empty", "Aucun veto ni inclinaison en vigueur.")))
@@ -2408,6 +2618,9 @@ details { margin-top: 10px; } details summary { cursor: pointer; font-weight: 60
 details .dbody { margin-top: 6px; }
 .narrow-only { display: none; }
 .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.grid2 > * { min-width: 0; }
+span.url { overflow-wrap: anywhere; }
 nav.toc { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 14px; font-size: 13.5px; }
 a { color: var(--pos); }
 .notes { display: grid; gap: 10px; }
@@ -2544,9 +2757,14 @@ def render_report(asof: Any, capital: float, *, panels: Mapping[str, Any] | None
                   diagnostic_dir: str | Path | None = "reports/diagnostic_S0", holdings: Mapping[str, int] | None = None,
                   variant: str | None = None, cash: float | None = None, costs: Any = "central",
                   registry_path: str | Path | None = None, n_boot: int = 5000, seed: int = 0,
-                  recommend_kwargs: Mapping[str, Any] | None = None, now: Any = None) -> RapportHTML:
+                  recommend_kwargs: Mapping[str, Any] | None = None, now: Any = None,
+                  notes_known_at: Any = None) -> RapportHTML:
     """Construit le rapport en mémoire (voir :func:`build_report`) et renvoie le HTML et le statut
-    de chaque section (``ok``, ``indisponible``, ``erreur``)."""
+    de chaque section (``ok``, ``indisponible``, ``erreur``).
+
+    ``notes_known_at`` : ``None`` (défaut sûr : mode historique, notes en règle stricte à la date des
+    données) ou instant de connaissance des notes (mode direct, passé par la ligne de commande et
+    l'interface quand la date est la dernière séance du panel)."""
     if capital is None or not _ok(capital) or float(capital) <= 0:
         raise ValueError("capital doit être un nombre > 0 (FCFA)")
     now_ts = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
@@ -2555,7 +2773,7 @@ def render_report(asof: Any, capital: float, *, panels: Mapping[str, Any] | None
     ctx = _Ctx(asof, capital, panels=panels, panel_dir=panel_dir, notes_root=notes_root,
                validation_dir=validation_dir, diagnostic_dir=diagnostic_dir, holdings=holdings, variant=variant,
                cash=cash, costs=costs, registry_path=registry_path, n_boot=n_boot, seed=seed,
-               recommend_kwargs=recommend_kwargs, now=now_ts)
+               recommend_kwargs=recommend_kwargs, now=now_ts, notes_known_at=notes_known_at)
     results: list[SectionResult] = []
     leads = {
         "marche": "Faits du bulletin officiel de la cote à la date des données ; le taux de référence est une estimation.",
@@ -2566,7 +2784,8 @@ def render_report(asof: Any, capital: float, *, panels: Mapping[str, Any] | None
         "distribution": "Bootstrap stationnaire des rendements hebdomadaires : une distribution historique, pas une "
                         "prévision ; puis les scénarios de stress du §9.3.",
         "indices": "Évaluation des indices (notes.index_eval) : SURPONDÉRER, NEUTRE ou SOUS-PONDÉRER, avec confiance et raisons.",
-        "notes": "Journal des notes de l'analyste (data/notes) et surcouches actives.",
+        "notes": "Journal des notes de l'analyste (data/notes) : notes en vigueur à la séance d'application, filtres "
+                 "actifs, notes extrêmes, composante « notes » de chaque indice et surcouches.",
         "risques": "Filtres R, règles pays, événements à venir et valorisation du marché.",
         "univers": "Tous les titres du panel à la date : éligibilité (U1-U10), motif, score, rang et blocs de signaux.",
         "methode": "Ce que la plate-forme ne peut pas promettre, limites des données et hypothèses.",
@@ -2627,7 +2846,8 @@ def build_report(asof: Any, capital: float, out_path: str | Path, *, panels: Map
         Titres détenus (symbole → nombre) et variante imposée (défaut : choix de ``choose_variant``).
     **kwargs
         Options de :func:`render_report` : ``cash``, ``costs``, ``registry_path``, ``n_boot``, ``seed``,
-        ``recommend_kwargs``, ``now``.
+        ``recommend_kwargs``, ``now``, ``notes_known_at`` (instant de connaissance des notes du mode
+        direct ; défaut ``None`` : mode historique).
     """
     rep = render_report(asof, capital, panels=panels, panel_dir=panel_dir, notes_root=notes_root,
                         validation_dir=validation_dir, diagnostic_dir=diagnostic_dir, holdings=holdings,

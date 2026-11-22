@@ -52,7 +52,10 @@ DOWN = (
 DET = r"(?:\s+(?:du|de\s+la|de\s+l'|de|des|d'|son|sa|ses|leur|leurs|le|la|les|l'))*"
 RN = (
     r"(?:resultats?\s+nets?(?:\s+(?:consolides?|sociaux|social|part\s+du\s+groupe|global))?|"
-    r"benefices?(?:\s+nets?)?|rn|resultats?\s+de\s+l'exercice|resultats?)"
+    r"benefices?(?:\s+nets?)?|rn|resultats?\s+de\s+l'exercice|"
+    # « résultat » seul, mais pas le résultat financier, HAO, exceptionnel ou technique (lecture des
+    # rapports du 22/11/2026 : « recul du résultat financier » était lu comme une baisse du résultat net).
+    r"resultats?(?!\s+(?:financiers?|hors\s+activites|hao\b|exceptionnels?|techniques?)))"
 )
 PNB = r"(?:pnb|produit\s+net\s+bancaire)"
 CA = r"(?:chiffres?\s+d'affaires|ventes|revenus|recettes)"
@@ -479,8 +482,37 @@ def scan(text: str, title: str = "") -> list[TermHit]:
         hit = TermHit(t.label, t.kind, float(t.weight), float(t.weight), t.indicator, t.risk, surface, s, e, si, source=t.source)
         if t.kind in ("pos", "neg"):
             _apply_modifiers(hit, norm, sa, sb, t)
+            _apply_context_guards(hit, norm[sa:sb])
         hits.append(hit)
     return hits
+
+
+#: Clauses types d'un rapport d'audit (responsabilités du conseil et des commissaires, hypothèses) :
+#: « … sauf si le Conseil a l'intention de mettre la société en liquidation ou de cesser ses activités »
+#: n'affirme aucun fait (lecture des documents du 22/11/2026 : un rapport sans réserve déclenchait R3).
+_AUDIT_BOILERPLATE_RX = re.compile(
+    r"sauf\s+si|il\s+incombe|si\s+nous\s+concluons|quant\s+a\s+l'existence\s+ou\s+non|nous\s+sommes\s+tenus|"
+    r"a\s+l'intention\s+de|notre\s+responsabilite|responsabilites?\s+d(?:u|es|e\s+la)\s+(?:conseil|commissaires?|direction|auditeurs?)"
+)
+#: Opération sur le capital racontée après coup dans un rapport (« le succès de l'augmentation de capital en
+#: numéraire…, souscrite à 100 % ») : les droits sont détachés depuis longtemps, R5 n'a plus d'objet.
+_COMPLETED_OPERATION_RX = re.compile(
+    r"(?<![a-z])(?:succes|reussie?s?|cloturee?s?|achevee?s?|finalisee?s?|souscrite?s?\s+a|a\s+ete\s+realisee?|realisee?\s+avec|"
+    r"a\s+porte\s+sur|ont\s+ete\s+cloturees?)(?![a-z])"
+)
+
+
+def _apply_context_guards(hit: TermHit, sentence: str) -> None:
+    """Neutralise un terme à filtre de risque quand la phrase n'affirme rien : clause type d'un rapport
+    d'audit (R3) ou opération sur le capital déjà achevée (R5). Le terme reste listé, avec un poids nul."""
+    if hit.weight == 0:
+        return
+    if hit.risk == "R3" and _AUDIT_BOILERPLATE_RX.search(sentence):
+        hit.weight = 0.0
+        hit.modifiers.append("clause type d'un rapport d'audit (hypothèse) : sans portée")
+    elif hit.risk == "R5" and _COMPLETED_OPERATION_RX.search(sentence):
+        hit.weight = 0.0
+        hit.modifiers.append("opération achevée, racontée après coup : sans portée")
 
 
 def _apply_modifiers(hit: TermHit, norm: str, sa: int, sb: int, term: Term) -> None:

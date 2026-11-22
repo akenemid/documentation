@@ -18,6 +18,12 @@ Sécurité (aucune authentification : l'interface est réservée à la machine l
 
 Les opérations longues (recherche, rapport, ordre de bataille) tournent dans **un** fil de travail
 (:class:`JobManager`) avec suivi d'état (statut, progression, journal) ; une seule à la fois.
+
+**Deux instants** : la date des cours est celle du dernier BOC ; quand la date demandée est la
+dernière séance du panel (ou vide), l'interface travaille en **mode direct** : les notes connues à
+l'instant de la requête (horloge de :class:`Services`, remplaçable dans les tests) sont appliquées
+à la séance suivante (indices, dossier, explication, ordre de bataille, rapport, pages Notes et
+Tableau de bord). Une date passée reste en mode historique (règle stricte, sans anticipation).
 Performance passée ≠ garantie. Aucun gain n'est garanti.
 """
 
@@ -52,6 +58,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = cli.DEFAULT_PORT
 LOCAL_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 RESEARCH_MAX_REQUESTS = 150
+#: Lecture du contenu des documents après une recherche : nombre par défaut et maximum.
+RESEARCH_MAX_DOCS_DEFAULT = 20
+RESEARCH_MAX_DOCS = 60
 _ID_RE = re.compile(r"^[0-9a-f]{4,64}$")
 _JOB_RE = re.compile(r"^[0-9a-f]{16}$")
 _SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,8}$")
@@ -215,7 +224,11 @@ class Services:
     def __init__(self, notes_root: str | Path | None = None, panel_dir: str | Path | None = None,
                  reports_dir: str | Path | None = None, validation_dir: str | Path | None = None,
                  diagnostic_dir: str | Path | None = None, boc_dir: str | Path | None = None,
-                 research_kwargs: Mapping[str, Any] | None = None) -> None:
+                 research_kwargs: Mapping[str, Any] | None = None,
+                 clock: Callable[[], pd.Timestamp] | None = None) -> None:
+        #: horloge UTC de l'interface (instant de connaissance des notes en mode direct) ; injectable
+        self.clock: Callable[[], pd.Timestamp] = clock or (lambda: cli.now_utc())
+        self._status_cache: OrderedDict[Any, Any] = OrderedDict()
         self.notes_root = Path(notes_root) if notes_root else None
         self.panel_dir = Path(panel_dir) if panel_dir else cli.DEFAULT_PANEL_DIR
         self.reports_dir = Path(reports_dir) if reports_dir else cli.DEFAULT_REPORTS_DIR
@@ -287,6 +300,57 @@ class Services:
             self._panels_key = key
             return self._panels
 
+    # -- deux instants : date des cours et instant de connaissance des notes ------
+    def notes_instant(self, asof: Any = None) -> pd.Timestamp | None:
+        """Instant de connaissance des notes pour ``asof`` : maintenant (mode direct) si ``asof`` est
+        vide ou n'est pas antérieure à la dernière séance du panel ; ``None`` (mode historique) sinon."""
+        try:
+            return cli.notes_instant(asof, None, self.panel_dir, last=self.last_session(), now=self.clock())
+        except Exception:
+            return None
+
+    def _moment_key(self, asof: Any, known: Any) -> Any:
+        """Clé de cache d'un calcul daté : la séance d'application suffit (le journal a sa propre clé)."""
+        if known is None:
+            return None
+        try:
+            from brvm_alpha.notes import signals as sg
+
+            return str(sg.notes_moment(asof, known).session.date())
+        except Exception:
+            return str(known)
+
+    def notes_status(self, asof: Any = None) -> dict[str, Any] | None:
+        """État daté des notes (ligne « Notes connues au … », notes en vigueur, filtres actifs).
+
+        ``asof`` vide : dernière séance du panel (mode direct). ``None`` si le journal ou le panel
+        manquent ; ne lève jamais (une erreur est rendue dans la ligne).
+        """
+        store = self._notes_for_eval()
+        t = pd.Timestamp(asof) if asof is not None else self.last_session()
+        if store is None or t is None:
+            return None
+        known = self.notes_instant(t)
+        key = (str(t.date()), self._panel_key(), self._notes_key(), self._moment_key(t, known))
+        with self._lock:
+            if key in self._status_cache:
+                return self._status_cache[key]
+        cal: Any = None
+        eq: Any = None
+        try:
+            if (self.panel_dir / "sessions.parquet").exists():
+                cal = pd.read_parquet(self.panel_dir / "sessions.parquet")
+            if (self.panel_dir / "equities.parquet").exists():
+                eq = str(self.panel_dir)
+        except Exception:
+            cal, eq = None, None
+        out = cli.notes_status(store, t, known, calendar=cal, equities=eq)
+        with self._lock:
+            self._status_cache[key] = out
+            while len(self._status_cache) > 8:
+                self._status_cache.popitem(last=False)
+        return out
+
     # -- indices -------------------------------------------------------------
     def _notes_for_eval(self) -> Any:
         store = self.notes_store()
@@ -296,14 +360,16 @@ class Services:
         from brvm_alpha.notes import index_eval
 
         store = self._notes_for_eval()
-        key = (str(asof), self._panel_key(), self._notes_key() if store is not None else None)
+        known = self.notes_instant(asof) if store is not None else None
+        key = (str(asof), self._panel_key(), self._notes_key() if store is not None else None,
+               self._moment_key(asof, known))
         with self._lock:
             if key in self._idx_cache:
                 return self._idx_cache[key]
         panels = index_eval.load_panels(self.panel_dir)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ev = index_eval.evaluate_indices(panels=panels, store=store, asof=asof)
+            ev = index_eval.evaluate_indices(panels=panels, store=store, asof=asof, notes_known_at=known)
         out = (ev, store is not None)
         with self._lock:
             self._idx_cache[key] = out
@@ -315,23 +381,29 @@ class Services:
         from brvm_alpha.notes import index_eval
 
         panels = index_eval.load_panels(self.panel_dir)
+        store = self._notes_for_eval()
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return index_eval.index_dossier(code, panels=panels, store=self._notes_for_eval(), asof=asof)
+            return index_eval.index_dossier(code, panels=panels, store=store, asof=asof,
+                                            notes_known_at=self.notes_instant(asof) if store is not None else None)
 
     # -- explication, ordre de bataille, rapport -------------------------------
     def explain(self, symbol: str, asof: Any, variant: str | None) -> dict[str, Any]:
         notes: Any = self.notes_store() if self.notes_root else "auto"
-        return cli.explain_symbol(symbol, asof, variant=variant, notes=notes, panels=self.strategy_panels())
+        return cli.explain_symbol(symbol, asof, variant=variant, notes=notes, panels=self.strategy_panels(),
+                                  notes_known_at=self.notes_instant(asof))
 
     def recommend(self, *, asof: Any, capital: float, holdings: Mapping[str, int] | None, cash: float | None,
                   variant: str | None, n_boot: int, log: Callable[[str], None]) -> Any:
         from brvm_alpha.portfolio import recommend as rec
 
         log(f"ordre de bataille au {cli.fr_date(asof)} pour {cli.fr_num(capital, 0)} FCFA ({n_boot} tirages)…")
+        known = self.notes_instant(asof)
+        log(f"notes : connues au {known:%d/%m/%Y %H:%M} UTC, appliquées à la séance suivante (mode direct)"
+            if known is not None else "notes : mode historique (règle stricte à la date demandée, sans anticipation)")
         return rec.recommend(asof, capital, holdings=holdings or None, cash=cash, variant=variant, n_boot=n_boot,
                              notes_store=self.notes_store() if self.notes_root else None,
-                             panel_dir=self.panel_dir, validation_dir=self.validation_dir)
+                             panel_dir=self.panel_dir, validation_dir=self.validation_dir, notes_known_at=known)
 
     def report_target(self, asof: Any) -> Path:
         """Chemin du rapport régénéré : construit à partir de la date (jamais d'une saisie)."""
@@ -342,13 +414,18 @@ class Services:
 
         out = self.report_target(asof)
         log(f"rapport au {cli.fr_date(asof)} pour {cli.fr_num(capital, 0)} FCFA → {out.name}")
+        known = self.notes_instant(asof)
+        log(f"notes : connues au {known:%d/%m/%Y %H:%M} UTC, appliquées à la séance suivante (mode direct)"
+            if known is not None else "notes : mode historique (règle stricte à la date demandée, sans anticipation)")
         return build_report(asof, capital, out, panel_dir=self.panel_dir,
                             notes_root=self.notes_root or "data/notes", validation_dir=self.validation_dir,
-                            diagnostic_dir=self.diagnostic_dir)
+                            diagnostic_dir=self.diagnostic_dir, notes_known_at=known)
 
     # -- recherche --------------------------------------------------------------
     def run_research(self, *, offline: bool, max_requests: int, targets: list[str] | None, since: Any,
-                     log: Callable[[str], None]) -> dict[str, Any]:
+                     log: Callable[[str], None], read_docs: bool = False, max_docs: int = 20) -> dict[str, Any]:
+        """Recherche (listes de www.brvm.org ou cache, BOC locaux) puis, si ``read_docs``, lecture du
+        contenu d'au plus ``max_docs`` documents récents (``notes.research.enrich_documents``)."""
         from brvm_alpha.notes import research as rs
 
         store = self.notes_store()
@@ -372,8 +449,19 @@ class Services:
                               session=sess, **kw)
         summary = res.report.summary()
         log(summary)
-        return {"resume": summary, "notes": [n.note_id for n in res], "arret": res.report.stopped,
-                "requetes": res.report.n_requests}
+        out = {"resume": summary, "notes": [n.note_id for n in res], "arret": res.report.stopped,
+               "requetes": res.report.n_requests, "documents": None}
+        if read_docs and int(max_docs) > 0:
+            if res.report.stopped and not offline:
+                log("lecture du contenu des documents : non lancée (collecte arrêtée, aucune autre requête)")
+            else:
+                log(f"lecture du contenu d'au plus {int(max_docs)} document(s) récent(s)"
+                    + (" (hors ligne : cache seulement)" if offline else " (au moins 10 s entre deux requêtes)"))
+                rep, lines = cli.run_enrich(store, max_docs=int(max_docs), targets=targets, offline=offline)
+                for line in lines:
+                    log(line)
+                out["documents"] = {"bilan": rep, "lignes": lines}
+        return out
 
     def blocked_hosts(self) -> dict[str, Any]:
         try:
@@ -751,9 +839,18 @@ def get_dashboard(h: Handler, qs: Mapping[str, list[str]]) -> None:
     flash = None
     if _qv(qs, "lance"):
         flash = ("info", "Régénération du rapport lancée : suivi ci-dessous.")
+    status = _safe(s.notes_status)
     h._page(200, lambda ctx: P.page_dashboard(
         ctx, last_session=s.last_session(), validation=s.read_validation(), choice=s.choose_variant(),
-        reports=s.list_reports(), job=_job_view(job), recent_notes=recent, flash=flash))
+        reports=s.list_reports(), job=_job_view(job), recent_notes=recent, flash=flash, notes_status=status))
+
+
+def _safe(fn: Callable[..., Any], *args: Any) -> Any:
+    """Résultat de ``fn(*args)``, ou ``None`` si le calcul échoue (une page ne tombe jamais pour une synthèse)."""
+    try:
+        return fn(*args)
+    except Exception:
+        return None
 
 
 def get_report(h: Handler, qs: Mapping[str, list[str]]) -> None:
@@ -789,9 +886,17 @@ def _render_notes(h: Handler, status: int, filters: Mapping[str, str], *, form_v
     total = len(store)
     opts = P.target_options(s.symbol_names())
     fl = flash or (("error", err) if err else None)
+    # Notes en vigueur à la séance d'application (mode direct) et composante « notes » des indices.
+    nstatus = _safe(s.notes_status)
+    last = _safe(s.last_session)
+    idx = None
+    if nstatus and last is not None and not cli.in_s1(last):
+        res = _safe(s.evaluate_indices, last)
+        idx = res[0] if isinstance(res, tuple) and res else None
     h._page(status, lambda ctx: P.page_notes(ctx, notes=_records(df), filters=filters, options=opts,
                                              form_values=form_values, form_error=form_error,
-                                             store_errors=list(store.errors), total=total, flash=fl))
+                                             store_errors=list(store.errors), total=total, flash=fl,
+                                             notes_status=nstatus, indices=idx))
 
 
 def get_notes(h: Handler, qs: Mapping[str, list[str]]) -> None:
@@ -836,10 +941,14 @@ def _render_research(h: Handler, status: int, *, defaults: Mapping[str, Any] | N
         if ids:
             df = s.notes_store().list(status=None)
             new_notes = _records(df[df["note_id"].isin(ids)].sort_values("published_at", ascending=False).head(100))
+    docs = None
+    if job is not None and job.finished_ok and isinstance(job.result, Mapping):
+        d = job.result.get("documents")
+        docs = list(d.get("lignes") or []) if isinstance(d, Mapping) else None
     opts = P.target_options(s.symbol_names())
     h._page(status, lambda ctx: P.page_research(ctx, job=_job_view(job), blocked=s.blocked_hosts(),
                                                 defaults=defaults, error=error, new_notes=new_notes, flash=flash,
-                                                options=opts))
+                                                options=opts, documents=docs))
 
 
 def _asof_or_last(h: Handler, value: str) -> pd.Timestamp | None:
@@ -861,7 +970,9 @@ def get_indices(h: Handler, qs: Mapping[str, list[str]]) -> None:
     except ValueError as exc:
         err = str(exc)
     status = 400 if err and asof is not None and cli.in_s1(asof) else 200
-    h._page(status, lambda ctx: P.page_indices(ctx, evaluation=ev, asof=asof, notes_included=inc, error=err))
+    nstatus = _safe(s.notes_status, asof) if ev is not None and inc else None
+    h._page(status, lambda ctx: P.page_indices(ctx, evaluation=ev, asof=asof, notes_included=inc, error=err,
+                                               notes_status=nstatus))
 
 
 def get_dossier(h: Handler, qs: Mapping[str, list[str]]) -> None:
@@ -902,8 +1013,9 @@ def _render_portfolio(h: Handler, status: int, *, qs: Mapping[str, list[str]] | 
             vals = dict(job.inputs)  # type: ignore[attr-defined]
         if job.finished_ok and job.result is not None:
             fragment = job.result.to_html_fragment()
+    nstatus = _safe(h.server.services.notes_status)
     h._page(status, lambda ctx: P.page_portfolio(ctx, values=vals, job=_job_view(job), fragment=fragment, error=error,
-                                                 job_id=job.id if job is not None else None))
+                                                 job_id=job.id if job is not None else None, notes_status=nstatus))
 
 
 def get_portfolio_result(h: Handler, qs: Mapping[str, list[str]]) -> None:
@@ -1034,8 +1146,10 @@ def post_note_archive(h: Handler, form: Mapping[str, list[str]]) -> None:
 def post_research(h: Handler, form: Mapping[str, list[str]]) -> None:
     s = h.server.services
     mode = _first(form, "mode") or "hors_ligne"
+    read_docs = _first(form, "lire_documents") == "oui"
     defaults = {"mode": mode, "max_requetes": _first(form, "max_requetes") or "30", "cibles": _first(form, "cibles"),
-                "depuis": _first(form, "depuis")}
+                "depuis": _first(form, "depuis"), "lire_documents": "oui" if read_docs else "",
+                "max_documents": _first(form, "max_documents") or str(RESEARCH_MAX_DOCS_DEFAULT)}
     if _first(form, "confirmer") != "oui":
         _render_research(h, 400, defaults=defaults, error="cocher la case de confirmation pour lancer la recherche")
         return
@@ -1049,6 +1163,16 @@ def post_research(h: Handler, form: Mapping[str, list[str]]) -> None:
     except ValueError:
         _render_research(h, 400, defaults=defaults, error=f"quota : entier de 1 à {RESEARCH_MAX_REQUESTS}")
         return
+    max_docs = RESEARCH_MAX_DOCS_DEFAULT
+    if read_docs:
+        try:
+            max_docs = int(defaults["max_documents"])
+            if not 1 <= max_docs <= RESEARCH_MAX_DOCS:
+                raise ValueError
+        except ValueError:
+            _render_research(h, 400, defaults=defaults,
+                             error=f"nombre maximal de documents : entier de 1 à {RESEARCH_MAX_DOCS}")
+            return
     try:
         since = _opt_date(defaults["depuis"], "date")
     except ValueError as exc:
@@ -1062,10 +1186,13 @@ def post_research(h: Handler, form: Mapping[str, list[str]]) -> None:
         _render_research(h, 400, defaults=defaults, error="périmètre : cible(s) non reconnue(s) ; voir l'aide des codes")
         return
     offline = mode == "hors_ligne"
-    label = f"recherche {'hors ligne' if offline else 'en ligne'} (quota {n})"
+    label = f"recherche {'hors ligne' if offline else 'en ligne'} (quota {n})" + (
+        f" + lecture d'au plus {max_docs} document(s)" if read_docs else "")
+    kw: dict[str, Any] = {"read_docs": True, "max_docs": max_docs} if read_docs else {}
     try:
         h.server.jobs.start("recherche", label, lambda job: s.run_research(offline=offline, max_requests=n,
-                                                                           targets=targets, since=since, log=job.log))
+                                                                           targets=targets, since=since, log=job.log,
+                                                                           **kw))
     except JobBusy as exc:
         _render_research(h, 409, defaults=defaults, error=str(exc))
         return

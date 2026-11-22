@@ -44,6 +44,34 @@ Principes
   écart-type, borné à ±0,5, valable ``horizon_days`` séances), ``flags`` (R1-R10 actifs,
   durées du document 07 §6.6).
 
+Deux instants, deux modes (:class:`NotesMoment`)
+-------------------------------------------------
+Une évaluation manipule deux instants distincts : la **date des cours** (dernier BOC, paramètre
+``asof``) et l'**instant de connaissance des notes**.
+
+- **Mode historique** (défaut de toutes les fonctions : ``known_at=None``) : dates passées,
+  backtests, diagnostics, validation. Règle stricte ci-dessus, évaluée à la date des cours ;
+  aucune anticipation. Rien ne change pour un appel programmatique existant.
+- **Mode direct** (``known_at=<instant UTC>``, passé explicitement par le seul chemin « direct »
+  de la ligne de commande, de l'interface et du rapport) : l'outil tourne le soir ou le week-end
+  pour la séance suivante et doit tenir compte de tout ce qui est connu **au moment où il
+  tourne**. La **séance d'application** est la première séance après la date des cours, ou la
+  suivante si sa coupure de 09h00 UTC est déjà passée : ``max(séance qui suit le dernier BOC,
+  première séance négociable de known_at)`` (:func:`application_session`). Sont en vigueur les
+  notes dont une version est écrite au plus tard à ``known_at``, non archivées, publiées au plus
+  tard à ``known_at`` (une note datée de demain n'agit pas) et dont la première séance négociable
+  est au plus tard la séance d'application. L'âge ``Δ`` (décroissance, durée des filtres, horizon
+  d'un avis) est compté jusqu'à la séance d'application, depuis :
+
+  * la première séance négociable de la **publication** pour une note collectée automatiquement
+    (l'information est publique et datée par sa source ; la date de collecte n'est qu'un artefact
+    de l'outil : une alerte sur résultats de juin collectée en novembre a bien cinq mois) ;
+  * ``first_tradable_session(max(publication prudente, saisie))`` pour une note de l'analyste
+    (son avis vaut à partir du moment où il l'exprime, comme en mode strict).
+
+  La règle de coupure de 09h00 UTC est inchangée ; une version reconstituée (``now`` antidaté)
+  ne compte que si ``known_at`` n'est pas antérieur à l'heure réelle.
+
 Les notes ne pilotent jamais seules le portefeuille : le poids du score S5 reste nul tant
 que l'IC walk-forward n'a pas dépassé 0,05 sur au moins 3 années (document 07 §6.5) ;
 :func:`notes_panel` fournit le panel date × symbole pour cette mesure. Aucune sortie n'est
@@ -53,6 +81,7 @@ une garantie : ce sont des lectures factuelles, chiffrées, avec leur confiance.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -76,6 +105,7 @@ from .model import (
     default_calendar,
     default_panel_dir,
     fold,
+    is_backdated,
     normalize_targets,
     stance_sign,
     target_kind,
@@ -360,6 +390,94 @@ def _clock(calendar: Any) -> SessionClock:
     return clk
 
 
+# ---------------------------------------------------------------------------
+# Deux instants : date des cours et instant de connaissance des notes
+# ---------------------------------------------------------------------------
+
+MODE_DIRECT = "direct"
+MODE_HISTORICAL = "historique"
+
+
+@dataclass(frozen=True)
+class NotesMoment:
+    """Les deux instants d'une évaluation des notes (voir l'en-tête du module).
+
+    ``prices_date`` : date des cours (dernier BOC, minuit sans fuseau) ; ``known_at`` : instant
+    de connaissance des notes (UTC), ``None`` en mode historique ; ``session`` : séance à
+    laquelle les notes sont appliquées (mode direct : séance qui suit le dernier BOC, ou la
+    suivante si la coupure de 09h00 UTC est passée ; mode historique : la date des cours) ;
+    ``mode`` : ``"direct"`` ou ``"historique"``.
+    """
+
+    prices_date: pd.Timestamp
+    session: pd.Timestamp
+    known_at: pd.Timestamp | None = None
+    mode: str = MODE_HISTORICAL
+
+    @property
+    def direct(self) -> bool:
+        return self.mode == MODE_DIRECT
+
+    def describe(self) -> str:
+        """« Notes connues au JJ/MM/AAAA HH:MM UTC, appliquées à la séance du JJ/MM/AAAA »."""
+        if self.direct and self.known_at is not None:
+            return (f"Notes connues au {self.known_at:%d/%m/%Y %H:%M} UTC, appliquées à la séance du "
+                    f"{_fr_date(self.session)}")
+        return (f"Notes en mode historique (règle stricte, sans anticipation : connues avant la coupure de 09h00 UTC "
+                f"de la séance du {_fr_date(self.session)})")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"mode": self.mode, "date_des_cours": self.prices_date, "connues_au": self.known_at,
+                "seance_application": self.session}
+
+
+def knowledge_instant(value: Any) -> pd.Timestamp | None:
+    """Instant de connaissance (UTC) d'une saisie : une date seule désigne la fin de cette journée.
+
+    Un ``pd.Timestamp`` avec fuseau est pris tel quel (minuit compris) ; un :class:`NotesMoment`
+    rend son instant.
+    """
+    if value is None:
+        return None
+    if isinstance(value, NotesMoment):
+        return value.known_at
+    if isinstance(value, pd.Timestamp) and value.tzinfo is not None:
+        return value.tz_convert("UTC")
+    return asof_utc(value)
+
+
+def application_session(prices_date: Any, known_at: Any, calendar: Any = None) -> pd.Timestamp:
+    """Séance d'application des notes en mode direct.
+
+    ``max(première séance après la date des cours, première séance négociable de known_at)`` :
+    la séance qui suit le dernier BOC, ou la suivante si sa coupure de 09h00 UTC est déjà passée
+    (règle de :func:`brvm_alpha.notes.model.first_tradable_session`, inchangée). Hors du
+    calendrier connu, les jours ouvrés hors fériés fixes font foi (hypothèse).
+    """
+    day = to_day(prices_date)
+    k = knowledge_instant(known_at)
+    if day is None or k is None:
+        raise ValueError("application_session : date des cours et instant de connaissance requis")
+    clock = _clock(calendar)
+    nxt = clock.nth_session(day, 1)
+    ft = pd.Timestamp(clock.first_tradable([k])[0])
+    return max(pd.Timestamp(nxt), ft)
+
+
+def notes_moment(asof: Any, known_at: Any = None, calendar: Any = None) -> NotesMoment:
+    """Instants d'une évaluation : mode direct si ``known_at`` est donné, historique sinon."""
+    if isinstance(known_at, NotesMoment):
+        return known_at
+    t = asof_utc(asof)
+    if t is None:
+        raise ValueError("asof : date vide")
+    day = t.tz_localize(None).normalize()
+    k = knowledge_instant(known_at)
+    if k is None:
+        return NotesMoment(prices_date=day, session=day, known_at=None, mode=MODE_HISTORICAL)
+    return NotesMoment(prices_date=day, session=application_session(day, k, calendar), known_at=k, mode=MODE_DIRECT)
+
+
 def decay_factor(elapsed: Any, half_life: float | None = DEFAULT_HALF_LIFE, tau: float | None = None) -> np.ndarray:
     """Facteur de décroissance : ``exp(−Δ/τ)`` si ``tau`` est donné, sinon ``2^(−Δ/h)``.
 
@@ -568,8 +686,16 @@ def all_versions(store_or_frame: Any) -> pd.DataFrame:
     return _ensure_columns(_to_frame(recs))
 
 
-def notes_asof(store_or_frame: Any, asof: Any, strict: bool = True, calendar: Any = None) -> pd.DataFrame:
+def notes_asof(store_or_frame: Any, asof: Any, strict: bool = True, calendar: Any = None, *,
+               known_at: Any = None) -> pd.DataFrame:
     """Notes connues et négociables à ``asof`` (une ligne par note, version en vigueur).
+
+    ``known_at`` (mot-clé, défaut ``None`` = **mode historique**, comportement inchangé) : instant
+    de connaissance des notes du **mode direct**. ``asof`` est alors la date des cours (dernier
+    BOC) ; les notes sont celles connues à ``known_at`` dont la première séance négociable est au
+    plus tard la séance d'application (:func:`application_session`). Voir l'en-tête du module
+    (âge compté depuis la publication pour une note automatique, depuis la saisie pour une note
+    de l'analyste). ``strict`` est sans effet en mode direct.
 
     ``strict=True`` (défaut) : règle de connaissance du module (voir l'en-tête) —
     version en vigueur = dernière version non reconstituée écrite avant la coupure de la
@@ -590,6 +716,12 @@ def notes_asof(store_or_frame: Any, asof: Any, strict: bool = True, calendar: An
     if t is None:
         raise ValueError("asof : date vide")
     day = t.tz_localize(None).normalize()
+    if known_at is not None:
+        if calendar is None and isinstance(store_or_frame, NoteStore):
+            calendar = store_or_frame.calendar
+        clock = _clock(calendar)
+        m = notes_moment(day, known_at, clock)
+        return _select_direct(all_versions(store_or_frame), m.known_at, m.session, clock)
     if strict:
         if calendar is None and isinstance(store_or_frame, NoteStore):
             calendar = store_or_frame.calendar
@@ -660,6 +792,52 @@ def _select_strict(df: pd.DataFrame, t: pd.Timestamp, day: pd.Timestamp, clock: 
     out = out.assign(first_tradable_session_published=out["first_tradable_session"], known_at=anchor,
                      first_tradable_session=eff)
     out = _drop_tmp(out[keep])
+    if len(out):
+        out = out.sort_values(["published_at", "note_id"])
+    return out.reset_index(drop=True)
+
+
+def _select_direct(df: pd.DataFrame, k: pd.Timestamp, session: pd.Timestamp, clock: SessionClock) -> pd.DataFrame:
+    """Notes en vigueur en mode direct : connues à ``k``, négociables au plus tard à ``session``.
+
+    Version retenue : la dernière écrite au plus tard à ``k`` (une version reconstituée ne compte
+    que si ``k`` n'est pas antérieur à l'heure réelle : on ne peut pas prouver qu'elle était
+    connue avant). Séance effective (colonne ``first_tradable_session``) : celle de la
+    publication pour une note automatique ; ``max(publication, saisie)`` pour une note de
+    l'analyste. ``first_tradable_session_published`` garde la séance de la publication,
+    ``known_at`` la première connaissance de la note.
+    """
+    if not len(df):
+        return df.assign(first_tradable_session_published=df["first_tradable_session"], known_at=df["created_at"])
+    rec = df["recorded_at"].fillna(df["created_at"])
+    created = df["created_at"].fillna(rec)
+    known = pd.to_datetime(pd.concat([created, rec], axis=1).max(axis=1), utc=True)
+    usable = known.notna() & (known <= k)
+    if is_backdated(k):  # instant passé : une version antidatée n'est pas une preuve de connaissance
+        recon = df["tags"].apply(_is_reconstructed)
+        if "backdated" in df.columns:
+            recon = recon | df["backdated"].apply(lambda v: v is True or (isinstance(v, (int, np.integer)) and v == 1))
+        usable &= ~recon
+    cand = df[usable].assign(_known=known[usable])
+    if not len(cand):
+        return cand.drop(columns=["_known"]).assign(first_tradable_session_published=cand["first_tradable_session"],
+                                                     known_at=cand["created_at"])
+    cand = cand.assign(_first_known=cand.groupby("note_id")["_known"].transform("min"))
+    out = cand.sort_values(["note_id", "version"]).groupby("note_id", sort=False).tail(1)
+    pub = _published_effective(out)
+    stored = out["first_tradable_session"]
+    by_pub = pd.Series(clock.first_tradable(pub.values), index=out.index)
+    stored = stored.where(stored.notna(), by_pub)
+    anchor = pd.to_datetime(pd.concat([pub, out["_first_known"]], axis=1).max(axis=1), utc=True)
+    by_entry = pd.Series(clock.first_tradable(anchor.values), index=out.index)
+    manual = out["author"] == "analyste"
+    eff = stored.where(~manual, pd.concat([stored, by_entry], axis=1).max(axis=1))
+    eff = pd.to_datetime(eff)
+    keep = (out["published_at"].notna() & (out["published_at"] <= k) & (out["status"] != "archived")
+            & eff.notna() & (eff <= session))
+    out = out.assign(first_tradable_session_published=stored, known_at=out["_first_known"],
+                     first_tradable_session=eff)
+    out = out[keep].drop(columns=["_known", "_first_known"])
     if len(out):
         out = out.sort_values(["published_at", "note_id"])
     return out.reset_index(drop=True)
@@ -829,21 +1007,27 @@ def note_contributions(
     tau: float | None = None,
     min_decay: float = MIN_DECAY,
     universe: Universe | None = None,
+    known_at: Any = None,
 ) -> pd.DataFrame:
     """Contributions élémentaires ``s_k · w_k · d_k(asof)`` : une ligne par (cible atteinte, note).
 
     Voir :func:`note_scores` pour les paramètres. ``relation`` vaut ``directe`` pour la cible
     de la note elle-même, sinon ``pays``, ``secteur``, ``marché``, ``indice`` ou ``thème``.
+    ``known_at`` : instant de connaissance du mode direct (:func:`notes_asof`) ; la décroissance
+    est alors comptée jusqu'à la séance d'application.
     """
     prop = dict(DEFAULT_PROPAGATION if propagation is None else propagation)
     t = asof_utc(asof)
     if t is None:
         raise ValueError("asof : date vide")
     day = t.tz_localize(None).normalize()
-    df = notes_asof(store_or_frame, asof, strict=strict, calendar=calendar)
+    clock = _clock(calendar)
+    if known_at is not None:
+        known_at = notes_moment(day, known_at, clock)
+        day = known_at.session
+    df = notes_asof(store_or_frame, asof, strict=strict, calendar=calendar, known_at=known_at)
     if not len(df):
         return pd.DataFrame(columns=CONTRIBUTION_COLUMNS)
-    clock = _clock(calendar)
     uni = universe if universe is not None else Universe(equities)
     elapsed = clock.count(day)[0] - clock.count(df["first_tradable_session"].values)
     dec = decay_factor(np.maximum(elapsed, 0), half_life, tau)
@@ -890,6 +1074,7 @@ def note_scores(
     tau: float | None = None,
     min_decay: float = MIN_DECAY,
     propagate: bool = True,
+    known_at: Any = None,
 ) -> pd.DataFrame:
     """Score de nouvelles par cible à la date ``asof`` : ``Σ s_k · w_k · exp(−Δ_k/τ)`` (τ = 10).
 
@@ -905,7 +1090,9 @@ def note_scores(
       ``propagate=False`` : cibles directes seulement ;
     - ``equities`` : panel long (``load_equities``) pour la composition des secteurs,
       compartiments et indices ; ``"default"`` : panel du dépôt ; ``None`` : référence ;
-    - ``strict`` : voir ``NoteStore.asof``.
+    - ``strict`` : voir ``NoteStore.asof`` ;
+    - ``known_at`` : ``None`` (défaut, mode historique) ou instant de connaissance du mode
+      direct (voir l'en-tête du module et :func:`notes_asof`).
 
     Une ligne par cible (index ``target``) : ``score`` (total), ``score_direct`` (notes sur
     la cible elle-même), ``score_propagated``, ``score_manual`` / ``score_auto`` (auteur),
@@ -913,7 +1100,7 @@ def note_scores(
     ``last_note_id``, ``last_title``, ``last_event_type``. Trié par ``|score|`` décroissant.
     """
     con = note_contributions(store_or_frame, asof, half_life=half_life, calendar=calendar, propagation=propagation,
-                             equities=equities, strict=strict, tau=tau, min_decay=min_decay)
+                             equities=equities, strict=strict, tau=tau, min_decay=min_decay, known_at=known_at)
     if not propagate and len(con):
         con = con[con["relation"] == "directe"]
     return aggregate_contributions(con)
@@ -1122,8 +1309,13 @@ def manual_overlays(
     strict: bool = True,
     tilt_max: float = TILT_MAX_SD,
     use_panel_status: bool = True,
+    known_at: Any = None,
 ) -> dict[str, Any]:
     """Surcouches de l'analyste et filtres de risque actifs à la date ``asof``.
+
+    ``known_at`` : ``None`` (défaut, mode historique : règle stricte à la date ``asof``) ou
+    instant de connaissance du **mode direct** ; les durées sont alors comptées jusqu'à la
+    séance d'application (clés ``session``, ``known_at`` et ``mode`` du résultat).
 
     Renvoie un dictionnaire :
 
@@ -1139,20 +1331,25 @@ def manual_overlays(
     - ``block_buys`` (R1, R2, R3, R5, R9 et veto), ``max_weight_mult`` (R4 : 0,5),
       ``freeze_auto`` (R6), ``quality_penalty`` (R7 rouge −0,5, R9 −1, R10 −0,5),
       ``governance_penalty`` (R2 −1), ``disabled_signals`` (R9 : S1, S4) ;
-    - ``table`` : une ligne par surcouche active ; ``reasons`` : phrases en français.
+    - ``table`` : une ligne par surcouche active (avec la note qui la porte : ``published_at``,
+      ``source``, ``url``) ; ``tilt_notes`` : notes de l'analyste qui portent une inclinaison ;
+      ``reasons`` : phrases en français ; ``n_notes`` : notes connues et négociables.
     """
     prop = dict(DEFAULT_PROPAGATION if propagation is None else propagation)
     t = asof_utc(asof)
     if t is None:
         raise ValueError("asof : date vide")
-    day = t.tz_localize(None).normalize()
-    df = notes_asof(store, asof, strict=strict, calendar=calendar)
+    prices_day = t.tz_localize(None).normalize()
     clock = _clock(calendar)
+    moment = notes_moment(prices_day, known_at, clock)
+    day = moment.session
+    df = notes_asof(store, asof, strict=strict, calendar=calendar, known_at=None if known_at is None else moment)
     uni = Universe(equities)
     rows: list[dict[str, Any]] = []
     tilt_t: dict[str, float] = {}
     tilt_s: dict[str, float] = {}
     tilt_src: dict[str, list[str]] = {}
+    tilt_ids: set[str] = set()
 
     if len(df):
         df = df.sort_values(["first_tradable_session", "published_at", "note_id"]).reset_index(drop=True)
@@ -1184,7 +1381,8 @@ def manual_overlays(
         nid = row["note_id"]
         title = row.get("title") or ""
         base = {"note_id": nid, "title": title, "since": fts, "first_tradable_session": fts,
-                "author": row.get("author"), "event_type": row.get("_et")}
+                "author": row.get("author"), "event_type": row.get("_et"), "published_at": row.get("published_at"),
+                "source": row.get("source"), "url": row.get("url") or ""}
 
         # 1) Veto manuel.
         horizon = int(_finite(row.get("horizon_days")) or DEFAULT_HORIZON_DAYS)
@@ -1203,6 +1401,8 @@ def manual_overlays(
         if row.get("author") == "analyste" and sgn != 0 and elapsed < horizon:
             conv = _finite(row.get("conviction")) or DEFAULT_CONVICTION
             val = sgn * conv / 5.0 * tilt_max
+            if tg:
+                tilt_ids.add(nid)
             for code, _o in tg:
                 tilt_t[code] = tilt_t.get(code, 0.0) + val
             for s, (w, src, _rel) in _target_weights(tg, fts, uni, prop).items():
@@ -1318,7 +1518,8 @@ def manual_overlays(
             continue
         rule = RISK_RULES[code]
         info = {k: rec.get(k) for k in ("code", "label", "since", "until", "remaining_sessions", "note_id", "title",
-                                        "action", "level", "resumption", "confirmed", "fallback", "rights_ex_date")
+                                        "action", "level", "resumption", "confirmed", "fallback", "rights_ex_date",
+                                        "published_at", "source", "url", "author")
                 if k in rec and not (isinstance(rec.get(k), float) and math.isnan(rec.get(k)))}
         flags_out.setdefault(s, []).append(info)
         if rule.get("veto"):
@@ -1355,7 +1556,12 @@ def manual_overlays(
             reasons.append(f"{s} : surcouche manuelle {_fr_signed(v)} écart-type (borne ±{_fr_num(tilt_max, 1)} ; "
                            f"{len(tilt_src.get(s, []))} note(s) de l'analyste).")
     return {
-        "asof": day,
+        "asof": prices_day,
+        "session": day,
+        "known_at": moment.known_at,
+        "mode": moment.mode,
+        "n_notes": int(len(df)),
+        "tilt_notes": sorted(tilt_ids),
         "veto": veto,
         "tilt": tilt.sort_index(),
         "tilt_targets": tilt_targets.sort_index(),
@@ -1371,9 +1577,193 @@ def manual_overlays(
     }
 
 
+# ---------------------------------------------------------------------------
+# État des notes à une évaluation : ligne de synthèse, notes en vigueur, filtres actifs
+# ---------------------------------------------------------------------------
+
+IN_FORCE_COLUMNS = [
+    "note_id", "version", "published_at", "first_tradable_session", "known_at", "author", "manual", "source", "url",
+    "title", "targets", "event_type", "score", "confidence", "materiality", "stance", "conviction", "horizon_days",
+    "sessions_elapsed", "decay", "weight", "filters", "tilt", "tags",
+]
+
+#: Comment lever un blocage issu d'une note (texte affiché avec chaque filtre).
+LIFT_HINT = ("archiver la note (python -m brvm_alpha notes archive {id}, ou bouton « Archiver » de sa fiche dans "
+             "l'interface) : l'archivage écrit une nouvelle version, l'historique est conservé")
+
+
+def blocks_buys(code: Any) -> bool:
+    """Le filtre ``code`` (``R1``…``R10`` ou ``VETO``) interdit-il les achats (document 07 §6.6) ?"""
+    c = str(code or "").upper()
+    return c == "VETO" or bool(RISK_RULES.get(c, {}).get("block_buys"))
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _text_or_none(value: Any) -> str | None:
+    """Texte non vide, sinon ``None`` (pandas 3 : une valeur manquante d'une colonne de textes vaut NaN)."""
+    return value if isinstance(value, str) and value else None
+
+
+def notes_in_force(
+    store: Any,
+    asof: Any,
+    *,
+    known_at: Any = None,
+    calendar: Any = None,
+    equities: Any = "default",
+    propagation: Mapping[str, float] | None = None,
+    half_life: float = DEFAULT_HALF_LIFE,
+    tau: float | None = None,
+    min_decay: float = MIN_DECAY,
+    strict: bool = True,
+    overlays: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """État des notes pour une évaluation : synthèse, notes en vigueur et filtres actifs.
+
+    ``asof`` : date des cours ; ``known_at`` : ``None`` (mode historique, règle stricte) ou
+    instant de connaissance du mode direct. Une note est **en vigueur** si elle est connue et
+    négociable (:func:`notes_asof`) et agit encore : décroissance ``exp(−Δ/τ) >= min_decay``
+    (moins de 70 séances environ pour τ = 10), filtre de risque ou veto actif, ou avis de
+    l'analyste dans son horizon.
+
+    Renvoie un dictionnaire : ``moment`` (:class:`NotesMoment`), ``mode``, ``prices_date``,
+    ``session``, ``known_at`` ; ``n_known`` (notes connues et négociables), ``n_in_force``,
+    ``n_manual``, ``n_auto``, ``n_scored`` (en vigueur avec un score non nul), ``n_filters``
+    (couples titre × filtre R actifs), ``n_block_buys`` (titres dont l'achat est bloqué par une
+    note), ``n_veto``, ``n_tilt`` ; ``line`` : « Notes connues au JJ/MM/AAAA HH:MM UTC,
+    appliquées à la séance du JJ/MM/AAAA : N en vigueur (dont M manuelles), F filtre(s) de
+    risque actif(s) » ; ``scores_message`` (texte clair quand aucune note ne porte de score) ;
+    ``table`` (une ligne par note en vigueur, colonnes :data:`IN_FORCE_COLUMNS`, triée de la
+    plus récente à la plus ancienne) ; ``filters`` (une entrée par titre × filtre : règle, note
+    — date, titre, source, lien —, fin du blocage, comment le lever) ; ``overlays``
+    (:func:`manual_overlays`). Lecture factuelle, sans garantie.
+    """
+    t = asof_utc(asof)
+    if t is None:
+        raise ValueError("asof : date vide")
+    prices_day = t.tz_localize(None).normalize()
+    clock = _clock(calendar)
+    moment = notes_moment(prices_day, known_at, clock)
+    day = moment.session
+    direct = moment if known_at is not None else None
+    df = notes_asof(store, asof, strict=strict, calendar=calendar, known_at=direct)
+    ov = overlays if overlays is not None else manual_overlays(
+        store, asof, calendar=calendar, equities=equities, propagation=propagation, strict=strict, known_at=direct)
+    tab = ov.get("table")
+    recs = tab.to_dict("records") if isinstance(tab, pd.DataFrame) and len(tab) else []
+    by_note: dict[str, list[str]] = {}
+    filters: list[dict[str, Any]] = []
+    for rec in recs:
+        code = str(rec.get("code"))
+        nid = str(rec.get("note_id"))
+        label = f"{code} ({rec.get('symbol')})"
+        if label not in by_note.setdefault(nid, []):
+            by_note[nid].append(label)
+        until = rec.get("until")
+        until = None if until is None or pd.isna(until) else pd.Timestamp(until)
+        rem = rec.get("remaining_sessions")
+        rem = None if rem is None or pd.isna(rem) else int(rem)
+        rule = RISK_RULES.get(code, {})
+        filters.append({
+            "symbole": rec.get("symbol"), "code": code,
+            "libelle": "veto manuel de l'analyste" if code == "VETO" else RISK_FLAGS.get(code, code),
+            "action": rec.get("action") or rule.get("action", ""), "bloque_achats": blocks_buys(code),
+            "depuis": pd.Timestamp(rec["since"]), "jusqu_au": until, "seances_restantes": rem,
+            "duree": (f"jusqu'au {_fr_date(until)}" if until is not None else rule.get("duration", "durée ouverte")),
+            "note_id": nid, "note_titre": _text_or_none(rec.get("title")) or "", "note_date": rec.get("published_at"),
+            "note_source": _text_or_none(rec.get("source")) or "", "note_url": _text_or_none(rec.get("url")) or "",
+            "note_auteur": _text_or_none(rec.get("author")) or "", "lever": LIFT_HINT.format(id=nid[:12]),
+        })
+    tilt_ids = set(ov.get("tilt_notes") or [])
+    rows: list[dict[str, Any]] = []
+    if len(df):
+        elapsed = clock.count(day)[0] - clock.count(df["first_tradable_session"].values)
+        dec = decay_factor(np.maximum(elapsed, 0), half_life, tau)
+        for (_, r), e, d in zip(df.iterrows(), elapsed, dec):
+            row = r.to_dict()
+            nid = str(row["note_id"])
+            flt = by_note.get(nid, [])
+            if d < min_decay and not flt and nid not in tilt_ids:
+                continue
+            sc, an = note_score_value(row, calendar)
+            rows.append({
+                "note_id": nid, "version": int(row["version"]), "published_at": row.get("published_at"),
+                "first_tradable_session": pd.Timestamp(row["first_tradable_session"]),
+                "known_at": row.get("known_at"), "author": _text_or_none(row.get("author")),
+                "manual": row.get("author") == "analyste", "source": _text_or_none(row.get("source")) or "",
+                "url": _text_or_none(row.get("url")) or "", "title": _text_or_none(row.get("title")) or "",
+                "targets": [c for c, _o in effective_targets(row, an)],
+                "event_type": _text_or_none(row.get("event_type")) or _text_or_none(an.get("event_type")),
+                "score": sc,
+                "confidence": _finite(an.get("confidence")), "materiality": _finite(an.get("materiality")),
+                "stance": _text_or_none(row.get("stance")), "conviction": _finite(row.get("conviction")),
+                "horizon_days": _finite(row.get("horizon_days")), "sessions_elapsed": int(max(e, 0)),
+                "decay": float(d), "weight": float(sc * d) if d >= min_decay else 0.0, "filters": list(flt),
+                "tilt": nid in tilt_ids, "tags": list(row.get("tags") or []),
+            })
+    table = pd.DataFrame(rows, columns=IN_FORCE_COLUMNS)
+    if len(table):
+        table = table.sort_values(["first_tradable_session", "published_at", "note_id"],
+                                  ascending=[False, False, True]).reset_index(drop=True)
+    n_in = int(len(table))
+    n_manual = int(table["manual"].sum()) if n_in else 0
+    n_scored = int((table["weight"].abs() > 1e-12).sum()) if n_in else 0
+    pairs = {(f["symbole"], f["code"]) for f in filters if f["code"] != "VETO"}
+    n_veto = len({f["symbole"] for f in filters if f["code"] == "VETO"})
+    tilt = ov.get("tilt")
+    n_tilt = int((pd.Series(tilt, dtype=float) != 0).sum()) if tilt is not None and len(tilt) else 0
+    blocked = sorted({str(f["symbole"]) for f in filters if f["bloque_achats"]})
+    line = (f"{moment.describe()} : {n_in} en vigueur (dont {_plural(n_manual, 'manuelle')}), "
+            f"{len(pairs)} filtre(s) de risque actif(s)")
+    extra = []
+    if n_veto:
+        extra.append(f"{n_veto} veto(s) manuel(s)")
+    if n_tilt:
+        extra.append(f"{n_tilt} inclinaison(s)")
+    if blocked:
+        extra.append("achats bloqués : " + ", ".join(blocked))
+    if extra:
+        line += " ; " + ", ".join(extra)
+    line += "."
+    if not n_in:
+        msg = ("Aucune note en vigueur : aucune note connue n'agit à cette séance" + (
+            "" if moment.direct else " (mode historique : une note saisie ou collectée après cette date n'agit pas)")
+            + ".")
+    elif not n_scored:
+        msg = (f"Aucune des {n_in} note(s) en vigueur ne porte de score directionnel : leurs titres n'ont ni chiffre "
+               "ni ton exploitable (score nul). Elles agissent seulement par leurs filtres de risque et par les avis "
+               "de l'analyste ; lire le contenu des documents (python -m brvm_alpha notes lire) peut leur donner un "
+               "score.")
+    else:
+        msg = f"{n_scored} note(s) en vigueur sur {n_in} portent un score directionnel non nul."
+    return {
+        "moment": moment, "mode": moment.mode, "prices_date": moment.prices_date, "session": moment.session,
+        "known_at": moment.known_at, "n_known": int(len(df)), "n_in_force": n_in, "n_manual": n_manual,
+        "n_auto": n_in - n_manual, "n_scored": n_scored, "n_filters": len(pairs), "n_veto": n_veto,
+        "n_tilt": n_tilt, "n_block_buys": len(blocked), "block_buys": blocked, "line": line,
+        "scores_message": msg, "table": table, "filters": filters, "overlays": ov,
+    }
+
+
+def top_notes(table: pd.DataFrame, n: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Les ``n`` notes les plus positives et les ``n`` plus négatives (score × décroissance non nul)."""
+    if table is None or not len(table):
+        empty = pd.DataFrame(columns=IN_FORCE_COLUMNS)
+        return empty, empty
+    w = pd.to_numeric(table["weight"], errors="coerce").fillna(0.0)
+    pos = table[w > 1e-12].assign(_w=w[w > 1e-12]).sort_values("_w", ascending=False, kind="stable").head(n)
+    neg = table[w < -1e-12].assign(_w=w[w < -1e-12]).sort_values("_w", ascending=True, kind="stable").head(n)
+    return pos.drop(columns=["_w"]).reset_index(drop=True), neg.drop(columns=["_w"]).reset_index(drop=True)
+
+
 __all__ = [
     "DEFAULT_HALF_LIFE", "DEFAULT_TAU", "DEFAULT_PROPAGATION", "RISK_RULES", "THEME_EXPOSURE", "TILT_MAX_SD", "SessionClock",
     "theme_exposures",
     "Universe", "decay_factor", "note_contributions", "note_scores", "aggregate_contributions", "notes_panel",
     "manual_overlays", "notes_asof", "effective_targets", "all_versions",
+    "NotesMoment", "MODE_DIRECT", "MODE_HISTORICAL", "application_session", "notes_moment", "knowledge_instant",
+    "notes_in_force", "top_notes", "blocks_buys", "IN_FORCE_COLUMNS",
 ]

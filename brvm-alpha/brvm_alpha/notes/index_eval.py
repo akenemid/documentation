@@ -61,6 +61,14 @@ sinon **approximation documentée** : les 30 titres au meilleur rang moyen (vale
 trimestre » (28/30 titres retrouvés pour les compositions officielles T3 et T4 2026, contre
 24 à 26/30 avec la seule valeur échangée sur 6 mois, option ``brvm30_method="valeur_6m"``).
 
+**Deux instants** (voir ``signals.NotesMoment``) : toutes les données de marché sont datées
+``<= asof`` (date des cours). Les notes suivent, par défaut, la règle stricte à cette date (mode
+historique, aucune anticipation). Avec ``notes_known_at=<instant UTC>`` (mode direct, passé par
+la ligne de commande, l'interface et le rapport quand la date est le dernier BOC), la composante
+« notes », les dividendes annoncés, le calendrier et les filtres des constituants utilisent les
+notes connues à cet instant, appliquées à la séance qui suit le dernier BOC ; les cours, eux, ne
+changent pas.
+
 Ces lectures sont factuelles et **ne sont pas des garanties** : les poids et seuils sont des
 choix de conception, non validés hors échantillon ; la composante « notes » relève du signal
 S5, dont le poids dans le modèle multifacteur reste nul tant que l'IC walk-forward n'a pas
@@ -269,7 +277,8 @@ def truncate_panels(panels: Any, asof: Any) -> dict[str, pd.DataFrame]:
 class _Ctx:
     """Données tronquées à ``asof`` et panels larges (date × symbole)."""
 
-    def __init__(self, panels: Any, asof: Any, store: Any = None, calendar: Any = None):
+    def __init__(self, panels: Any, asof: Any, store: Any = None, calendar: Any = None,
+                 notes_known_at: Any = None):
         P = _resolve_panels(panels)
         eq = _long(P.get("equities"), ("date", "symbol"))
         ix = _long(P.get("indices"), ("date", "index"))
@@ -297,6 +306,12 @@ class _Ctx:
         if not len(self.eq):
             raise ValueError(f"aucune donnée d'actions avant le {_date(day)}")
         self.date = pd.Timestamp(self.eq["date"].max())
+        # Deux instants : date des cours (self.date) et instant de connaissance des notes. Mode
+        # direct si ``notes_known_at`` est donné (notes appliquées à la séance qui suit le dernier
+        # BOC) ; sinon mode historique (règle stricte à ``asof``, comportement inchangé).
+        k = sg.knowledge_instant(notes_known_at)
+        self.notes_moment = sg.notes_moment(self.date if k is not None else day, k, self.calendar)
+        self.notes_direct = self.notes_moment.direct
 
         def wide(df: pd.DataFrame, col: str, idx: str = "symbol") -> pd.DataFrame:
             return df.pivot_table(index="date", columns=idx, values=col, aggfunc="last").sort_index()
@@ -321,6 +336,13 @@ class _Ctx:
         self.universe = sg.Universe(self.eq)
         self._series: dict[str, tuple[pd.Series, dict[str, Any]]] = {}
         self._shares: pd.Series | None = None
+
+    # -- notes ----------------------------------------------------------------
+    def notes_frame(self, t: Any) -> pd.DataFrame:
+        """Notes en vigueur : mode direct (connues à l'instant de connaissance) ou strict à ``t``."""
+        if self.notes_direct:
+            return sg.notes_asof(self.store, self.date, calendar=self.calendar, known_at=self.notes_moment)
+        return sg.notes_asof(self.store, t)
 
     # -- capitalisation ------------------------------------------------------
     def shares_at(self, day: pd.Timestamp | None = None) -> pd.Series:
@@ -789,7 +811,7 @@ def _announced_dividends(ctx: _Ctx, t: pd.Timestamp, horizon: pd.Timestamp) -> d
     if ctx.store is None:
         return {}
     try:
-        df = sg.notes_asof(ctx.store, t)
+        df = ctx.notes_frame(t)
     except Exception:
         return {}
     out: dict[str, dict[str, Any]] = {}
@@ -878,9 +900,13 @@ def _dividend_season(ctx: _Ctx, members: list[str], t: pd.Timestamp, window_days
     }
 
 
+#: Nombre maximal de notes détaillées par indice (``notes_detail``).
+NOTES_DETAIL_MAX = 12
+
+
 def _notes_component(ctx: _Ctx, code: str, members: list[str], con: pd.DataFrame | None) -> dict[str, Any]:
     out = {"notes_score": None, "notes_n": 0, "notes_index": 0.0, "notes_constituents": 0.0, "z_notes": None,
-           "notes_n_index": 0, "notes_n_constituents": 0, "notes_n_informative": 0}
+           "notes_n_index": 0, "notes_n_constituents": 0, "notes_n_informative": 0, "notes_detail": []}
     if con is None or not len(con):
         return out
     alias = index_aliases(code)
@@ -898,9 +924,27 @@ def _notes_component(ctx: _Ctx, code: str, members: list[str], con: pd.DataFrame
     informative = pd.concat([d.loc[d["contribution"].abs() > 1e-12, "note_id"],
                              c.loc[c["contribution"].abs() > 1e-12, "note_id"]])
     n_info = int(informative.nunique())
+    # Notes qui portent la composante : part de chaque note dans le score (indice et alias : la
+    # contribution elle-même ; constituant : contribution × part de la valeur échangée).
+    share = (vw / vw.sum()) if vw.sum() > 0 else pd.Series(1.0 / max(len(members), 1), index=members)
+    detail: dict[str, dict[str, Any]] = {}
+    for part, rel_default in ((d, "indice"), (c, "constituant")):
+        for r in part.to_dict("records"):
+            val = float(r["contribution"]) * (1.0 if rel_default == "indice" else float(share.get(r["target"], 0.0)))
+            if abs(val) <= 1e-12:
+                continue
+            e = detail.setdefault(str(r["note_id"]), {
+                "note_id": str(r["note_id"]), "title": r.get("title") or "", "author": r.get("author"),
+                "event_type": r.get("event_type"), "note_score": float(r["note_score"]), "decay": float(r["decay"]),
+                "first_tradable_session": pd.Timestamp(r["first_tradable_session"]), "targets": [], "part": 0.0,
+                "via": rel_default})
+            e["part"] += val
+            if r["target"] not in e["targets"]:
+                e["targets"].append(r["target"])
+    ranked = sorted(detail.values(), key=lambda e: -abs(e["part"]))
     out.update({"notes_index": idx, "notes_constituents": const, "notes_n": n,
                 "notes_n_index": int(d["note_id"].nunique()), "notes_n_constituents": int(c["note_id"].nunique()),
-                "notes_n_informative": n_info})
+                "notes_n_informative": n_info, "notes_detail": ranked[:NOTES_DETAIL_MAX]})
     if n_info:
         raw = idx + const
         out["notes_score"] = raw
@@ -1022,6 +1066,10 @@ def _evaluate_one(code: str, ctx: _Ctx, con: pd.DataFrame | None, weights: Mappi
     wsum = sum(weights[k] for k in avail)
     composite = float(sum(weights[k] * avail[k] for k in avail) / wsum) if wsum > 0 else None
     stance = _stance(composite)
+    # Score sans la composante « notes » (transparence : effet des notes sur la position).
+    rest = {k: v for k, v in avail.items() if k != "notes"}
+    wrest = sum(weights[k] for k in rest)
+    composite_ex = float(sum(weights[k] * rest[k] for k in rest) / wrest) if wrest > 0 else None
     wall = sum(v for v in weights.values() if v > 0)
     coverage = wsum / wall if wall > 0 else 0.0
     agreement, margin = _stance_support(stance, composite, avail, weights)
@@ -1046,16 +1094,18 @@ def _evaluate_one(code: str, ctx: _Ctx, con: pd.DataFrame | None, weights: Mappi
         "breadth_50": br["breadth_50"], "breadth_200": br["breadth_200"], "up_down_20": br["up_down_20"],
         "div_payers": div["div_payers"], "div_expected_60d": div["div_expected"],
         "div_season_share": div["div_season_share"], "div_yield_60d": div["div_yield_window"],
-        "notes_score": nt["notes_score"], "notes_n": nt["notes_n"],
+        "notes_score": nt["notes_score"], "notes_n": nt["notes_n"], "notes_detail": nt["notes_detail"],
         "z_trend": z_trend, "z_valuation": z_val, "z_breadth": z_br, "z_regime": z_reg, "z_notes": nt["z_notes"],
         "composite": composite, "stance": stance, "confidence": confidence, "agreement": agreement,
+        "composite_ex_notes": composite_ex, "stance_ex_notes": _stance(composite_ex),
         "n_constituents": len(members),
         "composition": method, "approx_composition": approx,
     }
     extras = {"val": val, "br": br, "div": div, "notes": nt, "trend": {"r3": t3, "r12": t12, "t200": ttr},
               "weights": dict(weights), "avail": avail, "agreement": agreement, "coverage": coverage,
               "margin": margin, "data_quality": data_q,
-              "cap_weights": capw, "regime": reg}
+              "cap_weights": capw, "regime": reg,
+              "notes_moment": ctx.notes_moment if ctx.store is not None else None}
     row["reasons"] = _reasons(row, info, extras, window_days, years)
     return _Eval(row, members, method, s, info, extras)
 
@@ -1121,22 +1171,45 @@ def _reasons(row: dict[str, Any], info: dict[str, Any], ex: dict[str, Any], wind
                  f"{row['div_payers']} payeur(s) ({_pct(row['div_season_share'], 0, signed=False)}){ann} ; rendement net "
                  f"attendu pondéré par la capitalisation {_pct(row['div_yield_60d'], 2, signed=False)}, {mech}.")
     nt = ex["notes"]
+    nm = ex.get("notes_moment")
+    when = ""
+    if nm is not None and nm.direct:
+        when = f" (connues au {nm.known_at:%d/%m/%Y %H:%M} UTC, appliquées à la séance du {_date(nm.session)})"
+    elif nm is not None:
+        when = f" (mode historique : règle stricte au {_date(nm.session)})"
     if nt["notes_n"] and nt["z_notes"] is None:
-        R.append(f"Notes : {nt['notes_n']} note(s) en vigueur, toutes de score nul (aucune information "
+        notes_nd = f"n.d. : {nt['notes_n']} note(s) en vigueur, toutes de score nul"
+        R.append(f"Notes{when} : {nt['notes_n']} note(s) en vigueur, toutes de score nul (aucune information "
                  "directionnelle) ; composante exclue du score.")
     elif nt["notes_n"]:
-        R.append(f"Notes : score {_signed(nt['notes_score'], 3)} ({nt['notes_n']} note(s) en vigueur : "
+        notes_nd = ""
+        R.append(f"Notes{when} : score {_signed(nt['notes_score'], 3)} ({nt['notes_n']} note(s) en vigueur : "
                  f"{_signed(nt['notes_index'], 3)} sur l'indice et ses alias, {_signed(nt['notes_constituents'], 3)} pour "
                  f"les constituants pondérés par la valeur échangée sur 6 mois) ; z notes {_z_txt(row['z_notes'])}.")
+        top = [e for e in nt.get("notes_detail") or []][:3]
+        if top:
+            R.append("Notes qui portent la composante : " + " ; ".join(
+                f"« {str(e['title'])[:70]} » ({', '.join(e['targets'][:3])}, score {_signed(e['note_score'], 2)}, "
+                f"part {_signed(e['part'], 3)})" for e in top) + ".")
+        if row.get("composite_ex_notes") is not None and row.get("composite") is not None:
+            flip = "" if row["stance_ex_notes"] == row["stance"] else (
+                " : la position change à cause de cette composante (elle pèse "
+                f"{_num(100 * ex['weights'].get('notes', 0), 0)} % du score dès qu'une note porte un score, même faible)")
+            R.append(f"Effet des notes : sans la composante notes, le score composite serait "
+                     f"{_z_txt(row['composite_ex_notes'])} ({row['stance_ex_notes']}) ; avec elle, "
+                     f"{_z_txt(row['composite'])} ({row['stance']}){flip}.")
     else:
-        R.append("Notes : aucune note en vigueur sur l'indice ou ses constituants ; composante exclue du score.")
+        notes_nd = "n.d. : aucune note en vigueur" if nm is not None else "n.d. : aucun journal de notes"
+        R.append(f"Notes{when} : aucune note en vigueur sur l'indice ou ses constituants ; composante exclue du "
+                 "score.")
     R.append(f"Composition ({row['n_constituents']} titres) : {row['composition']}.")
     w = ex["weights"]
     parts = []
     for k, lab_k in (("tendance", "tendance"), ("valorisation", "valorisation"), ("largeur", "largeur"),
                      ("regime", "régime"), ("notes", "notes")):
         z = ex["avail"].get(k)
-        parts.append(f"{lab_k} {_z_txt(z)} × {_num(w.get(k, 0), 2)}" if z is not None else f"{lab_k} n.d.")
+        nd = notes_nd if k == "notes" and notes_nd else "n.d."
+        parts.append(f"{lab_k} {_z_txt(z)} × {_num(w.get(k, 0), 2)}" if z is not None else f"{lab_k} {nd}")
     comp = row["composite"]
     lean = ""
     if row["stance"] == "NEUTRE" and comp is not None:
@@ -1167,10 +1240,13 @@ def _codes(indices: Iterable[str] | None) -> list[str]:
 
 
 def _prepare(panels: Any, store: Any, asof: Any, calendar: Any, half_life: float,
-             propagation: Mapping[str, float] | None) -> tuple[_Ctx, pd.DataFrame | None]:
-    ctx = _Ctx(panels, asof, store=store, calendar=calendar)
+             propagation: Mapping[str, float] | None, notes_known_at: Any = None) -> tuple[_Ctx, pd.DataFrame | None]:
+    ctx = _Ctx(panels, asof, store=store, calendar=calendar, notes_known_at=notes_known_at)
     con = None
-    if store is not None:
+    if store is not None and ctx.notes_direct:
+        con = sg.note_contributions(store, ctx.date, half_life=half_life, calendar=ctx.calendar,
+                                    propagation=propagation, universe=ctx.universe, known_at=ctx.notes_moment)
+    elif store is not None:
         con = sg.note_contributions(store, ctx.asof, half_life=half_life, calendar=ctx.calendar,
                                     propagation=propagation, universe=ctx.universe)
     return ctx, con
@@ -1188,6 +1264,7 @@ def evaluate_indices(
     calendar: Any = None,
     propagation: Mapping[str, float] | None = None,
     brvm30_method: str = "trimestre",
+    notes_known_at: Any = None,
 ) -> pd.DataFrame:
     """Une ligne par indice disponible à ``asof`` (voir le module pour les définitions).
 
@@ -1197,7 +1274,13 @@ def evaluate_indices(
       « notes » et les dividendes annoncés ; ``None`` : composante exclue ;
     - ``asof`` : date d'évaluation (défaut : dernière séance du panel) ;
     - ``indices`` : codes (``IDX:BRVM-C``…) ou désignations libres ; défaut : tous ;
-    - ``weights`` : poids des composantes (:data:`COMPONENT_WEIGHTS`).
+    - ``weights`` : poids des composantes (:data:`COMPONENT_WEIGHTS`) ;
+    - ``notes_known_at`` : ``None`` (défaut : mode historique, notes en règle stricte à
+      ``asof``) ou instant de connaissance des notes (mode direct : notes connues à cet instant,
+      appliquées à la séance qui suit le dernier BOC ; les cours restent ceux de ``asof``).
+
+    ``attrs`` : ``asof``, ``weights``, ``history_years``, ``notes_moment``
+    (``signals.NotesMoment`` ou ``None`` sans journal) et ``notes_line`` (phrase datée).
 
     Index : code de l'indice. Colonnes : ``label``, ``name`` (BOC), ``date``, ``level``,
     ``ret_1m``…``ret_12m``, ``ytd`` (décimaux), ``rel_3m``, ``rel_12m``, ``vol_63``,
@@ -1207,13 +1290,15 @@ def evaluate_indices(
     ``div_expected_60d``, ``div_season_share``, ``div_yield_60d``, ``notes_score``,
     ``notes_n``, ``z_trend``, ``z_valuation``, ``z_breadth``, ``z_regime``, ``z_notes``,
     ``composite``, ``stance``, ``confidence``, ``n_constituents``, ``composition``,
-    ``approx_composition``, ``reasons``.
+    ``approx_composition``, ``reasons``, ``notes_detail`` (notes qui portent la composante
+    « notes » : ``note_id``, ``title``, ``targets``, ``note_score``, ``decay``, ``part``),
+    ``composite_ex_notes`` et ``stance_ex_notes`` (score et position sans la composante notes).
     """
     w = dict(COMPONENT_WEIGHTS if weights is None else weights)
     unknown = set(w) - set(COMPONENT_WEIGHTS)
     if unknown:
         raise ValueError(f"composantes inconnues : {', '.join(sorted(unknown))}")
-    ctx, con = _prepare(panels, store, asof, calendar, half_life, propagation)
+    ctx, con = _prepare(panels, store, asof, calendar, half_life, propagation, notes_known_at)
     comp_s, _ = level_series("IDX:BRVM-C", ctx)
     rows = []
     for code in _codes(indices):
@@ -1224,7 +1309,10 @@ def evaluate_indices(
     if len(df):
         df = df.set_index("index")
     df.attrs.update({"asof": ctx.asof, "weights": w, "history_years": history_years,
-                     "notes": "lecture factuelle, sans garantie ; poids non validés hors échantillon"})
+                     "notes": "lecture factuelle, sans garantie ; poids non validés hors échantillon",
+                     "notes_moment": ctx.notes_moment if store is not None else None,
+                     "notes_line": ctx.notes_moment.describe() if store is not None else
+                     "Notes : aucun journal transmis, composante « notes » exclue"})
     return df
 
 
@@ -1363,7 +1451,7 @@ def _calendar(ctx: _Ctx, code: str, members: list[str], div_table: pd.DataFrame,
                            if r.get("div_net") and y else "")})
     if ctx.store is not None:
         try:
-            df = sg.notes_asof(ctx.store, t)
+            df = ctx.notes_frame(t)
         except Exception:
             df = pd.DataFrame()
         for r in df.to_dict("records") if len(df) else []:
@@ -1411,8 +1499,12 @@ def index_dossier(
     propagation: Mapping[str, float] | None = None,
     brvm30_method: str = "trimestre",
     recent_days: int = 90,
+    notes_known_at: Any = None,
 ) -> dict[str, Any]:
     """Dossier détaillé d'un indice à ``asof`` (mêmes données point-in-time que :func:`evaluate_indices`).
+
+    ``notes_known_at`` : voir :func:`evaluate_indices` (mode direct des notes) ; clés ajoutées :
+    ``notes_moment`` et ``notes_line``.
 
     Clés : ``index``, ``label``, ``asof``, ``evaluation`` (ligne de :func:`evaluate_indices`),
     ``constituents`` (``DataFrame`` : poids en capitalisation, cours, rendements, PER,
@@ -1427,7 +1519,7 @@ def index_dossier(
     if not code.startswith("IDX:"):
         raise ValueError(f"indice inconnu : {index!r}")
     w = dict(COMPONENT_WEIGHTS if weights is None else weights)
-    ctx, con = _prepare(panels, store, asof, calendar, half_life, propagation)
+    ctx, con = _prepare(panels, store, asof, calendar, half_life, propagation, notes_known_at)
     comp_s, _ = level_series("IDX:BRVM-C", ctx)
     ev = _evaluate_one(code, ctx, con, w, history_years, window_days, brvm30_method, comp_s)
     if ev is None:
@@ -1445,7 +1537,9 @@ def index_dossier(
     info = snap.drop_duplicates("symbol").set_index("symbol") if snap is not None else pd.DataFrame()
     v6 = ctx.value.loc[ctx.value.index > t - pd.DateOffset(months=LIQUIDITY_MONTHS)]
     scores = sg.aggregate_contributions(con) if con is not None else pd.DataFrame(columns=sg.SCORE_COLUMNS)
-    overlays = sg.manual_overlays(store, t, calendar=ctx.calendar, equities=ctx.eq, propagation=propagation) \
+    overlays = sg.manual_overlays(store, ctx.date if ctx.notes_direct else t, calendar=ctx.calendar, equities=ctx.eq,
+                                  propagation=propagation,
+                                  known_at=ctx.notes_moment if ctx.notes_direct else None) \
         if store is not None else None
     rows = []
     for sym in members:
@@ -1510,6 +1604,9 @@ def index_dossier(
         "constituents": cons, "contributions": contribs, "top_contributors": top, "bottom_contributors": bottom,
         "recent_notes": recent, "calendar": cal, "change_my_mind": cmm, "overlays": overlays,
         "dividends": ev.extras["div"].get("div_table"), "reasons": reasons,
+        "notes_moment": ctx.notes_moment if store is not None else None,
+        "notes_line": ctx.notes_moment.describe() if store is not None else
+        "Notes : aucun journal transmis, composante « notes » exclue",
     }
 
 

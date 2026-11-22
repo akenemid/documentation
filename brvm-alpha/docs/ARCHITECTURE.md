@@ -207,8 +207,18 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
 - `recommend(asof, capital, *, panels=None, holdings=None, cash=None, variant=None, costs="central",
   notes_store=None, validation_dir="reports/validation_S1", horizon_months=12, n_boot=5000, seed=0,
   registry_path=None, panel_dir=None, sessions=None, tolerance=0.01, max_participation=0.10,
-  mean_block_weeks=8, comparison=True, explanations=True, index_evaluation=True, today=None) -> OrdreDeBataille`
-  (`holdings` : symbole → nombre de titres ; un titre connu du panel mais absent du BOC à t est gardé
+  mean_block_weeks=8, comparison=True, explanations=True, index_evaluation=True, today=None,
+  notes_known_at=None) -> OrdreDeBataille`
+  (`notes_known_at` : instant de connaissance des notes ; `None` (défaut sûr) = **mode historique**, règle
+  stricte à la date de décision ; donné = **mode direct**, notes connues à cet instant appliquées à la séance
+  d'exécution, voir « Deux instants » du module des notes ; `declencheurs["notes"]` porte alors `ligne`
+  (« Notes connues au …, appliquées à la séance du … : N en vigueur (dont M manuelles), F filtre(s) de risque
+  actif(s) »), `mode`, `connues_au`, `seance_application`, `filtres`, `blocages` (titre, règle, note — date,
+  titre, source, adresse —, fin du blocage, `lever` : archiver la note) et `effet` (poids cibles sans et avec
+  les notes, même décision recalculée sans aucune note : montre si le poids d'un titre bloqué est redistribué
+  ou laissé en liquidités par les règles de construction, inchangées) ; un achat bloqué qui change l'ordre
+  ajoute un avertissement « ACHAT BLOQUÉ par une note » ;
+  `holdings` : symbole → nombre de titres ; un titre connu du panel mais absent du BOC à t est gardé
   « bloqué, hors BOC », valorisé au dernier cours − 10 % (§7.1.7), seuls les symboles jamais vus sont refusés ;
   `cash=None` : `capital − titres détenus` ; `notes_store=None` : journal du dépôt, `False` : aucune note ;
   `today` : contrôle de fraîcheur du panel (défaut : date système si le panel est lu sur disque) : séances
@@ -375,9 +385,14 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
 
 Modèle v1 + additif v1.1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §8.4, §9.1 ; paramètres =
 `configs/strategy_v1.yaml`, `version: "1.1"`) :
-- `BrvmAlpha(config=None, variant="A", capital=None, params=None, *, notes="auto", country_events=None,
-  dividend_calendar=None, history_start=None, risk_overlay=True, defer_sales=None, sectors=None,
-  window_basis=None, validation_s1=False, capital_increases=None, cfg=None)`
+- `BrvmAlpha(config=None, variant="A", capital=None, params=None, *, notes="auto", notes_known_at=None,
+  country_events=None, dividend_calendar=None, history_start=None, risk_overlay=True, defer_sales=None,
+  sectors=None, window_basis=None, validation_s1=False, capital_increases=None, cfg=None)`
+  - `notes_known_at=None` (défaut) : notes en règle stricte à la date de décision (backtests, validation,
+    dates passées : inchangé) ; un instant UTC : **mode direct**, les notes connues à cet instant sont
+    transmises telles quelles aux mêmes règles (veto, inclinaison, filtres R), appliquées à la séance qui
+    suit la décision (`diagnostics["notes"]["mode"]`, `["session"]`, `["known_at"]`, `["table"]`) ; ignoré
+    en `validation_s1` et pour une décision postérieure à cet instant ; aucune règle ne change ;
   - `variant` ∈ `VARIANT_SPECS` : famille `FAMILY_V11 = ("A", …, "H", "I")` (PBO et DSR, N = 9) et
     référence `REFERENCE_VARIANT = "REF"` (« indice discipliné » D8, essai REF-ID hors famille) ;
     `VariantSpec.kind` : `"alpha"` (A-H), `"core_satellite"` (I, D9), `"reference"` (REF, D8) ;
@@ -437,23 +452,39 @@ Codes de sortie : 0 succès, 1 échec (données absentes, collecte arrêtée), 2
   (`make_manual_note` : source libre en étiquette `source:…`, URL http(s) seulement, date future refusée ;
   `NoteStore.add(analyze=True)`), `notes list [--cible] [--depuis] [--jusqu-au] [--statut]`, `notes show ID`
   et `notes archive ID [--motif]` (préfixe unique d'identifiant, `resolve_note_id`), `notes export [--sortie
-  chemin|-]`, `notes research [--cibles] [--hors-ligne] [--max-requetes] [--depuis] [--simulation]`
-  (`run_research`, règles de politesse affichées), `notes analyze --texte|--fichier` (sans enregistrer).
-- Analyse : `indices [--date] [--detail] [--format]` et `indices dossier CODE` (`evaluate_indices`,
-  `index_dossier`) ; `universe [--date]` ; `explain SYMBOLE [--date] [--variante]` (`explain_symbol` :
+  chemin|-]`, `notes research [--cibles] [--hors-ligne] [--max-requetes] [--depuis] [--simulation] [--pdf N]`
+  (`run_research`, règles de politesse affichées ; puis lecture du contenu d'au plus `N` documents récents,
+  défaut 20, `0` = aucun, non lancée si la collecte en ligne a été arrêtée), `notes lire [--max N]
+  [--hors-ligne] [--cibles CODES] [--simulation] [--racine]` (lecture seule des documents, sans nouvelle
+  collecte), `notes analyze --texte|--fichier` (sans enregistrer). La lecture appelle
+  `notes.research.enrich_documents(store, max_docs=, targets=, offline=, dry_run=)`, **importée au moment de
+  l'appel** (`load_enrich_documents`, `run_enrich`) : fonction absente → message clair, code 1 pour `notes
+  lire` ; bilan affiché par `format_enrich_report` (candidats, lus, notes enrichies, documents scannés à lire
+  à la main avec leur adresse, erreurs, requêtes, arrêt éventuel).
+- Analyse : `indices [--date] [--detail] [--format] [--notes-au]` et `indices dossier CODE` (`evaluate_indices`,
+  `index_dossier`) ; `universe [--date]` ; `explain SYMBOLE [--date] [--variante] [--racine] [--notes-au]` (`explain_symbol` :
   variante par défaut = `choose_variant`) ; `recommend --capital K [--portefeuille fichier.csv] [--cash]
-  [--variante] [--format md|json|html] [--date] [--couts] [--tirages] [--graine] [--racine] [--sortie]` (CSV
+  [--variante] [--format md|json|html] [--date] [--couts] [--tirages] [--graine] [--racine] [--notes-au] [--sortie]` (CSV
   « symbole,titres », `parse_holdings` ; `--racine` : même journal des notes que `serve` et `report`) ;
-  `report --capital K [--couts] [--tirages] [--graine] [--racine] [--sortie]` (`report.build_report`, défaut
-  `reports/rapport_AAAA-MM-JJ.html`) ; `serve [--port 8765] [--hote]`.
+  `report --capital K [--couts] [--tirages] [--graine] [--racine] [--notes-au] [--sortie]` (`report.build_report`,
+  défaut `reports/rapport_AAAA-MM-JJ.html`) ; `serve [--port 8765] [--hote]`.
+- **Deux instants** (`notes_instant(date, notes_au, panel_dir, last=, now=)`) : la date des cours est `--date`
+  (défaut : dernière séance du panel). L'instant de connaissance des notes vaut `--notes-au
+  AAAA-MM-JJ[THH:MM]` s'il est donné (UTC ; date seule = fin de journée, `parse_instant`) ; sinon l'heure
+  réelle (`now_utc()`, remplaçable dans les tests) en **mode direct**, c'est-à-dire quand la date de décision
+  est la dernière séance du panel (aucune date, ou une date non antérieure à cette séance) ; sinon `None` :
+  **mode historique**, règle stricte à la date demandée. `indices`, `explain`, `recommend` et `report`
+  transmettent cet instant (`notes_known_at`) et affichent la ligne datée des notes (`notes_status`,
+  `filter_lines`) ; `notes add` indique à quelle séance la note saisie comptera.
 - **S1** : `indices`, `explain`, `recommend`, `report` refusent (code 2) toute date de décision ≤ 2022-11-16
   avant tout calcul (`in_s1`, `s1_refusal`) ; `backtest` refuse une période qui recoupe S1 sans
   `--validation-s1` (qui exige `--window-basis`) ; `universe` (comptage) reste permis.
 - `validate --sample S1|S0 [--rerun-reason TEXTE] [--workers N] [--out-dir] [--panel-dir] [--decision-mode
   evenementiel|mensuel]` : exécuteur de la validation (`validation.run_validation`) ; refus du verrou → 2,
   run en échec → 1.
-- Saisies partagées avec l'interface : `parse_date`, `parse_capital` (« 10 000 000 », « 10M », « 1,5Md »),
-  `parse_holdings`, `is_loopback`, `last_session(panel_dir)`.
+- Saisies partagées avec l'interface : `parse_date`, `parse_instant`, `parse_capital` (« 10 000 000 », « 10M »,
+  « 1,5Md »), `parse_holdings`, `is_loopback`, `last_session(panel_dir)`, `notes_instant`, `notes_status`,
+  `run_enrich`.
 
 ### `data/boc_download.py`
 `download_range(start, end, out_dir, pause=10.0, *, fetcher=None, today=None, progress=None) -> int`,
@@ -466,8 +497,15 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
 ### `ui/` (interface web locale, `python -m brvm_alpha serve`)
 - `server.make_server(host="127.0.0.1", port=8765, *, allow_remote=False, services=None) -> UIServer`
   (`ThreadingHTTPServer` ; `port=0` : port libre ; adresse non locale refusée sans `allow_remote`) ;
-  `Services(notes_root, panel_dir, reports_dir, validation_dir, diagnostic_dir, boc_dir, research_kwargs)` :
-  seuls accès aux données (remplaçables dans les tests) ; `JobManager` : **une** opération longue à la fois
+  `Services(notes_root, panel_dir, reports_dir, validation_dir, diagnostic_dir, boc_dir, research_kwargs,
+  clock=None)` : seuls accès aux données (remplaçables dans les tests) ; `clock` : horloge UTC injectable
+  (défaut `cli.now_utc`) ; `Services.notes_instant(asof)` : maintenant (mode direct) si `asof` est vide ou
+  n'est pas antérieure à la dernière séance du panel, `None` (mode historique) sinon, transmis à
+  `evaluate_indices`, `index_dossier`, `explain`, `recommend` et `build_report` ; `Services.notes_status(asof)` :
+  état daté des notes (`notes.signals.notes_in_force`, mis en cache par journal, panel et séance
+  d'application) ; `Services.run_research(..., read_docs=False, max_docs=20)` : après la collecte, lecture du
+  contenu des documents (`cli.run_enrich`), bilan dans le journal du travail et `result["documents"]` ;
+  `JobManager` : **une** opération longue à la fois
   (recherche, rapport, ordre de bataille) dans un fil, `Job.snapshot()` (statut, progression, journal),
   `JobBusy` → 409.
 - Connexions : au plus `MAX_CONNECTIONS = 32` simultanées (sémaphore de `UIServer.process_request`, au-delà
@@ -480,12 +518,19 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   `no-store` ; échappement systématique (`pages.esc`, Markdown sûr `md_to_html`) ; aucune commande système ;
   fichiers servis choisis dans la liste `reports/*.html` (jamais un chemin saisi), rapport régénéré écrit sous
   `reports/rapport_<date du panel>.html` et servi dans un `iframe` *sandbox* avec sa propre CSP.
-- Pages (GET) : `/` tableau de bord (état S1, variante, dernier rapport, « régénérer »), `/notes` (saisie
-  manuelle avec aide aux codes SYMBOLE / IDX:… / PAYS:… / SECT:… / THEME:… / MARCHE, liste filtrable),
+- Pages (GET) : `/` tableau de bord (état S1, variante, **ligne datée des notes** et filtres actifs, dernier
+  rapport, « régénérer »), `/notes` (saisie manuelle avec aide aux codes SYMBOLE / IDX:… / PAYS:… / SECT:… /
+  THEME:… / MARCHE ; section « Notes en vigueur à la séance d'application » : ligne datée, filtres actifs avec
+  la note qui les porte et la façon de les lever, notes manuelles et notes automatiques séparées (date, cible,
+  type, score, confiance, décroissance, source avec lien, filtre), 10 plus positives et 10 plus négatives,
+  composante « notes » de chaque indice avec les notes qui la portent ; puis le journal filtrable),
   `/notes/fiche?id=` (analyse, lecture, versions, archivage), `/recherche` (confirmation, hors ligne / en
-  ligne, quota ≤ 150, journal et progression, règles de politesse), `/indices` et `/indices/dossier?code=`
+  ligne, quota ≤ 150, case « lire le contenu des documents récents » et nombre maximal ≤ 60, journal et
+  progression, bilan de la lecture, règles de politesse), `/indices` (ligne datée, colonne « Notes (z) » :
+  valeur, « score nul » ou « aucune note », jamais « n.d. » seul) et `/indices/dossier?code=`
   (notes qui influencent l'indice), `/portefeuille` (capital, portefeuille « symbole,titres », liquidités,
-  variante → ordre de bataille complet, exports Markdown / JSON), `/expliquer?symbole=`, `/validation`
+  variante → ordre de bataille complet avec la ligne datée et les achats bloqués, exports Markdown / JSON),
+  `/expliquer?symbole=`, `/validation`
   (résultats S1 lus, diagnostic S0 replié et marqué contaminé), `/rapport/voir?nom=`, `/api/travail?id=`.
   Actions (POST) : `/notes/ajouter`, `/notes/archiver`, `/recherche/lancer`, `/rapport/regenerer`,
   `/portefeuille/calculer`. Dates de S1 refusées comme dans la CLI.
@@ -499,7 +544,9 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   **kwargs) -> Path` : écrit **un seul fichier HTML** autonome (aucune ressource externe : styles et script en
   ligne, graphiques en SVG inline générés en Python, axes et libellés en HTML ; seuls les liens de la liste des
   sources, `class="src"`, pointent vers brvm.org). Options (`**kwargs`, transmises à `render_report`) : `cash`,
-  `costs`, `registry_path`, `n_boot` (5 000), `seed`, `recommend_kwargs` (surcharges de `recommend`), `now`.
+  `costs`, `registry_path`, `n_boot` (5 000), `seed`, `recommend_kwargs` (surcharges de `recommend`), `now`,
+  `notes_known_at` (instant de connaissance des notes ; `None`, défaut sûr : mode historique ; la ligne de
+  commande et l'interface passent l'heure réelle quand la date est la dernière séance du panel).
   Chemins de données relatifs = racine du dépôt (comme `recommend`) ; `out_path` relatif = répertoire courant.
 - `render_report(...) -> RapportHTML` (`html`, `sections` : liste de `SectionResult(id, titre, statut, message,
   duree_s)` avec `statut` ∈ `ok` / `indisponible` / `erreur`, `meta`) ; `read_validation(dir, sample="S1")` :
@@ -520,9 +567,16 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   tirages **recalculés à l'identique** par `recommend.return_distribution(..., with_draws=True)` : même fenêtre,
   mêmes poids, même graine, même renormalisation des lignes pas encore cotées ; médiane/P10/P90, P(battre le TR), P(perte) ; stress du §9.3 **en tête** si la prime
   du BOC classe le marché « cher », §4.5), `indices` (`notes.index_eval.evaluate_indices` : position, confiance,
-  raisons ; « aide à la décision, pas un signal validé »), `notes` (12 dernières notes actives de
-  `NoteStore(notes_root)` avec score, matérialité, confiance, lecture ; adresses en texte ; vetos et inclinaisons
-  de la décision ; encadré « aucune note » si le journal est absent), `risques` (filtres R actifs de
+  raisons, ligne datée des notes et colonne « Notes (z) » ; « aide à la décision, pas un signal validé »),
+  `notes` (ligne « Notes connues au …, appliquées à la séance du … : N en vigueur (dont M manuelles), F
+  filtre(s) de risque actif(s) » ; texte clair si aucune note ne porte de score ; filtres actifs avec la note
+  qui les porte et la façon de les lever ; notes en vigueur, manuelles et automatiques séparées : date, cible,
+  type, score, confiance, décroissance, source, filtre ; 10 plus positives et 10 plus négatives ; composante
+  « notes » de chaque indice avec les notes qui la portent ; puis les 12 dernières notes actives de
+  `NoteStore(notes_root)` avec score, matérialité, confiance, lecture ; une adresse n'est un lien
+  (`class="src"`) que vers `https://www.brvm.org/`, sinon elle est en texte ; vetos et inclinaisons de la
+  décision ; encadré « aucune note » si le journal est absent ; la section `ordre` affiche la même ligne et
+  les achats bloqués par une note), `risques` (filtres R actifs de
   `BrvmAlpha.decide`, règles et événements pays, événements à venir, drawdown, valorisation §4.5), `univers`
   (tous les titres : éligible, motif U1-U10, score final, rang, blocs z, poids, filtres R), `methode` (§10,
   trous de données comptés dans `sessions.parquet`, hypothèses de coûts, protocole, sources).
@@ -635,8 +689,30 @@ sécurité, eurobond…) ; `MARCHE`.
   §2.3) ; la version en vigueur à la séance J est la dernière écrite avant la coupure de J ;
   Δ est compté depuis cette séance effective. `strict=False` : publication seule
   (reconstitution d'historique).
-- `manual_overlays(store, asof) -> dict` : `veto` (exclusions), `tilt`
-  (ajustement borné à ±0,5 écart-type), `flags` (R1..R10 actifs).
+- **Deux instants, deux modes** (`NotesMoment(prices_date, session, known_at, mode)`,
+  `notes_moment(asof, known_at=None, calendar=None)`, `application_session(prices_date, known_at, calendar)`) :
+  la **date des cours** (dernier BOC, `asof`) et l'**instant de connaissance des notes**. `known_at=None`
+  (défaut de `notes_asof`, `note_contributions`, `note_scores`, `manual_overlays`, `notes_in_force`) :
+  **mode historique**, règle stricte ci-dessus à la date `asof`, inchangée (dates passées, backtests,
+  diagnostics, validation). `known_at=<instant UTC>` : **mode direct** (passé seulement par la ligne de
+  commande, l'interface et le rapport à la dernière séance du panel) : séance d'application = `max(séance
+  qui suit le dernier BOC, première séance négociable de known_at)` (la séance suivante, ou celle d'après
+  si sa coupure de 09h00 UTC est passée) ; sont en vigueur les notes dont une version est écrite au plus
+  tard à `known_at`, non archivées, publiées au plus tard à `known_at` (une note datée de demain n'agit
+  pas) et dont la première séance négociable est au plus tard la séance d'application. Âge Δ compté
+  jusqu'à la séance d'application, depuis la séance de la **publication** pour une note automatique (la date
+  de collecte n'est qu'un artefact de l'outil) et depuis `max(publication, saisie)` pour une note de
+  l'analyste. Une version reconstituée ne compte que si `known_at` n'est pas antérieur à l'heure réelle.
+- `manual_overlays(store, asof, ..., known_at=None) -> dict` : `veto` (exclusions), `tilt`
+  (ajustement borné à ±0,5 écart-type), `flags` (R1..R10 actifs), `table` (une ligne par surcouche, avec la
+  note qui la porte : `published_at`, `source`, `url`), `tilt_notes`, `session`, `known_at`, `mode`.
+- `notes_in_force(store, asof, *, known_at=None, calendar=None, equities="default", ...) -> dict` : état
+  daté des notes : `line` (« Notes connues au JJ/MM/AAAA HH:MM UTC, appliquées à la séance du JJ/MM/AAAA :
+  N en vigueur (dont M manuelles), F filtre(s) de risque actif(s) »), `scores_message` (texte clair si
+  aucune note ne porte de score), `table` (notes en vigueur : connues, négociables et qui agissent encore —
+  décroissance ≥ 0,001, filtre actif ou avis dans son horizon ; colonnes `IN_FORCE_COLUMNS`), `filters`
+  (titre × filtre : règle, note, fin, `bloque_achats`, `lever`), compteurs `n_in_force`, `n_manual`,
+  `n_scored`, `n_filters`… ; `top_notes(table, n=10)` : les plus positives et les plus négatives.
 - `notes_panel(store, calendar, symbols, half_life=10·ln 2) -> pd.DataFrame`
   (date × symbole, point-in-time, mêmes règles que `note_scores`) pour l'IC walk-forward.
 
@@ -652,3 +728,11 @@ sécurité, eurobond…) ; `MARCHE`.
 - `index_dossier(index, panels, store=None, asof=None) -> dict` (détail :
   constituants, contributions, notes récentes, calendrier, « ce qui ferait
   changer d'avis »).
+- `evaluate_indices(..., notes_known_at=None)` et `index_dossier(..., notes_known_at=None)` : `None`
+  (défaut) = notes en règle stricte à `asof` ; un instant = mode direct (notes connues à cet instant,
+  appliquées à la séance qui suit le dernier BOC ; cours inchangés). Ajouts : `attrs["notes_moment"]` et
+  `attrs["notes_line"]`, colonnes `notes_detail` (notes qui portent la composante : `note_id`, `title`,
+  `targets`, `note_score`, `decay`, `part`), `composite_ex_notes` et `stance_ex_notes` (score et position
+  sans la composante notes) ; raisons « Notes (connues au …) », « Notes qui portent la composante »,
+  « Effet des notes » ; quand la composante est absente, le motif est écrit (« notes n.d. : aucune note en
+  vigueur » ou « … toutes de score nul »), jamais « n.d. » seul.

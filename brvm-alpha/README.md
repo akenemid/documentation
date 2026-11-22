@@ -68,7 +68,7 @@ Code de sortie : 0 succès, 1 échec, 2 refus ou saisie invalide. **Toute date d
 | `update` | télécharge les BOC manquants sur www.brvm.org (robots.txt, 10 s au moins entre deux requêtes, arrêt au premier 403 ou 429), puis reconstruit le panel |
 | `panel` | reconstruit `data/panel` depuis les BOC locaux (cache incrémental) |
 | `live` | cours du jour (page publique de brvm.org, un instantané ; le BOC du soir fait foi) |
-| `notes` | journal des notes : `add`, `list`, `show`, `archive`, `export`, `research`, `analyze` |
+| `notes` | journal des notes : `add`, `list`, `show`, `archive`, `export`, `research` (collecte, puis lecture des documents : `--pdf N`), `lire` (lecture seule des documents), `analyze` |
 | `indices` | évaluation des indices (position, confiance, raisons) ; `indices dossier CODE` |
 | `universe` | univers éligible U1-U10 à une date (comptage, permis sur toute la période) |
 | `explain` | décomposition du score et des contraintes d'un titre |
@@ -100,6 +100,13 @@ python -m brvm_alpha indices --detail
 python -m brvm_alpha indices dossier IDX:BRVM-30
 python -m brvm_alpha universe --date 2026-11-20 --capital 10000000
 
+# Notes : les notes connues maintenant comptent (mode direct) ; --notes-au fixe l'instant (UTC)
+python -m brvm_alpha recommend --capital 10M                                 # notes connues maintenant
+python -m brvm_alpha recommend --capital 10M --notes-au 2026-11-22T21:00     # notes connues à cet instant
+python -m brvm_alpha indices --date 2026-11-13                               # date passée : règle stricte
+python -m brvm_alpha notes research --pdf 20     # collecte polie, puis lecture d'au plus 20 documents
+python -m brvm_alpha notes lire --max 10 --hors-ligne    # documents déjà en cache, aucune requête
+
 # Validation (le test S1 a déjà été exécuté : la commande refuse de se relancer)
 python -m brvm_alpha validate --sample S0
 ```
@@ -118,11 +125,15 @@ python -m brvm_alpha serve --port 0   # port libre
 ```
 
 L'interface écoute sur **127.0.0.1 seulement** : elle n'a pas d'authentification, et une autre adresse
-exige `--hote`, ce qui est déconseillé. Pages : tableau de bord (état de S1, variante, dernier rapport),
-notes (saisie manuelle, liste, fiche, archivage), recherche automatique (hors ligne ou en ligne, avec
-quota), indices et dossiers d'indice, portefeuille (capital, titres détenus, liquidités, puis ordre de
-bataille avec exports Markdown et JSON), explication d'un titre, validation (S1 lu ; S0 replié et
-marqué contaminé), rapports. Protections : contrôle de l'en-tête `Host`, jeton anti-CSRF sur chaque
+exige `--hote`, ce qui est déconseillé. Pages : tableau de bord (état de S1, variante, notes prises en
+compte, dernier rapport), notes (saisie manuelle, notes en vigueur à la séance d'application, filtres
+actifs, 10 notes les plus positives et les plus négatives, composante « notes » de chaque indice, journal,
+fiche, archivage), recherche automatique (hors ligne ou en ligne, avec quota, et case « lire le contenu
+des documents récents »), indices et dossiers d'indice, portefeuille (capital, titres détenus,
+liquidités, puis ordre de bataille avec exports Markdown et JSON), explication d'un titre, validation
+(S1 lu ; S0 replié et marqué contaminé), rapports. Quand la date est la dernière séance du panel,
+l'interface travaille en **mode direct** : les notes saisies ou collectées jusqu'à l'instant de la
+requête comptent, et chaque page affiche la ligne « Notes connues au …, appliquées à la séance du … ». Protections : contrôle de l'en-tête `Host`, jeton anti-CSRF sur chaque
 envoi, corps de requête borné, politique de sécurité de contenu stricte, délai d'expiration de 20 s,
 32 connexions au plus, une seule opération longue à la fois. Thème clair ou sombre, mise en page
 lisible sur téléphone.
@@ -153,15 +164,51 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
   requêtes (150 par défaut) ; aucune API non documentée. Sika Finance, Richbourse et la presse sont
   **désactivés par défaut**. `--hors-ligne` n'utilise que le cache et les BOC locaux ; `--simulation`
   n'enregistre rien.
+- **Lecture du contenu des documents** : après la collecte, `notes research --pdf N` (défaut 20 ; `0` :
+  aucun) lit le contenu d'au plus N documents PDF récents de www.brvm.org (alertes sur résultats,
+  résultats, rapports d'activité, notations, communiqués), un par émetteur d'abord, et écrit une
+  **nouvelle version** de chaque note avec l'analyse du texte. `notes lire [--max N] [--hors-ligne]
+  [--cibles CODES]` fait la même lecture sans nouvelle collecte. Le bilan affiche les documents lus, les
+  notes enrichies, les documents scannés (images sans texte, **à lire à la main**) et les erreurs. Les
+  règles de politesse sont les mêmes (une requête par document, 10 s au moins, arrêt au premier 403 ou
+  429).
 - **Analyse** : chaque note reçoit un type d'événement (dividende, résultats, alerte sur résultats,
   macro…), un ton, les chiffres extraits (variation du résultat net, du dividende…), une matérialité,
   une confiance, des filtres de risque R1-R10 et une lecture en phrases courtes. Le score suit le
   document 07 §3.4 : `clip(0,7 × s_num + 0,3 × ton, −1, 1)`.
+- **Deux instants : la date des cours et l'instant de connaissance des notes.** Les cours sont ceux du
+  dernier BOC. Les notes, elles, peuvent être plus récentes : une note saisie le dimanche soir doit
+  compter pour la séance du lundi.
+  - **Mode direct** (défaut de `indices`, `explain`, `recommend`, `report` et de l'interface quand la
+    date est la dernière séance du panel) : l'instant de connaissance est l'heure réelle. Les notes
+    connues à cet instant sont appliquées à la **séance qui suit le dernier BOC**, ou à la suivante si sa
+    coupure de 09h00 UTC est déjà passée. Une note datée de demain n'agit pas. L'âge d'une note
+    (décroissance, durée d'un filtre) se compte depuis sa publication pour une note collectée
+    automatiquement, depuis sa saisie pour une note de l'analyste.
+  - **Mode historique** (`--date` antérieure à la dernière séance, backtests, validation, tout appel
+    programmatique sans `notes_known_at`) : règle stricte à la date demandée, **sans anticipation** ; une
+    note saisie ou collectée après cette date n'agit pas.
+  - `--notes-au AAAA-MM-JJ[THH:MM]` fixe l'instant de connaissance (UTC ; une date seule désigne la fin
+    de la journée).
+  - Chaque sortie écrit la ligne « Notes connues au JJ/MM/AAAA HH:MM UTC, appliquées à la séance du
+    JJ/MM/AAAA : N en vigueur (dont M manuelles), F filtre(s) de risque actif(s) ». Quand une note
+    **bloque un achat** (filtre R), l'ordre de bataille l'écrit en clair : titre, règle, note (date,
+    titre, source, adresse), fin du blocage, effet sur les poids cibles et façon de lever le blocage
+    (**archiver la note** : `notes archive ID`, ou le bouton « Archiver » de sa fiche).
+  - Exemple (fait, journal collecté le 22/11/2026) : l'annulation de l'assemblée générale d'ETI (note du
+    23/10/2026, filtre R2, 60 séances, jusqu'au 19/01/2027) bloque l'achat d'ETIT. Dans l'ordre REF de
+    10 M FCFA, son poids cible de 6,16 % passe à 0 % ; les règles de construction existantes (D8) le
+    **redistribuent** : TotalEnergies Marketing CI (TTLC) entre comme vingtième ligne et les autres
+    poids montent en proportion ; le total investi cible reste de 98 %. Les ordres publiés dans
+    `reports/` avant ce changement achètent encore ETIT : ils sont à régénérer avec `recommend`.
 - **Effet sur les indices** : les scores des notes, datés et point-in-time (une note agit à la première
   séance négociable après sa publication, coupure de 09h00, décroissance τ = 10 séances), forment la
   composante « notes » de l'évaluation des indices (poids 0,15, à côté de la tendance 0,30, de la
   valorisation 0,25, de la largeur 0,15 et du régime 0,15). Cette composante n'est retenue que si une
-  note en vigueur a une contribution non nulle. La position (SURPONDÉRER, NEUTRE, SOUS-PONDÉRER) est
+  note en vigueur a une contribution non nulle ; dès qu'elle l'est, elle pèse 15 % du score, même si son
+  z est proche de zéro : chaque indice affiche donc son score **sans et avec** les notes (« Effet des
+  notes »), et les notes qui portent la composante. Quand elle est absente, la raison est écrite
+  (« aucune note en vigueur » ou « score nul »). La position (SURPONDÉRER, NEUTRE, SOUS-PONDÉRER) est
   une **aide à la décision, pas un signal validé** : elle n'entre pas dans l'ordre de bataille.
 - **Effet sur la position** : les notes ne pilotent jamais seules le portefeuille. Un **veto** manuel
   exclut un titre. Une **inclinaison** est bornée à ±0,5 écart-type et s'ajoute au score des variantes
@@ -279,14 +326,14 @@ Les contrats des modules et l'arborescence complète sont décrits dans
 
 ```bash
 cd brvm-alpha
-python -m pytest -q -p no:cacheprovider        # suite complète, environ 3 minutes
+python -m pytest -q -p no:cacheprovider        # suite complète, environ 10 minutes
 python -m pytest -q -p no:cacheprovider tests/test_report_html.py
 ```
 
 Les tests n'envoient **aucune requête réseau**. Ils utilisent des données synthétiques, des extraits de
 BOC et des pages de brvm.org enregistrées (`tests/fixtures/`), ou la période S0. **Aucun backtest,
 aucune performance et aucun IC n'est évalué sur S1** dans les tests. Le 22/11/2026, la suite complète
-compte 1 300 tests, tous verts.
+compte 1 380 tests, tous verts (dont 36 pour le mode direct des notes, `tests/test_notes_direct.py`).
 
 ## Sources
 

@@ -7,9 +7,19 @@ Données
   ``live`` : cours du jour (page publique, instantané sans historique).
 
 Notes de l'analyste (journal ``data/notes/notes.jsonl``)
-  ``notes add|list|show|archive|export|research|analyze`` : saisie manuelle analysée, liste filtrée,
-  fiche (analyse, lecture, versions), archivage, export Markdown, recherche polie sur brvm.org (ou
-  hors ligne, cache seul), analyse d'un texte sans l'enregistrer.
+  ``notes add|list|show|archive|export|research|lire|analyze`` : saisie manuelle analysée, liste
+  filtrée, fiche (analyse, lecture, versions), archivage, export Markdown, recherche polie sur
+  brvm.org (ou hors ligne, cache seul) suivie de la lecture du contenu des documents récents
+  (``--pdf N``), lecture seule des documents (``notes lire``), analyse d'un texte sans l'enregistrer.
+
+Deux instants (``indices``, ``explain``, ``recommend``, ``report``)
+  La **date des cours** est celle du dernier BOC (``--date``). L'**instant de connaissance des
+  notes** est, en **mode direct** (date de décision = dernière séance du panel, aucune date passée
+  demandée), l'heure réelle : les notes connues au moment où la commande tourne sont appliquées à
+  la séance qui suit le dernier BOC (ou la suivante si sa coupure de 09h00 UTC est passée). En
+  **mode historique** (``--date`` antérieure à la dernière séance), la règle stricte s'applique à
+  la date demandée, sans anticipation. ``--notes-au AAAA-MM-JJ[THH:MM]`` fixe l'instant de
+  connaissance (UTC ; une date seule désigne la fin de la journée).
 
 Analyse et décision
   ``indices [--date]`` et ``indices dossier CODE`` : évaluation des indices (position, confiance,
@@ -132,6 +142,58 @@ def parse_date(value: Any) -> pd.Timestamp:
     raise ValueError(f"date invalide : {s!r} (attendu AAAA-MM-JJ ou JJ/MM/AAAA)")
 
 
+def parse_instant(value: Any) -> pd.Timestamp:
+    """Instant UTC : « AAAA-MM-JJ », « AAAA-MM-JJTHH:MM », « AAAA-MM-JJ HH:MM », « JJ/MM/AAAA [HH:MM] ».
+
+    Une date seule désigne la **fin** de cette journée (tout ce qui est connu ce jour-là). Lève
+    ``ValueError`` (message en français) sinon.
+    """
+    from brvm_alpha.notes.model import asof_utc
+
+    s = str(value or "").strip()
+    if not s:
+        raise ValueError("instant vide (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)")
+    if not re.fullmatch(r"(\d{4}-\d{2}-\d{2}|\d{1,2}[/.]\d{1,2}[/.]\d{4})([T ]+\d{1,2}[:h]\d{2}(:\d{2})?)?\s*(Z|UTC)?", s,
+                        re.I):
+        raise ValueError(f"instant invalide : {s!r} (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)")
+    txt = re.sub(r"\s*(Z|UTC)$", "", s, flags=re.I)
+    m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})[T ]+(\d{1,2})[:h](\d{2})(?::(\d{2}))?", txt)
+    try:
+        if m:
+            return pd.Timestamp(f"{m.group(1)} {int(m.group(2)):02d}:{m.group(3)}:{m.group(4) or '00'}", tz="UTC")
+        ts = asof_utc(txt.replace("T", " "))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"instant invalide : {s!r} (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)") from exc
+    if ts is None:
+        raise ValueError(f"instant invalide : {s!r}")
+    return ts
+
+
+def now_utc() -> pd.Timestamp:
+    """Instant présent en UTC (point d'injection de l'horloge : remplaçable dans les tests)."""
+    return pd.Timestamp.now(tz="UTC")
+
+
+def notes_instant(date: Any, notes_au: Any = None, panel_dir: str | Path | None = None, *,
+                  last: Any = None, now: Any = None) -> pd.Timestamp | None:
+    """Instant de connaissance des notes pour une commande (``None`` : mode historique).
+
+    - ``notes_au`` donné (``--notes-au``) : cet instant ;
+    - sinon **mode direct** si la date de décision est la dernière séance du panel (``date`` absente
+      ou non antérieure à cette séance) : l'heure réelle (:func:`now_utc`, ou ``now``) ;
+    - sinon (date passée demandée) : ``None``, règle stricte à la date demandée.
+    """
+    if notes_au is not None and str(notes_au).strip() != "":
+        return notes_au if isinstance(notes_au, pd.Timestamp) and notes_au.tzinfo is not None else parse_instant(notes_au)
+    last_s = pd.Timestamp(last).normalize() if last is not None else last_session(panel_dir)
+    if date is not None and last_s is not None and pd.Timestamp(date).normalize() < last_s:
+        return None
+    if date is not None and last_s is None:
+        return None
+    t = now_utc() if now is None else pd.Timestamp(now)
+    return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+
+
 def parse_capital(value: Any) -> float:
     """Montant en FCFA : « 10000000 », « 10 000 000 », « 10M », « 1,5 Md », « 250k » (``ValueError`` sinon)."""
     s = str(value or "").strip().lower().replace("\u202f", "").replace("\xa0", "").replace(" ", "").replace("_", "")
@@ -193,6 +255,13 @@ def _date_arg(value: str) -> pd.Timestamp:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _instant_arg(value: str) -> pd.Timestamp:
+    try:
+        return parse_instant(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _capital_arg(value: str) -> float:
     try:
         return parse_capital(value)
@@ -217,6 +286,16 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"entier attendu : {value!r}") from exc
     if n <= 0:
         raise argparse.ArgumentTypeError("entier strictement positif attendu")
+    return n
+
+
+def _nonneg_int(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"entier attendu : {value!r}") from exc
+    if n < 0:
+        raise argparse.ArgumentTypeError("entier positif ou nul attendu")
     return n
 
 
@@ -429,6 +508,17 @@ def _add_notes_root(p: argparse.ArgumentParser) -> None:
                    help="dossier du journal des notes (défaut : data/notes)")
 
 
+_NOTES_AU_HELP = ("instant de connaissance des notes, en UTC (une date seule : fin de la journée) ; défaut : "
+                  "maintenant si la date de décision est la dernière séance du panel (mode direct : les notes "
+                  "connues maintenant sont appliquées à la séance suivante), sinon règle stricte à la date "
+                  "demandée (mode historique)")
+
+
+def _add_notes_au(p: argparse.ArgumentParser, default: Any = None) -> None:
+    p.add_argument("--notes-au", dest="notes_au", type=_instant_arg, default=default,
+                   metavar="AAAA-MM-JJ[THH:MM]", help=_NOTES_AU_HELP)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Analyseur des arguments (en français)."""
     parser = FrArgumentParser(prog="python -m brvm_alpha", description=_DESCRIPTION)
@@ -544,6 +634,24 @@ def build_parser() -> argparse.ArgumentParser:
     nq.add_argument("--depuis", type=_date_arg, default=None, metavar="AAAA-MM-JJ", help="remonter les listes jusqu'à")
     nq.add_argument("--sans-boc", action="store_true", help="n'analyse pas les BOC locaux")
     nq.add_argument("--simulation", action="store_true", help="n'enregistre rien (dry run)")
+    nq.add_argument("--pdf", type=_nonneg_int, default=20, metavar="N",
+                    help="après la collecte, lit le contenu d'au plus N documents PDF récents de www.brvm.org "
+                         "(alertes, résultats, rapports d'activité, notations…) et réanalyse les notes ; défaut : "
+                         "20 ; 0 : ne lit aucun document")
+
+    nd = nsub.add_parser("lire", help="lit le contenu des documents PDF des notes (sans nouvelle collecte)",
+                         description="Lit le contenu des documents PDF de www.brvm.org attachés aux notes actives pas "
+                                     "encore lues (les plus utiles et les plus récentes d'abord, un document par "
+                                     "émetteur avant un deuxième), puis écrit une NOUVELLE VERSION de chaque note "
+                                     "(journal en ajout seul) avec l'analyse du texte. Un PDF scanné (image sans "
+                                     "texte) est signalé : à lire à la main. " + RULES_POLITENESS)
+    _add_notes_root(nd)
+    nd.add_argument("--max", dest="max_docs", type=_positive_int, default=20, metavar="N",
+                    help="nombre maximal de documents lus (défaut : 20)")
+    nd.add_argument("--hors-ligne", action="store_true", help="aucune requête réseau : documents du cache seulement")
+    nd.add_argument("--cibles", action="append", default=None, metavar="CODES",
+                    help="périmètre (codes séparés par des virgules ; défaut : toutes les notes)")
+    nd.add_argument("--simulation", action="store_true", help="liste les documents sans rien écrire (dry run)")
 
     nz = nsub.add_parser("analyze", help="analyse un texte sans l'enregistrer",
                          description="Analyse un texte (type d'événement, ton, chiffres, cibles, matérialité, "
@@ -569,6 +677,7 @@ def build_parser() -> argparse.ArgumentParser:
     ix.add_argument("--detail", action="store_true", help="affiche toutes les raisons")
     ix.add_argument("--sans-notes", action="store_true", help="exclut la composante « notes »")
     _add_notes_root(ix)
+    _add_notes_au(ix)
     ix.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
     ixs = ix.add_subparsers(dest="indices_cmd", required=False, title="sous-commande (facultative)",
                            metavar="[dossier CODE]")
@@ -583,6 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="exclut les notes de l'analyste")
     ixd.add_argument("--racine", default=argparse.SUPPRESS, metavar="DOSSIER",
                      help="dossier du journal des notes (défaut : data/notes)")
+    _add_notes_au(ixd, default=argparse.SUPPRESS)
     ixd.add_argument("--panel-dir", default=argparse.SUPPRESS, metavar="DOSSIER", help="panel (défaut : data/panel)")
 
     # -- univers, explication, backtest, validation -----------------------------------
@@ -604,6 +714,8 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--format", choices=("texte", "json"), default="texte",
                     help="format de sortie (défaut : texte)")
     ex.add_argument("--sans-notes", action="store_true", help="ignore les notes de l'analyste")
+    _add_notes_root(ex)
+    _add_notes_au(ex)
     ex.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
 
     b = sub.add_parser("backtest", help="backtest net de coûts (S1 refusé sans --validation-s1)")
@@ -652,6 +764,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--sans-notes", action="store_true", help="ignore les notes de l'analyste")
     r.add_argument("--sans-indices", action="store_true", help="n'évalue pas les indices (plus rapide)")
     _add_notes_root(r)
+    _add_notes_au(r)
     r.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
 
     rp = sub.add_parser("report", help="rapport HTML autonome (marché, S1, ordre de bataille, indices, notes…)")
@@ -668,6 +781,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--couts", default="central", help="scénario de coûts : optimistic, central, stress, severe")
     rp.add_argument("--graine", type=int, default=0, metavar="N", help="graine du bootstrap (0)")
     _add_notes_root(rp)
+    _add_notes_au(rp)
     rp.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
 
     sv = sub.add_parser("serve", help="interface web locale (http://127.0.0.1:8765)",
@@ -801,6 +915,118 @@ def _cmd_live(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def notes_status(store: Any, asof: Any, known_at: Any = None, *, calendar: Any = None,
+                 equities: Any = "default") -> dict[str, Any] | None:
+    """État daté des notes (``notes.signals.notes_in_force``) ; ``None`` sans journal ; jamais d'exception.
+
+    En cas d'erreur, renvoie ``{"line": "Notes de l'analyste : synthèse indisponible (…)", "erreur": …}``.
+    """
+    if store is None:
+        return None
+    try:
+        from brvm_alpha.notes import signals as sg
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return sg.notes_in_force(store, asof, known_at=known_at, calendar=calendar, equities=equities)
+    except Exception as exc:  # la synthèse ne doit jamais faire échouer une commande
+        return {"line": f"Notes de l'analyste : synthèse indisponible ({exc.__class__.__name__} : {exc}).",
+                "erreur": str(exc)}
+
+
+def notes_status_json(st: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Version sérialisable de :func:`notes_status` (sans les tableaux internes)."""
+    if not st:
+        return None
+    if st.get("erreur"):
+        return {"ligne": st.get("line"), "erreur": st.get("erreur")}
+    m = st["moment"]
+    tab = st["table"]
+    return {"ligne": st["line"], "mode": st["mode"], "date_des_cours": m.prices_date, "connues_au": m.known_at,
+            "seance_application": m.session, "n_connues": st["n_known"], "n_en_vigueur": st["n_in_force"],
+            "n_manuelles": st["n_manual"], "n_filtres": st["n_filters"], "n_avec_score": st["n_scored"],
+            "message_scores": st["scores_message"], "filtres": st["filters"],
+            "notes_en_vigueur": tab.drop(columns=["tags"], errors="ignore") if len(tab) else []}
+
+
+def filter_lines(st: dict[str, Any] | None) -> list[str]:
+    """Filtres actifs issus des notes, une phrase par filtre (règle, note, fin, levée)."""
+    out: list[str] = []
+    for f in (st or {}).get("filters") or []:
+        rem = f.get("seances_restantes")
+        fin = str(f.get("duree") or "durée ouverte") + (f", encore {int(rem)} séance(s)" if rem is not None else "")
+        out.append(
+            f"{f['symbole']} : {f['code']} ({f['libelle']}) depuis le {fr_date(f['depuis'])}, {fin}"
+            + (" — ACHATS BLOQUÉS" if f.get("bloque_achats") else "")
+            + f" ; note {str(f['note_id'])[:12]} du {fr_date(f.get('note_date'))} « {f.get('note_titre') or ''} » "
+              f"(source {f.get('note_source') or 'n.d.'}" + (f", {f['note_url']}" if f.get("note_url") else "")
+            + f") ; pour lever : {f.get('lever')}")
+    return out
+
+
+def load_enrich_documents() -> Callable[..., dict[str, Any]] | None:
+    """``notes.research.enrich_documents``, importée **au moment de l'appel** (``None`` si absente)."""
+    from brvm_alpha.notes import research as rs
+
+    fn = getattr(rs, "enrich_documents", None)
+    return fn if callable(fn) else None
+
+
+ENRICH_MISSING = ("lecture du contenu des documents indisponible : la fonction "
+                  "brvm_alpha.notes.research.enrich_documents n'est pas installée dans cette version (aucun document "
+                  "lu, journal inchangé)")
+_ENRICH_STATUS = {"enrichie": "enrichie", "scan": "scannée", "illisible": "illisible", "sans_chiffre": "sans chiffre",
+                  "erreur": "erreur"}
+
+
+def format_enrich_report(rep: Any, limit: int = 30) -> list[str]:
+    """Bilan de ``enrich_documents`` en français : lus, enrichis, scannés à lire à la main, erreurs."""
+    if not isinstance(rep, dict):
+        return [f"Lecture des documents : bilan illisible ({type(rep).__name__})."]
+
+    def n(key: str) -> int:
+        try:
+            return int(rep.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    lines = [f"Lecture du contenu des documents : {n('n_candidates')} candidat(s), {n('n_read')} lu(s), "
+             f"{n('n_enriched')} note(s) enrichie(s), {n('n_scanned')} document(s) scanné(s) à lire à la main, "
+             f"{n('n_failed')} erreur(s), {n('n_requests')} requête(s)."]
+    if rep.get("stopped"):
+        lines.append(f"Arrêt de la lecture : {rep['stopped']}")
+    details = [d for d in (rep.get("details") or []) if isinstance(d, dict)]
+    for d in details[:limit]:
+        b, a = d.get("score_before"), d.get("score_after")
+        chg = f"score {fr_num(b, 2, True)} → {fr_num(a, 2, True)}" if _ok(a) or _ok(b) else "score inchangé"
+        lines.append(f"  {_ENRICH_STATUS.get(str(d.get('status')), str(d.get('status'))):12s} "
+                     f"{str(d.get('symbol') or '—'):6s} {chg}  {str(d.get('title') or '')[:70]}")
+    if len(details) > limit:
+        lines.append(f"  … et {len(details) - limit} autre(s) document(s).")
+    scans = [d for d in details if d.get("status") == "scan"]
+    if scans:
+        lines.append("Documents scannés (images sans texte) : à lire à la main, aucun chiffre n'a pu être extrait :")
+        lines += [f"  {str(d.get('symbol') or '—'):6s} {d.get('url') or ''}" for d in scans[:limit]]
+    return lines
+
+
+def run_enrich(store: Any, *, max_docs: int, targets: Sequence[str] | None = None, offline: bool = False,
+               dry_run: bool = False, **extra: Any) -> tuple[dict[str, Any] | None, list[str]]:
+    """Appelle ``enrich_documents`` (si elle existe) et renvoie ``(bilan, lignes à afficher)``.
+
+    ``(None, [message])`` si la fonction est absente ou échoue ; aucune exception n'est propagée.
+    """
+    fn = load_enrich_documents()
+    if fn is None:
+        return None, [ENRICH_MISSING]
+    try:
+        rep = fn(store, max_docs=int(max_docs), targets=list(targets) if targets else None, offline=bool(offline),
+                 dry_run=bool(dry_run), **extra)
+    except Exception as exc:  # la lecture des documents ne fait jamais échouer la collecte déjà faite
+        return None, [f"lecture du contenu des documents interrompue ({exc.__class__.__name__} : {exc})"]
+    return (rep if isinstance(rep, dict) else None), format_enrich_report(rep)
+
+
 def _read_text_file(path: str) -> str:
     p = Path(path)
     if not p.is_file():
@@ -908,6 +1134,25 @@ def _note_summary(n: Any) -> list[str]:
     return lines
 
 
+def _note_effect_line(note: Any, panel_dir: Any = None) -> str:
+    """Quand la note saisie comptera-t-elle dans la décision en direct ?"""
+    try:
+        from brvm_alpha.notes import signals as sg
+
+        last = last_session(panel_dir)
+        if last is None:
+            return "Prise en compte : panel introuvable (python -m brvm_alpha panel)."
+        m = sg.notes_moment(last, now_utc())
+        fts = pd.Timestamp(note.first_tradable_session)
+        if fts <= m.session:
+            return (f"Prise en compte : dès maintenant, à la séance du {fr_date(m.session)} (cours du {fr_date(last)}), "
+                    "par « indices », « recommend », « report » et l'interface (mode direct).")
+        return (f"Prise en compte : à partir de la séance du {fr_date(fts)} (première séance négociable de la note) ; "
+                f"la décision en direct porte aujourd'hui sur la séance du {fr_date(m.session)}.")
+    except Exception as exc:  # information seulement
+        return f"Prise en compte : non calculée ({exc.__class__.__name__})."
+
+
 def _status_arg(s: str) -> str | None:
     return {"actives": "active", "archivees": "archived", "toutes": None}[s]
 
@@ -945,6 +1190,7 @@ def _cmd_notes(args: argparse.Namespace) -> int:
             return 0
         print(f"Note enregistrée : {nid}")
         print("\n".join(_note_summary(saved) + _analysis_lines(saved.analysis)))
+        print(_note_effect_line(saved))
         print(BANNER)
         return 0
     if cmd == "list":
@@ -1015,8 +1261,32 @@ def _cmd_notes(args: argparse.Namespace) -> int:
             print(f"  {n.note_id[:12]}  {fr_date(n.published_at)}  {', '.join(n.targets)[:24]:24s}  {n.title[:60]}")
         if len(res) > 20:
             print(f"  … et {len(res) - 20} autre(s) (python -m brvm_alpha notes list).")
+        n_pdf = int(getattr(args, "pdf", 0) or 0)
+        if n_pdf > 0 and res.report.stopped and not args.hors_ligne:
+            print("Lecture du contenu des documents : non lancée (la collecte a été arrêtée ; aucune autre requête).")
+        elif n_pdf > 0:
+            print(f"Lecture du contenu d'au plus {n_pdf} document(s) récent(s)"
+                  f"{' (hors ligne : cache seulement)' if args.hors_ligne else ''}…", flush=True)
+            _rep, lines = run_enrich(store, max_docs=n_pdf, targets=targets, offline=bool(args.hors_ligne),
+                                     dry_run=bool(args.simulation))
+            print("\n".join(lines))
+        else:
+            print("Lecture du contenu des documents : non demandée (--pdf 0).")
         print(BANNER)
         return 1 if res.report.stopped else 0
+    if cmd == "lire":
+        print(RULES_POLITENESS)
+        targets = _split_targets(args.cibles) or None
+        print(f"Lecture du contenu d'au plus {args.max_docs} document(s)"
+              f"{' (hors ligne : cache seulement)' if args.hors_ligne else ' de www.brvm.org'}"
+              f"{' — simulation, rien ne sera écrit' if args.simulation else ''}…", flush=True)
+        rep, lines = run_enrich(store, max_docs=args.max_docs, targets=targets, offline=bool(args.hors_ligne),
+                                dry_run=bool(args.simulation))
+        print("\n".join(lines))
+        print(BANNER)
+        if rep is None:
+            return 1
+        return 1 if rep.get("stopped") else 0
     return 2  # pragma: no cover - argparse impose une action
 
 
@@ -1037,33 +1307,49 @@ def _cmd_indices(args: argparse.Namespace) -> int:
     store = None if args.sans_notes else _notes_store(args.racine)
     if store is not None and not store.path.exists():
         store = None
+    # Deux instants : date des cours (t) et instant de connaissance des notes (mode direct ou historique).
+    known = None if store is None else notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
     panels = index_eval.load_panels(args.panel_dir) if args.panel_dir else None
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         if dossier:
-            d = index_eval.index_dossier(args.code, panels=panels, store=store, asof=t)
+            d = index_eval.index_dossier(args.code, panels=panels, store=store, asof=t, notes_known_at=known)
         else:
-            ev = index_eval.evaluate_indices(panels=panels, store=store, asof=t)
+            ev = index_eval.evaluate_indices(panels=panels, store=store, asof=t, notes_known_at=known)
+    cal = panels.get("sessions") if isinstance(panels, dict) else None
+    eq = panels.get("equities") if isinstance(panels, dict) else "default"
+    status = notes_status(store, t, known, calendar=cal, equities=eq if eq is not None else "default")
+    notes_line = status["line"] if status else ("Notes de l'analyste : aucune (journal absent ou --sans-notes) ; "
+                                                "composante « notes » exclue.")
     if dossier:
         if fmt == "json":
-            _print_json({"bandeau": BANNER, **{k: v for k, v in d.items() if k != "overlays"}})
+            _print_json({"bandeau": BANNER, "notes": notes_status_json(status),
+                         **{k: v for k, v in d.items() if k not in ("overlays", "notes_moment")}})
             return 0
-        _print_dossier(d)
+        _print_dossier(d, notes_line=notes_line, status=status)
         return 0
     if fmt == "json":
-        _print_json({"bandeau": BANNER, "asof": t, "indices": ev})
+        _print_json({"bandeau": BANNER, "asof": t, "notes": notes_status_json(status), "indices": ev})
         return 0
     when = fr_date(ev["date"].max()) if len(ev) and "date" in ev else fr_date(t)
     print(f"Évaluation des indices au {when} — aide à la décision, pas un signal validé "
           f"(notes : {'incluses' if store is not None else 'aucune'}).")
+    print(notes_line)
+    if status and status.get("scores_message"):
+        print(status["scores_message"])
     rows = [[code, str(r["label"])[:40], fr_num(r["level"], 2), fr_pct(r.get("ret_1m")), fr_pct(r.get("ret_12m")),
-             fr_pct(r.get("ytd")), str(r["stance"]), fr_num(r["confidence"], 2), fr_num(r["composite"], 2, True)]
+             fr_pct(r.get("ytd")), str(r["stance"]), fr_num(r["confidence"], 2), fr_num(r["composite"], 2, True),
+             _notes_cell(r)]
             for code, r in ev.iterrows()]
     print(_table(rows, ["Code", "Indice", "Niveau", "1 mois", "12 mois", "Depuis 31/12", "Position", "Confiance",
-                        "Score"]))
+                        "Score", "Notes (z)"]))
+    for line in filter_lines(status):
+        print(f"Filtre actif — {line}")
     for code, r in ev.iterrows():
         reasons = list(r["reasons"] or [])
         shown = reasons if args.detail else reasons[:3]
+        if not args.detail:  # la lecture des notes est toujours affichée
+            shown = shown + [x for x in reasons[3:] if x.startswith(("Notes", "Effet des notes"))]
         print(f"\n{r['label']} ({code}) : {r['stance']}, confiance {fr_num(r['confidence'], 2)}")
         for s in shown:
             print(f"  - {s}")
@@ -1074,11 +1360,26 @@ def _cmd_indices(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_dossier(d: dict[str, Any]) -> None:
+def _notes_cell(r: Any) -> str:
+    """Composante « notes » d'un indice : z, ou la raison de son absence (jamais « n.d. » seul)."""
+    z = r.get("z_notes") if hasattr(r, "get") else None
+    if _ok(z):
+        return fr_num(z, 2, True)
+    n = r.get("notes_n") if hasattr(r, "get") else None
+    return "score nul" if _ok(n) and int(n) > 0 else "aucune note"
+
+
+def _print_dossier(d: dict[str, Any], notes_line: str | None = None, status: dict[str, Any] | None = None) -> None:
     ev = d["evaluation"]
     print(f"Dossier {d['label']} ({d['index']}) au {fr_date(ev.get('date'))} : {ev.get('stance')}, confiance "
           f"{fr_num(ev.get('confidence'), 2)}, score {fr_num(ev.get('composite'), 2, True)} ; composition : "
           f"{d.get('composition')}")
+    if notes_line:
+        print(notes_line)
+    members = set(d["constituents"].index) if isinstance(d.get("constituents"), pd.DataFrame) else set()
+    for f in (status or {}).get("filters") or []:
+        if f.get("symbole") in members:
+            print(f"Filtre actif sur un constituant — {filter_lines({'filters': [f]})[0]}")
     print("Raisons :")
     for s in d.get("reasons") or []:
         print(f"  - {s}")
@@ -1132,8 +1433,12 @@ def _cmd_universe(args: argparse.Namespace) -> int:
 
 
 def explain_symbol(symbol: str, asof: Any, *, variant: str | None = None, capital: float | None = None,
-                   notes: Any = "auto", panels: Any = None, panel_dir: Any = None) -> dict[str, Any]:
-    """``BrvmAlpha.explain`` à la date ``asof`` (S1 refusé : ``ValueError``), variante par défaut = choix du §3.4."""
+                   notes: Any = "auto", panels: Any = None, panel_dir: Any = None,
+                   notes_known_at: Any = None) -> dict[str, Any]:
+    """``BrvmAlpha.explain`` à la date ``asof`` (S1 refusé : ``ValueError``), variante par défaut = choix du §3.4.
+
+    ``notes_known_at`` : ``None`` (mode historique, règle stricte à ``asof``) ou instant de connaissance
+    des notes (mode direct : même décision que l'ordre de bataille)."""
     from brvm_alpha.portfolio import recommend as rec
     from brvm_alpha.strategy import BrvmAlpha, build_panels
 
@@ -1150,7 +1455,8 @@ def explain_symbol(symbol: str, asof: Any, *, variant: str | None = None, capita
         warnings.simplefilter("ignore")
         if panels is None:
             panels = build_panels(panel_dir)
-        model = BrvmAlpha(variant=variant, capital=capital or DEFAULT_CAPITAL, notes=notes)
+        model = BrvmAlpha(variant=variant, capital=capital or DEFAULT_CAPITAL, notes=notes,
+                          notes_known_at=notes_known_at)
         out = model.explain(pd.Timestamp(asof), panels, sym)
     out["choix_variante"] = None if choice is None else {k: choice.get(k) for k in ("variante", "motif", "statut_A")}
     return out
@@ -1161,14 +1467,20 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     if in_s1(t):
         _say(s1_refusal(t, "l'explication"))
         return 2
+    notes: Any = None if args.sans_notes else (_notes_store(args.racine) if getattr(args, "racine", None) else "auto")
+    known = None if args.sans_notes else notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
     e = explain_symbol(args.symbole, t, variant=args.variante, capital=args.capital,
-                       notes=None if args.sans_notes else "auto", panel_dir=args.panel_dir)
+                       notes=notes, panel_dir=args.panel_dir, notes_known_at=known)
     if args.format == "json":
         _print_json({k: v for k, v in e.items()})
         return 0
     ch = e.get("choix_variante")
     print(f"Explication {e['symbol']} au {fr_date(e['asof'])}, variante {e['variant']}"
           + (f" ({ch.get('motif')})" if ch and ch.get("motif") else ""))
+    if not args.sans_notes:
+        store = notes if not isinstance(notes, str) else _notes_store(None)
+        status = notes_status(store if store.path.exists() else None, t, known)
+        print(status["line"] if status else "Notes de l'analyste : aucun journal ; aucune note n'entre dans le calcul.")
     print(e.get("text") or "")
     blocks = e.get("blocks") or {}
     if blocks:
@@ -1296,9 +1608,12 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
             store = NoteStore(args.racine)  # même journal que l'interface et le rapport (--racine)
         else:
             store = None
+        # Mode direct (dernière séance du panel) : les notes connues maintenant comptent dans l'ordre.
+        known = None if args.sans_notes else notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
         o = rec.recommend(t, args.capital, holdings=holdings, cash=args.cash, variant=args.variante,
                           costs=args.couts, n_boot=args.tirages, seed=args.graine, notes_store=store,
-                          panel_dir=args.panel_dir, index_evaluation=not args.sans_indices)
+                          panel_dir=args.panel_dir, index_evaluation=not args.sans_indices,
+                          notes_known_at=known)
     if args.format == "json":
         out = json.dumps(o.to_dict(), ensure_ascii=False, indent=1)
     elif args.format == "html":
@@ -1329,7 +1644,13 @@ def _cmd_report(args: argparse.Namespace) -> int:
         kw["notes_root"] = args.racine
     if args.panel_dir:
         kw["panel_dir"] = args.panel_dir
+    kw["notes_known_at"] = notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
     print(f"Rapport au {fr_date(t)} pour {fr_num(args.capital, 0)} FCFA…", flush=True)
+    if kw["notes_known_at"] is not None:
+        print(f"Notes connues au {kw['notes_known_at']:%d/%m/%Y %H:%M} UTC (mode direct : appliquées à la séance "
+              "qui suit le dernier BOC).", flush=True)
+    else:
+        print(f"Notes en mode historique : règle stricte au {fr_date(t)}, sans anticipation.", flush=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         path = build_report(t, args.capital, out, **kw)

@@ -12,7 +12,10 @@ Règles de rendu :
   ou bouton « Thème ») ; gouttière de 16 px ; tableaux larges dans ``.tablewrap`` (aucun défilement
   horizontal de la page) : utilisable sur téléphone ;
 - chaque page porte la bannière « Performance passée ≠ garantie. Aucun gain n'est garanti. » et
-  distingue faits, estimations et hypothèses.
+  distingue faits, estimations et hypothèses ;
+- les pages Tableau de bord, Notes, Indices et Portefeuille affichent la ligne datée des notes
+  (« Notes connues au …, appliquées à la séance du … : N en vigueur (dont M manuelles), F filtre(s)
+  de risque actif(s) ») : :func:`notes_status_block`.
 """
 
 from __future__ import annotations
@@ -483,6 +486,140 @@ TARGET_HELP = Safe(
 
 
 # ---------------------------------------------------------------------------
+# Notes en vigueur : ligne datée, filtres actifs, tableaux
+# ---------------------------------------------------------------------------
+
+NOTES_HEAD = ["Publiée", "Séance", "Cible", "Type", "Titre", "Score", "Confiance", "Décroissance", "Source", "Filtre"]
+#: Lignes affichées au plus dans le tableau des notes automatiques en vigueur.
+NOTES_AUTO_MAX = 80
+
+
+def _src_cell(n: Mapping[str, Any]) -> Safe:
+    """Source d'une note avec son lien (http ou https seulement)."""
+    src = esc(n.get("source") or "n.d.")
+    url = str(n.get("url") or "").strip()
+    return Safe(f"{src} · {ext_link(url, 'document')}") if url else src
+
+
+def _in_force_rows(tab: Any, limit: int | None = None) -> list[list[Any]]:
+    if not isinstance(tab, pd.DataFrame) or not len(tab):
+        return []
+    rows = []
+    for n in (tab if limit is None else tab.head(limit)).to_dict(orient="records"):
+        avis = ""
+        if isinstance(n.get("stance"), str) and n["stance"]:
+            c = n.get("conviction")
+            avis = f" ({n['stance']}" + (f" {int(c)}/5" if c is not None and c == c else "") + ")"
+        rows.append([fr_date(n.get("published_at")), fr_date(n.get("first_tradable_session")),
+                     ", ".join(map(str, n.get("targets") or [])) or "—", (n.get("event_type") or "n.d.") + avis,
+                     link(f"/notes/fiche?id={q(n.get('note_id'))}", str(n.get("title") or "(sans titre)")[:90]),
+                     fr_num(n.get("score"), 2, True), fr_num(n.get("confidence"), 2), fr_num(n.get("decay"), 2),
+                     _src_cell(n), ", ".join(map(str, n.get("filters") or [])) or "—"])
+    return rows
+
+
+def _filters_table(status: Mapping[str, Any]) -> Safe:
+    rows = []
+    for f in status.get("filters") or []:
+        rem = f.get("seances_restantes")
+        fin = str(f.get("duree") or "durée ouverte") + (f" (encore {int(rem)} séance(s))" if rem is not None else "")
+        note = Safe(f"{link('/notes/fiche?id=' + q(f.get('note_id')), str(f.get('note_titre') or '(sans titre)')[:90])}"
+                    f"<br><span class=\"muted\">{esc(fr_date(f.get('note_date')))} · "
+                    f"{_src_cell({'source': f.get('note_source'), 'url': f.get('note_url')})}</span>")
+        rows.append([f.get("symbole"), Safe(f"<strong>{esc(f.get('code'))}</strong> {esc(f.get('libelle') or '')}"),
+                     "achats bloqués" if f.get("bloque_achats") else "surveillance",
+                     f"depuis le {fr_date(f.get('depuis'))}, {fin}", note, f.get("lever") or ""])
+    return table(["Titre", "Filtre", "Effet", "Durée", "Note", "Pour lever le filtre"], rows,
+                 empty="Aucun filtre de risque actif issu des notes.")
+
+
+def notes_status_block(status: Mapping[str, Any] | None, *, detail: bool = False, title: str | None = None) -> Safe:
+    """Ligne datée des notes (toujours), message sur les scores et filtres actifs (``detail``)."""
+    if not status:
+        return box("info", "Notes de l'analyste : aucun journal (ou panel introuvable) ; aucune note n'entre dans "
+                           "les calculs.", title)
+    parts: list[Any] = [box("fact", status.get("line") or "", title or "Notes dans la décision :")]
+    if status.get("erreur"):
+        return join(parts)
+    if status.get("scores_message"):
+        parts.append(Safe(f'<p class="muted">{esc(status["scores_message"])}</p>'))
+    if detail or status.get("filters"):
+        parts.append(Safe("<h3>Filtres de risque actifs issus des notes</h3>"))
+        parts.append(_filters_table(status))
+    return join(parts)
+
+
+def notes_in_force_section(status: Mapping[str, Any] | None, indices: Any = None) -> Safe:
+    """Section « Notes en vigueur » de la page Notes : synthèse, filtres, notes manuelles et
+    automatiques, 10 plus positives et 10 plus négatives, composante « notes » de chaque indice."""
+    if not status or status.get("erreur"):
+        return Safe('<section class="card"><h2>Notes en vigueur</h2>') + notes_status_block(status) + Safe("</section>")
+    from brvm_alpha.notes.signals import top_notes
+
+    tab = status.get("table")
+    has = isinstance(tab, pd.DataFrame) and len(tab) > 0
+    manual = tab[tab["manual"]] if has else None
+    auto = tab[~tab["manual"]] if has else None
+    pos, neg = top_notes(tab, 10) if has else (None, None)
+    parts: list[Any] = [Safe('<section class="card"><h2>Notes en vigueur à la séance d\'application</h2>'),
+                        notes_status_block(status, detail=True),
+                        Safe('<p class="muted">Une note est en vigueur si elle est connue, non archivée, négociable au '
+                             "plus tard à la séance d'application et agit encore (décroissance exp(−Δ/10 séances), "
+                             "filtre de risque ou avis de l'analyste dans son horizon). Âge compté depuis la "
+                             "publication pour une note automatique, depuis la saisie pour une note manuelle.</p>"),
+                        Safe(f"<h3>Notes manuelles en vigueur ({0 if manual is None else len(manual)})</h3>"),
+                        table(NOTES_HEAD, _in_force_rows(manual), empty="Aucune note manuelle en vigueur."),
+                        Safe(f"<h3>Notes automatiques en vigueur ({0 if auto is None else len(auto)})</h3>")]
+    arows = _in_force_rows(auto, NOTES_AUTO_MAX)
+    if arows:
+        more = (f" (les {NOTES_AUTO_MAX} plus récentes sur {len(auto)})" if auto is not None and len(auto) > NOTES_AUTO_MAX
+                else "")
+        parts.append(Safe(f"<details><summary>Afficher le tableau{esc(more)}</summary>") + table(NOTES_HEAD, arows)
+                     + Safe("</details>"))
+    else:
+        parts.append(Safe('<p class="muted">Aucune note automatique en vigueur.</p>'))
+    parts += [Safe("<h3>Les 10 notes les plus positives</h3>"),
+              table(NOTES_HEAD, _in_force_rows(pos), empty="Aucune note de score positif en vigueur."),
+              Safe("<h3>Les 10 notes les plus négatives</h3>"),
+              table(NOTES_HEAD, _in_force_rows(neg), empty="Aucune note de score négatif en vigueur.")]
+    if isinstance(indices, pd.DataFrame) and len(indices):
+        rows = []
+        for code, r in indices.iterrows():
+            det = list(_val(r.get("notes_detail")) or [])[:4]
+            if det:
+                who: Any = Safe("<ul>" + "".join(
+                    f"<li>{link('/notes/fiche?id=' + q(e.get('note_id')), str(e.get('title') or '(sans titre)')[:80])} "
+                    f"({esc(', '.join(map(str, (e.get('targets') or [])[:3])))}) : score "
+                    f"{esc(fr_num(e.get('note_score'), 2, True))}, part {esc(fr_num(e.get('part'), 3, True))}</li>"
+                    for e in det) + "</ul>")
+            else:
+                n = _val(r.get("notes_n"))
+                who = "notes en vigueur de score nul : composante exclue" if n is not None and int(n) > 0 else \
+                    "aucune note en vigueur : composante exclue"
+            rows.append([link(f"/indices/dossier?code={q(code)}", r.get("label")), notes_z_text(r),
+                         fr_num(r.get("notes_score"), 3, True) if _val(r.get("notes_score")) is not None else "—",
+                         fr_num(r.get("composite_ex_notes"), 2, True) + " → " + fr_num(r.get("composite"), 2, True),
+                         who])
+        parts += [Safe("<h3>Composante « notes » de chaque indice</h3>"
+                       '<p class="muted">z notes = score des notes / 0,5, borné à ±3, poids 0,15 du score composite ; '
+                       "« sans → avec » : score composite sans puis avec cette composante. Aide à la décision, pas "
+                       "un signal validé.</p>"),
+                  table(["Indice", "z notes", "Score des notes", "Composite sans → avec",
+                         "Notes qui portent la composante"], rows)]
+    parts.append(Safe("</section>"))
+    return join(parts)
+
+
+def notes_z_text(r: Any) -> str:
+    """Composante « notes » d'un indice : z, ou la raison de son absence (jamais « n.d. » seul)."""
+    z = _val(r.get("z_notes"))
+    if z is not None:
+        return fr_num(z, 2, True)
+    n = _val(r.get("notes_n"))
+    return "score nul" if n is not None and int(n) > 0 else "aucune note"
+
+
+# ---------------------------------------------------------------------------
 # Tableau de bord
 # ---------------------------------------------------------------------------
 
@@ -490,7 +627,8 @@ TARGET_HELP = Safe(
 def page_dashboard(ctx: PageContext, *, last_session: Any, validation: Mapping[str, Any] | None,
                    choice: Mapping[str, Any] | None, reports: Sequence[Mapping[str, Any]],
                    job: Mapping[str, Any] | None, recent_notes: Sequence[Mapping[str, Any]],
-                   default_capital: float = 10_000_000, flash: Any = None) -> str:
+                   default_capital: float = 10_000_000, flash: Any = None,
+                   notes_status: Mapping[str, Any] | None = None) -> str:
     facts = [("Données au", fr_date(last_session) if last_session is not None else "panel introuvable")]
     if validation:
         facts.append(("Test S1", f"{validation.get('etat')} ; statut de A : {validation.get('statut_A') or 'n.d.'}"))
@@ -528,6 +666,11 @@ def page_dashboard(ctx: PageContext, *, last_session: Any, validation: Mapping[s
         box("hypothesis", "Tant que rien n'est PROMU, toute recommandation est à titre d'étude : suivi réel (paper "
                           "trading) requis avant tout engagement d'argent réel."),
         Safe("</section>"),
+        Safe('<section class="card"><h2>Notes prises en compte (mode direct)</h2>'),
+        notes_status_block(notes_status),
+        Safe('<p class="muted">Date des cours : dernier BOC du panel ; instant de connaissance des notes : maintenant. '
+             "Les notes saisies ou collectées jusqu'à cet instant comptent dans l'évaluation des indices, l'ordre de "
+             f"bataille et le rapport régénéré. {link('/notes', 'Détail des notes en vigueur')}</p></section>"),
         Safe('<section class="card"><h2>Rapport</h2>'), rep, form, Safe("</section>"),
         job_panel(job, result_link=link("/", "Afficher le nouveau rapport")),
         Safe('<section class="card"><h2>Dernières notes</h2>'),
@@ -605,7 +748,8 @@ def _note_row(n: Mapping[str, Any]) -> list[Any]:
 
 def page_notes(ctx: PageContext, *, notes: Sequence[Mapping[str, Any]], filters: Mapping[str, Any],
                options: Sequence[tuple[str, str]], form_values: Mapping[str, Any] | None = None,
-               form_error: Any = None, store_errors: Sequence[str] = (), total: int = 0, flash: Any = None) -> str:
+               form_error: Any = None, store_errors: Sequence[str] = (), total: int = 0, flash: Any = None,
+               notes_status: Mapping[str, Any] | None = None, indices: Any = None) -> str:
     f = {k: ("" if x is None else x) for k, x in dict(filters).items()}
     statut = [("actives", "actives"), ("archivees", "archivées"), ("toutes", "toutes")]
     filt = Safe(
@@ -629,7 +773,8 @@ def page_notes(ctx: PageContext, *, notes: Sequence[Mapping[str, Any]], filters:
              "lecture) puis enregistrée dans le journal append-only. Les notes ne pilotent jamais seules le "
              "portefeuille : leur poids est borné (inclinaison ±0,5 écart-type, veto).</p>"),
         note_form(ctx, form_values, form_error), Safe("</section>"),
-        Safe('<section class="card"><h2>Notes</h2>'), filt, warn,
+        notes_in_force_section(notes_status, indices),
+        Safe('<section class="card"><h2>Journal des notes</h2>'), filt, warn,
         Safe(f'<p class="muted">{len(notes)} note(s) affichée(s) sur {int(total)} dans le journal.</p>'), lst,
         Safe("</section>"),
     ])
@@ -726,8 +871,10 @@ def page_note(ctx: PageContext, *, note: Mapping[str, Any], versions: Sequence[M
 
 def page_research(ctx: PageContext, *, job: Mapping[str, Any] | None, blocked: Mapping[str, Any],
                   defaults: Mapping[str, Any] | None = None, error: Any = None, new_notes: Sequence[Mapping[str, Any]] = (),
-                  flash: Any = None, options: Sequence[tuple[str, str]] = ()) -> str:
-    d = {"mode": "hors_ligne", "max_requetes": 30, "cibles": "", "depuis": ""} | dict(defaults or {})
+                  flash: Any = None, options: Sequence[tuple[str, str]] = (),
+                  documents: Sequence[str] | None = None) -> str:
+    d = {"mode": "hors_ligne", "max_requetes": 30, "cibles": "", "depuis": "", "lire_documents": "",
+         "max_documents": 20} | dict(defaults or {})
     busy = bool(job and job.get("statut") in ("en cours", "en attente"))
     blk = Safe("")
     if blocked:
@@ -752,6 +899,15 @@ def page_research(ctx: PageContext, *, job: Mapping[str, Any] | None, blocked: M
           f'list="codes-cibles" value="{esc(d.get("cibles"))}" placeholder="vide : tout le marché"></div>'
         + f'<div><label for="r-depuis">Remonter jusqu\'au (facultatif)</label><input type="date" id="r-depuis" '
           f'name="depuis" value="{esc(d.get("depuis"))}"></div>'
+        + '<div class="wide"><label class="inline"><input type="checkbox" name="lire_documents" value="oui"'
+          f'{" checked" if d.get("lire_documents") else ""}> lire le contenu des documents récents (PDF de '
+          "www.brvm.org : alertes sur résultats, résultats, rapports d'activité, notations, communiqués)</label>"
+          '<div class="hint">Après la collecte : une requête par document en ligne (au moins 10 s entre deux), ou le '
+          "cache seul hors ligne ; chaque note lue reçoit une nouvelle version analysée avec le texte ; un PDF "
+          "scanné (image) est signalé « à lire à la main ».</div></div>"
+        + f'<div><label for="max_documents">Nombre maximal de documents</label><input type="number" '
+          f'id="max_documents" name="max_documents" min="1" max="60" value="{esc(d.get("max_documents"))}">'
+          '<div class="hint">au plus 60 ; les plus utiles et les plus récents d\'abord</div></div>'
         + '<div class="wide"><label class="inline"><input type="checkbox" name="confirmer" value="oui" required> '
           "Je confirme le lancement et j'ai pris connaissance des règles de politesse.</label></div>"
         + f'<div><button type="submit"{" disabled" if busy else ""}>Lancer la recherche</button></div></form>')
@@ -766,6 +922,8 @@ def page_research(ctx: PageContext, *, job: Mapping[str, Any] | None, blocked: M
         blk, Safe("</section>"),
         Safe('<section class="card"><h2>Lancer une recherche</h2>'), form, Safe("</section>"),
         job_panel(job, result_link=link("/notes", "Voir les notes")),
+        (Safe('<section class="card"><h2>Lecture du contenu des documents (dernière recherche)</h2><pre class="log">')
+         + esc("\n".join(map(str, documents))) + Safe("</pre></section>")) if documents else Safe(""),
         Safe('<section class="card"><h2>Nouvelles notes de la dernière recherche</h2>') if rows else Safe(""),
         table(["Publiée", "Titre", "Cibles", "Avis", "Score", "Matérialité", "Confiance", "Source", "Statut"], rows)
         if rows else Safe(""), Safe("</section>") if rows else Safe(""),
@@ -779,7 +937,7 @@ def page_research(ctx: PageContext, *, job: Mapping[str, Any] | None, blocked: M
 
 
 def page_indices(ctx: PageContext, *, evaluation: pd.DataFrame | None, asof: Any, notes_included: bool,
-                 error: Any = None) -> str:
+                 error: Any = None, notes_status: Mapping[str, Any] | None = None) -> str:
     form = Safe('<form method="get" action="/indices" class="grid"><div><label for="i-date">Date d\'évaluation</label>'
                 f'<input type="date" id="i-date" name="date" value="{esc("" if asof is None else pd.Timestamp(asof).strftime("%Y-%m-%d"))}">'
                 '<div class="hint">à partir du 17/11/2022 (S0) ; vide : dernière séance</div></div>'
@@ -791,6 +949,8 @@ def page_indices(ctx: PageContext, *, evaluation: pd.DataFrame | None, asof: Any
         when = fr_date(evaluation["date"].max()) if "date" in evaluation else fr_date(asof)
         parts.append(Safe(f"<p>Évaluation au <strong>{esc(when)}</strong> ; composante « notes » : "
                           f"{'incluse' if notes_included else 'aucune note'}.</p>"))
+        if notes_included:
+            parts.append(notes_status_block(notes_status))
         parts.append(box("hypothesis", "Aide à la décision, pas un signal validé : poids et seuils sont des choix de "
                                        "conception non validés hors échantillon (score composite de z-scores bornés)."))
         rows = []
@@ -800,9 +960,9 @@ def page_indices(ctx: PageContext, *, evaluation: pd.DataFrame | None, asof: Any
                          fr_num(r.get("level"), 2), fr_pct(r.get("ret_1m")), fr_pct(r.get("ret_3m")),
                          fr_pct(r.get("ret_12m")), fr_pct(r.get("ytd")), fr_num(r.get("per"), 1),
                          fr_num(r.get("yield_pct"), 2), stance_badge(r.get("stance")), fr_num(r.get("confidence"), 2),
-                         fr_num(r.get("composite"), 2, True)])
+                         fr_num(r.get("composite"), 2, True), notes_z_text(r)])
         parts.append(table(["Indice", "Niveau", "1 mois", "3 mois", "12 mois", "Depuis 31/12", "PER", "Rdt %",
-                            "Position", "Confiance", "Score"], rows))
+                            "Position", "Confiance", "Score", "Notes (z)"], rows))
         parts.append(Safe("</section>"))
         for code, r in evaluation.iterrows():
             reasons = list(_val(r.get("reasons")) or [])
@@ -824,7 +984,8 @@ def page_dossier(ctx: PageContext, *, dossier: Mapping[str, Any] | None, code: s
     head = dl([("Position", stance_badge(ev.get("stance"))), ("Confiance", fr_num(ev.get("confidence"), 2)),
                ("Score composite", fr_num(ev.get("composite"), 2, True)), ("Date", fr_date(ev.get("date"))),
                ("Niveau", fr_num(ev.get("level"), 2)), ("Composition", d.get("composition") or "—")])
-    parts: list[Any] = [Safe('<section class="card"><h2>Synthèse</h2>'), head,
+    nline = Safe(f'<p class="muted">{esc(d.get("notes_line"))}.</p>') if d.get("notes_line") else Safe("")
+    parts: list[Any] = [Safe('<section class="card"><h2>Synthèse</h2>'), head, nline,
                         Safe("<h3>Raisons</h3><ul>" + "".join(f"<li>{esc(s)}</li>" for s in d.get("reasons") or [])
                              + "</ul></section>")]
     notes = d.get("recent_notes") or []
@@ -873,7 +1034,8 @@ VARIANT_CHOICES = (("", "automatique (d'après le test S1)"),) + tuple(
 
 
 def page_portfolio(ctx: PageContext, *, values: Mapping[str, Any] | None, job: Mapping[str, Any] | None,
-                   fragment: str | None, error: Any = None, job_id: str | None = None) -> str:
+                   fragment: str | None, error: Any = None, job_id: str | None = None,
+                   notes_status: Mapping[str, Any] | None = None) -> str:
     v = {"capital": "10 000 000", "portefeuille": "", "cash": "", "variante": "", "date": "", "tirages": "5000"} \
         | {k: ("" if x is None else x) for k, x in dict(values or {}).items()}
     busy = bool(job and job.get("statut") in ("en cours", "en attente"))
@@ -888,7 +1050,9 @@ def page_portfolio(ctx: PageContext, *, values: Mapping[str, Any] | None, job: M
           f'inputmode="numeric" value="{esc(v["cash"])}"><div class="hint">défaut : capital − titres détenus</div></div>'
         + f'<div><label for="p-variante">Variante</label>{_select("variante", VARIANT_CHOICES, v["variante"], "p-variante")}</div>'
         + f'<div><label for="p-date">Date de décision</label><input type="date" id="p-date" name="date" '
-          f'value="{esc(v["date"])}"><div class="hint">vide : dernière séance ; S1 refusé</div></div>'
+          f'value="{esc(v["date"])}"><div class="hint">vide : dernière séance (mode direct : les notes connues '
+          "maintenant comptent, appliquées à la séance suivante) ; date passée : notes en règle stricte à cette "
+          'date ; S1 refusé</div></div>'
         + f'<div><label for="p-tirages">Tirages du bootstrap</label>{_select("tirages", tir, v["tirages"], "p-tirages")}</div>'
         + f'<div class="wide"><label for="p-portefeuille">Portefeuille actuel (une ligne « symbole,titres »)</label>'
           f'<textarea id="p-portefeuille" name="portefeuille" placeholder="SNTS,120&#10;ORAC,15">{esc(v["portefeuille"])}'
@@ -902,6 +1066,11 @@ def page_portfolio(ctx: PageContext, *, values: Mapping[str, Any] | None, job: M
                      f'{link("/portefeuille/resultat?travail=" + q(job_id) + "&format=json", "JSON")}</p>')
     body = join([
         Safe('<section class="card"><h2>Paramètres</h2>'), form, Safe("</section>"),
+        Safe('<section class="card"><h2>Notes prises en compte à la dernière séance (mode direct)</h2>'),
+        notes_status_block(notes_status),
+        Safe('<p class="muted">Un achat bloqué par une note est écrit en clair dans l\'ordre de bataille (règle, '
+             "note, fin du blocage) ; pour le lever, archiver la note depuis sa fiche. "
+             f'{link("/notes", "Notes en vigueur")}</p></section>'),
         job_panel(job),
         Safe('<section class="card"><h2>Ordre de bataille</h2>') if fragment else Safe(""),
         links, Safe(fragment) if fragment else Safe(""), Safe("</section>") if fragment else Safe(""),

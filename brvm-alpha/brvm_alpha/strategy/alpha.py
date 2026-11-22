@@ -489,6 +489,14 @@ class BrvmAlpha:
         ``"auto"`` (défaut : ``NoteStore()`` du dépôt si le module s'importe), un
         ``NoteStore`` / ``DataFrame`` de notes, ou ``None`` (aucune note). Forcé à ``None``
         quand ``validation_s1=True`` (additif v1.1, D11 : ni veto ni inclinaison, S5 = 0).
+    notes_known_at
+        Instant de connaissance des notes (UTC) du **mode direct** : ``None`` (défaut, mode
+        historique : règle stricte à la date de décision, aucune anticipation — backtests,
+        validation, dates passées). Donné par le seul chemin « direct » (ordre de bataille,
+        rapport, interface, à la dernière séance du panel) : les notes connues à cet instant
+        sont appliquées à la séance qui suit la date de décision (``notes.signals``, en-tête).
+        Sans effet sur les règles : seul change l'ensemble des notes transmises. Ignoré en
+        validation S1 et pour une décision postérieure à cet instant.
     country_events
         Table ``date, country, rule`` (+ ``event_date``, ``end``, ``sessions``, ``label``)
         des règles d'événements pays (§4.3) ; ``date`` = date de l'annonce publique. ``None``
@@ -548,6 +556,7 @@ class BrvmAlpha:
         params: Mapping[str, Any] | None = None,
         *,
         notes: Any = "auto",
+        notes_known_at: Any = None,
         country_events: pd.DataFrame | Iterable[Mapping[str, Any]] | None = None,
         dividend_calendar: pd.DataFrame | None = None,
         history_start: Any = None,
@@ -590,6 +599,8 @@ class BrvmAlpha:
         if self.capital <= 0:
             raise ValueError("capital doit être > 0")
         self.notes_source = notes
+        #: instant de connaissance des notes (mode direct) ; None : mode historique (règle stricte)
+        self.notes_known_at: Any = None if self.validation_s1 else notes_known_at
         self._store_cache: Any = None
         if country_events is None:  # additif v1.1, D10 : chronologie datée par défaut
             self.country_events = self._normalize_events(reference.COUNTRY_EVENTS)
@@ -1288,15 +1299,28 @@ class BrvmAlpha:
         out: dict[str, Any] = {"available": False, "message": "", "veto": {}, "tilt": pd.Series(dtype=float),
                                "flags": {}, "block_buys": [], "max_weight_mult": {}, "freeze_auto": [],
                                "quality_penalty": {}, "governance_penalty": {}, "disabled_signals": {},
-                               "reasons": [], "scores": None, "country_events": None, "dividend_calendar": None}
+                               "reasons": [], "scores": None, "country_events": None, "dividend_calendar": None,
+                               "table": None, "tilt_notes": [], "mode": "historique", "session": d.t,
+                               "known_at": None}
         store, why = self._notes_store()
         if store is None:
             out["message"] = why
             return out
         ns, why = self._notes_api()
         cal = list(d.index)
+        # Mode direct : notes connues à ``notes_known_at``, appliquées à la séance qui suit t. Aucune
+        # règle ne change ; une décision postérieure à cet instant reste en mode historique.
+        kw: dict[str, Any] = {}
+        if self.notes_known_at is not None and not self.validation_s1:
+            try:
+                moment = ns.notes_moment(d.t, self.notes_known_at, cal)
+                if moment.known_at is not None and moment.known_at.tz_localize(None) >= d.t:
+                    kw = {"known_at": moment}
+            except Exception as exc:
+                out["message"] = f"instant de connaissance des notes illisible ({exc.__class__.__name__} : {exc})"
+                return out
         try:
-            ov = ns.manual_overlays(store, d.t, calendar=cal)
+            ov = ns.manual_overlays(store, d.t, calendar=cal, **kw)
         except Exception as exc:
             out["message"] = f"surcouches des notes non calculées ({exc.__class__.__name__} : {exc})"
             return out
@@ -1313,18 +1337,21 @@ class BrvmAlpha:
         out["veto"] = manual
         out["available"] = True
         try:
-            sc = ns.note_scores(store, d.t, calendar=cal)
+            sc = ns.note_scores(store, d.t, calendar=cal, **kw)
             out["scores"] = sc
         except Exception as exc:
             out["reasons"] = list(out["reasons"]) + [f"scores des notes non calculés ({exc.__class__.__name__})"]
         try:
-            frame = ns.notes_asof(store, d.t)
+            frame = ns.notes_asof(store, d.t, calendar=cal, **kw) if kw else ns.notes_asof(store, d.t)
             out["country_events"], out["dividend_calendar"] = self._events_from_notes(frame, d, ns)
         except Exception as exc:
             out["reasons"] = list(out["reasons"]) + [f"règles pays des notes non lues ({exc.__class__.__name__})"]
         n_tilt = int((pd.Series(out["tilt"], dtype=float) != 0).sum()) if out["tilt"] is not None else 0
         out["message"] = (f"notes de l'analyste prises en compte : {len(out['veto'])} veto(s), {n_tilt} "
                           f"inclinaison(s), {len(out['flags'])} titre(s) avec filtre R")
+        if kw:
+            out["message"] += (f" (mode direct : notes connues au {out['known_at']:%d/%m/%Y %H:%M} UTC, appliquées à "
+                               f"la séance du {_d(out['session'])})")
         return out
 
     @staticmethod

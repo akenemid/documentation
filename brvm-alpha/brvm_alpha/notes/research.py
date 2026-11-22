@@ -27,6 +27,13 @@ Il est organisé en deux couches :
     paquet ``notes`` sont importés à l'intérieur des fonctions : la couche (a) ne
     dépend pas d'eux.
 
+(c) **lecture du contenu** : :func:`enrich_documents` télécharge poliment le PDF des notes
+    déjà au journal (résultats, rapports d'activité, alertes, notations, communiqués), en
+    lit le texte (tableaux compris, ``analyze.read_document``) et écrit une **nouvelle
+    version** de chaque note : extrait borné, chiffres contrôlés avec leur ligne source,
+    marques ``doc_*``. Les PDF scannés (image sans texte) sont seulement étiquetés
+    ``doc_scan`` : aucun OCR n'est lancé. Voir :func:`select_documents` pour l'ordre de lecture.
+
 Politesse et sûreté (document 07, §6.2 et §6.7) :
 
 - seul www.brvm.org est interrogé automatiquement ; Sika Finance, Richbourse et la
@@ -2235,12 +2242,57 @@ def _suspension_events(files, sp_by_file: dict[int, set[str]], w0: int, w1: int,
 # ---------------------------------------------------------------------------
 
 
+def pdf_text_layer_is_ocr(path: str | Path) -> bool | None:
+    """La couche texte d'un PDF vient-elle de l'OCR d'un scanner ? ``None`` si on ne peut pas le dire.
+
+    Un scanner avec OCR produit des pages faites d'une grande image recouverte d'un texte
+    invisible, écrit avec des polices **non incorporées** (« Helvetica »). Ce texte est lisible
+    par ``pdftotext`` mais ses chiffres peuvent être faux (« t 174 » pour « 1 174 ») : les
+    chiffres d'un tel document ne sont retenus que s'ils sont recoupés (``analyze.read_document``).
+    Critère : au moins une police, aucune incorporée, et une image d'au moins 1 000 × 1 000
+    points d'image sur 80 % des pages au moins (``pdffonts`` et ``pdfimages -list``).
+    """
+    if not (shutil.which("pdffonts") and shutil.which("pdfimages")):
+        return None
+    try:
+        fonts = subprocess.run(["pdffonts", str(path)], capture_output=True, timeout=60).stdout.decode("utf-8", "replace")
+        images = subprocess.run(["pdfimages", "-list", str(path)], capture_output=True, timeout=60).stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    flines = fonts.splitlines()
+    if len(flines) < 3 or "emb" not in flines[0]:
+        return False if len(flines) >= 2 else None
+    col = flines[0].index("emb")
+    embedded = [ln[col : col + 3].strip() for ln in flines[2:] if ln.strip()]
+    if not embedded or any(e == "yes" for e in embedded):
+        return False
+    pages: set[int] = set()
+    n_pages = 0
+    for ln in images.splitlines()[2:]:
+        parts = ln.split()
+        try:
+            page, width, height = int(parts[0]), int(parts[3]), int(parts[4])
+        except (IndexError, ValueError):
+            continue
+        n_pages = max(n_pages, page)
+        if width >= 1000 and height >= 1000:
+            pages.add(page)
+    try:
+        info = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=60).stdout.decode("utf-8", "replace")
+        m = re.search(r"^Pages:\s+(\d+)", info, re.MULTILINE)
+        n_pages = int(m.group(1)) if m else n_pages
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return bool(pages) and len(pages) >= 0.8 * max(n_pages, 1)
+
+
 def extract_pdf_text(path: str | Path, min_chars_per_page: int = OCR_MIN_CHARS_PER_PAGE) -> dict[str, Any]:
     """Texte d'un PDF : ``pdftotext -layout`` puis repli ``pdfplumber``.
 
     Renvoie ``text``, ``n_pages``, ``chars_per_page`` (moyenne), ``ocr_needed``
     (moins de ``min_chars_per_page`` caractères par page : document scanné, à
-    passer à l'OCR) et ``method``. L'OCR n'est pas lancé ici.
+    passer à l'OCR), ``method`` et ``ocr_layer`` (:func:`pdf_text_layer_is_ocr` : le texte
+    vient de l'OCR d'un scanner, ses chiffres sont à recouper). L'OCR n'est pas lancé ici.
     """
     path = Path(path)
     text, method, n_pages = "", None, 0
@@ -2275,7 +2327,8 @@ def extract_pdf_text(path: str | Path, min_chars_per_page: int = OCR_MIN_CHARS_P
     chars = len(re.sub(r"\s+", "", text))
     cpp = chars / max(n_pages, 1)
     return {"text": text, "n_pages": n_pages, "chars_per_page": round(cpp, 1),
-            "ocr_needed": cpp < min_chars_per_page, "method": method}
+            "ocr_needed": cpp < min_chars_per_page, "method": method,
+            "ocr_layer": pdf_text_layer_is_ocr(path) if chars else None}
 
 
 def fetch_document(session: PoliteSession, url: str, cache_dir: str | Path | None = None) -> dict[str, Any]:
@@ -2283,7 +2336,8 @@ def fetch_document(session: PoliteSession, url: str, cache_dir: str | Path | Non
 
     Cache par empreinte sha256 de l'URL sous ``cache_dir`` (défaut :
     ``data/notes/cache/docs``) : ``<sha>.pdf`` et ``<sha>.json`` (métadonnées et
-    texte). Un document déjà en cache n'est jamais retéléchargé.
+    texte). Un document déjà en cache n'est jamais retéléchargé. ``sha256`` est l'empreinte
+    de l'URL (clé du cache) ; ``content_sha256`` celle du fichier téléchargé.
     """
     cache = Path(cache_dir) if cache_dir is not None else session.cache_dir / "docs"
     h = url_hash(url)
@@ -2299,13 +2353,15 @@ def fetch_document(session: PoliteSession, url: str, cache_dir: str | Path | Non
     if res.status != 200:
         return {"url": url, "sha256": h, "status": res.status, "text": "", "ocr_needed": None,
                 "error": f"HTTP {res.status}"}
+    content_sha = hashlib.sha256(res.content).hexdigest()
     if not res.content.startswith(b"%PDF"):
         return {"url": url, "sha256": h, "status": res.status, "text": "", "ocr_needed": None,
-                "error": "le document n'est pas un PDF"}
+                "content_sha256": content_sha, "error": "le document n'est pas un PDF"}
     cache.mkdir(parents=True, exist_ok=True)
     pdf_p.write_bytes(res.content)
     info = extract_pdf_text(pdf_p)
     meta = {"url": url, "sha256": h, "status": 200, "path": str(pdf_p), "bytes": len(res.content),
+            "content_sha256": content_sha,
             "text_sha256": hashlib.sha256(info["text"].encode("utf-8")).hexdigest(), **info, "cached": False}
     meta_p.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     return meta
@@ -3551,6 +3607,364 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
     return note
 
 
+# ---------------------------------------------------------------------------
+# Couche (b) — lecture du CONTENU des publications déjà au journal (PDF de www.brvm.org)
+# ---------------------------------------------------------------------------
+
+#: Priorité de lecture par type d'événement : alertes sur résultats, résultats annuels et semestriels,
+#: rapports d'activité trimestriels, notations, puis communiqués (:data:`DOC_PRIORITY_COMMUNIQUE`).
+DOC_PRIORITY: dict[str, int] = {"PROFIT_WARNING": 0, "RES_ANNUAL": 1, "RES_S1": 1, "ACT_Q1": 2, "ACT_Q3": 2, "RATING": 3}
+DOC_PRIORITY_COMMUNIQUE = 4
+#: Listes dont les documents sont lus comme « communiqués » quand leur type n'a pas de priorité propre.
+DOC_COMMUNIQUE_LISTS = frozenset({"liste:communiques", "liste:rapports_emetteur"})
+#: Étiquette portée par la nouvelle version de la note, selon l'issue de la lecture.
+DOC_TAGS: dict[str, str] = {"enrichie": "doc_lu", "scan": "doc_scan", "illisible": "doc_illisible",
+                            "sans_chiffre": "doc_sans_chiffre"}
+#: Étiquette d'une note dont le texte lu vient de l'OCR d'un scanner (couche texte peu sûre).
+DOC_OCR_TAG = "ocr"
+#: Une note est « encore utile » tant qu'elle agit sur un signal ou un filtre : 70 séances pour le score
+#: de nouvelles (``exp(−Δ/10)`` passe sous 0,001 après 69 séances, ``signals.MIN_DECAY``) ; 120 séances
+#: pour une notation (durée du filtre R4).
+DOC_USEFUL_SESSIONS = 70
+DOC_USEFUL_SESSIONS_BY_TYPE: dict[str, int] = {"RATING": 120}
+#: Marques écrites dans ``analysis["extracted"]`` d'une note dont le document a été lu.
+DOC_MARKS = ("doc_sha256", "doc_pages", "doc_method", "doc_chars", "doc_status")
+_DOC_DETAIL_KEYS = ("fiscal_period", "rn", "rn_prev", "rn_growth", "rn_source", "rn_note", "pnb", "pnb_prev",
+                    "pnb_growth", "pnb_source", "pnb_note", "ca", "ca_prev", "ca_growth", "ca_source", "ca_note",
+                    "rai", "rai_prev", "rai_growth", "rai_source", "rai_note", "div_net", "div_gross", "div_prev",
+                    "div_growth", "doc_rejected", "doc_period_ok") + DOC_MARKS
+_BOC_PDF_RX = re.compile(r"/boc_\d{8}", re.I)
+
+
+def is_brvm_document_url(url: str | None) -> bool:
+    """``True`` pour l'URL d'un PDF de publication de www.brvm.org (hors bulletins officiels de la cote)."""
+    if not url:
+        return False
+    try:
+        p = urlparse(str(url))
+    except ValueError:
+        return False
+    return (p.scheme in ("http", "https") and url_host(str(url)) in (BRVM_HOST, "brvm.org")
+            and p.path.lower().endswith(".pdf") and not _BOC_PDF_RX.search(p.path))
+
+
+def _doc_priority(event_type: str | None, tags: Iterable[str]) -> int | None:
+    """Rang de priorité d'une note pour la lecture de son document (``None`` : document non lu)."""
+    et = str(event_type or "").upper()
+    if et in DOC_PRIORITY:
+        return DOC_PRIORITY[et]
+    if DOC_COMMUNIQUE_LISTS & set(tags or []):
+        return DOC_PRIORITY_COMMUNIQUE
+    return None
+
+
+def select_documents(store: Any, *, targets: Iterable[str] | None = None, now: dt.datetime | None = None,
+                     panel_dir: str | Path | None = DEFAULT_PANEL_DIR, calendar: Any = None,
+                     reread: bool = False) -> list[dict[str, Any]]:
+    """Notes dont le document reste à lire, dans l'ordre de lecture de :func:`enrich_documents`.
+
+    Sont retenues les notes **actives**, hors BOC, qui portent l'URL d'un PDF de www.brvm.org,
+    sans marque ``analysis.extracted.doc_sha256`` (sauf ``reread=True``), d'un type lu
+    (:data:`DOC_PRIORITY` ; les documents des listes de :data:`DOC_COMMUNIQUE_LISTS` comptent
+    comme communiqués ; les listes structurées — dividendes, augmentations de capital,
+    fractionnements — et les convocations, résolutions, dirigeants et seuils ne sont pas lus)
+    et **encore utiles** à la date de ``now`` : première séance négociable vieille d'au plus
+    :data:`DOC_USEFUL_SESSIONS` séances (:data:`DOC_USEFUL_SESSIONS_BY_TYPE` pour les notations).
+
+    Ordre : en largeur d'abord — le meilleur document de chaque émetteur (priorité du type,
+    puis le plus récent) avant le deuxième d'un émetteur —, puis par priorité, puis du plus
+    récent au plus ancien.
+    """
+    from brvm_alpha.notes.model import _calendar as model_calendar
+
+    now = to_utc(now or utcnow())
+    today = pd.Timestamp(now.date())
+    if calendar is None:
+        calendar = _sessions_for(panel_dir)
+    cal = model_calendar(calendar)
+    try:
+        frame = store.list(status="active")
+    except TypeError:
+        frame = store.list()
+    scope = expand_targets(targets, None, panel_dir)
+    rows: list[dict[str, Any]] = []
+    for r in frame.to_dict("records") if len(frame) else []:
+        url = str(r.get("url") or "")
+        if str(r.get("source") or "") == "boc" or not is_brvm_document_url(url):
+            continue
+        an = r.get("analysis") if isinstance(r.get("analysis"), dict) else {}
+        ex = an.get("extracted") if isinstance(an.get("extracted"), dict) else {}
+        already = bool(ex.get("doc_sha256"))
+        if already and not reread:
+            continue
+        et = r.get("event_type")
+        tags = list(r.get("tags") or [])
+        prio = _doc_priority(et, tags)
+        if prio is None:
+            continue
+        tgts = [str(t) for t in (r.get("targets") or [])] or [str(t) for t in (r.get("all_targets") or [])]
+        symbol = next((t for t in tgts if re.fullmatch(r"[A-Z]{3,6}", t) and t != "MARCHE"), None)
+        country = next((t[5:] for t in tgts if t.startswith("PAYS:")), None)
+        if not scope.matches({"symbol": symbol, "country": country, "market_level": "MARCHE" in tgts,
+                              "title": r.get("title") or "", "text": r.get("text") or ""}):
+            continue
+        fts = r.get("first_tradable_session")
+        age = 0
+        if fts is not None and not pd.isna(fts):
+            age = cal.sessions_between(pd.Timestamp(fts), today)
+        horizon = DOC_USEFUL_SESSIONS_BY_TYPE.get(str(et or "").upper(), DOC_USEFUL_SESSIONS)
+        if age > horizon:
+            continue
+        pub = r.get("published_at")
+        rows.append({"note_id": r["note_id"], "symbol": symbol, "title": r.get("title") or "", "url": url,
+                     "event_type": et, "priority": prio, "published_at": pub, "age_sessions": int(age),
+                     "already_read": already, "issuer": symbol or country or ("MARCHE" if "MARCHE" in tgts else r["note_id"])})
+
+    def recency(row: dict[str, Any]) -> float:
+        pub = row["published_at"]
+        return -(pd.Timestamp(pub).timestamp() if pub is not None and not pd.isna(pub) else 0.0)
+
+    rows.sort(key=lambda x: (x["priority"], recency(x), x["note_id"]))
+    rank: dict[str, int] = {}
+    for row in rows:
+        row["round"] = rank.get(row["issuer"], 0)
+        rank[row["issuer"]] = row["round"] + 1
+    rows.sort(key=lambda x: (x["round"], x["priority"], recency(x), x["note_id"]))
+    return rows
+
+
+def _doc_content_sha256(doc: Mapping[str, Any], docs_dir: Path, url: str) -> str:
+    """Empreinte sha256 du fichier lu (à défaut : celle de son texte, puis celle de son URL)."""
+    if doc.get("content_sha256"):
+        return str(doc["content_sha256"])
+    pdf = docs_dir / f"{url_hash(url)}.pdf"
+    try:
+        return hashlib.sha256(pdf.read_bytes()).hexdigest()
+    except OSError:
+        return str(doc.get("text_sha256") or doc.get("sha256") or url_hash(url))
+
+
+def enrich_documents(store: Any, *, max_docs: int = 20, targets: Iterable[str] | None = None, offline: bool = False,
+                     session: PoliteSession | None = None, delay_s: float = 10.0, max_requests: int | None = None,
+                     panel_dir: str | Path | None = DEFAULT_PANEL_DIR, dry_run: bool = False,
+                     now: dt.datetime | None = None, reread: bool = False) -> dict[str, Any]:
+    """Lit le **contenu** des publications déjà au journal (PDF de www.brvm.org), pas seulement leur titre.
+
+    ``store`` : :class:`~brvm_alpha.notes.store.NoteStore` ou dossier du journal. Les notes à lire
+    sont choisies et ordonnées par :func:`select_documents` (actives, URL d'un PDF de
+    www.brvm.org, pas encore lues, encore utiles à la date du jour ; alertes sur résultats,
+    résultats annuels et semestriels, rapports trimestriels, notations, puis communiqués ; les
+    plus récentes d'abord, un document par émetteur avant un deuxième). Au plus ``max_docs``
+    documents sont traités par appel.
+
+    Pour chaque document :
+
+    1. téléchargement **poli** par :class:`PoliteSession` (robots.txt, au moins 10 s entre deux
+       requêtes vers brvm.org, cache ``<journal>/cache/docs``) ; un document déjà en cache n'est
+       jamais retéléchargé ; ``offline=True`` : cache seul, les documents absents sont passés ;
+    2. extraction du texte (:func:`extract_pdf_text` : ``pdftotext -layout``, repli pdfplumber) ;
+    3. lecture contrôlée (``analyze.read_document``) : tableaux et phrases, périodes N / N−1,
+       unité, variation écrite recoupée avec les montants à 1 point près, bornes de
+       plausibilité, période cohérente avec le type de la note ; en cas d'ambiguïté, **aucun
+       chiffre** (score fondé sur le ton seul, confiance basse) ;
+    4. écriture d'une **nouvelle version** de la note (``store.update`` : journal en ajout seul,
+       l'ancienne version reste, ``recorded_at`` = maintenant — une lecture stricte à une date
+       passée voit toujours l'ancienne version) : même titre ; ``text`` = extrait du document
+       (1 500 caractères au plus : lignes de tableau et phrases qui portent les chiffres) ;
+       analyse recalculée ; étiquette ``doc_lu`` (chiffres retenus), ``doc_sans_chiffre``,
+       ``doc_scan`` (PDF image sans texte : aucun OCR n'est lancé) ou ``doc_illisible`` ; étiquette
+       ``ocr`` en plus quand le texte lu vient de l'OCR d'un scanner (:func:`pdf_text_layer_is_ocr` :
+       seuls les chiffres recoupés sont alors retenus, confiance d'extraction abaissée) ; marques
+       ``analysis["extracted"]`` : ``doc_sha256`` (empreinte du fichier), ``doc_pages``,
+       ``doc_method``, ``doc_chars``, ``doc_status``, plus ``<agrégat>_source`` (ligne ou phrase
+       exacte de chaque chiffre retenu), ``doc_figures`` et ``doc_rejected`` (chiffres écartés et
+       motif). Une note de type générique (communiqué) prend le type lu dans le document.
+
+    Un téléchargement en erreur (HTTP 404, robots.txt…) n'écrit rien : le document sera
+    retenté au prochain appel. **Arrêt propre** au quota (``max_requests`` requêtes réseau pour
+    cet appel ; à défaut ``max_docs + 10``), au premier HTTP 403 ou 429 (arrêt définitif, site
+    inscrit comme bloqué) ou si le site ne répond plus : ``stopped`` donne le motif, les
+    documents déjà lus restent écrits. Aucune exception n'est levée pour un document isolé.
+
+    ``dry_run=True`` : tout est fait (téléchargement, lecture, analyse) sauf l'écriture dans le
+    journal. ``reread=True`` : relit aussi, **depuis le cache seulement**, les documents déjà
+    lus (après une correction de la lecture) ; une nouvelle version n'est écrite que si le
+    résultat change. ``now`` : instant d'écriture (tests) ; sans lui, l'heure réelle.
+
+    Renvoie un dictionnaire : ``n_candidates`` (notes à lire), ``n_read`` (documents dont le
+    texte a été lu), ``n_enriched`` (avec au moins un chiffre retenu), ``n_scanned``,
+    ``n_failed`` (illisibles ou en erreur), ``n_requests`` (requêtes réseau de cet appel),
+    ``stopped`` (``None`` ou motif), ``details`` (une entrée par document : ``note_id``,
+    ``symbol``, ``title``, ``url``, ``status`` parmi ``enrichie`` | ``scan`` | ``illisible`` |
+    ``sans_chiffre`` | ``erreur``, ``score_before``, ``score_after``, ``extracted``, et
+    ``reason``, ``event_type``, ``confidence_after``, ``version``, ``written``), ainsi que
+    ``n_selected``, ``n_no_figure``, ``n_skipped`` (absents du cache hors ligne), ``n_written``.
+
+    Aucune promesse : les chiffres lus sont des faits publiés, le score qui en découle est une
+    lecture, pas une prévision. Performance passée ≠ garantie. Aucun gain n'est garanti.
+    """
+    from brvm_alpha.notes import analyze as analyze_mod
+
+    if isinstance(store, (str, os.PathLike)):
+        from brvm_alpha.notes.store import NoteStore
+
+        store = NoteStore(Path(store))
+    root = _store_root(store)
+    explicit_now = now is not None
+    now_utc = to_utc(now or utcnow())
+    calendar = _sessions_for(panel_dir)
+    sess = session or PoliteSession(delay_s=delay_s, offline=offline, cache_dir=root / "cache",
+                                    log_path=root / "fetch_log.jsonl",
+                                    max_requests=int(max_requests) if max_requests is not None else int(max_docs) + 10)
+    docs_dir = sess.cache_dir / "docs"
+    n0 = sess.n_requests
+    candidates = select_documents(store, targets=targets, now=now_utc, panel_dir=panel_dir, calendar=calendar,
+                                  reread=reread)
+    out: dict[str, Any] = {"n_candidates": len(candidates), "n_selected": 0, "n_read": 0, "n_enriched": 0,
+                           "n_no_figure": 0, "n_scanned": 0, "n_failed": 0, "n_skipped": 0, "n_written": 0,
+                           "n_requests": 0, "stopped": None, "details": [], "dry_run": bool(dry_run),
+                           "offline": bool(sess.offline)}
+    history = _store_frame(store)
+    history = history if len(history) else None
+
+    def cached(url: str) -> bool:
+        return (docs_dir / f"{url_hash(url)}.json").exists() or sess.cache_get(url) is not None
+
+    for cand in candidates:
+        if out["n_selected"] >= int(max_docs):
+            break
+        url = cand["url"]
+        detail: dict[str, Any] = {"note_id": cand["note_id"], "symbol": cand["symbol"], "title": cand["title"],
+                                  "url": url, "status": "erreur", "score_before": None, "score_after": None,
+                                  "extracted": {}, "event_type": cand["event_type"], "reason": None,
+                                  "written": False}
+        in_cache = cached(url)
+        if not in_cache:
+            if sess.offline or cand["already_read"]:
+                out["n_skipped"] += 1  # hors ligne (ou relecture) : seul le cache est lu
+                continue
+            if sess.stopped:
+                out["stopped"] = sess.stopped
+                break
+            if max_requests is not None and sess.n_requests - n0 >= int(max_requests):
+                out["stopped"] = f"quota de {int(max_requests)} requêtes atteint"
+                break
+        out["n_selected"] += 1
+        try:
+            try:
+                doc = fetch_document(sess, url)
+            except QuotaExceeded as exc:
+                out["stopped"] = f"quota de requêtes atteint ({exc})"
+                out["n_selected"] -= 1
+                break
+            except AccessBlocked as exc:
+                out["stopped"] = sess.stopped or str(exc)
+                detail["reason"] = str(exc)
+                out["details"].append(detail)
+                out["n_failed"] += 1
+                break
+            except ServerUnavailable as exc:
+                out["stopped"] = sess.stopped or str(exc)
+                detail["reason"] = str(exc)
+                out["details"].append(detail)
+                out["n_failed"] += 1
+                break
+            except OfflineCacheMiss:
+                out["n_skipped"] += 1
+                out["n_selected"] -= 1
+                continue
+            note = store.get(cand["note_id"])
+            old_an = dict(_note_get(note, "analysis") or {})
+            old_ex = dict(old_an.get("extracted") or {})
+            detail["score_before"] = old_an.get("score")
+            if int(doc.get("status") or 0) != 200:
+                detail["reason"] = doc.get("error") or f"HTTP {doc.get('status')}"
+                out["details"].append(detail)
+                out["n_failed"] += 1
+                continue  # rien n'est écrit : nouvel essai au prochain appel
+            text = str(doc.get("text") or "")
+            marks = {"doc_sha256": _doc_content_sha256(doc, docs_dir, url), "doc_pages": int(doc.get("n_pages") or 0),
+                     "doc_method": doc.get("method"), "doc_chars": len(re.sub(r"\s+", "", text)), "doc_status": None}
+            if doc.get("error"):
+                status, reading = "illisible", None
+                detail["reason"] = str(doc["error"])
+            elif doc.get("ocr_needed"):
+                status, reading = "scan", None
+                detail["reason"] = "PDF image sans texte (aucun OCR lancé)"
+            else:
+                et = _note_get(note, "event_type") or old_an.get("event_type")
+                ocr_layer = doc.get("ocr_layer")
+                if ocr_layer is None and (docs_dir / f"{url_hash(url)}.pdf").exists():
+                    ocr_layer = pdf_text_layer_is_ocr(docs_dir / f"{url_hash(url)}.pdf")  # cache d'avant ce champ
+                reading = analyze_mod.read_document(text, _note_get(note, "title") or "", et, ocr_layer=bool(ocr_layer))
+                status = "enrichie" if reading["has_figures"] else "sans_chiffre"
+                if ocr_layer:
+                    marks["doc_method"] = f"{doc.get('method') or 'texte'} (couche OCR du scanner)"
+            marks["doc_status"] = status
+            tags = [t for t in list(_note_get(note, "tags") or []) if t not in DOC_TAGS.values() and t != DOC_OCR_TAG]
+            tags.append(DOC_TAGS[status])
+            if reading is not None and reading.get("ocr_layer"):
+                tags.append(DOC_OCR_TAG)  # « ocr » : l'analyse abaisse la confiance d'extraction (0,3)
+            document = dict(reading or {"figures": {}, "rejected": []})
+            document["marks"] = marks
+            changes: dict[str, Any] = {"tags": tags}
+            if reading is not None:
+                changes["text"] = reading["excerpt"]
+            base_type = _note_get(note, "event_type")
+            probe = note.copy(**changes, analysis=None, event_type=None if base_type in _GENERIC_TYPES else base_type)
+            structured = ({k: old_ex[k] for k in STRUCTURED_KEYS if old_ex.get(k) is not None}
+                          if old_ex.get("source_structuree") else None)
+            adict = _analysis_to_dict(analyze_mod.analyze_note(
+                probe, panels=None, sessions=calendar, history=history, structured=structured, document=document)) or {}
+            if structured:
+                ex2 = dict(adict.get("extracted") or {})
+                for k in ("exercice", "avis_no", "source_structuree"):
+                    if old_ex.get(k) is not None:
+                        ex2.setdefault(k, old_ex[k])
+                adict["extracted"] = ex2
+            if base_type in _GENERIC_TYPES and adict.get("event_type") not in _GENERIC_TYPES:
+                changes["event_type"] = adict["event_type"]
+            changes["analysis"] = adict
+            ex_new = adict.get("extracted") or {}
+            detail.update(status=status, score_after=adict.get("score"), confidence_after=adict.get("confidence"),
+                          event_type=adict.get("event_type") or cand["event_type"],
+                          extracted={k: ex_new[k] for k in _DOC_DETAIL_KEYS if ex_new.get(k) is not None})
+            if reading is not None and reading.get("rejected") and status == "sans_chiffre":
+                detail["reason"] = "chiffres vus mais écartés : " + " ; ".join(
+                    dict.fromkeys(str(r.get("reason")) for r in reading["rejected"]))[:400]
+            if not dry_run:
+                before = int(_note_get(note, "version") or 1)
+                try:
+                    new = store.update(cand["note_id"], now=now_utc if explicit_now else None, **changes)
+                except TypeError:
+                    new = store.update(cand["note_id"], **changes)
+                detail["version"] = int(_note_get(new, "version") or before)
+                detail["written"] = detail["version"] != before
+                out["n_written"] += int(detail["written"])
+            out["details"].append(detail)
+            if status in ("enrichie", "sans_chiffre"):
+                out["n_read"] += 1
+                out["n_enriched"] += int(status == "enrichie")
+                out["n_no_figure"] += int(status == "sans_chiffre")
+            elif status == "scan":
+                out["n_scanned"] += 1
+            else:
+                out["n_failed"] += 1
+        except ResearchError as exc:  # robots.txt, source désactivée, redirections… : document isolé
+            detail["reason"] = str(exc)
+            out["details"].append(detail)
+            out["n_failed"] += 1
+        except Exception as exc:  # noqa: BLE001 - aucun document isolé ne doit interrompre la lecture
+            detail["reason"] = f"{type(exc).__name__}: {exc}"
+            out["details"].append(detail)
+            out["n_failed"] += 1
+            log.warning("lecture du document %s : %s", url, detail["reason"])
+    if sess.stopped and not out["stopped"]:
+        out["stopped"] = sess.stopped
+    out["n_requests"] = sess.n_requests - n0
+    return out
+
+
 __all__ = [
     "BASE_URL", "USER_AGENT", "BRVM_LISTS", "ISSUER_SLUGS", "ISSUER_ALIASES", "BRVM30_T4_2026",
     "ResearchError", "RobotsDisallowed", "AccessBlocked", "QuotaExceeded", "ServerUnavailable",
@@ -3564,4 +3978,7 @@ __all__ = [
     "PostdatedItem", "item_seen_at", "parse_page_date", "url_host", "clear_block", "blocked_hosts",
     "default_resolver", "norm_label", "dedup_event_type", "normalize_url", "item_key", "sovereign_country",
     "DISABLED_DOMAINS", "STOP_STATUSES", "BOC_GARBLED_LABELS",
+    "enrich_documents", "select_documents", "is_brvm_document_url", "pdf_text_layer_is_ocr", "DOC_PRIORITY", "DOC_TAGS",
+    "DOC_MARKS", "DOC_OCR_TAG",
+    "DOC_USEFUL_SESSIONS", "DOC_USEFUL_SESSIONS_BY_TYPE",
 ]

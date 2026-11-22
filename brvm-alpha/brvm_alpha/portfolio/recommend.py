@@ -32,6 +32,12 @@ Ce que contient l'ordre de bataille (spécification ``docs/SPECIFICATION_STRATEG
    :func:`stress_scenarios`.
 7. **Déclencheurs de revue** : filtres R actifs, drawdown relatif, événements à venir (dates ex,
    AG, publications, événements pays), prochain rebalancement, notes de l'analyste, indices.
+   **Notes de l'analyste, deux instants** : la date des cours est celle du dernier BOC ; les notes
+   suivent par défaut la règle stricte à cette date (mode historique). Avec ``notes_known_at``
+   (mode direct, passé par la ligne de commande, l'interface et le rapport à la dernière séance du
+   panel), les notes connues à cet instant sont appliquées à la séance d'exécution : veto,
+   inclinaisons et filtres R entrent dans la décision ; chaque achat bloqué par une note est écrit
+   en clair (règle, note, fin du blocage, comment le lever) avec son effet sur les poids cibles.
 8. **Explications** (``BrvmAlpha.explain``) des titres retenus et des 5 premiers écartés.
 
 **Honnêteté** : rien ici ne garantit un gain. Les coûts, l'impact, les dates projetées et la
@@ -1294,6 +1300,9 @@ class OrdreDeBataille:
                        f"{_d(self.execution.get('premiere_seance'))}. Capital {_fcfa(self.capital)} ; valeur du "
                        f"portefeuille avant ordres {_fcfa(self.valeur_portefeuille)}, dont liquidités "
                        f"{_fcfa(self.liquidites_initiales)}."))
+        nt_top = (self.declencheurs or {}).get("notes") or {}
+        if nt_top.get("ligne"):
+            B.append(("p", nt_top["ligne"]))
         # 1. variante
         B.append(("h2", "1. Variante et statut de validation"))
         B.append(("ul", [f"Variante retenue : **{self.variante}** — {c.get('description', '')}",
@@ -1316,6 +1325,7 @@ class OrdreDeBataille:
         notes = [f"{r.symbole} : {r.note}" for r in L.itertuples(index=False) if getattr(r, "note", "")]
         if notes:
             B.append(("ul", notes))
+        B.extend(self._notes_blocks())
         crow = []
         for r in L[L["sens"] != "aucun"].itertuples(index=False):
             crow.append([r.symbole, r.sens, _fcfa(r.courtage), _fcfa(r.tva), _fcfa(r.brvm), _fcfa(r.dcbr),
@@ -1428,6 +1438,38 @@ class OrdreDeBataille:
         B.append(("banner", self.bandeau))
         return B
 
+    def _notes_blocks(self) -> list[tuple[str, Any]]:
+        """Achats bloqués par une note (règle, note, fin du blocage, levée) et effet sur les poids."""
+        nt = (self.declencheurs or {}).get("notes") or {}
+        blocs = nt.get("blocages") or []
+        eff = nt.get("effet") or {}
+        B: list[tuple[str, Any]] = []
+        if not blocs and not eff.get("lignes"):
+            return B
+        B.append(("h3", "Achats bloqués par les notes de l'analyste et effet sur les poids"))
+        if blocs:
+            rows = []
+            for b in blocs:
+                note = (f"note {str(b.get('note_id', ''))[:12]} du {_d(b.get('note_date'))} : « {b.get('note_titre', '')} » "
+                        f"(source {b.get('note_source') or 'n.d.'}"
+                        + (f", {b['note_url']}" if b.get("note_url") else "") + ")")
+                fin = b.get("duree") or "durée ouverte"
+                if b.get("seances_restantes") is not None:
+                    fin += f" (encore {_int(b['seances_restantes'])} séance(s))"
+                rows.append([b.get("symbole"), f"{b.get('code')} — {b.get('libelle')}", note,
+                             f"depuis le {_d(b.get('depuis'))}, {fin}", b.get("effet_poids") or "—",
+                             b.get("lever") or ""])
+            B.append(("table", (["Titre", "Règle", "Note", "Blocage", "Effet sur l'ordre", "Pour lever le blocage"],
+                                rows)))
+        if eff.get("texte"):
+            B.append(("p", eff["texte"]))
+        if eff.get("lignes"):
+            B.append(("table", (["Titre", "Poids cible sans les notes", "Poids cible avec les notes", "Écart", "Motif"],
+                                [[x["symbole"], _pct(x["poids_sans_notes"]), _pct(x["poids_avec_notes"]),
+                                  _pct(x["ecart"], 2, True), x.get("motif") or "redistribution (construction)"]
+                                 for x in eff["lignes"]])))
+        return B
+
     def _dist_blocks(self) -> list[tuple[str, Any]]:
         D = self.distribution
         B: list[tuple[str, Any]] = [("h2", "5. Distribution historique à 12 mois (pas une prévision)")]
@@ -1495,6 +1537,17 @@ class OrdreDeBataille:
             items.append(f"Revue obligatoire {x['symbole']} : {_pct(x['relatif_63'], 1, True)} contre le TR sur 63 séances")
         nt = T.get("notes", {})
         items.append(nt.get("texte", ""))
+        if nt.get("ligne"):
+            items.append(nt["ligne"])
+        if nt.get("message_scores"):
+            items.append("Scores des notes : " + nt["message_scores"])
+        for f in nt.get("filtres") or []:
+            fin = f.get("duree") or "durée ouverte"
+            items.append(f"Filtre {f.get('code')} sur {f.get('symbole')} ({f.get('libelle')}) depuis le "
+                         f"{_d(f.get('depuis'))}, {fin} — note {str(f.get('note_id', ''))[:12]} du {_d(f.get('note_date'))} "
+                         f"« {f.get('note_titre', '')} »"
+                         + (" ; achats bloqués" if f.get("bloque_achats") else "")
+                         + ("" if f.get("dans_le_plan") else " ; titre hors du plan"))
         items.append(T.get("pays", {}).get("texte", ""))
         B.append(("ul", [i for i in items if i]))
         ev = T.get("evenements")
@@ -1654,14 +1707,15 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
                 notes_arg: Any, calendar_past: Any, horizon_months: int, n_boot: int, seed: int,
                 window: dict[str, Any], tolerance: float, max_participation: float, mean_block: float,
                 cfg: Mapping[str, Any], prebuilt: tuple[Any, Any] | None = None,
-                exec_after: pd.Timestamp | None = None, blocked: Mapping[str, Any] | None = None) -> _Plan:
+                exec_after: pd.Timestamp | None = None, blocked: Mapping[str, Any] | None = None,
+                notes_known_at: Any = None) -> _Plan:
     from brvm_alpha.strategy import BrvmAlpha
 
     held_w = pd.Series({s: q * float(close[s]) / nav for s, q in held_q.items() if q > 0}, dtype=float)
     if prebuilt is not None:  # même décision, autres hypothèses de coûts ou de participation (ST6, ST7)
         model, dec = prebuilt
     else:
-        model = BrvmAlpha(variant=variant, capital=nav, notes=notes_arg)
+        model = BrvmAlpha(variant=variant, capital=nav, notes=notes_arg, notes_known_at=notes_known_at)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             dec = model.decide(t, panels, held_w if len(held_w) else None)
@@ -2015,7 +2069,8 @@ def _publication_events(store: Any, t: pd.Timestamp, symbols: Sequence[str], end
 
 def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.DataFrame, calendar_past: Any,
               horizon_months: int, notes_store: Any, index_rows: list[dict[str, Any]] | None,
-              index_msg: str, known_at: Any = None) -> dict[str, Any]:
+              index_msg: str, known_at: Any = None, notes_state: Mapping[str, Any] | None = None,
+              notes_effect: Mapping[str, Any] | None = None) -> dict[str, Any]:
     dec = plan.decision
     L = plan.lines
     syms = [r.symbole for r in L.itertuples(index=False) if r.cibles > 0 or r.detenus > 0]
@@ -2117,17 +2172,148 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
     if dec.diagnostics.get("mode") == "indice_discipline" or plan.model.spec.kind in ("reference", "core_satellite"):
         # Première décision (mensuelle, dernière séance du mois) de janvier de l'année suivante (D8).
         annual = _month_end_session(pd.Timestamp(year=t.year + 1, month=1, day=1), calendar_past)
+    notes_out: dict[str, Any] = {
+        "texte": n_txt, "veto": veto, "inclinaisons": tilt.to_dict() if len(tilt) else {},
+        "drapeaux": {k: [str(x.get("code", x)) if isinstance(x, Mapping) else str(x) for x in v]
+                     for k, v in flags.items()}}
+    notes_out.update(_notes_trigger(notes_state, notes_effect, L, dec))
     return {"filtres_r": fr, "drawdown": {"texte": dd_txt, "revues_lignes": reviews, "etat_modele": rdd},
-            "notes": {"texte": n_txt, "veto": veto, "inclinaisons": tilt.to_dict() if len(tilt) else {},
-                      "drapeaux": {k: [str(x.get("code", x)) if isinstance(x, Mapping) else str(x) for x in v]
-                                   for k, v in flags.items()}},
+            "notes": notes_out,
             "pays": {"texte": p_txt, "regles_actives": {c: st.get("rule") for c, st in cs.items()}},
             "evenements": ev,
             "rebalancement": {"prochaine_revue": next_review, "rebalancement_annuel": annual},
             "indices": index_rows or [], "indices_message": index_msg}
 
 
-def _index_evaluation(t: pd.Timestamp, panel_dir: Path | None, panels_given: bool, store: Any) -> tuple[list[dict[str, Any]], str]:
+def _notes_state(plan: _Plan, t: pd.Timestamp, store: Any, calendar_dates: Any) -> dict[str, Any] | None:
+    """État des notes de la décision (``notes.signals.notes_in_force``) : mêmes surcouches que le modèle.
+
+    Mode direct si le modèle l'a appliqué (``diagnostics["notes"]["mode"]``), historique sinon.
+    ``None`` si les notes sont désactivées ou indisponibles.
+    """
+    nd = plan.decision.diagnostics.get("notes") or {}
+    if store is None or not nd.get("available"):
+        return None
+    try:
+        from brvm_alpha.notes import signals as ns
+
+        known = nd.get("known_at") if nd.get("mode") == "direct" else None
+        ov = {"table": nd.get("table"), "tilt_notes": list(nd.get("tilt_notes") or []), "tilt": nd.get("tilt")}
+        cal = calendar_dates if isinstance(calendar_dates, pd.DataFrame) else list(pd.DatetimeIndex(calendar_dates))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return ns.notes_in_force(store, t, known_at=known, calendar=cal, overlays=ov)
+    except Exception as exc:  # l'ordre de bataille ne dépend pas de cette synthèse
+        return {"erreur": f"{exc.__class__.__name__} : {exc}"}
+
+
+def _notes_effect(plan: _Plan, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav: float,
+                  state: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Effet des notes sur les poids cibles : même décision recalculée **sans aucune note**.
+
+    Calculé seulement si une note agit sur la décision (filtre, veto ou inclinaison). Les règles
+    de construction ne changent pas : la comparaison montre ce qu'elles font du poids d'un titre
+    bloqué (redistribué aux autres lignes ou laissé en liquidités).
+    """
+    if not state or state.get("erreur"):
+        return None
+    if not (state.get("n_filters") or state.get("n_veto") or state.get("n_tilt")):
+        return None
+    from brvm_alpha.strategy import BrvmAlpha
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            base = BrvmAlpha(variant=variant, capital=nav, notes=None).decide(
+                t, panels, plan.held_w if len(plan.held_w) else None)
+    except Exception as exc:  # pragma: no cover - comparaison facultative
+        return {"texte": f"Effet des notes sur les poids non calculé ({exc.__class__.__name__} : {exc}).", "lignes": []}
+    w1 = plan.decision.weights.astype(float).fillna(0.0)
+    w0 = base.weights.astype(float).fillna(0.0)
+    syms = sorted(set(w1[w1 > 0].index) | set(w0[w0 > 0].index))
+    reasons: dict[str, list[str]] = {}
+    for f in state.get("filters") or []:
+        reasons.setdefault(str(f["symbole"]), []).append(str(f["code"]))
+    tilt = pd.Series(state.get("overlays", {}).get("tilt"), dtype=float)
+    # Indice discipliné (REF) : sélection par capitalisation, l'inclinaison n'y entre pas (seuls le veto et
+    # les filtres R agissent) ; elle n'est donc pas citée comme motif d'un écart de poids.
+    by_cap = getattr(getattr(plan.model, "spec", None), "kind", "") == "reference"
+    rows = []
+    for s in syms:
+        a, b = float(w0.get(s, 0.0)), float(w1.get(s, 0.0))
+        if abs(b - a) < 5e-6:
+            continue
+        why = []
+        if s in reasons:
+            why.append("filtre " + ", ".join(sorted(set(reasons[s]))))
+        if not by_cap and s in tilt.index and float(tilt[s]) != 0:
+            why.append(f"inclinaison {_num(float(tilt[s]), 2, True)} σ")
+        rows.append({"symbole": s, "poids_sans_notes": a, "poids_avec_notes": b, "ecart": b - a,
+                     "motif": " ; ".join(why)})
+    rows.sort(key=lambda r: (r["ecart"], r["symbole"]))
+    tot0, tot1 = float(w0.sum()), float(w1.sum())
+    if not rows:
+        txt = ("Effet des notes sur les poids cibles : aucun (ni veto ni filtre sur un titre de la sélection"
+               + (" ; en indice discipliné, l'inclinaison n'entre pas dans la sélection par capitalisation"
+                  if by_cap else "")
+               + f") ; total investi cible {_pct(tot1)} avec ou sans les notes.")
+    else:
+        cash = tot0 - tot1
+        dest = ("le poids retiré est redistribué aux autres lignes par les règles de construction existantes"
+                if abs(cash) < 5e-5 else
+                f"{_pct(abs(cash))} du portefeuille {'restent en liquidités' if cash > 0 else 'sont investis en plus'} "
+                "(règles de construction existantes)")
+        txt = (f"Effet des notes sur les poids cibles (même décision recalculée sans aucune note, pour information) : "
+               f"{len(rows)} ligne(s) modifiée(s) ; total investi cible {_pct(tot0)} sans les notes, {_pct(tot1)} avec : "
+               f"{dest}. Les notes ne changent aucune règle : elles retirent un titre des achats ou inclinent un "
+               "score, dans les bornes de la spécification"
+               + (" (indice discipliné : l'inclinaison n'entre pas dans la sélection par capitalisation)."
+                  if by_cap else "."))
+    return {"texte": txt, "lignes": rows, "total_sans_notes": tot0, "total_avec_notes": tot1}
+
+
+def _notes_trigger(state: Mapping[str, Any] | None, effect: Mapping[str, Any] | None, L: pd.DataFrame,
+                   dec: Any) -> dict[str, Any]:
+    """Partie « notes » des déclencheurs : ligne datée, filtres actifs, achats bloqués, effet."""
+    if not state:
+        return {}
+    if state.get("erreur"):
+        return {"ligne": f"Notes de l'analyste : synthèse indisponible ({state['erreur']})."}
+    in_plan = {str(r.symbole) for r in L.itertuples(index=False) if r.cibles > 0 or r.detenus > 0} if len(L) else set()
+    eff_rows = {r["symbole"]: r for r in (effect or {}).get("lignes") or []}
+    held = {str(r.symbole): int(r.detenus) for r in L.itertuples(index=False)} if len(L) else {}
+    filters = []
+    gap = float((effect or {}).get("total_sans_notes") or 0.0) - float((effect or {}).get("total_avec_notes") or 0.0)
+    fate = ("ce poids est redistribué aux autres lignes par les règles de construction" if abs(gap) < 5e-5 else
+            f"{_pct(abs(gap))} du portefeuille {'restent en liquidités' if gap > 0 else 'sont investis en plus'} "
+            "(règles de construction)")
+    for f in state.get("filters") or []:
+        g = dict(f)
+        s = str(g["symbole"])
+        g["dans_le_plan"] = s in in_plan
+        if g.get("bloque_achats"):
+            e = eff_rows.get(s)
+            if e is not None and e["poids_sans_notes"] > 0 and e["poids_avec_notes"] <= 1e-9:
+                g["effet_poids"] = (f"aucun achat (poids cible {_pct(e['poids_sans_notes'])} sans les notes, 0 % avec) ; "
+                                    f"{fate} (voir le tableau d'effet)")
+            elif e is not None:
+                g["effet_poids"] = (f"poids cible {_pct(e['poids_sans_notes'])} sans les notes, "
+                                    f"{_pct(e['poids_avec_notes'])} avec (aucun renforcement)")
+            elif held.get(s, 0) > 0:
+                g["effet_poids"] = "ligne détenue conservée sans renforcement"
+            else:
+                g["effet_poids"] = "titre hors de la sélection : aucun effet sur cet ordre"
+        filters.append(g)
+    m = state["moment"]
+    return {"ligne": state["line"], "mode": state["mode"], "date_des_cours": m.prices_date,
+            "connues_au": m.known_at, "seance_application": m.session, "n_connues": state["n_known"],
+            "n_en_vigueur": state["n_in_force"], "n_manuelles": state["n_manual"], "n_filtres": state["n_filters"],
+            "n_avec_score": state["n_scored"], "message_scores": state["scores_message"], "filtres": filters,
+            "blocages": [g for g in filters if g.get("bloque_achats")], "effet": dict(effect) if effect else None}
+
+
+def _index_evaluation(t: pd.Timestamp, panel_dir: Path | None, panels_given: bool, store: Any,
+                      notes_known_at: Any = None) -> tuple[list[dict[str, Any]], str]:
     if panels_given and panel_dir is None:
         return [], "Évaluation des indices non calculée : panel long non fourni (passer panel_dir)."
     try:
@@ -2135,7 +2321,8 @@ def _index_evaluation(t: pd.Timestamp, panel_dir: Path | None, panels_given: boo
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            res = index_eval.evaluate_indices(str(panel_dir) if panel_dir is not None else None, store, t)
+            res = index_eval.evaluate_indices(str(panel_dir) if panel_dir is not None else None, store, t,
+                                              notes_known_at=notes_known_at)
     except Exception as exc:
         return [], f"Évaluation des indices indisponible ({exc.__class__.__name__} : {exc})."
     rows = []
@@ -2298,6 +2485,7 @@ def recommend(
     explanations: bool = True,
     index_evaluation: bool = True,
     today: Any = None,
+    notes_known_at: Any = None,
 ) -> OrdreDeBataille:
     """Ordre de bataille à la date ``asof`` pour un capital ``capital`` (FCFA).
 
@@ -2340,6 +2528,14 @@ def recommend(
         décision porte sur le dernier BOC du panel et que des séances manquent avant ``today`` :
         avertissement en tête (« panel en retard »), ordres marqués **périmés**, et aucune séance
         d'exécution antérieure à ``today``.
+    notes_known_at
+        Instant de connaissance des notes (UTC ; une date seule désigne la fin de la journée).
+        ``None`` (défaut sûr) : **mode historique**, les notes suivent la règle stricte à la date
+        de décision (aucune anticipation ; appels programmatiques, dates passées). Donné (**mode
+        direct**, passé par la ligne de commande, l'interface et le rapport quand la décision
+        porte sur le dernier BOC) : les notes connues à cet instant sont appliquées à la séance
+        qui suit le dernier BOC (ou la suivante si sa coupure de 09h00 UTC est passée) ; veto,
+        inclinaisons et filtres R entrent dans la décision, sans changer aucune règle.
     """
     t0 = time.time()
     if capital is None or float(capital) <= 0:
@@ -2448,9 +2644,20 @@ def recommend(
     common = dict(t=t, panels=panels, nav=nav, cash=cash_v, held_q=hold, close=close, costs=cm, cost_name=cost_name,
                   taxes=taxes, notes_arg=notes_arg, calendar_past=sessions, horizon_months=horizon_months,
                   n_boot=n_boot, seed=seed, window=window, tolerance=tolerance, max_participation=max_participation,
-                  mean_block=mean_block_weeks, cfg=cfg, exec_after=exec_after, blocked=blocked_off_boc)
+                  mean_block=mean_block_weeks, cfg=cfg, exec_after=exec_after, blocked=blocked_off_boc,
+                  notes_known_at=notes_known_at)
     plan = _build_plan(variant=choice["variante"], **common)
     L = plan.lines
+    # Notes de l'analyste : état daté (deux instants) et effet sur les poids cibles. Calendrier des
+    # séances du panel (lacunes de BOC comprises) s'il est sur disque, comme l'évaluation des indices.
+    notes_cal: Any = None
+    if pdir is not None and (pdir / "sessions.parquet").exists():
+        try:
+            notes_cal = pd.read_parquet(pdir / "sessions.parquet")
+        except Exception:
+            notes_cal = None
+    notes_state = _notes_state(plan, t, store_for_events, notes_cal if notes_cal is not None else close_df.index)
+    notes_effect = _notes_effect(plan, choice["variante"], t, panels, nav, notes_state)
     names = _names(pdir, panels)
     if len(L):
         L.insert(1, "nom", [names.get(s, s) for s in L["symbole"]])
@@ -2499,11 +2706,21 @@ def recommend(
         stress = stress_scenarios(values, nav, beta=beta, extra_costs=extra, data_guard=guard)
     # Indices, déclencheurs, explications.
     if index_evaluation:
-        idx_rows, idx_msg = _index_evaluation(t, pdir, panels_given, store_for_events)
+        idx_rows, idx_msg = _index_evaluation(t, pdir, panels_given, store_for_events, notes_known_at)
     else:
         idx_rows, idx_msg = [], "Évaluation des indices non demandée."
+    pub_known = max(t, t_req)
+    if notes_known_at is not None and notes_state and not notes_state.get("erreur") \
+            and notes_state["moment"].known_at is not None:
+        pub_known = max(pub_known, notes_state["moment"].known_at.tz_localize(None))
     trig = _triggers(plan, t, panels, div, sessions, horizon_months, store_for_events, idx_rows, idx_msg,
-                     known_at=max(t, t_req))
+                     known_at=pub_known, notes_state=notes_state, notes_effect=notes_effect)
+    for b in (trig.get("notes") or {}).get("blocages") or []:
+        if b.get("dans_le_plan") or "sans les notes" in str(b.get("effet_poids", "")):
+            warn.append(f"ACHAT BLOQUÉ par une note : {b['symbole']} ({b['code']}, {b['libelle']}) — note "
+                        f"{str(b['note_id'])[:12]} du {_d(b.get('note_date'))} « {b.get('note_titre', '')} », "
+                        f"{b.get('duree') or 'durée ouverte'}. Effet : {b.get('effet_poids', '')}. Pour lever le "
+                        f"blocage : {b.get('lever', '')}.")
     expl = _explanations(plan, t, panels) if explanations else []
     # Comparaison.
     comp = None
@@ -2595,6 +2812,7 @@ def recommend(
             "stress_source": stress_src, "fenetre_estimation": window, "n_boot": int(n_boot), "graine": int(seed),
             "horizon_mois": int(horizon_months), "notes": "auto" if notes_store is None else
             ("désactivées" if notes_store is False else "fournies"),
+            "notes_mode": (notes_state or {}).get("mode") if notes_state and not notes_state.get("erreur") else None,
             "empreinte_config": settings.config_fingerprint(cfg), "modele": repr(plan.model),
             "s1_lu": bool(window["s1_utilise"])}
     return OrdreDeBataille(

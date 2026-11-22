@@ -1,0 +1,443 @@
+# Extraits RÉELS (texte de « pdftotext -layout », mise en page conservée) de publications lues sur www.brvm.org
+# le 22/11/2026 par enrich_documents. Chaque section « === NOM === » est un extrait d'un document public ;
+# les passages sans rapport sont retirés. Aucune donnée personnelle (ni nom de personne, ni adresse électronique).
+=== NESTLE_T3_2026 ===
+# NESTLE CI, rapport du 3e trimestre 2026 (publié le 22/10/2026) : libellés placés SOUS leurs nombres.
+            Rapport Financier du 3e trimestre Nestlé CI au 30.09.2026
+
+            Vue d’ensemble de la performance financière :
+
+                          RUBRIQUES                    ACTIVITÉ       ACTIVITÉ      EXERCICE      VARIATION N / N-1
+                                                      NESTLÉ-CI      NESTLÉ-CI        2025
+                                                      30.09.2026     30.09.2025                    %        Valeur
+                                                        KXOF           KXOF
+             Chiffre d’Affaires                        192 500 938    173 406 065   233 261 163    11,0%   19 094 873
+
+                                                        21 426 583     19 736 051    29 730 141     8,6%    1 690 532
+             Résultat des Activités Ordinaires
+                                                        11 986 513     11 935 555    18 426 899     0,4%      50 958
+             Résultat Net
+
+
+            Commentaires :
+
+                •   Le chiffre d’affaires maintient une dynamique soutenue, avec une croissance de
+                    11,0 % à fin septembre 2026 par rapport à la même période de 2025, dans un contexte
+                    économique exigeant.
+=== BERNABE_S1_2026 ===
+# BERNABE CI, rapport du 1er semestre 2026 (27/10/2026) : signe « - » détaché du nombre ; « en hausse de +141 MFCFA » est un écart.
+                                              RAPPORT D’ACTIVITES DU 1er SEMESTRE 2026
+
+        I.       Tableau d’activité et de résultats
+
+                                                                                                                   Variation
+                                    1er Semestre 2026    1er Semestre 2025
+       Indicateurs en F CFA                                                     Exercice 2025    En valeur           En pourcentage (%)
+                                           (1)                   (2)
+                                                                                                    (3)=(1)-(2)       (4)=([(1)-(2)]/(2))*100
+CHIFFRE D'AFFAIRES                      23 160 039 828        21 665 799 827    42 454 158 321     1 494 240 001               7%
+
+RESULTAT D'EXPLOITATION                    573 960 181          408 750 091      1 048 744 980      165 210 090               40%
+
+RESULTAT FINANCIER                  -      550 814 228 -        534 649 318 -    1 010 528 553 -     16 164 910                3%
+RESULTAT DES ACTIVITES ORDINAIRES           23 145 953 -        125 899 227         38 216 427      149 045 180               118%
+RESULTAT AVANT IMPOT                        19 357 862 -        122 068 719         43 318 122      141 426 581               116%
+
+IMPOTS SUR LE RESULTAT                      17 500 000           17 500 000         21 000 000                -                0%
+RESULTAT NET                                 1 857 862 -        139 568 719         22 318 122      141 426 581               101%
+
+
+"Les informations présentées dans ce tableau d'activités ont été établies conformément aux règles et principes
+comptables du SYSCOHADA"
+
+        II.      Commentaires de la Direction
+
+Sur l’activité
+Le chiffre d’affaires du premier semestre 2026 est en amélioration de +1 494 MCFA par rapport à la
+même période de l’exercice précédent. Cette hausse s’explique principalement par l’intégration de
+l’activité Equipement depuis janvier 2026.
+
+Sur le résultat net
+Le résultat net en hausse de +141 MFCFA s’explique par la hausse de la marge commerciale en lien
+avec la hausse du chiffre d’affaires et une bonne maîtrise des charges d’exploitation et financières.
+=== FILTISAC_S1_2026 ===
+# FILTISAC CI, comparatif d'activité au 30 juin 2026 (02/11/2026) : comptes sociaux puis comptes consolidés.
+
+
+        COMPTES SOCIAUX
+                                                                                        Variation 30-06-2026 vs
+                                                30 Juin 2026        30 Juin 2025               30-06-2025                 Exercice 2025
+                                                 (MFCFA)             (MFCFA)                                               (MFCFA)
+                                                                                          En %         En valeur
+Chiffre d'affaires net HT                                16 438              13 406              23%          3 032                    32 109
+Résultat d’exploitation                                    -509                 -13                 -          -496                        275
+Résultat financier                                         -236                 140            -269%           -376                       -133
+Résultat des activités ordinaires                          -745                 126           -688%            -871                       142
+Résultat HAO                                                   10                  13           -27%              -3                      382
+Impôt sur le Résultat                                       -35                 -35                                                       -58
+Résultat Net                                               -770                 105           -835%           - 875                       466
+
+
+         Au terme du premier semestre 2026, les indicateurs financiers traduisent une forte croissance commerciale, malheureusement impactés par la
+        hausse des cours du pétrole, du coût des matières et du fret, du fait de la crise au moyen orient.
+
+             •   Chiffre d'affaires en croissance : Le chiffre d'affaires s'établit à 16 438 millions de FCFA, soit une progression de 23% sur un an,
+                 essentiellement portée par le département Jute, qui bénéficie des retombées d’une excellente campagne cacao 2025-2026.
+             •   Rentabilité opérationnelle en baisse : Le résultat d’exploitation se dégrade à – 509 millions de FCFA conséquence de la hausse sensible
+                 des matières premières, des coûts logistiques en lien avec la crise au moyen orient.
+
+     •   Recul du résultat financier : Le poste financier enregistre un repli marqué, sous l'effet d'un besoin de financement accru par la forte
+         croissance de l'activité Jute.
+     •   Résultat net: Fortement impacté par des niveaux de coûts matières premières répercutés à la clientèle au second semestre pour des
+         raisons contractuelles ainsi que par le recul du résultat financier, le résultat net ressort négatif à 770 millions de FCFA, contre 105
+         millions de FCFA au premier semestre 2025.
+
+ COMPTES CONSOLIDÉS
+
+
+                                      30 Juin 2026              30 Juin 2025            Variation 30-06-2026 vs 30-06-2025
+                                       (MFCFA)                   (MFCFA)                                        En valeur
+                                                                                             En %
+    Chiffre d'affaires net HT             20 795                   18 092                     15 %                   2 703
+Résultat courant avant impôt               -579                       252                    -330%                      -831
+ R. Net part des minoritaires               43                         30                     43%                        13
+           R. net part groupe              -673                       178                    -478 %                     -851
+
+
+
+ Le chiffre d’affaires consolidé du Groupe s’élève à 20 795 millions de FCFA au 30 juin 2026 contre 18 092 millions de FCFA au 30 juin 2025,
+ en croissance de 15%, principalement tiré par les résultats de FILTISAC.
+
+ Le résultat courant avant impôt semestriel consolidé, est en retrait de 831 millions de FCFA, à -579 millions de FCFA.
+=== SETAO_S1_2026 ===
+# SETAO CI, tableau d'activité au 30 juin 2026 (30/10/2026) : périodes citées dans les colonnes de variation, résultat net négatif.
+            SETAO - Publication du tableau
+            d’activité et de résultat au 30 juin
+            2026
+
+                                                                                        Variation en     Variation en
+Tableau de Résultat                                                                                                     Rappel à fin
+                                                 Juin 2026               Juin 2025         valeur             %
+                                                                                                                         décembre
+                                                  (6 mois)                (6 mois)      (Juin 2026 -     (Juin 2026 -
+Nb : données en F CFA                                                                                                      2025
+                                                                                         Juin 2025)       Juin 2025)
+Chiffre d'affaires                                  680 332 341 2 271 125 021           -1 590 792 680          -70 % 3 878 254 920
+Résultat d'exploitation                          -1 824 345 585 -542 619 317            -1 281 726 268         -236 % -771 954 220
+Résultat Financier                                          -17     3 537 245               -3 537 262         -100 %   227 009 282
+Résultat des activités ordinaires                -1 824 345 602 -539 082 072            -1 285 263 530         -238 % -544 944 938
+Impôts sur le résultat                                 -656 388   -19 554 822               18 898 434          -96 % -100 899 752
+Résultat net                                     -1 821 139 763 -556 761 512            -1 264 378 251         -227 %   -96 559 607
+
+
+
+            RAPPORT D’ACTIVITE AU 30 JUIN 2026
+            1- Commentaire sur l’activité
+
+            Le chiffre d’affaires des six premiers mois de l’exercice 2026 s’élève à 680 332 341 F CFA, en baisse
+            de 70 % par rapport à la même période en 2025.
+=== SETAO_T3_2026 ===
+# SETAO CI, tableau d'activité au 30 septembre 2026 (30/10/2026) : colonnes décalées par rapport à l'en-tête ; « est une perte qui s'élève à ».
+            SETAO - Publication du tableau
+            d’activité et de résultat au 30
+            septembre 2026
+
+                                                                                          Variation en      Variation en
+Tableau de Résultat                         Septembre            Septembre                                                 Rappel à fin
+                                                                                             valeur              %
+                                               2026                 2025                                                    décembre
+                                                                                        (Sept 2026 - Sept   (Sept 2026 -
+Nb : données en F CFA                        (9 mois)             (9 mois)                                                    2025
+                                                                                              2025)          Sept 2025)
+Chiffre d'affaires                3 960 047 624 3 455 701 576                                 504 346 048            15% 3 878 254 920
+Résultat d'exploitation            -346 328 209 -456 089 413                                  109 761 204           -24% -771 954 220
+Résultat Financier                          106     4 914 174                                  -4 914 068          -100%   227 009 282
+Résultat des activités ordinaires -346 328 103 -451 175 239                                   104 847 136           -23% -544 944 938
+Impôts sur le résultat               -9 005 683   -45 630 784                                  36 625 101           -80% -100 899 752
+Résultat net                       -346 386 813 -477 134 031                                  130 747 218           -27%   -96 559 607
+
+
+
+            RAPPORT D’ACTIVITE AU 30 SEPTEMBRE 2026
+            1- Commentaire sur l’activité
+
+            Le chiffre d’affaires des neufs premiers mois de l’exercice 2026 s’élève à 3 960 047 624 F CFA, en
+            hausse de 15 % par rapport à la même période en 2025.
+
+
+            Le résultat net à fin septembre 2026 est une perte qui s’élève à 346 386 813 F CFA, en baisse de 27%
+            par rapport à la même période en 2025.
+=== SUCRIVOIRE_S1_2026 ===
+# SUCRIVOIRE CI, rapport du 1er semestre 2026 (02/11/2026) : en-tête sur trois lignes, montants en FCFA sans unité écrite, titre de rubrique.
+
+                                            RAPPORT D'ACTIVITÉ ET DE RÉSULTAT
+                               PREMIER SEMESTRE 2026 (période du 1er janvier au 30 juin 2026)
+
+
+I – Tableau d’activité et de résultat
+
+                                                                      1er semestre            1er semestre              Exercice                Variation
+INDICATEUR
+                                                                        2026 (1)                2025 (2)                2025 (3)                 (1) - (2)
+
+CHIFFRE D'AFFAIRES                                                   42 256 666 676          42 868 302 911         80 568 589 451            (611 636 235)
+EXCÉDENT BRUT D'EXPLOITATION                                           7 081 235 185           3 992 773 399        15 630 529 718            3 088 461 786
+RÉSULTAT D'EXPLOITATION                                              (1 090 826 156)         (3 179 813 119)          1 828 947 146           2 088 986 963
+RÉSULTAT FINANCIER                                                   (3 658 411 066)         (3 266 312 517)        (7 590 422 709)           (392 098 549)
+RÉSULTAT DES ACTIVITÉS ORDINAIRES                                    (4 749 237 222)         (6 446 125 636)        (5 761 475 563)           1 696 888 414
+RÉSULTAT HORS ACTIVITÉS ORDINAIRES                                       (21 239 327)          (243 680 831)          (335 324 663)             222 441 504
+IMPÔTS SUR LE RÉSULTAT                                                   (17 499 996)            (17 499 996)           (35 000 000)                      –
+RÉSULTAT NET                                                         (4 787 976 545)         (6 707 306 463)        (6 131 800 226)           1 919 329 918
+(1) Les informations financières au 30 juin 2026 présentées dans ce tableau et dans le rapport d’activité n’ont pas encore fait l’objet de l’attestation du
+Commissaire aux Comptes prévue par l’Acte uniforme OHADA relatif au droit des sociétés commerciales et du GIE. Les travaux du Commissaire aux Comptes
+sont en cours de finalisation. La Société procédera à une publication complémentaire dès la délivrance de cette attestation et informera le marché sans délai de
+tout ajustement significatif éventuel.
+(2) Comptes intermédiaires au 30 juin 2025, établis selon le référentiel SYSCOHADA révisé, présentés à titre comparatif.
+(3) Exercice de 12 mois clos le 31 décembre 2025.
+
+2. Volumes et chiffre d'affaires
+Les volumes de sucre vendus s'établissent à 73 252 tonnes sur le semestre, contre 72 566 tonnes un an plus tôt,
+soit une progression de 0,9 %. Cette stabilité d'ensemble recouvre deux périodes très différentes.
+=== ORANGE_T3_2026 ===
+# ORANGE CI, résultats consolidés au 30 septembre 2026 (28/10/2026) : « (En MXOF) » dans l'en-tête, « Montants en milliards de FCFA » dessous.
+                                             Résultats financiers consolidés au 30 septembre 2026
+   Groupe Orange Côte d’Ivoire
+                                                                                            T3 2026             T3 2025            Variation N/N-1
+                                         Indicateurs (En MXOF)
+
+                                         Chiffre d'affaires                                       1 012                876    15,5%              136
+                                         EBITDAaL                                                   360                305    18,0%               55
+                                         Résultat net                                               141                119    18,3%               22
+
+
+                                         Montants en milliards de FCFA
+
+
+
+
+                                         Chiffre d’affaires, données IFRS
+                                         Au 30 septembre 2026, le chiffre d’affaires consolidé des trois pays s’élève à 1 012 milliards FCFA, contre 876
+                                         milliards FCFA à fin septembre 2025, soit une croissance de 136 milliards FCFA (+15,5%). Cette progression traduit
+
+                                         Résultat Net, données IFRS
+                                         Le résultat net consolidé s’élève à 141 Milliards FCFA, en hausse de +18,3 % au troisième trimestre 2026 par
+T3_2025         38 266      156,9        rapport à l’année dernière.
+=== LNB_T3_2026 ===
+# LNB BN, rapport du 3e trimestre 2026 (28/10/2026) : variation par rapport au trimestre précédent, puis cumul d'une année sur l'autre.
+   I
+             Tableau d’activités et de résultat du troisième
+             trimestre de l’année 2026
+
+
+
+
+Montants arrondis au million de FCFA. Les écarts peuvent différer des calculs effectués sur les montants
+affichés en raison des arrondis.
+
+
+
+   II        Commentaires de la Direction
+Au 30 septembre 2026, la Loterie Nationale du Bénin (LNB SA) affiche une hausse de son chiffre d’affaires
+et de ses résultats, malgré le recul du produit brut des jeux (PBJ). Cette dynamique se confirme notamment
+au troisième trimestre, avec un chiffre d’affaires en progression de 15 % par rapport au trimestre précédent.
+
+Le chiffre d’affaires cumulé atteint 77 950 millions de FCFA, contre 72 479 millions à la même date en 2025,
+soit une hausse de 7,5 %. Cette croissance repose principalement sur les paris en ligne, dont les ventes
+progressent de 36,3 %. Ces produits représentent désormais 48,4 % du chiffre d’affaires total, pour une
+contribution de 9,6 % au PBJ.
+
+Le résultat financier demeure positif, à 218 millions de FCFA, mais recule de 38,9 % par rapport à septembre
+2025 du fait du non-renouvellement de certains placements financiers arrivés à terme en 2025. Le résultat
+net s’établit ainsi à 1 778 millions de FCFA, contre 1 034 millions un an plus tôt, soit une progression de 72 %.
+=== SODECI_S1_2026 ===
+# SODE CI, rapport d'activité au 30 juin 2026 (30/10/2026) : « 1er semestre » écrit au-dessus de « 2026 ».
+               RAPPORT D’ACTIVITÉ AU 30 JUIN 2026
+Un premier semestre 2026 en redressement, après un premier semestre 2025 en retrait
+
+• Tableau d’activité et de résultats                                                             Données en millions de FCFA
+
+                                          1er semestre 1er semestre              Écart           Écart          Exercice
+  Indicateurs
+                                              2026         2025                                   %              2025
+
+  Chiffre d'affaires                         83 974            82 300            1 674          2,0%           189 430
+  Résultat d’exploitation                     4 358            3 067             1 291          42,1%            9 105
+  Résultat financier                           -308             -195              -113         -57,9 %            -463
+  Résultat des activités ordinaires           4 050            2 872             1 178         41,0 %            8 643
+  Résultat hors activités ordinaires           196               -62              258            n.a.             -737
+  Impôt sur le résultat                      -1 579            -1 455             -124          -8,5 %           -3 243
+  Résultat Net                                2 667            1 355             1 312         96,8 %            4 663
+
+
+• Évolution de l’activité et des résultats
+Le chiffre d’affaires atteint 83 974 millions de FCFA, contre 82 300 millions de FCFA au premier semestre
+=== BICI_S1_2026 ===
+# BICI CI, rapport du 1er semestre 2026 (13/10/2026) : en-tête décalé par rapport aux colonnes (tableau écarté), phrases retenues.
+                            RAPPORT D’ACTIVITE DU PREMIER SEMESTRE DE L’EXERCICE 2026
+      I. TABLEAU D’ACTIVITÉ ET DE RÉSULTATS
+
+                                                                                                        PERIODES
+                                                   Du 1er                                                    Du 1er       Variation S1 2026
+      COMPTE DE RESULTAT
+                                                            Du 1er Janvier
+                                                 Janvier au                                                Janvier au         vs S1 2025
+                                                              au 30 Juin
+                                                31 Décembre                                                  30 Juin
+                                                                 2025
+      (Données Financières en Millions de FCFA)     2025                                                      2026        Valeur             %
+
+      Produit Net Bancaire                                                        79 563          37 146         42 637      5 491             14,8%
+      Frais de Gestion                                                           -40 440         -19 355        -18 932        423             -2,2%
+      Résultat brut d'exploitation                                                39 123          17 791         23 705      5 914             33,2%
+      Coût du risque                                                               1 498           -123          -1 778     -1 655           1343,1%
+      Résultat Courant Avant Impôts                                               40 621          17 673         21 810      4 137             23,4%
+      Résultat net                                                                36 520          16 253         19 948      3 695             22,7%
+
+
+Le Produit Net Bancaire (PNB), s’établit à 42 637 MXOF, en hausse de 14,8% comparativement à celui de l’exercice 2025. Cette
+hausse est essentiellement portée par la progression continue de la marge d’intermédiation (+18,0%) et des commissions nettes
+
+
+En conséquence, les performances du premier semestre 2026 traduisent une amélioration continue de la rentabilité de la Banque, le
+Résultat Net ressort ainsi bénéficiaire à 19 948 MXOF, contre 16 253 MXOF au 30 juin 2025, soit une progression de 3 695 MXOF
+(+22,7 %).
+=== SIB_S1_2026 ===
+# SIB CI, compte de résultat au 30 juin 2026 (28/09/2026) : lignes précédées d'un code de poste.
+COMPTE DE RESULTAT                                                                                                   En Millions de FCFA
+
+POSTE    LIBELLÉ                                                                30/06/2025         30/06/2026      Var N/N-1    Var (%)
+
+C9       Autres charges d'exploitation bancaire                                      -157                 -27          130       -83%
+C10      Produit net bancaire                                                      54 302              56 592        2 290         4%
+
+C14      Résultat brut d'exploitation                                              34 653               36 427       1 773        5%
+C15      Coût du risque                                                            -1 160                -287          872      -75%
+C16      Résultat d'exploitation                                                   33 494               36 139       2 646        8%
+C17      Gains ou pertes nets sur actifs immobilisés                                    4                   10           6      133%
+C18      Résultat avant impôts                                                     33 498               36 150       2 652        8%
+C19     Impôts sur les bénéﬁces                                                    -4 084               -4 010          74       -2%
+RESULTAT NET                                                                        29 414              32 140        2 725        9%
+=== SGCI_S1_PHRASE ===
+# SOCIETE GENERALE CI, rapport du 1er semestre 2026 (31/08/2026) : un coefficient d'exploitation n'est pas une variation du PNB (texte sur deux colonnes).
+                                                                        d’assurer la croissance de l’activité et du bilan.
+La bonne maîtrise des coûts d’exploitation (- 4%) malgré la poursuite
+des investissements et la progression continue du PNB assurent un       Le profil de liquidité de la banque demeure par ailleurs solide et
+coefficient d’exploitation remarquable à 36,7%, en amélioration de      reste en amélioration continue sur 2026. La banque maintient un
+228 Bps par rapport à l’année dernière.                                 ratio prêts/dépôts de 84%, traduisant un équilibre entre croissance
+                                                                        et stabilité. Par ailleurs, les ratios de liquidité à court terme et les
+=== SGCI_T3_PHRASE ===
+# SOCIETE GENERALE CI, rapport du 3e trimestre 2026 (30/10/2026) : « par rapport à 2025 » n'est pas un montant (texte sur deux colonnes).
+une politique d’investissement sélective générant une pression          modèle opérationnel
+ponctuelle sur les revenus.
+                                                                        Le résultat net ressort ainsi à 80,4 milliards FCFA, en légère baisse
+Performance commerciale : Une activité en progression,                  par rapport à 2025, principalement liée au recul du PNB. Cette
+soutenue par la dynamique des financements                              performance traduit la capacité de la Banque à absorber les effets
+                                                                        d’une évolution ralentie des revenus, grâce à la résilience de ses
+=== NSIA_S1_2026 ===
+# NSIA BANQUE CI, communiqué du 23/10/2026 sur le 1er semestre 2026 : chiffres clés en cases, « hors résultat de l'exercice ».
+          NSIA BANQUE CÔTE D'IVOIRE : PNB EN HAUSSE DE 6% ET
+         RÉSULTAT BRUT D'EXPLOITATION EN PROGRESSION DE 5%
+                      AU PREMIER SEMESTRE 2026
+
+   FAITS SAILLANTS DU PREMIER SEMESTRE 2026
+      Revenus en croissance : produit net bancaire de 53,7 milliards FCFA (+6 %), porté par la marge d'intérêts (+9 %).
+
+      Efficacité opérationnelle : résultat brut d'exploitation de 22,8 milliards FCFA (+5 %).
+
+      Prudence renforcée : le résultat brut d'exploitation couvre plus de trois fois le coût du risque, dans le cadre d'une revue
+      approfondie du portefeuille.
+
+      Résultat net : 14,5 milliards FCFA.
+
+      Bilan solide : dépôts de la clientèle en hausse de 15 % sur un an et capitaux propres renforcés de 11 %, à 214,3 milliards FCFA.
+
+ CHIFFRES CLÉS
+
+        53,7 Mds                                                   22,8 Mds                                                 14,5 Mds
+  Produit Net Bancaire                                      Résultat brut d'exploitation                             Résultat net
+  +6 % sur un an                                            +5 % sur un an                                           Après renforcement de la couverture du
+                                                                                                                     portefeuille
+
+
+
+
+        2 225 Mds                                                  214,3 Mds                                                3 072 Mds
+  Dépôts de la clientèle                                    Capitaux propres (hors résultat)                         Total bilan
+  +15 % sur un an                                           +11 % sur un an                                          +13 % sur un an
+
+
+
+
+En milliards de FCFA. Variations calculées par rapport au 30 juin 2025. Chiffres issus des comptes semestriels après revue limitée des Commissaires Aux Comptes.
+
+RÉSULTATS DU PREMIER SEMESTRE 2026
+
+   En milliards de FCFA                                                               30 juin 2025                  30 juin 2026     Variation
+
+
+
+   Produit Net Bancaire                                                                    50,5                        53,7             +6%
+
+
+   Résultat net                                                                            16,3                        14,5             -11 %
+
+
+Les capitaux propres hors résultat de l'exercice progressent de 11% à 214,3 milliards FCFA, renforçant la capacité de la
+Banque à accompagner ses clients.
+=== AUDIT_CLAUSE_TYPE ===
+# AFRICA GLOBAL LOGISTICS CI, rapport des commissaires aux comptes sur l'exercice 2025 (17/09/2026) : point clé et clause type sur la continuité d'exploitation (opinion sans réserve).
+    •    Chiffre d’affaires
+
+Au 31 décembre 2025, le chiffre d'affaires s'élève à 92 004 millions FCFA et représente 98,37% du total des produits
+des activités ordinaires de l'exercice 2025. Le chiffre d'affaires provient d'activités diverses et variées : consignation,
+manutention, transit maritime, transport aérien/express, transport ferroviaire, agence de voyage, location
+immobilière et autres. Cette situation nécessite un niveau de contrôle interne approprié afin de s'assurer de
+l'exhaustivité et de l'exactitude de la facturation.
+
+
+Lors de la préparation des états financiers annuels, il incombe au Conseil d’Administration d’évaluer la
+capacité de la société à poursuivre son exploitation, de fournir, le cas échéant, des informations relatives à
+la continuité d’exploitation et d’appliquer la base de continuité d’exploitation, sauf si le Conseil
+d’Administration a l’intention de mettre la société en liquidation ou de cesser ses activités ou s’il n’existe
+aucune autre solution alternative réaliste qui s’offre à lui.
+=== SAFCA_T3_AUGMENTATION ===
+# SAFCA CI, rapport du 3e trimestre 2026 (02/11/2026) : augmentation de capital achevée, racontée après coup.
+   UNE AUGMENTATION DE CAPITAL RÉUSSIE, SOUSCRITE À 100 %
+Cette période est marquée par le succès de l'augmentation de capital en numéraire avec maintien du droit préférentiel de
+souscription (DPS), sur le Marché Financier Régional de l'UMOA, sous le contrôle de l'AMF-UMOA (visa
+n°047/AMF-UMOA/2026) et de la BRVM. Autorisée par l'Assemblée Générale Extraordinaire du 24 octobre 2025,
+l'opération a porté sur l'émission de 3 750 000 actions nouvelles au prix de 400 FCFA. Les souscriptions, ouvertes du 27
+avril au 11 juin 2026, ont été clôturées avec une demande supérieure à l'offre et un taux de souscription de 100 %, soit 1
+500 millions de FCFA levés. Le capital social passe ainsi de 3 247,9 à 4 747,9 millions de FCFA.
+=== NEICEDA_S1_OCR ===
+# NEI-CEDA CI, rapport du 1er semestre 2026 (30/10/2026) : couche texte issue de l'OCR d'un scanner (chiffres mal reconnus).
+
+                     RAPPORT D'ACTIVITE DU PREMIER SEMESTRE 2026
+     I- Tableau d'activité et de résultats
+
+          Indicateurs en           1e. semestre          l.t semestre           Année 2025          Variations            En
+               FCFA                    2026                   2025                                  En valeur             pourcenta
+                                         (1)                   (1)                                          (3)=(1)-(2)   se(%)
+                                                                                                                          (4)=(((1)-
+                                                                                                                          (2\ /t2tl
+       Chiffre d'affaires           258 69 1 309         t t74 537 800          5 139 206 354           -915 846 49r         -)78%
+       Résultat                    -945 076 877              -8 530 015         t 272 792 267           -936 546 862      (-ltoe79%
+       d'exploitation
+       Résultat financier             83 420 457             58 439 089           t23 t48 043                24 981 368     (+1430Â
+       Résultat des                -86t 656 420              49 909 074         1 335 940 310           -gtt 565 494       (-lt826%
+       activités ordinaires
+       Impôts sur le                  -3 000 000            -92 442 853          -430 051 861                89 442 853     (+)e7%
+       résultat
+       Résultat net                -864 392 420          1 088 044 006          2 036 626 234         -t 952 436 426         -l'179%
+
+              II- Commentaire de la Direction de la société
+         Chiffre d'affaires
+         Le chiffre d'affaires réalisé est de 259 millions de FCFA au 1"'semestre 2026 contre 1 175 millions de
+         FCFA en2025, soit une baisse de 916 millions de FCFA par rapport au 1.. semestre 2025. Cette
+         baisse est liée au décalage de la campagne scolaire 2026 à la suite du changement de la politique du
+
+         millions de FCFA en 2025 à 83 millions de FCFA en 2026.
+         Résultat net
+         La société affiche un résultat net de (-) 864 millions de FCFA au 1". semestre 2026 contre (+) 1 0BB
+         millions de FCFA au 1". semestre 2025, soit une régression de i 952 millions de FCFA, Cette baisse
+         est principalement liée à la reprise de provision faite en2025.
