@@ -37,10 +37,12 @@ def pdf_to_text(pdf_path: Path) -> str:
     if shutil.which("pdftotext"):
         out = subprocess.run(
             ["pdftotext", "-layout", str(pdf_path), "-"],
-            check=True,
             capture_output=True,
         )
-        return out.stdout.decode("utf-8", errors="replace")
+        # pdftotext renvoie parfois un code d'erreur sur un PDF légèrement
+        # corrompu tout en extrayant le texte : on garde la sortie si elle existe.
+        if out.stdout.strip():
+            return out.stdout.decode("utf-8", errors="replace")
     import pdfplumber  # repli pur Python, plus lent
 
     with pdfplumber.open(pdf_path) as pdf:
@@ -82,8 +84,16 @@ def fetch_one(session: requests.Session, day: dt.date, out_dir: Path, pause: flo
             tmp_path = Path(tmp.name)
         try:
             text = pdf_to_text(tmp_path)
+        except Exception as exc:  # PDF illisible : on le note et on passe à la suite
+            log.warning("%s illisible : %s", url, exc)
+            (out_dir / f"boc_{stamp}.bad").write_text(f"{url}\n{exc}\n", encoding="utf-8")
+            continue
         finally:
             tmp_path.unlink(missing_ok=True)
+        if len(text.strip()) < 500:
+            log.warning("%s : texte vide ou trop court", url)
+            (out_dir / f"boc_{stamp}.bad").write_text(f"{url}\ntexte vide\n", encoding="utf-8")
+            continue
         with gzip.open(target, "wt", encoding="utf-8") as fh:
             fh.write(f"# source: {url}\n")
             fh.write(text)
