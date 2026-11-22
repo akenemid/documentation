@@ -645,6 +645,9 @@ def choose_variant(variant: str | None = None, validation_dir: str | Path | None
     ``phrase_etude`` est vrai tant que la variante retenue n'est pas PROMUE.
     """
     vdir = _resolve(validation_dir, DEFAULT_VALIDATION_DIR)
+    if _paths.est_embarque():  # moteur embarqué : fichiers livrés obligatoires, aucun repli silencieux
+        settings.check_shipped_files(validation_dir=vdir,
+                                     registry_path=_resolve(registry_path, DEFAULT_REGISTRY_PATH))
     s1_done, s1_msg = s1_executed(registry_path)
     out: dict[str, Any] = {"variante": "REF", "comparaison": "A", "statut_A": NOT_TESTED, "statut": NOT_TESTED,
                            "statut_REF": None, "variante_promue": None, "s1_execute": s1_done, "registre": s1_msg,

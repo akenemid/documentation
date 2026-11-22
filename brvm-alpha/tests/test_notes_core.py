@@ -25,6 +25,23 @@ from brvm_alpha.notes import model as md
 from brvm_alpha.notes.model import Note, NoteAnalysis, SessionCalendar, first_tradable_session, normalize_target
 from brvm_alpha.notes.store import NoteStore
 
+
+def lock_held(path: Path) -> bool:
+    """Le verrou ``fcntl.flock`` du journal est-il tenu ? (le fichier de verrou n'est jamais supprimé)."""
+    import fcntl
+    import os
+
+    if not path.exists():
+        return False
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
 FIX = Path(__file__).parent / "fixtures" / "notes"
 REAL_SESSIONS = Path(__file__).resolve().parents[1] / "data" / "panel" / "sessions.parquet"
 
@@ -336,7 +353,7 @@ def test_store_tolerates_corrupted_line_and_export(tmp_path):
     md_text = out.read_text(encoding="utf-8")
     assert "# Notes de l'analyste" in md_text and "SONATEL SN" in md_text
     assert not re.search(r"\b(?:nan|None|NaT)\b", md_text)
-    assert not st2.lock_path.exists()
+    assert not lock_held(st2.lock_path)  # verrou rendu (fichier de verrou flock gardé)
 
 
 def test_store_concurrent_writers(tmp_path):
@@ -1237,7 +1254,7 @@ def test_regression_analysis_runs_outside_the_journal_lock(tmp_path, monkeypatch
     real = NoteStore._analyze
 
     def spy(self, note, panels=None):
-        seen.append(self.lock_path.exists())
+        seen.append(lock_held(self.lock_path))
         return real(self, note, panels)
 
     monkeypatch.setattr(NoteStore, "_analyze", spy)

@@ -878,7 +878,7 @@ def expected_detachments(ctx: _Ctx, members: list[str], t: pd.Timestamp,
             rows.append({"symbol": s, "payer": False, "expected_ex": None, "source": "aucun détachement depuis 550 jours",
                          "div_net": None, "close": px, "yield": None, "last_ex": last_ex, "in_window": False})
             continue
-        doy = int(np.median([pd.Timestamp(d).dayofyear for d in h["ex_date"].iloc[-3:]]))
+        doy = int(np.median([pd.Timestamp(d).day_of_year for d in h["ex_date"].iloc[-3:]]))
         cands = []
         for y in (t.year - 1, t.year, t.year + 1, t.year + 2):
             d = pd.Timestamp(year=y, month=1, day=1) + pd.Timedelta(days=doy - 1)

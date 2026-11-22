@@ -62,7 +62,7 @@ def test_weekly_returns_compound_w_fri_and_exclusions() -> None:
     r.iloc[2] = np.nan  # séance sans rendement : ignorée
     w = mt.weekly_returns(r)
     assert list(w.index) == list(pd.DatetimeIndex(["2031-03-07", "2031-03-14", "2031-03-21"]))
-    assert (w.index.dayofweek == 4).all()
+    assert (w.index.day_of_week == 4).all()
     assert w.iloc[0] == pytest.approx(1.01**4 - 1.0)
     assert w.iloc[1] == pytest.approx(1.01**4 - 1.0)  # semaine sans le vendredi férié
     assert w.iloc[2] == pytest.approx(1.01**5 - 1.0)

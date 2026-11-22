@@ -774,6 +774,7 @@ def run_validation(
         Consigné dans le verrou et dans ``metrics.json`` ; sur S1, un repli d'un run vers un autre mode
         que celui demandé est un échec (aucune métrique publiée).
     """
+    mt.require_statsmodels()  # arrêt propre et immédiat sans statsmodels (code 8), avant tout calcul
     t_all = time.perf_counter()
     code = str(sample).strip().upper()
     if code not in SAMPLES:

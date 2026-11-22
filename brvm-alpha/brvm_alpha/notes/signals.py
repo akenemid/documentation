@@ -282,7 +282,7 @@ class SessionClock:
         cal = self.calendar
         dts = cal.dates
         ts = pd.DatetimeIndex(days)
-        open_wd = (ts.dayofweek < 5) & ~pd.Index(list(zip(ts.month, ts.day))).isin(list(FIXED_HOLIDAYS))
+        open_wd = (ts.day_of_week < 5) & ~pd.Index(list(zip(ts.month, ts.day))).isin(list(FIXED_HOLIDAYS))
         if len(dts) == 0:
             return np.asarray(open_wd)
         unknown = (days < dts[0]) | (days > dts[-1])
@@ -743,6 +743,14 @@ def _is_reconstructed(tags: Any) -> bool:
     return isinstance(tags, (list, tuple)) and RECONSTRUCTED_TAG in tags
 
 
+def _utc_values(s: pd.Series) -> np.ndarray:
+    """Tableau numpy des instants en UTC sans fuseau (ce que rendait ``Series.values`` sur des dates avec
+    fuseau, usage déprécié depuis pandas 3.1 : ``Pandas4Warning``) ; série sans fuseau : ``to_numpy()``."""
+    if getattr(s.dtype, "tz", None) is not None:
+        return s.dt.tz_convert(None).to_numpy()
+    return s.to_numpy()
+
+
 def _knowledge(df: pd.DataFrame, clock: SessionClock) -> pd.DataFrame:
     """Colonnes de connaissance par version : ``_known`` (max(created_at, recorded_at)),
     ``_fts_known`` (séance à partir de laquelle la version est connue avant la coupure),
@@ -755,7 +763,7 @@ def _knowledge(df: pd.DataFrame, clock: SessionClock) -> pd.DataFrame:
     if "backdated" in df.columns:
         recon = recon | df["backdated"].apply(lambda v: v is True or (isinstance(v, (int, np.integer)) and v == 1))
     eligible = known.notna() & df["created_at"].notna() & ~recon
-    fts_known = pd.Series(clock.first_tradable(known.values), index=df.index)
+    fts_known = pd.Series(clock.first_tradable(_utc_values(known)), index=df.index)
     first_known = known.where(eligible).groupby(df["note_id"]).transform("min")
     return df.assign(_rec=rec, _known=known, _fts_known=fts_known, _eligible=eligible, _first_known=first_known)
 
@@ -769,7 +777,7 @@ def _effective_session(df: pd.DataFrame, clock: SessionClock) -> tuple[pd.Series
     pub = _published_effective(df)
     anchor = pd.concat([pub, df["_first_known"]], axis=1).max(axis=1)
     anchor = pd.to_datetime(anchor, utc=True)
-    fts_k = pd.Series(clock.first_tradable(anchor.values), index=df.index)
+    fts_k = pd.Series(clock.first_tradable(_utc_values(anchor)), index=df.index)
     stored = df["first_tradable_session"]
     eff = pd.concat([stored, fts_k], axis=1).max(axis=1)
     return pd.to_datetime(eff), anchor
@@ -826,10 +834,10 @@ def _select_direct(df: pd.DataFrame, k: pd.Timestamp, session: pd.Timestamp, clo
     out = cand.sort_values(["note_id", "version"]).groupby("note_id", sort=False).tail(1)
     pub = _published_effective(out)
     stored = out["first_tradable_session"]
-    by_pub = pd.Series(clock.first_tradable(pub.values), index=out.index)
+    by_pub = pd.Series(clock.first_tradable(_utc_values(pub)), index=out.index)
     stored = stored.where(stored.notna(), by_pub)
     anchor = pd.to_datetime(pd.concat([pub, out["_first_known"]], axis=1).max(axis=1), utc=True)
-    by_entry = pd.Series(clock.first_tradable(anchor.values), index=out.index)
+    by_entry = pd.Series(clock.first_tradable(_utc_values(anchor)), index=out.index)
     manual = out["author"] == "analyste"
     eff = stored.where(~manual, pd.concat([stored, by_entry], axis=1).max(axis=1))
     eff = pd.to_datetime(eff)

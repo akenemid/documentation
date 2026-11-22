@@ -39,16 +39,20 @@ import math
 import multiprocessing
 import os
 import re
+import secrets
+import shutil
+from contextlib import contextmanager
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 import numpy as np
 import pandas as pd
 
+from .. import fichiers, paths, ressources
 from .. import reference
 from . import boc_parser
 from .boc_parser import EQUITY_COLUMNS, INDEX_COLUMNS, ORDER_BOOK_COLUMNS, parse_boc_file, warning_code
@@ -70,6 +74,7 @@ __all__ = [
     "load_market",
     "load_order_book",
     "load_sessions",
+    "lecture_panel",
     "parser_version",
     "session_calendar",
     "equal_weight_tr",
@@ -180,6 +185,16 @@ class PanelSummary:
     n_missing_sessions: int = 0
     n_gaps: int = 0
 
+    def to_dict(self) -> dict[str, Any]:
+        """Résumé sérialisable en JSON (dates ISO)."""
+        def day(x: Any) -> str | None:
+            return None if x is None or pd.isna(x) else pd.Timestamp(x).strftime("%Y-%m-%d")
+
+        return {"fichiers": self.n_files, "analyses": self.n_parsed, "en_cache": self.n_cached,
+                "erreurs": self.n_errors, "seances": self.n_sessions, "premiere_seance": day(self.first_date),
+                "derniere_seance": day(self.last_date), "symboles": self.n_symbols, "lignes_actions": self.n_rows,
+                "seances_sans_boc": self.n_missing_sessions, "trous": self.n_gaps, "dossier": str(self.out_dir)}
+
     def __str__(self) -> str:  # pragma: no cover - affichage
         top = "\n".join(f"    {n:6d}  {c}" for c, n in self.top_warnings)
         return (
@@ -199,8 +214,16 @@ def build_panel(
     *,
     workers: int | None = None,
     force: bool = False,
+    lock_timeout_s: float | None = None,
 ) -> PanelSummary:
     """Construit (ou met à jour) le panel à partir des BOC texte de ``boc_dir``.
+
+    La construction est **transactionnelle** : tout est écrit dans un dossier temporaire voisin
+    (``.<panel>.construction-…``), puis ce dossier prend la place du panel d'un seul coup
+    (:func:`brvm_alpha.fichiers.remplacer_dossier`). Une construction interrompue laisse l'ancien
+    panel intact ; un lecteur qui tient :func:`lecture_panel` ne voit jamais un panel à moitié écrit.
+    Une seule construction à la fois (verrou ``.<panel>.construction.lock``,
+    :class:`~brvm_alpha.erreurs.VerrouOccupe` au-delà de ``lock_timeout_s`` secondes).
 
     Parameters
     ----------
@@ -209,13 +232,110 @@ def build_panel(
     out_dir:
         Répertoire de sortie (créé si besoin).
     workers:
-        Nombre de processus d'analyse (défaut : nombre de cœurs).
+        Nombre de processus d'analyse (défaut : :func:`brvm_alpha.ressources.workers_par_defaut`,
+        ``min(2, processeurs disponibles)`` : affinité et quota du cgroup). Chaque processus de travail
+        tourne avec un seul fil BLAS et Arrow.
     force:
         Ignore le cache et réanalyse tous les fichiers.
+    lock_timeout_s:
+        Attente maximale du verrou de construction (défaut : :func:`brvm_alpha.fichiers.delai_verrou`).
     """
     boc_dir, out_dir = Path(boc_dir), Path(out_dir)
+    paths.verifier_ecriture(out_dir)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    with fichiers.verrou(_panel_lock(out_dir, "construction"), attente=lock_timeout_s, quoi="construction du panel"):
+        _recover_panel(out_dir)
+        work = out_dir.with_name(f".{out_dir.name}.construction-{os.getpid()}-{secrets.token_hex(4)}")
+        work.mkdir()
+        old: Path | None = None
+        try:
+            summary = _build_panel_into(boc_dir, out_dir, work, workers=workers, force=force)
+            with fichiers.verrou(_panel_lock(out_dir, "lecture"), attente=lock_timeout_s, quoi="bascule du panel"):
+                old = fichiers.remplacer_dossier(work, out_dir)
+        except BaseException:
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+        if old is not None:
+            shutil.rmtree(old, ignore_errors=True)
+    summary.out_dir = out_dir
+    return summary
+
+
+def _panel_lock(panel_dir: Path, kind: str) -> Path:
+    """Fichier de verrou du panel (à côté du dossier, qui est remplacé à chaque construction)."""
+    return panel_dir.with_name(f".{panel_dir.name}.{kind}.lock")
+
+
+def _recover_panel(panel_dir: Path) -> None:
+    """Sous le verrou de construction : remet un panel mis de côté par une bascule interrompue, et
+    supprime les dossiers de construction et les anciens panels laissés par un processus tué."""
+    fichiers.recuperer_dossier(panel_dir)
+    for p in panel_dir.parent.glob(f".{panel_dir.name}.construction-*"):
+        shutil.rmtree(p, ignore_errors=True)
+    if panel_dir.exists():
+        for p in panel_dir.parent.glob(f".{panel_dir.name}.ancien-*"):
+            shutil.rmtree(p, ignore_errors=True)
+
+
+@contextmanager
+def lecture_panel(panel_dir: str | Path, lock_timeout_s: float | None = None) -> Iterator[Path]:
+    """Lecture cohérente du panel : verrou **partagé** pendant le bloc (la bascule d'une construction
+    attend la fin des lectures en cours). N'écrit rien : sans fichier de verrou, aucun verrou n'est pris."""
+    p = Path(panel_dir)
+    with fichiers.verrou(_panel_lock(p, "lecture"), attente=lock_timeout_s, partage=True, creer=False,
+                         quoi="lecture du panel"):
+        yield p
+
+
+_PANEL_OUTPUTS = frozenset({"_cache", "equities.parquet", "sessions.parquet", "indices.parquet", "market.parquet",
+                            "order_book.parquet", "dividends.parquet", "corporate_actions.parquet",
+                            "adjusted_prices.parquet", "parse_report.csv"})
+
+
+def _carry_over(old_dir: Path, new_dir: Path) -> None:
+    """Fichiers déposés dans le panel par autre chose que la construction : repris tels quels."""
+    if not old_dir.is_dir():
+        return
+    for entry in old_dir.iterdir():
+        if entry.name in _PANEL_OUTPUTS or entry.name.startswith(".") or not entry.is_file():
+            continue
+        dest = new_dir / entry.name
+        try:
+            os.link(entry, dest)
+        except OSError:
+            shutil.copy2(entry, dest)
+
+
+def _parse_all(todo: list[Path], workers: int | None) -> list[dict[str, Any]]:
+    """Analyse des fichiers, en parallèle au-delà de 4 (processus de travail à un seul fil de calcul)."""
+    n_workers = workers or ressources.workers_par_defaut()
+    if not (n_workers > 1 and len(todo) > 4):
+        return [_parse_one(str(p)) for p in todo]
+    # « fork » est déconseillé depuis un processus multi-threadé (pyarrow...).
+    methods = multiprocessing.get_all_start_methods()
+    ctx = multiprocessing.get_context("forkserver" if "forkserver" in methods else "spawn")
+    # Fils BLAS à 1 dans les processus de travail : variables posées avant leur import de numpy.
+    saved = {k: os.environ.get(k) for k in ressources.VARIABLES_FILS}
+    ressources.limiter_fils()
+    try:
+        with ProcessPoolExecutor(max_workers=min(n_workers, len(todo)), mp_context=ctx,
+                                 initializer=ressources.initialiser_travailleur) as pool:
+            return list(pool.map(_parse_one, [str(p) for p in todo], chunksize=8))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def _build_panel_into(boc_dir: Path, old_dir: Path, out_dir: Path, *, workers: int | None,
+                      force: bool) -> PanelSummary:
+    """Construction dans ``out_dir`` (dossier neuf), avec le cache de ``old_dir`` (panel en place)."""
+    old_cache = old_dir / "_cache"
     cache_dir = out_dir / "_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
+    _carry_over(old_dir, out_dir)
     version = parser_version()
 
     files = sorted(p for p in boc_dir.iterdir() if _FILE_RE.match(p.name))
@@ -227,8 +347,8 @@ def build_panel(
             by_stamp[stamp] = p
     files = [by_stamp[s] for s in sorted(by_stamp)]
 
-    manifest = _read_parquet(cache_dir / "manifest.parquet")
-    cached: dict[str, pd.DataFrame] = {t: _read_parquet(cache_dir / f"{t}.parquet") for t in _CACHE_TABLES}
+    manifest = _read_parquet(old_cache / "manifest.parquet")
+    cached: dict[str, pd.DataFrame] = {t: _read_parquet(old_cache / f"{t}.parquet") for t in _CACHE_TABLES}
     known: dict[str, tuple[int, int, str]] = {}
     # Cache antérieur au calendrier des séances (pas de numéro de BOC) : tout réanalyser.
     if not force and len(manifest) and "issue_no" in manifest.columns:
@@ -243,17 +363,7 @@ def build_panel(
     present = {p.name for p in files}
 
     # Analyse parallèle des fichiers nouveaux ou modifiés.
-    results: list[dict[str, Any]] = []
-    if todo:
-        n_workers = workers or os.cpu_count() or 1
-        if n_workers > 1 and len(todo) > 4:
-            # « fork » est déconseillé depuis un processus multi-threadé (pyarrow...).
-            methods = multiprocessing.get_all_start_methods()
-            ctx = multiprocessing.get_context("forkserver" if "forkserver" in methods else "spawn")
-            with ProcessPoolExecutor(max_workers=min(n_workers, len(todo)), mp_context=ctx) as pool:
-                results = list(pool.map(_parse_one, [str(p) for p in todo], chunksize=8))
-        else:
-            results = [_parse_one(str(p)) for p in todo]
+    results: list[dict[str, Any]] = _parse_all(todo, workers) if todo else []
     log.info("BOC : %d fichiers, %d à analyser", len(files), len(todo))
 
     # Mise à jour du cache : on retire les anciennes lignes des fichiers réanalysés
@@ -311,12 +421,12 @@ def build_panel(
     _write_parquet(adjusted, out_dir / "adjusted_prices.parquet")
 
     report = manifest.drop(columns=["size", "mtime", "version"], errors="ignore").copy()
-    report["excluded"] = report["file"].map(excluded).fillna("")
+    report["excluded"] = report["file"].map(excluded).astype(object).fillna("")
     if len(sessions):
         avail = sessions[sessions["available"]]
         report["missing_before"] = report["file"].map(pd.Series(avail["missing_before"].to_numpy(),
                                                                 index=avail["source_file"]))
-    report.to_csv(out_dir / "parse_report.csv", index=False)
+    fichiers.ecrire_atomique_avec(out_dir / "parse_report.csv", lambda tmp: report.to_csv(tmp, index=False))
 
     # Résumé.
     codes: Counter[str] = Counter()
@@ -348,10 +458,8 @@ def build_panel(
 
 
 def _write_parquet(df: pd.DataFrame, path: Path) -> None:
-    """Écriture atomique (fichier temporaire puis renommage)."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    df.to_parquet(tmp, index=False)
-    tmp.replace(path)
+    """Écriture atomique (fichier temporaire du même dossier, fsync, renommage : :mod:`brvm_alpha.fichiers`)."""
+    fichiers.ecrire_atomique_avec(path, lambda tmp: df.to_parquet(tmp, index=False))
 
 
 def _duplicate_sessions(manifest: pd.DataFrame, equities: pd.DataFrame) -> dict[str, str]:

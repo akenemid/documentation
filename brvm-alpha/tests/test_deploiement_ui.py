@@ -512,9 +512,11 @@ def test_state_json_is_read_only_and_follows_the_prefix(serve, tmp_path, tiny_pa
     status, h, body = call(srv, "GET", PREFIX + "/etat.json")
     assert status == 200 and h["content-type"].startswith("application/json") and h["cache-control"] == "no-store"
     state = json.loads(body)
-    assert list(state) == ["bandeau", "pret", "version", "releve_le", "panel", "bulletins", "site", "notes", "rapport",
-                           "donnees"]
-    assert state["bandeau"] == pages.BANNER and state["pret"] is True and state["releve_le"] == "2026-10-30T12:00:00Z"
+    assert list(state) == ["bandeau", "pret", "raison", "historique_complet", "version", "releve_le", "panel",
+                           "bulletins", "site", "notes", "rapport", "donnees"]
+    # sept BOC des fixtures : panel lisible, historique incomplet depuis 2017, donc pas « prêt »
+    assert state["bandeau"] == pages.BANNER and state["pret"] is False and state["releve_le"] == "2026-10-30T12:00:00Z"
+    assert state["raison"].startswith("historique incomplet") and state["historique_complet"] is False
     assert state["panel"]["derniere_seance"] == "2026-10-29" and state["panel"]["seances_presentes"] == 7
     assert state["panel"]["seances_en_retard"] == 0 and state["panel"]["retard"] is None
     assert state["bulletins"]["en_cache"] == 7 and state["bulletins"]["dernier"] == "2026-10-29"
@@ -537,7 +539,7 @@ def test_state_json_counts_notes_and_is_cached_for_a_few_seconds(serve, tmp_path
                           boc_dir=BOC_FIX, data_dir=tmp_path)
     srv = serve(services=services)
     first = json.loads(call(srv, "GET", "/etat.json")[2])
-    assert first["pret"] is True and first["notes"]["au_journal"] == 0 and first["rapport"]["nom"] is None
+    assert first["pret"] is False and first["notes"]["au_journal"] == 0 and first["rapport"]["nom"] is None
     post(srv, "/notes/ajouter", {"cibles": "SNTS", "titre": "Sonatel : avis", "avis": "haussier", "conviction": "3"})
     assert json.loads(call(srv, "GET", "/etat.json")[2])["notes"]["au_journal"] == 0  # relevé gardé quelques secondes
     monkeypatch.setattr(S, "STATE_TTL_S", 0.0)

@@ -3,8 +3,11 @@
 Principes :
 - **une ligne par version** de note ; une modification ou un archivage ajoute une ligne,
   aucune ligne n'est jamais réécrite ni supprimée (historique complet, auditable) ;
-- écriture sous **verrou** (fichier ``.lock`` créé en exclusif, verrou périmé levé après
-  ``stale_after_s``) et ``fsync`` après chaque ajout ;
+- écriture sous **verrou** (``fcntl.flock`` sur ``notes.jsonl.lock``, libéré par le système à la mort
+  du processus ; :class:`StoreLockError`, une :class:`~brvm_alpha.erreurs.VerrouOccupe`, au-delà de
+  ``lock_timeout_s``) et ``fsync`` après chaque ajout ;
+- :meth:`NoteStore.add_unique` : recherche du doublon et ajout **sous le même verrou** (deux saisies
+  simultanées de la même note n'en écrivent qu'une) ;
 - une ligne illisible est ignorée à la lecture et signalée dans ``errors`` : écriture
   interrompue (y compris au milieu d'un caractère accentué), octets non UTF-8 (ligne
   éditée en Windows-1252), JSON invalide, ou enregistrement mal typé (version non
@@ -27,14 +30,15 @@ import json
 import os
 import re
 import threading
-import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
 import pandas as pd
 
+from brvm_alpha import fichiers as _fichiers
 from brvm_alpha import paths as _paths
+from brvm_alpha.erreurs import VerrouOccupe
 
 from .model import (
     AUTHORS,
@@ -165,8 +169,8 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-class StoreLockError(RuntimeError):
-    """Le verrou d'écriture n'a pas pu être obtenu."""
+class StoreLockError(RuntimeError, VerrouOccupe):
+    """Le verrou d'écriture n'a pas pu être obtenu (code de sortie 4)."""
 
 
 class NoteStore:
@@ -207,30 +211,23 @@ class NoteStore:
     # ------------------------------------------------------------------
     @contextmanager
     def _locked(self) -> Iterator[None]:
+        """Verrou d'écriture : fil d'exécution (``RLock``) puis processus (``fcntl.flock``), réentrant."""
+        _paths.verifier_ecriture(self.path)
         self.root.mkdir(parents=True, exist_ok=True)
-        deadline = time.monotonic() + self.lock_timeout_s
-        with self._tlock:
-            while True:
-                try:
-                    fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    os.write(fd, f"{os.getpid()} {time.time():.3f}".encode())
-                    os.close(fd)
-                    break
-                except FileExistsError:
-                    try:
-                        age = time.time() - self.lock_path.stat().st_mtime
-                        if age > self.stale_after_s:
-                            self.lock_path.unlink(missing_ok=True)  # verrou périmé
-                            continue
-                    except FileNotFoundError:
-                        continue
-                    if time.monotonic() > deadline:
-                        raise StoreLockError(f"verrou occupé : {self.lock_path}")
-                    time.sleep(0.05)
+        if not self._tlock.acquire(timeout=max(self.lock_timeout_s, 0.0)):
+            raise StoreLockError(f"verrou occupé : {self.lock_path} (autre écriture en cours dans ce processus)")
+        try:
+            try:
+                ctx = _fichiers.verrou(self.lock_path, attente=self.lock_timeout_s, quoi="journal des notes")
+                ctx.__enter__()
+            except VerrouOccupe as exc:
+                raise StoreLockError(str(exc)) from None
             try:
                 yield
             finally:
-                self.lock_path.unlink(missing_ok=True)
+                ctx.__exit__(None, None, None)
+        finally:
+            self._tlock.release()
 
     def _read(self) -> list[dict[str, Any]]:
         """Toutes les lignes valides du journal (cache invalidé par taille et date)."""
@@ -445,6 +442,45 @@ class NoteStore:
             rec["store_format"] = STORE_FORMAT
             self._append(rec)
         return note.note_id
+
+    def add_unique(self, note: Note, analyze: bool = False, panels: dict | None = None, now: Any = None,
+                   max_age_days: float = DUPLICATE_WINDOW_DAYS, force: bool = False) -> tuple[Note, bool, str | None]:
+        """Ajout **atomique** d'une note de l'analyste : doublon cherché et note écrite sous le même verrou.
+
+        Renvoie ``(note, cree, doublon_id)`` :
+
+        - même identifiant déjà au journal : ``(note existante, False, son identifiant)`` (contenu
+          différent : :class:`NoteConflictError`, comme :meth:`add`) ;
+        - doublon de contenu (:meth:`find_duplicate` : même cible, titre, texte, avis, conviction et
+          adresse, note active saisie depuis moins de ``max_age_days`` jours) et ``force`` faux :
+          ``(note existante, False, identifiant du doublon)`` ; rien n'est écrit ;
+        - sinon la note est écrite : ``(note écrite, True, None)``.
+
+        La date de publication fournie (``published_at``, saisie « publiée le ») est gardée telle
+        quelle. L'analyse (``analyze=True``) est faite hors verrou ; ``now`` comme pour :meth:`add`.
+        """
+        if not isinstance(note, Note):
+            raise TypeError("add_unique() attend une Note")
+        note = note.copy()
+        note.version = 1
+        self._with_calendar(note)
+        if analyze and note.analysis is None and note.note_id not in self:
+            note.analysis = self._analyze(note, panels)  # hors verrou (texte long, autres écrivains)
+        with self._locked():
+            self._cache_key = None
+            if note.note_id in self:
+                self._check_conflict(note)
+                return self.get(note.note_id), False, note.note_id
+            dup = None if force else self.find_duplicate(note, max_age_days=max_age_days, now=now)
+            if dup:
+                return self.get(dup), False, dup
+            rec = note.to_dict()
+            self._stamp(note, rec, now)
+            rec["op"] = "add"
+            rec["store_format"] = STORE_FORMAT
+            self._append(rec)
+            self._cache_key = None
+        return self.get(note.note_id), True, None
 
     def add_many(self, notes: list[Note], analyze: bool = False, now: Any = None) -> list[str]:
         """Ajoute plusieurs notes ; renvoie les identifiants (doublons ignorés)."""
@@ -668,8 +704,7 @@ class NoteStore:
                 lines.extend("> " + ln if ln.strip() else ">" for ln in body.splitlines())
             lines.append("")
         out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        _fichiers.ecrire_atomique(out, "\n".join(lines).rstrip() + "\n")
         return out
 
 

@@ -400,6 +400,21 @@ def _css_objective(z: np.ndarray, x: np.ndarray) -> float:
     return float(e[k:] @ e[k:])
 
 
+def require_statsmodels() -> Any:
+    """Classe ``ARIMA`` de statsmodels ; :class:`~brvm_alpha.erreurs.ConfigurationError` (code de sortie 8)
+    si le paquet manque. Aucun repli silencieux : le lissage GLM du test S1 (pré-enregistré) se calcule par
+    maximum de vraisemblance, jamais par une autre méthode faute de paquet (commandes ``validate``, ``backtest``)."""
+    try:
+        from statsmodels.tsa.arima.model import ARIMA
+    except ImportError as exc:
+        from brvm_alpha.erreurs import ConfigurationError
+
+        raise ConfigurationError(
+            "statsmodels n'est pas installé : validate et le lissage GLM du test S1 en ont besoin (aucun repli "
+            "silencieux). Installer statsmodels, ou ne pas lancer cette commande.") from exc
+    return ARIMA
+
+
 def glm_smoothing(returns: Any, k: int = 2, method: str = "mle") -> GLMSmoothing:
     """Estime les coefficients de lissage ``θ_0..θ_k`` de GLM (2004).
 
@@ -433,9 +448,8 @@ def glm_smoothing(returns: Any, k: int = 2, method: str = "mle") -> GLMSmoothing
     psi = None
     converged = False
     if method == "mle":
+        ARIMA = require_statsmodels()
         try:
-            from statsmodels.tsa.arima.model import ARIMA
-
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 model = ARIMA(x, order=(0, 0, k), trend="c", enforce_invertibility=False, enforce_stationarity=False)

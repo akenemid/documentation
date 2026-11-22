@@ -12,8 +12,10 @@ import datetime as dt
 import re
 from dataclasses import dataclass, field
 
+from pathlib import Path
+from typing import Any
+
 import pandas as pd
-import requests
 from bs4 import BeautifulSoup, FeatureNotFound
 
 LIVE_URL = "https://www.brvm.org/fr/cours-actions/0"
@@ -60,7 +62,8 @@ def parse_live_html(html: str, fetched_at: dt.datetime | None = None) -> LiveSna
     for table in soup.find_all("table"):
         headers = [th.get_text(" ", strip=True) for th in table.find_all("th")]
         if headers and headers[0].startswith("Symbole"):
-            for tr in table.find("tbody").find_all("tr"):
+            body = table.find("tbody") or table  # page sans <tbody> : lignes du tableau, en-tête sauté
+            for tr in body.find_all("tr"):
                 cells = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
                 if len(cells) < 7:
                     continue
@@ -97,8 +100,25 @@ def parse_live_html(html: str, fetched_at: dt.datetime | None = None) -> LiveSna
     )
 
 
-def fetch_live(timeout: float = 30.0) -> LiveSnapshot:
-    """Télécharge et analyse la page des cours du jour."""
-    resp = requests.get(LIVE_URL, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-    resp.raise_for_status()
-    return parse_live_html(resp.text)
+def fetch_live(timeout: float = 30.0, *, session: Any = None, cache_dir: str | Path | None = None,
+               offline: bool = False, max_age_s: float = 60.0) -> LiveSnapshot:
+    """Télécharge et analyse la page des cours du jour, **poliment** (comme la commande ``live``).
+
+    La requête passe par ``brvm_alpha.notes.research.PoliteSession`` : session réseau commune
+    (:mod:`brvm_alpha.net` : liste blanche, plafonds, délai total), robots.txt, au moins 10 s entre deux
+    requêtes vers brvm.org (état partagé ``politeness.json``), arrêt au premier 403/429, quota de 3
+    requêtes ; une page lue depuis moins de ``max_age_s`` secondes est reprise du cache. ``session`` :
+    session polie déjà ouverte ; ``offline`` : cache seulement. Lève une erreur de collecte
+    (``ResearchError``) ou ``RuntimeError`` pour un statut HTTP autre que 200.
+    """
+    from brvm_alpha.notes import research as rs
+
+    if session is None:
+        cdir = Path(cache_dir) if cache_dir is not None else rs.DEFAULT_NOTES_DIR / "cache"
+        session = rs.PoliteSession(max_requests=3, offline=offline, cache_dir=cdir,
+                                   log_path=cdir.parent / "fetch_log.jsonl", timeout=timeout)
+    res = session.get(LIVE_URL, max_age_s=max_age_s)
+    if res.status != 200:
+        raise RuntimeError(f"HTTP {res.status} sur {LIVE_URL}")
+    fetched = pd.Timestamp(res.fetched_at) if res.fetched_at else pd.Timestamp.now(tz="UTC")
+    return parse_live_html(res.text, fetched_at=fetched.to_pydatetime())

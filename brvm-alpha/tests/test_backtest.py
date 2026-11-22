@@ -718,7 +718,7 @@ def test_rebalance_dates_rules() -> None:
     cal = cal.drop(pd.Timestamp("2024-03-29"))  # vendredi férié
     w = rebalance_dates(cal, "W-FRI")
     assert pd.Timestamp("2024-03-28") in w and pd.Timestamp("2024-03-29") not in w
-    assert all(d.dayofweek == 4 for d in w if d != pd.Timestamp("2024-03-28") and d != cal[-1])
+    assert all(d.day_of_week == 4 for d in w if d != pd.Timestamp("2024-03-28") and d != cal[-1])
     m = rebalance_dates(cal, "M")
     assert list(m[:3]) == [pd.Timestamp("2024-01-31"), pd.Timestamp("2024-02-29"), pd.Timestamp("2024-03-28")]
     assert list(rebalance_dates(cal, "ME")) == list(m)

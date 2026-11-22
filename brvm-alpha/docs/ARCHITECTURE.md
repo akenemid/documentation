@@ -19,8 +19,14 @@ brvm-alpha/
     __main__.py            # python -m brvm_alpha
     cli.py                 # update, panel, live, etat, notes, indices, universe, explain, backtest,
                            # validate, recommend, report, serve (S1 refusé pour tout signal)
-    paths.py               # dossiers des données et des rapports écrits (BRVM_ALPHA_DONNEES, BRVM_ALPHA_RAPPORTS)
+    paths.py               # dossiers des données et des rapports écrits (BRVM_ALPHA_DONNEES, BRVM_ALPHA_RAPPORTS),
+                           # mode embarqué (est_embarque), contrôle des écritures hors de l'arbre du code
     etat.py                # état de l'installation : commande etat et adresse /etat.json (lecture seule)
+    erreurs.py             # erreurs prévues et codes de retour (0, 1, 2, 4, 5, 6, 7, 8, 130 ; jamais 3)
+    fichiers.py            # écritures atomiques (fsync + rename), verrous fcntl.flock, bascule de dossier
+    net.py                 # session HTTP unique, liste blanche, plafonds de taille, délai total, adresses refusées
+    pdf.py                 # extraction PDF bornée (pdftotext obligatoire en mode embarqué)
+    ressources.py          # processeurs disponibles (cgroup), fils BLAS/Arrow à 1, pool mémoire « system »
     config.py              # paramètres (frais, taxes, contraintes) — dataclasses
     settings.py            # lecture et contrôle de configs/strategy_v1.yaml, empreinte de configuration
     reference.py           # métadonnées des titres : pays, secteur, fiscalité, événements pays (D10)
@@ -518,8 +524,9 @@ d'emploi complet et le **contrat du relais** sont dans [DEPLOIEMENT.md](DEPLOIEM
   `notes.research`, `notes.store` (`NoteStore()`), `notes.model.default_panel_dir`, `strategy.alpha`,
   `portfolio.recommend`, `report.html`, `ui.server.Services`. Les options de la ligne de commande l'emportent.
 - `etat.py` : `collect_state(*, panel_dir, boc_dir, notes_root, reports_dir, data_dir, now, store, notes_status)
-  -> dict` (clés `bandeau`, `pret`, `version`, `releve_le`, `panel`, `bulletins`, `site`, `notes`, `rapport`,
-  `donnees`), `format_text(etat)`, `code_version()` (commit court lu dans `.git` **sans lancer de commande**,
+  -> dict` (clés `bandeau`, `pret`, `raison`, `historique_complet`, `version`, `releve_le`, `panel`, `bulletins`,
+  `site`, `notes`, `rapport`, `donnees` ; `pret` exige un panel lisible et un historique complet depuis le
+  02/01/2017), `format_text(etat)`, `code_version()` (commit court lu dans `.git` **sans lancer de commande**,
   sinon `BRVM_ALPHA_VERSION`, sinon « inconnue »), `dir_size`. Lecture seule, aucune requête, jamais d'exception.
   Les jours restant à télécharger viennent de `cli.update_window(boc_dir, start=None, end=None, today=None)`,
   la fonction dont se servent aussi `update` et `update --simulation`.
@@ -538,7 +545,36 @@ d'emploi complet et le **contrat du relais** sont dans [DEPLOIEMENT.md](DEPLOIEM
 - `deploiement/` : `commun.sh` (variables, journal horodaté, verrou, priorité basse), `service.sh`,
   `collecte-initiale.sh [--simulation]`, `quotidien.sh`.
 
+### Couches internes du moteur embarqué (`erreurs`, `paths`, `fichiers`, `net`, `pdf`, `ressources`)
+- **Mode embarqué** : `paths.est_embarque()` (variable `BRVM_ALPHA_EMBARQUE=1` ou fichier `VERSION` à la racine
+  du code). Alors `resolve_dirs` exige `BRVM_ALPHA_DONNEES` et `BRVM_ALPHA_RAPPORTS` absolus, hors du code
+  (`ConfigurationError`, code 8 ; gardée au démarrage dans `paths.ERREUR_CONFIGURATION`, relevée par
+  `paths.verifier_configuration()`), `paths.verifier_ecriture(chemin)` refuse toute écriture dans le code,
+  `paths.resoudre_chemin_option(valeur, base="donnees"|"rapports")` résout un chemin relatif d'option,
+  `paths.version_livree()` lit `VERSION`. `brvm_alpha/__init__.py` pose alors un fil BLAS, le pool mémoire
+  « system » d'Arrow et deux arènes de malloc (`ressources.regler_processus_embarque`).
+- **Codes** : `erreurs.code_retour(exc)`, `type_erreur(exc)`, `erreur_json(exc, bandeau)` ; classes
+  `DonneesAbsentes` (1), `SaisieInvalide` (2), `VerrouOccupe` (4), `AccesRefuse` (5), `ConfigurationError` (8) ;
+  `MemoryError` → 6, exception imprévue → 7, Ctrl+C → 130 ; jamais 3.
+- **Fichiers** : `fichiers.ecrire_atomique(chemin, données)`, `ecrire_atomique_avec(chemin, écrire)`,
+  `fichier_atomique(chemin)`, `remplacer_dossier(nouveau, cible)`, `verrou(chemin, *, attente, partage, creer)`
+  (`fcntl.flock`, libéré à la mort du processus ; `BRVM_ALPHA_ATTENTE_VERROU`).
+- **Réseau** : `net.creer_session()` (`trust_env=False` en mode embarqué, mandataire `BRVM_ALPHA_PROXY`),
+  `net.ClientHttp(politique)`, `net.Politique` (liste blanche www.brvm.org et brvm.org, sources facultatives
+  activées explicitement, https, plafonds `PLAFONDS`, délais `DELAIS_TOTAUX`) ; erreurs `RefusPolitique`
+  (définitives) et `ErreurReseau` (passagères), toutes `AccesRefuse`.
+- **Panel** : `store.build_panel(..., workers=None, lock_timeout_s=None)` construit dans un dossier voisin puis
+  bascule ; `store.lecture_panel(panel_dir)` (verrou partagé des lecteurs) ; workers par défaut
+  `ressources.workers_par_defaut()` = `min(2, processeurs disponibles)`.
+- **Journal des notes** : `NoteStore.add_unique(note, ...) -> (note, cree, doublon_id)` (doublon et ajout sous
+  le même verrou). `research.run_research` écrit chaque lot dès sa collecte ; bilan `report.to_dict()`.
+
 ### `data/boc_download.py`
+Marqueurs `.missing` en JSON (`lire_marqueur`, `ecrire_marqueur`, `marquer_definitif`, `reouvrir`) : définitifs
+seulement après `TENTATIVES_404 = 3` passages « 404 partout » espacés d'un jour ; `update_window(boc_dir,
+start=None, end=None, today=None)` part du 02/01/2017 ; `etat_dossier(...)` ; `client_brvm(...)` (client poli de
+`update`) ; `mettre_a_jour(boc_dir, panel_dir, *, workers=None, ...) -> BilanMiseAJour` ; compagnon
+`boc_AAAAMMJJ.meta.json` (extracteur et version) ; verrou `.telechargement.lock`.
 `download_range(start, end, out_dir, pause=10.0, *, fetcher=None, today=None, progress=None) -> int`,
 `fetch_one(fetcher, day, out_dir, pause=None, *, mark_missing=True)`, `pending_days(start, end, out_dir)`,
 `PoliteFetcher(session=None, pause=10.0, *, sleep, clock, max_requests)` (robots.txt lu une fois et respecté,

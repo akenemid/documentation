@@ -702,7 +702,7 @@ def to_day(value: Any) -> pd.Timestamp | None:
 
 def _is_open_weekday(day: np.datetime64) -> bool:
     ts = pd.Timestamp(day)
-    return ts.dayofweek < 5 and (ts.month, ts.day) not in FIXED_HOLIDAYS
+    return ts.day_of_week < 5 and (ts.month, ts.day) not in FIXED_HOLIDAYS
 
 
 class SessionCalendar:

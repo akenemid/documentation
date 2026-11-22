@@ -1931,7 +1931,7 @@ def _parse_date_match(m: re.Match) -> tuple[pd.Timestamp | None, str | None]:
         return None, None
     warn = None
     wd = m.group("wd")
-    if wd and _WEEKDAYS[wd] != ts.dayofweek:
+    if wd and _WEEKDAYS[wd] != ts.day_of_week:
         warn = f"jour de la semaine incohérent : « {wd} » pour le {ts:%d/%m/%Y} (coquille probable de l'avis)"
     return ts, warn
 
@@ -1963,7 +1963,7 @@ def extract_dates(text: str, title: str = "") -> tuple[dict[str, Any], list[str]
                                       "mixte": "AGM", "agm": "AGM"}.get(k, k.upper())
             break
     ex = out.get("ex_date")
-    if ex is not None and ex.dayofweek >= 5:
+    if ex is not None and ex.day_of_week >= 5:
         warnings.append(f"date ex-dividende un week-end ({ex:%d/%m/%Y}) : à recouper avec le BOC (doc 07 §6.7)")
     pay = out.get("pay_date")
     if ex is not None and pay is not None and pay < ex:

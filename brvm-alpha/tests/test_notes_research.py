@@ -164,10 +164,16 @@ def brvm_pages(**overrides: Any) -> dict[str, Any]:
     return pages
 
 
+#: Hôtes fictifs des essais : la liste blanche (brvm_alpha.net) ne permet que www.brvm.org et brvm.org ;
+#: ces hôtes sont donc donnés explicitement (paramètre ``hosts`` de ``PoliteSession``).
+TEST_HOSTS = ("exemple.test", "a.test", "b.test", "presse.test", "court.test", "cible.test")
+
+
 def make_session(tmp_path: Path, pages: dict[str, Any] | None = None, **kw: Any):
     clock = FakeClock()
     web = FakeWeb(brvm_pages() if pages is None else pages, clock)
     kw.setdefault("delay_s", 10.0)
+    kw.setdefault("hosts", TEST_HOSTS)
     sess = r.PoliteSession(transport=web, clock=clock, sleep=clock.sleep, cache_dir=tmp_path / "cache",
                            log_path=tmp_path / "fetch_log.jsonl", now=lambda: NOW, **kw)
     return sess, web, clock
@@ -1243,9 +1249,15 @@ def test_regression_default_transport_does_not_follow_redirects(monkeypatch: pyt
         resp.headers["Location"] = "https://ailleurs.test/"
         return resp
 
+    from brvm_alpha import net
+
     monkeypatch.setattr(requests.Session, "request", fake_request)
-    resp = r._requests_transport(r.USER_AGENT)("https://a.test/", {}, 5.0)
+    # Liste blanche : l'hôte fictif est permis explicitement (sans résolution DNS, pour l'essai).
+    policy = net.Politique(hotes=frozenset({"a.test"}), adresses_locales=True)
+    resp = r._requests_transport(r.USER_AGENT, policy)("https://a.test/", {}, 5.0)
     assert seen["allow_redirects"] is False and resp.status_code == 302
+    with pytest.raises(net.HoteNonAutorise):  # sans cette permission : refus avant toute requête
+        r._requests_transport(r.USER_AGENT)("https://a.test/", {}, 5.0)
 
 
 @pytest.mark.parametrize("url", [

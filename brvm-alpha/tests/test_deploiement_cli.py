@@ -68,14 +68,17 @@ def test_etat_exits_zero_when_nothing_is_ready_and_creates_nothing(tmp_path, cap
             "--racine", str(tmp_path / "notes")]
     assert cli.main(argv) == 0
     out = capsys.readouterr().out
-    assert "Prêt : non (le panel est absent ou vide)." in out and "python -m brvm_alpha update" in out
+    assert "Prêt : non (panel absent ou vide)." in out and "python -m brvm_alpha update" in out
+    assert "Panel : aucune séance." in out and "(dernier : aucun)" in out  # accords (relecture du 22/11/2026)
     assert "Notes : aucun journal pour l'instant." in out and "Aucune requête n'a été envoyée." in out
     assert out.rstrip().endswith(cli.BANNER)
     assert cli.main(argv + ["--format", "json"]) == 0
     state = json.loads(capsys.readouterr().out)
     assert state["pret"] is False and state["bandeau"] == cli.BANNER
+    assert state["raison"] == "panel absent ou vide" and state["historique_complet"] is False
     assert state["panel"] == {"dossier": str(tmp_path / "panel"), "derniere_seance": None, "seances_presentes": 0,
-                              "seances_manquantes": 0, "seances_en_retard": 0, "retard": None}
+                              "seances_manquantes": 0, "seances_en_retard": 0, "retard": None,
+                              "premiere_seance": None, "lisible": False, "erreur": None}
     assert state["bulletins"]["en_cache"] == 0 and state["bulletins"]["dernier"] is None
     assert state["notes"] == {"dossier": str(tmp_path / "notes"), "journal_present": False, "au_journal": 0,
                               "en_vigueur": 0}
@@ -90,17 +93,24 @@ def test_etat_on_a_tiny_installation(tiny, tmp_path, capsys, no_network):
     argv = ["etat", "--panel-dir", str(tiny / "panel"), "--boc-dir", str(tiny / "boc_text"), "--racine", str(notes)]
     assert cli.main(argv + ["--format", "json"]) == 0
     state = json.loads(capsys.readouterr().out)
-    assert state["pret"] is True
+    # Sept bulletins seulement : panel lisible, mais historique incomplet depuis 2017, donc pas « prêt ».
+    assert state["pret"] is False and state["historique_complet"] is False
+    assert state["raison"].startswith("historique incomplet : ") and "jour(s) à télécharger" in state["raison"]
+    assert state["panel"]["lisible"] is True and state["panel"]["premiere_seance"] == "2025-12-31"
     assert state["panel"]["derniere_seance"] == "2026-10-29" and state["panel"]["seances_presentes"] == 7
     assert state["panel"]["seances_manquantes"] > 0  # numéros de BOC absents entre les sept extraits
-    assert state["bulletins"] | {"jours_a_telecharger": 0, "jours_a_telecharger_depuis_2017": 0} == {
+    assert state["bulletins"]["jours_manquants"] > 2000
+    assert state["bulletins"] | {"jours_a_telecharger": 0, "jours_a_telecharger_depuis_2017": 0,
+                                 "jours_manquants": 0} == {
         "dossier": str(tiny / "boc_text"), "en_cache": 7, "sans_bulletin": 1, "dernier": "2026-10-29",
-        "jours_a_telecharger": 0, "premier_jour_cherche": "2026-10-31", "jours_a_telecharger_depuis_2017": 0}
+        "jours_a_telecharger": 0, "premier_jour_cherche": "2026-10-31", "jours_a_telecharger_depuis_2017": 0,
+        "premier": "2025-12-31", "sans_bulletin_definitif": 1, "a_reessayer": 0, "jours_manquants": 0,
+        "historique_complet": False}
     assert state["notes"]["au_journal"] == 1 and state["notes"]["en_vigueur"] == 1
     assert state["notes"]["journal_present"] is True
     assert cli.main(argv) == 0
     out = capsys.readouterr().out
-    assert "Prêt : oui (le panel existe et n'est pas vide)." in out
+    assert "Prêt : non (historique incomplet : " in out and "update --from 2017-01-02" in out
     assert "Panel : dernière séance le 29/10/2026 ; 7 séance(s) présente(s)" in out
     assert "Bulletins : 7 en cache (dernier : 29/10/2026), 1 jour(s) marqué(s) sans bulletin." in out
     assert "Notes : 1 au journal, 1 en vigueur." in out and out.rstrip().endswith(cli.BANNER)
@@ -138,7 +148,7 @@ def test_etat_reports_panel_delay_with_the_existing_function(tiny):
     assert late["retard"].startswith("PANEL EN RETARD de 4 séance(s)")
     state = etat.collect_state(panel_dir=tiny / "panel", boc_dir=tiny / "boc_text", notes_root=tiny / "notes", now=now)
     assert "Retard du panel : PANEL EN RETARD de 4 séance(s)" in etat.format_text(state)
-    assert state["releve_le"] == "2026-11-04T18:00:00Z" and state["pret"] is True
+    assert state["releve_le"] == "2026-11-04T18:00:00Z" and state["pret"] is False  # historique incomplet
 
 
 def test_etat_reports_a_blocked_site_last_report_and_data_size(tmp_path):
@@ -176,14 +186,14 @@ def test_code_version_reads_git_without_running_a_command(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("aucune commande")))
     code = tmp_path / "depot" / "brvm-alpha"
     git = tmp_path / "depot" / ".git"
-    (git / "refs" / "heads" / "claude").mkdir(parents=True)
+    (git / "refs" / "heads" / "travail").mkdir(parents=True)
     code.mkdir()
-    (git / "HEAD").write_text("ref: refs/heads/claude/branche\n", encoding="utf-8")
+    (git / "HEAD").write_text("ref: refs/heads/travail/branche\n", encoding="utf-8")
     assert etat.code_version(code, {}) == "inconnue"  # référence absente
-    (git / "refs" / "heads" / "claude" / "branche").write_text(sha + "\n", encoding="utf-8")
+    (git / "refs" / "heads" / "travail" / "branche").write_text(sha + "\n", encoding="utf-8")
     assert etat.code_version(code, {}) == "0123456"  # .git du dossier parent, comme dans ce dépôt
-    (git / "refs" / "heads" / "claude" / "branche").unlink()
-    (git / "packed-refs").write_text(f"# pack-refs\n{'f' * 40} refs/heads/autre\n{sha[::-1]} refs/heads/claude/branche\n", "utf-8")
+    (git / "refs" / "heads" / "travail" / "branche").unlink()
+    (git / "packed-refs").write_text(f"# pack-refs\n{'f' * 40} refs/heads/autre\n{sha[::-1]} refs/heads/travail/branche\n", "utf-8")
     assert etat.code_version(code, {}) == sha[::-1][:7]  # références compactées
     (git / "HEAD").write_text("89abcdef" * 5 + "\n", encoding="utf-8")
     assert etat.code_version(code, {}) == "89abcde"  # HEAD détaché
@@ -437,7 +447,8 @@ def test_commands_read_and_write_in_the_relocated_folders(tmp_path):
     assert f"Reconstruction du panel {data / 'panel'} depuis {data / 'boc_text'}" in r.stdout
     assert f"dossier {data / 'boc_text'}" in r.stdout  # update --simulation
     state = json.loads(r.stdout[r.stdout.rindex('{\n "bandeau"'):])
-    assert state["pret"] is True and state["panel"]["dossier"] == str(data / "panel")
+    assert state["pret"] is False and state["panel"]["dossier"] == str(data / "panel")  # sept BOC : incomplet
+    assert state["panel"]["lisible"] is True and state["raison"].startswith("historique incomplet")
     assert state["bulletins"]["dossier"] == str(data / "boc_text") and state["bulletins"]["en_cache"] == 7
     assert state["notes"]["dossier"] == str(data / "notes") and state["notes"]["au_journal"] >= 1
     assert state["rapport"]["dossier"] == str(reports) and state["donnees"]["dossier"] == str(data)

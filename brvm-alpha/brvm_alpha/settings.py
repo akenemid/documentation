@@ -41,6 +41,9 @@ from .config import Constraints, CostModel, ExecutionModel, PlatformConfig, TaxM
 __all__ = [
     "COST_SCENARIOS",
     "DEFAULT_STRATEGY_PATH",
+    "SHIPPED_FILES",
+    "missing_shipped_files",
+    "check_shipped_files",
     "StrategyConfigError",
     "apply_to_platform_config",
     "config_fingerprint",
@@ -65,6 +68,35 @@ __all__ = [
 
 #: Emplacement du fichier de paramètres livré avec le dépôt.
 DEFAULT_STRATEGY_PATH = Path(__file__).resolve().parent.parent / "configs" / "strategy_v1.yaml"
+
+#: Fichiers livrés avec le code, frères du paquet ``brvm_alpha`` (lus par ``__file__``) : configuration
+#: figée, résultats du test S1 (variante de l'ordre de bataille, rapport) et registre des essais.
+SHIPPED_FILES = ("configs/strategy_v1.yaml", "reports/validation_S1/metrics.json", "reports/trials.parquet")
+
+
+def missing_shipped_files(root: str | Path | None = None, validation_dir: str | Path | None = None,
+                          registry_path: str | Path | None = None) -> list[str]:
+    """Fichiers livrés absents (chemins), parmi :data:`SHIPPED_FILES` ; ``validation_dir`` et
+    ``registry_path`` remplacent ``reports/validation_S1`` et ``reports/trials.parquet``."""
+    base = Path(root) if root is not None else Path(__file__).resolve().parent.parent
+    wanted = [base / SHIPPED_FILES[0],
+              (Path(validation_dir) / "metrics.json") if validation_dir is not None else base / SHIPPED_FILES[1],
+              Path(registry_path) if registry_path is not None else base / SHIPPED_FILES[2]]
+    return [str(p) for p in wanted if not p.is_file()]
+
+
+def check_shipped_files(root: str | Path | None = None, validation_dir: str | Path | None = None,
+                        registry_path: str | Path | None = None) -> None:
+    """Erreur claire (:class:`~brvm_alpha.erreurs.ConfigurationError`, code de sortie 8) si un fichier livré
+    manque, au lieu d'un repli silencieux (ordre de bataille rendu en « test S1 non exécuté » faute de
+    ``metrics.json``). À appeler en mode embarqué, où ces fichiers sont copiés avec le code."""
+    missing = missing_shipped_files(root, validation_dir, registry_path)
+    if missing:
+        from brvm_alpha.erreurs import ConfigurationError
+
+        raise ConfigurationError(
+            "fichier(s) livré(s) avec le code introuvable(s) : " + ", ".join(missing) + ". Copier configs/, "
+            "reports/validation_S1/ et reports/trials.parquet à côté du paquet brvm_alpha (vrais fichiers).")
 
 #: Noms canoniques des scénarios de coûts (§7.2) et alias acceptés.
 COST_SCENARIOS = ("optimistic", "central", "stress", "severe")

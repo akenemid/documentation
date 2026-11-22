@@ -77,6 +77,7 @@ une lecture factuelle ; leur poids dans le portefeuille est borné et mesuré.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import datetime as dt
 import gzip
@@ -92,6 +93,7 @@ import tempfile
 import time
 import unicodedata
 import uuid
+import zlib
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -103,6 +105,9 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 import pandas as pd
 
+from brvm_alpha import erreurs as _err
+from brvm_alpha import fichiers as _fichiers
+from brvm_alpha import net as _net
 from brvm_alpha import paths as _paths
 
 log = logging.getLogger(__name__)
@@ -378,32 +383,41 @@ class ResearchError(RuntimeError):
     """Erreur de collecte."""
 
 
-class RobotsDisallowed(ResearchError):
-    """La page est interdite aux robots par le robots.txt du site."""
+class RobotsDisallowed(ResearchError, _err.AccesRefuse):
+    """La page est interdite aux robots par le robots.txt du site (code de sortie 5)."""
 
 
-class AccessBlocked(ResearchError):
-    """Le site refuse l'accès (HTTP 403/429) : arrêt définitif, aucun contournement."""
+class AccessBlocked(ResearchError, _err.AccesRefuse):
+    """Le site refuse l'accès (HTTP 403/429) : arrêt définitif, aucun contournement (code de sortie 5)."""
 
 
-class QuotaExceeded(ResearchError):
-    """Le quota de requêtes de la session est atteint."""
+class QuotaExceeded(ResearchError, _err.DonneesAbsentes):
+    """Le quota de requêtes de la session est atteint (collecte incomplète : code de sortie 1)."""
 
 
-class ServerUnavailable(ResearchError):
-    """Le site répond 5xx ou ne répond pas, même après les nouveaux essais."""
+class ServerUnavailable(ResearchError, _err.AccesRefuse):
+    """Le site répond 5xx ou ne répond pas, même après les nouveaux essais (code de sortie 5)."""
 
 
-class OfflineCacheMiss(ResearchError):
-    """Mode hors ligne : la page n'est pas dans le cache."""
+class OfflineCacheMiss(ResearchError, _err.DonneesAbsentes):
+    """Mode hors ligne : la page n'est pas dans le cache (code de sortie 1)."""
+
+
+class TooManyRedirects(ResearchError, _err.AccesRefuse):
+    """Plus de :data:`MAX_REDIRECTS` redirections : la page n'est pas lue (code de sortie 5)."""
+
+
+class PolicyRefused(ResearchError, _err.AccesRefuse):
+    """Refus de la politique de sûreté (:mod:`brvm_alpha.net`) : hôte hors liste blanche, redirection
+    ``https`` → ``http``, adresse locale ou privée, réponse trop grosse (code de sortie 5)."""
 
 
 class PostdatedItem(ResearchError):
     """Élément qu'un collecteur n'aurait pas pu voir à l'instant de collecte annoncé (reconstitution)."""
 
 
-class SourceDisabled(ResearchError):
-    """Source désactivée par défaut (protection anti-robot ou accord non obtenu)."""
+class SourceDisabled(ResearchError, _err.AccesRefuse):
+    """Source désactivée par défaut (protection anti-robot ou accord non obtenu ; code de sortie 5)."""
 
 
 # ---------------------------------------------------------------------------
@@ -611,21 +625,14 @@ class FetchResult:
         return (self.headers.get("Content-Type") or self.headers.get("content-type") or "").lower()
 
 
-def _requests_transport(user_agent: str) -> Callable[..., Any]:
-    """Transport réseau par défaut (``requests``), créé à la première requête.
+def _requests_transport(user_agent: str, politique: _net.Politique | None = None) -> Callable[..., Any]:
+    """Transport réseau par défaut : client commun du moteur (:mod:`brvm_alpha.net`), créé à la première requête.
 
-    Les redirections ne sont **pas** suivies ici : :meth:`PoliteSession.get` les suit une à
-    une, avec les mêmes contrôles que la première requête.
+    Les redirections ne sont **pas** suivies ici : :meth:`PoliteSession.get` les suit une à une, avec
+    les mêmes contrôles que la première requête. Le client contrôle la liste blanche, les adresses
+    après résolution DNS, la taille (lue en flux) et le délai total de chaque requête.
     """
-    import requests
-
-    sess = requests.Session()
-    sess.headers["User-Agent"] = user_agent
-
-    def transport(url: str, headers: Mapping[str, str], timeout: float) -> Any:
-        return sess.get(url, headers=dict(headers), timeout=timeout, allow_redirects=False)
-
-    return transport
+    return _net.transport_http(user_agent, politique)
 
 
 def url_host(url: str) -> str:
@@ -654,32 +661,24 @@ def _state_path(cache_dir: str | Path) -> Path:
     return Path(cache_dir) / POLITENESS_STATE
 
 
+#: Délai d'attente du verrou de l'état de politesse (s) : il n'est tenu que quelques millisecondes.
+STATE_LOCK_TIMEOUT_S = 15.0
+#: Une réservation d'une autre session n'est suivie que jusqu'à ce nombre de délais d'avance.
+MAX_CHAINED_SLOTS = 6
+
+
 @contextmanager
-def _state_locked(cache_dir: str | Path, timeout_s: float = 15.0, stale_s: float = 60.0):
-    """Verrou exclusif du fichier d'état de politesse (fichier ``.lock`` créé en exclusif)."""
+def _state_locked(cache_dir: str | Path, timeout_s: float = STATE_LOCK_TIMEOUT_S, stale_s: float | None = None):
+    """Verrou exclusif de l'état de politesse (``fcntl.flock`` sur ``politeness.json.lock``).
+
+    Le verrou est libéré par le système à la mort du processus : deux processus ne peuvent jamais le
+    tenir ensemble (l'ancien verrou par fichier créé en exclusif, repris après 60 s, pouvait en
+    admettre deux et perdre un blocage 403/429). Au-delà de ``timeout_s`` :
+    :class:`~brvm_alpha.erreurs.VerrouOccupe` (code de sortie 4). ``stale_s`` est ignoré (compatibilité).
+    """
     path = _state_path(cache_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock = path.with_name(path.name + ".lock")
-    deadline = time.monotonic() + timeout_s
-    while True:
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.close(fd)
-            break
-        except FileExistsError:
-            try:
-                if time.time() - lock.stat().st_mtime > stale_s:
-                    lock.unlink(missing_ok=True)  # verrou abandonné
-                    continue
-            except FileNotFoundError:
-                continue
-            if time.monotonic() > deadline:
-                raise ResearchError(f"état de politesse verrouillé ({lock}) : collecte reportée par prudence.")
-            time.sleep(0.02)
-    try:
+    with _fichiers.verrou(path.with_name(path.name + ".lock"), attente=timeout_s, quoi="état de politesse"):
         yield path
-    finally:
-        lock.unlink(missing_ok=True)
 
 
 def _state_load(path: Path) -> dict[str, Any]:
@@ -696,9 +695,7 @@ def _state_load(path: Path) -> dict[str, Any]:
 
 
 def _state_save(path: Path, data: dict[str, Any]) -> None:
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
-    os.replace(tmp, path)
+    _fichiers.ecrire_atomique(path, json.dumps(data, ensure_ascii=False, indent=1, default=str))
 
 
 def blocked_hosts(cache_dir: str | Path | None = None) -> dict[str, dict[str, Any]]:
@@ -738,7 +735,10 @@ class PoliteSession:
     - ``offline`` : aucune requête, seul le cache disque est lu ;
     - ``cache_dir`` / ``log_path`` : cache HTTP et journal JSONL ;
     - ``transport``, ``clock``, ``sleep``, ``now`` : injectables pour les tests
-      (aucun accès réseau, horloge simulée).
+      (aucun accès réseau, horloge simulée) ;
+    - ``hosts`` : hôtes permis **en plus** de la liste blanche (:mod:`brvm_alpha.net` : www.brvm.org
+      et brvm.org ; les sources facultatives seulement avec ``allow_disabled``) ; ``policy`` : politique
+      complète (remplace la liste blanche par défaut).
 
     Un HTTP 403 ou 429 arrête **définitivement** la session (attribut ``stopped``) :
     aucune requête ultérieure n'est envoyée, à aucun site. Le site est aussi inscrit
@@ -746,10 +746,12 @@ class PoliteSession:
     ce cache refuse de l'interroger (:class:`AccessBlocked`) tant que le blocage n'a pas
     été levé explicitement (:func:`clear_block`). Le même fichier conserve l'heure de la
     dernière requête vers chaque site : le délai s'applique aussi à la première requête
-    d'une nouvelle session.
+    d'une nouvelle session. ``stop_kind`` donne la nature de l'arrêt : ``"bloque"`` (403/429 ou
+    blocage enregistré), ``"serveur"`` (5xx ou réseau répétés), ``"politique"`` (adresse refusée).
 
     ``allow_disabled`` : autorise les sources désactivées par défaut (accord du site) ;
     sinon toute URL (ou redirection) vers l'une d'elles lève :class:`SourceDisabled`.
+    Toute URL (ou redirection) hors de la liste blanche lève :class:`PolicyRefused`.
     """
 
     def __init__(
@@ -769,6 +771,8 @@ class PoliteSession:
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], dt.datetime] = utcnow,
         allow_disabled: bool = False,
+        hosts: Iterable[str] = (),
+        policy: _net.Politique | None = None,
     ) -> None:
         self.user_agent = user_agent
         self.delay_s = float(delay_s)
@@ -785,22 +789,42 @@ class PoliteSession:
         self.now = now
         self.n_requests = 0
         self.stopped: str | None = None
+        #: Nature de l'arrêt : ``None``, ``"bloque"``, ``"serveur"`` ou ``"politique"``.
+        self.stop_kind: str | None = None
+        #: Dernier refus HTTP 403/429 : ``{"host", "status", "url"}``.
+        self.blocked: dict[str, Any] | None = None
         self._robots: dict[str, robotparser.RobotFileParser | None] = {}
         self._last_request: dict[str, float] = {}
         self.history: list[dict[str, Any]] = []
         self.allow_disabled = bool(allow_disabled)
+        base = policy or _net.politique_par_defaut()
+        self.policy = base.avec_hotes(*hosts) if hosts else base
         #: Identifiant de la session dans l'état partagé (ses propres requêtes y sont reconnues).
         self.session_id = uuid.uuid4().hex
+
+    # -- politique de sûreté --------------------------------------------------
+    def _policy(self, allow_disabled: bool | None = None) -> _net.Politique:
+        allow = self.allow_disabled if allow_disabled is None else bool(allow_disabled)
+        if not allow:
+            return self.policy
+        return dataclasses.replace(self.policy, domaines=frozenset(self.policy.domaines)
+                                   | _net.domaines_des_sources(True))
+
+    @property
+    def remaining(self) -> int:
+        """Requêtes encore permises par le quota."""
+        return max(0, self.max_requests - self.n_requests)
 
     # -- journal ------------------------------------------------------------
     def _log(self, **entry: Any) -> None:
         entry = {"ts": self.now().isoformat(timespec="seconds"), **entry}
         self.history.append(entry)
         try:
+            _paths.verifier_ecriture(self.log_path)
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-        except OSError as exc:  # le journal ne doit jamais bloquer la collecte
+        except (OSError, _err.ConfigurationError) as exc:  # le journal ne doit jamais bloquer la collecte
             log.warning("journal %s non écrit : %s", self.log_path, exc)
 
     # -- cache --------------------------------------------------------------
@@ -817,7 +841,7 @@ class PoliteSession:
         try:
             meta = json.loads(meta_p.read_text(encoding="utf-8"))
             body = gzip.decompress(body_p.read_bytes())
-        except (OSError, ValueError, EOFError):
+        except (OSError, ValueError, EOFError, zlib.error):
             return None
         return FetchResult(url=url, status=int(meta.get("status", 200)), content=body,
                            headers=meta.get("headers", {}), from_cache=True,
@@ -827,13 +851,12 @@ class PoliteSession:
                   final_url: str | None = None) -> None:
         """Enregistre une réponse dans le cache (utilisé aussi pour amorcer le mode hors ligne)."""
         meta_p, body_p = self._cache_paths(url)
-        meta_p.parent.mkdir(parents=True, exist_ok=True)
         keep = {k: v for k, v in (headers or {}).items()
                 if k.lower() in ("etag", "last-modified", "content-type")}
         meta = {"url": url, "status": status, "headers": keep, "final_url": final_url or url,
                 "fetched_at": self.now().isoformat(timespec="seconds")}
-        body_p.write_bytes(gzip.compress(content, mtime=0))
-        meta_p.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        _fichiers.ecrire_atomique(body_p, gzip.compress(content, mtime=0))
+        _fichiers.ecrire_atomique(meta_p, json.dumps(meta, ensure_ascii=False))
 
     # -- robots.txt ---------------------------------------------------------
     @staticmethod
@@ -841,9 +864,10 @@ class PoliteSession:
         return _url_origin(url)
 
     # -- état partagé entre sessions (délai, blocage) ------------------------
-    def _state_update(self, host: str, fn: Callable[[dict[str, Any]], Any]) -> Any:
+    def _state_update(self, host: str, fn: Callable[[dict[str, Any]], Any],
+                      timeout_s: float = STATE_LOCK_TIMEOUT_S) -> Any:
         """Applique ``fn`` à l'entrée de ``host`` de l'état partagé, sous verrou ; renvoie son résultat."""
-        with _state_locked(self.cache_dir) as path:
+        with _state_locked(self.cache_dir, timeout_s) as path:
             data = _state_load(path)
             entry = data["hosts"].setdefault(host, {})
             out = fn(entry)
@@ -859,7 +883,8 @@ class PoliteSession:
         return None
 
     def _check_source(self, url: str, allow_disabled: bool | None = None) -> None:
-        """Refuse une URL non http(s) ou une source désactivée par défaut (hôte normalisé)."""
+        """Refuse une URL non http(s), une source désactivée par défaut (hôte normalisé), puis toute URL hors
+        de la liste blanche (:class:`PolicyRefused`)."""
         p = urlparse(url)
         if p.scheme not in ("http", "https") or not url_host(url):
             raise ResearchError(f"URL refusée : {url!r} (http ou https attendu).")
@@ -871,9 +896,25 @@ class PoliteSession:
                 f"La source {url_host(url)} est désactivée par défaut ({why}). Elle ne sera lue qu'avec l'accord "
                 "du site (allow_disabled=True) ; aucune protection anti-robot n'est contournée."
             )
+        refusal = self._policy(allow).refus(url)
+        if refusal:
+            self._log(event="policy_refused", url=url, reason=refusal)
+            raise PolicyRefused(f"Adresse refusée : {refusal}.")
+
+    def _check_redirect(self, cur: str, nxt: str, allow_disabled: bool | None = None) -> None:
+        """Un saut de redirection : source désactivée, liste blanche, et jamais ``https`` → ``http``."""
+        if urlparse(cur).scheme.lower() == "https" and urlparse(nxt).scheme.lower() == "http":
+            self._log(event="policy_refused", url=cur, location=nxt, reason="redirection https vers http")
+            raise PolicyRefused(f"{cur} redirige vers {nxt} : redirection de https vers http refusée.")
+        self._check_source(nxt, allow_disabled)
 
     def robots_for(self, url: str) -> robotparser.RobotFileParser | None:
-        """Règles robots.txt du site de ``url`` (lues une fois par session ; ``None`` = tout permis)."""
+        """Règles robots.txt du site de ``url`` (lues une fois par session ; ``None`` = tout permis).
+
+        Prudence : une redirection refusée (source désactivée, hôte hors liste blanche, https vers http),
+        plus de :data:`MAX_REDIRECTS` redirections, un robots.txt trop gros ou illisible (page HTML,
+        octets binaires) valent « tout interdit ». Seul un 4xx (hors 401 et 403) vaut « tout permis ».
+        """
         origin = self._origin(url)
         if origin in self._robots:
             return self._robots[origin]
@@ -895,31 +936,42 @@ class PoliteSession:
             return None
         else:
             try:
-                res = self._network_get(robots_url, {}, purpose="robots")
-                # RFC 9309 : au plus 5 redirections pour robots.txt ; une redirection vers une
-                # source désactivée, ou trop de redirections, valent « tout interdit ».
+                res = self._network_get(robots_url, {}, purpose="robots", nature="robots")
+                # RFC 9309 : au plus 5 redirections pour robots.txt ; une redirection refusée, ou trop de
+                # redirections, valent « tout interdit ».
                 cur = robots_url
                 for _hop in range(MAX_REDIRECTS + 1):
                     loc = res.headers.get("Location") or res.headers.get("location")
                     if res.status not in REDIRECT_STATUSES or not loc:
                         break
                     nxt = urljoin(cur, loc)
-                    if _hop == MAX_REDIRECTS or urlparse(nxt).scheme not in ("http", "https") or _disabled_domain(nxt):
+                    refused = (_hop == MAX_REDIRECTS or urlparse(nxt).scheme not in ("http", "https")
+                               or _disabled_domain(nxt) or self._policy().refus(nxt)
+                               or (urlparse(cur).scheme == "https" and urlparse(nxt).scheme == "http"))
+                    if refused:
+                        self._log(event="robots_refused", url=cur, location=nxt, reason="redirection refusée")
                         res = FetchResult(url=robots_url, status=403, content=b"", final_url=nxt)
                         break
                     self._log(event="redirect", url=cur, location=nxt, status=res.status, purpose="robots")
                     cur = nxt
-                    res = self._network_get(cur, {}, purpose="robots")
+                    res = self._network_get(cur, {}, purpose="robots", nature="robots")
             except ServerUnavailable as exc:
                 raise ServerUnavailable(
                     f"robots.txt de {origin} inaccessible ({exc}) : par prudence, aucune page n'est lue."
                 ) from exc
-            if res.status == 200:
+            except PolicyRefused as exc:  # robots.txt trop gros, adresse refusée : tout interdit
+                self._log(event="robots_refused", url=robots_url, reason=str(exc))
+                res = FetchResult(url=robots_url, status=403, content=b"", final_url=robots_url)
+            if res.status == 200 and not _robots_unreadable(res):
                 self.cache_put(robots_url, res.content, 200, res.headers, res.final_url)
-        if res.status == 200:
+        if res.status == 200 and _robots_unreadable(res):
+            self._log(event="robots_refused", url=robots_url, reason="robots.txt illisible (HTML ou binaire)")
+            rp.disallow_all = True
+            self._robots[origin] = rp
+        elif res.status == 200:
             rp.parse(res.text.splitlines())
             self._robots[origin] = rp
-        elif res.status in (401, 403):
+        elif res.status in (401, 403) or res.status in REDIRECT_STATUSES:
             rp.disallow_all = True
             self._robots[origin] = rp
         elif 400 <= res.status < 500:
@@ -956,7 +1008,11 @@ class PoliteSession:
         partagé, horloge ``now``), y compris pour la première requête de la session. Le
         créneau est réservé sous verrou : deux sessions simultanées ne partent pas ensemble.
         Le créneau réservé inclut l'attente propre à la session : une autre session qui arrive
-        pendant cette attente part après lui, pas en même temps."""
+        pendant cette attente part après lui, pas en même temps.
+
+        Horloge recalée : une réservation datée dans le futur (faite « après » maintenant, ou sans
+        date de réservation et plus d'un délai en avance) est ignorée et remplacée par un seul délai ;
+        l'attente ne dépasse jamais :data:`MAX_CHAINED_SLOTS` délais."""
         host = url_host(url)
         delay = self.crawl_delay(url)
         wait = 0.0
@@ -966,18 +1022,32 @@ class PoliteSession:
         now = to_utc(self.now())
         sid = self.session_id
         own = wait
+        cap = MAX_CHAINED_SLOTS * delay
 
         def reserve(entry: dict[str, Any]) -> float:
             slot = now + dt.timedelta(seconds=own)
             prev = entry.get("last")
             if prev and entry.get("session") != sid:
                 try:
-                    slot = max(slot, to_utc(prev) + dt.timedelta(seconds=delay))
+                    prev_t = to_utc(prev)
+                    made = to_utc(entry["reserved_at"]) if entry.get("reserved_at") else None
                 except (TypeError, ValueError):
-                    pass
-            entry["last"] = slot.isoformat()
+                    prev_t = made = None
+                if prev_t is not None:
+                    skew = ((made is not None and made > now + dt.timedelta(seconds=1))
+                            or (made is None and prev_t > now + dt.timedelta(seconds=delay))
+                            or prev_t > now + dt.timedelta(seconds=cap))
+                    if skew:
+                        log.warning("état de politesse : dernière requête vers %s datée dans le futur (%s) : "
+                                    "ignorée, un seul délai est observé", host, prev)
+                        slot = max(slot, now + dt.timedelta(seconds=delay))
+                    else:
+                        slot = max(slot, prev_t + dt.timedelta(seconds=delay))
+            wait_s = min(max((slot - now).total_seconds(), 0.0), cap)
+            entry["last"] = (now + dt.timedelta(seconds=wait_s)).isoformat()
             entry["session"] = sid
-            return (slot - now).total_seconds()
+            entry["reserved_at"] = now.isoformat()
+            return wait_s
 
         try:
             wait = max(wait, self._state_update(host, reserve))
@@ -993,7 +1063,8 @@ class PoliteSession:
         def done(entry: dict[str, Any]) -> None:
             prev = entry.get("last")
             try:
-                later = prev is None or to_utc(prev) < now
+                made = to_utc(entry["reserved_at"]) if entry.get("reserved_at") else None
+                later = prev is None or to_utc(prev) < now or (made is not None and made > now)
             except (TypeError, ValueError):
                 later = True
             # Une réservation plus tardive d'une autre session (faite pendant cette requête)
@@ -1001,10 +1072,11 @@ class PoliteSession:
             if later:
                 entry["last"] = now.isoformat()
                 entry["session"] = sid
+                entry["reserved_at"] = now.isoformat()
 
         try:
             self._state_update(host, done)
-        except (OSError, ResearchError) as exc:
+        except (OSError, ResearchError, _err.VerrouOccupe) as exc:
             log.warning("état de politesse non écrit : %s", exc)
 
     def _record_block(self, host: str, url: str, status: int) -> None:
@@ -1015,12 +1087,23 @@ class PoliteSession:
             entry["blocked"] = info
 
         try:
-            self._state_update(host, block)
-        except (OSError, ResearchError) as exc:  # pragma: no cover - le journal garde l'événement
-            log.warning("blocage de %s non enregistré : %s", host, exc)
+            # Un blocage ne doit pas se perdre : attente plus longue du verrou.
+            self._state_update(host, block, timeout_s=max(STATE_LOCK_TIMEOUT_S, 60.0))
+        except (OSError, ResearchError, _err.VerrouOccupe) as exc:  # pragma: no cover - le journal garde l'événement
+            log.error("blocage de %s NON enregistré dans politeness.json : %s", host, exc)
 
-    def _network_get(self, url: str, headers: Mapping[str, str], purpose: str = "page") -> FetchResult:
-        """Une requête GET réseau, avec délai, quota, nouveaux essais et arrêts."""
+    def _stop(self, kind: str, reason: str) -> None:
+        self.stopped = reason
+        self.stop_kind = kind
+
+    def _network_get(self, url: str, headers: Mapping[str, str], purpose: str = "page",
+                     nature: str = "page") -> FetchResult:
+        """Une requête GET réseau, avec délai, quota, nouveaux essais et arrêts.
+
+        Erreur passagère (5xx, réseau, délai dépassé) : nouvel essai après une attente croissante.
+        Refus de la politique de sûreté (hôte, adresse, taille) : :class:`PolicyRefused`, sans nouvel
+        essai. ``MemoryError`` n'est jamais traitée comme une erreur réseau.
+        """
         if self.stopped:
             raise AccessBlocked(f"Session arrêtée ({self.stopped}) : aucune nouvelle requête n'est envoyée.")
         if self.offline:
@@ -1028,7 +1111,10 @@ class PoliteSession:
         host = url_host(url)
         blocked = self.persistent_block(host)
         if blocked:
-            self.stopped = f"{host} bloqué depuis le {blocked.get('ts')} (HTTP {blocked.get('status')} sur {blocked.get('url')})"
+            self._stop("bloque", f"{host} bloqué depuis le {blocked.get('ts')} (HTTP {blocked.get('status')} sur "
+                                 f"{blocked.get('url')})")
+            self.blocked = {"host": host, "status": blocked.get("status"), "url": blocked.get("url"),
+                            "since": blocked.get("ts")}
             self._log(event="blocked", url=url, reason=self.stopped)
             raise AccessBlocked(
                 f"Le site {host} a refusé l'accès (HTTP {blocked.get('status')}, {blocked.get('ts')}) : aucune requête "
@@ -1036,7 +1122,9 @@ class PoliteSession:
                 f"après accord du site (research.clear_block({host!r}))."
             )
         if self._transport is None:
-            self._transport = _requests_transport(self.user_agent)
+            self._transport = _requests_transport(self.user_agent, self._policy(True))
+        with_nature = bool(getattr(self._transport, "accepte_nature", False))
+        cap = self.policy.plafond(nature)
         hdrs = {"User-Agent": self.user_agent, **dict(headers)}
         last_error = ""
         for attempt in range(1, self.max_retries + 1):
@@ -1047,20 +1135,36 @@ class PoliteSession:
             self.n_requests += 1
             t0 = self.clock()
             try:
-                resp = self._transport(url, hdrs, self.timeout)
+                resp = (self._transport(url, hdrs, self.timeout, nature=nature) if with_nature
+                        else self._transport(url, hdrs, self.timeout))
                 status = int(resp.status_code)
                 content = bytes(resp.content or b"")
                 rheaders = {str(k): str(v) for k, v in dict(getattr(resp, "headers", {}) or {}).items()}
                 final_url = str(getattr(resp, "url", None) or url)
                 error = None
-            except Exception as exc:  # erreur réseau : traitée comme un 5xx
+                if len(content) > cap:
+                    raise _net.ReponseTropGrosse(f"{url} : réponse de {len(content)} octets, plafond {cap} ({nature}).")
+            except MemoryError:
+                raise
+            except (_err.ConfigurationError, _err.VerrouOccupe):
+                raise
+            except _net.RefusPolitique as exc:  # refus définitif : aucun nouvel essai
+                self._last_request[host] = self.clock()
+                self._record_done(host)
+                self._log(event="policy_refused", url=url, reason=str(exc), attempt=attempt)
+                if isinstance(exc, (_net.AdresseInterdite, _net.HoteNonAutorise)):
+                    self._stop("politique", f"adresse refusée : {exc}")
+                raise PolicyRefused(f"Requête refusée : {exc}") from exc
+            except Exception as exc:  # erreur réseau (délai dépassé compris) : traitée comme un 5xx
                 status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
             self._last_request[host] = self.clock()
             self._record_done(host)
             self._log(event=purpose, url=url, status=status, bytes=len(content), attempt=attempt,
                       elapsed_s=round(self.clock() - t0, 3), final_url=final_url, error=error)
             if status in STOP_STATUSES:
-                self.stopped = f"HTTP {status} sur {url}"
+                self._stop("bloque", f"HTTP {status} sur {url}")
+                self.blocked = {"host": host, "status": status, "url": url,
+                                "since": to_utc(self.now()).isoformat(timespec="seconds")}
                 self._record_block(host, url, status)
                 self._log(event="stop", url=url, status=status, reason=self.stopped)
                 raise AccessBlocked(
@@ -1074,7 +1178,7 @@ class PoliteSession:
                     self._log(event="retry", url=url, status=status, wait_s=wait)
                     self.sleep(wait)
                     continue
-                self.stopped = f"{last_error} répété sur {url}"
+                self._stop("serveur", f"{last_error} répété sur {url}")
                 self._log(event="stop", url=url, status=status, reason=self.stopped)
                 raise ServerUnavailable(
                     f"{host} ne répond pas correctement ({last_error}) après {self.max_retries} essais : "
@@ -1085,7 +1189,7 @@ class PoliteSession:
         raise ServerUnavailable(f"{url} : {last_error}")  # pragma: no cover
 
     def get(self, url: str, *, max_age_s: float | None = None, immutable: bool = False,
-            allow_disabled: bool | None = None) -> FetchResult:
+            allow_disabled: bool | None = None, nature: str | None = None, keep_body: bool = True) -> FetchResult:
         """GET poli de ``url``.
 
         - hors ligne : réponse du cache ou :class:`OfflineCacheMiss` ;
@@ -1094,13 +1198,19 @@ class PoliteSession:
         - sinon requête conditionnelle (``If-None-Match`` / ``If-Modified-Since``) ;
           une réponse 304 renvoie le corps en cache ;
         - redirections (301, 302, 303, 307, 308) suivies **à la main**, 5 au plus : chaque
-          saut repasse par les contrôles (source désactivée, robots.txt de l'hôte d'arrivée,
-          délai, quota, blocage) et compte comme une requête.
+          saut repasse par les contrôles (source désactivée, liste blanche, jamais https vers http,
+          robots.txt de l'hôte d'arrivée, délai, quota, blocage) et compte comme une requête ;
+        - ``nature`` : plafond de taille et délai total (:data:`brvm_alpha.net.PLAFONDS`) ; par défaut
+          ``"pdf"`` pour ``immutable`` ou une adresse en ``.pdf``, sinon ``"page"`` ;
+        - ``keep_body=False`` : la réponse n'est pas gardée dans le cache HTTP (document déjà rangé
+          ailleurs, par exemple ``docs/<sha>.pdf`` de :func:`fetch_document` : stocké une seule fois).
 
         Lève :class:`SourceDisabled` pour une source désactivée (sauf ``allow_disabled``),
-        :class:`RobotsDisallowed` si robots.txt interdit la page ou une étape de redirection.
+        :class:`PolicyRefused` hors liste blanche, :class:`RobotsDisallowed` si robots.txt interdit
+        la page ou une étape de redirection, :class:`TooManyRedirects` au-delà de 5 redirections.
         """
         self._check_source(url, allow_disabled)
+        kind = nature or ("pdf" if immutable or urlparse(url).path.lower().endswith(".pdf") else "page")
         cached = self.cache_get(url)
         if self.offline:
             if cached is None:
@@ -1133,7 +1243,7 @@ class PoliteSession:
                 headers["If-None-Match"] = etag
             if lastmod:
                 headers["If-Modified-Since"] = lastmod
-        res = self._network_get(url, headers)
+        res = self._network_get(url, headers, nature=kind)
         cur = url
         for hop in range(MAX_REDIRECTS + 1):
             loc = res.headers.get("Location") or res.headers.get("location")
@@ -1141,10 +1251,10 @@ class PoliteSession:
                 break
             if hop == MAX_REDIRECTS:
                 self._log(event="too_many_redirects", url=url, last=cur)
-                raise ResearchError(f"{url} : plus de {MAX_REDIRECTS} redirections, page non lue.")
+                raise TooManyRedirects(f"{url} : plus de {MAX_REDIRECTS} redirections, page non lue.")
             nxt = urljoin(cur, loc)
             self._log(event="redirect", url=cur, location=nxt, status=res.status)
-            self._check_source(nxt, allow_disabled)
+            self._check_redirect(cur, nxt, allow_disabled)
             if self.stopped:
                 raise AccessBlocked(f"Session arrêtée ({self.stopped}) : aucune nouvelle requête n'est envoyée.")
             if not self.allowed(nxt):
@@ -1155,15 +1265,27 @@ class PoliteSession:
                 )
             cur = nxt
             hop_headers = headers if cached is not None and cur == cached.final_url else {}
-            res = self._network_get(cur, hop_headers)
+            res = self._network_get(cur, hop_headers, nature=kind)
         if cur != url:
             res = dataclasses.replace(res, url=url, final_url=cur)
         if res.status == 304 and cached is not None:
             self.cache_put(url, cached.content, 200, cached.headers, cached.final_url)
             return dataclasses.replace(cached, from_cache=True, fetched_at=res.fetched_at)
-        if res.status == 200:
+        if res.status == 200 and keep_body:
             self.cache_put(url, res.content, 200, res.headers, res.final_url)
         return res
+
+
+def _robots_unreadable(res: FetchResult) -> bool:
+    """robots.txt « illisible » : page HTML, octets binaires, ou texte qui n'est pas de l'UTF-8 lisible."""
+    body = bytes(res.content or b"")
+    if b"\x00" in body[:4096]:
+        return True
+    head = body[:512].lstrip().lower()
+    if "html" in res.content_type or head.startswith((b"<!doctype", b"<html", b"<?xml", b"<head", b"<body")):
+        return True
+    text = body.decode("utf-8", errors="replace")
+    return bool(text) and text.count("�") > max(8, len(text) // 50)
 
 
 # ---------------------------------------------------------------------------
@@ -2163,7 +2285,11 @@ def list_boc_files(boc_dir: str | Path = DEFAULT_BOC_DIR) -> list[tuple[dt.date,
     return sorted(out)
 
 
-@lru_cache(maxsize=4096)
+#: BOC gardés en mémoire au plus (≈ 40 à 75 Ko de texte chacun) ; cache vidé en fin de recherche.
+BOC_TEXT_CACHE_SIZE = 128
+
+
+@lru_cache(maxsize=BOC_TEXT_CACHE_SIZE)
 def _read_boc(path: str, mtime: float) -> str:
     from brvm_alpha.data.boc_parser import read_boc_text
 
@@ -2339,47 +2465,39 @@ def pdf_text_layer_is_ocr(path: str | Path) -> bool | None:
 
 
 def extract_pdf_text(path: str | Path, min_chars_per_page: int = OCR_MIN_CHARS_PER_PAGE) -> dict[str, Any]:
-    """Texte d'un PDF : ``pdftotext -layout`` puis repli ``pdfplumber``.
+    """Texte d'un PDF : ``pdftotext -layout`` puis repli ``pdfplumber`` (:mod:`brvm_alpha.pdf`).
 
     Renvoie ``text``, ``n_pages``, ``chars_per_page`` (moyenne), ``ocr_needed``
     (moins de ``min_chars_per_page`` caractères par page : document scanné, à
-    passer à l'OCR), ``method`` et ``ocr_layer`` (:func:`pdf_text_layer_is_ocr` : le texte
-    vient de l'OCR d'un scanner, ses chiffres sont à recouper). L'OCR n'est pas lancé ici.
-    """
-    path = Path(path)
-    text, method, n_pages = "", None, 0
-    if shutil.which("pdftotext"):
-        try:
-            out = subprocess.run(["pdftotext", "-layout", str(path), "-"], capture_output=True, timeout=120)
-            text = out.stdout.decode("utf-8", errors="replace")
-            method = "pdftotext"
-        except (OSError, subprocess.SubprocessError):
-            text = ""
-        if shutil.which("pdfinfo"):
-            try:
-                info = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=60)
-                m = re.search(r"^Pages:\s+(\d+)", info.stdout.decode("utf-8", "replace"), re.MULTILINE)
-                n_pages = int(m.group(1)) if m else 0
-            except (OSError, subprocess.SubprocessError):
-                n_pages = 0
-    if not text.strip():
-        try:
-            import pdfplumber
+    passer à l'OCR), ``method``, ``method_version`` et ``ocr_layer`` (:func:`pdf_text_layer_is_ocr` : le
+    texte vient de l'OCR d'un scanner, ses chiffres sont à recouper). L'OCR n'est pas lancé ici.
 
-            with pdfplumber.open(path) as pdf:
-                pages = [(p.extract_text() or "") for p in pdf.pages]
-            text = "\n\f".join(pages)
-            n_pages = len(pages)
-            method = "pdfplumber"
-        except Exception as exc:  # PDF illisible
-            return {"text": "", "n_pages": n_pages, "chars_per_page": 0.0, "ocr_needed": True,
-                    "method": method, "error": f"{type(exc).__name__}: {exc}"}
+    Chaque extraction est bornée en durée (sous-processus) et le fichier en taille. En mode embarqué,
+    pdftotext est obligatoire et pdfplumber n'est jamais utilisé : :class:`~brvm_alpha.erreurs.ConfigurationError`
+    si pdftotext manque (comme hors mode embarqué quand aucun des deux n'est installé).
+    """
+    from brvm_alpha import pdf as _pdf
+
+    path = Path(path)
+    n_pages = 0
+    try:
+        text, method, version = _pdf.extraire_texte(path, layout=True)
+    except _pdf.ExtractionRatee as exc:  # PDF illisible, trop gros ou trop lent
+        return {"text": "", "n_pages": 0, "chars_per_page": 0.0, "ocr_needed": True, "method": None,
+                "method_version": None, "error": str(exc)}
+    if method == "pdftotext" and shutil.which("pdfinfo"):
+        try:
+            info = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=60)
+            m = re.search(r"^Pages:\s+(\d+)", info.stdout.decode("utf-8", "replace"), re.MULTILINE)
+            n_pages = int(m.group(1)) if m else 0
+        except (OSError, subprocess.SubprocessError):
+            n_pages = 0
     if not n_pages:
         n_pages = max(1, text.count("\f") + (0 if text.endswith("\f") else 1)) if text else 1
     chars = len(re.sub(r"\s+", "", text))
     cpp = chars / max(n_pages, 1)
     return {"text": text, "n_pages": n_pages, "chars_per_page": round(cpp, 1),
-            "ocr_needed": cpp < min_chars_per_page, "method": method,
+            "ocr_needed": cpp < min_chars_per_page, "method": method, "method_version": version,
             "ocr_layer": pdf_text_layer_is_ocr(path) if chars else None}
 
 
@@ -2390,6 +2508,10 @@ def fetch_document(session: PoliteSession, url: str, cache_dir: str | Path | Non
     ``data/notes/cache/docs``) : ``<sha>.pdf`` et ``<sha>.json`` (métadonnées et
     texte). Un document déjà en cache n'est jamais retéléchargé. ``sha256`` est l'empreinte
     de l'URL (clé du cache) ; ``content_sha256`` celle du fichier téléchargé.
+
+    Le PDF n'est rangé qu'une fois (``docs/<sha>.pdf``, pas aussi dans le cache HTTP) ; un PDF déjà
+    reçu dont la lecture avait échoué (délai, extracteur) est relu depuis ce fichier, sans requête.
+    Taille plafonnée (:data:`brvm_alpha.net.PLAFONDS` ``"pdf"``) et extraction bornée en durée.
     """
     cache = Path(cache_dir) if cache_dir is not None else session.cache_dir / "docs"
     h = url_hash(url)
@@ -2401,21 +2523,32 @@ def fetch_document(session: PoliteSession, url: str, cache_dir: str | Path | Non
             return meta
         except ValueError:
             pass
-    res = session.get(url, immutable=True)
-    if res.status != 200:
-        return {"url": url, "sha256": h, "status": res.status, "text": "", "ocr_needed": None,
-                "error": f"HTTP {res.status}"}
-    content_sha = hashlib.sha256(res.content).hexdigest()
-    if not res.content.startswith(b"%PDF"):
-        return {"url": url, "sha256": h, "status": res.status, "text": "", "ocr_needed": None,
+    content: bytes | None = None
+    try:
+        if pdf_p.is_file():
+            raw = pdf_p.read_bytes()
+            content = raw if raw.startswith(b"%PDF") else None
+    except OSError:
+        content = None
+    if content is None:
+        res = session.get(url, immutable=True, nature="pdf", keep_body=False)
+        if res.status != 200:
+            return {"url": url, "sha256": h, "status": res.status, "text": "", "ocr_needed": None,
+                    "error": f"HTTP {res.status}"}
+        content = res.content
+        if content.startswith(b"%PDF"):
+            _fichiers.ecrire_atomique(pdf_p, content)
+    content_sha = hashlib.sha256(content).hexdigest()
+    if not content.startswith(b"%PDF"):
+        return {"url": url, "sha256": h, "status": 200, "text": "", "ocr_needed": None,
                 "content_sha256": content_sha, "error": "le document n'est pas un PDF"}
-    cache.mkdir(parents=True, exist_ok=True)
-    pdf_p.write_bytes(res.content)
     info = extract_pdf_text(pdf_p)
-    meta = {"url": url, "sha256": h, "status": 200, "path": str(pdf_p), "bytes": len(res.content),
+    meta = {"url": url, "sha256": h, "status": 200, "path": str(pdf_p), "bytes": len(content),
             "content_sha256": content_sha,
             "text_sha256": hashlib.sha256(info["text"].encode("utf-8")).hexdigest(), **info, "cached": False}
-    meta_p.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    if info.get("error") and not info.get("text"):
+        return meta  # extraction ratée (délai, fichier trop gros) : pas de métadonnées en cache, nouvel essai
+    _fichiers.ecrire_atomique(meta_p, json.dumps(meta, ensure_ascii=False))
     return meta
 
 
@@ -3364,6 +3497,39 @@ class ResearchReport:
     unresolved: list[str] = field(default_factory=list)
     #: ``now`` antidaté : reconstitution d'historique (notes exclues des vues strictes).
     reconstructed: bool = False
+    #: Identifiants des notes ajoutées au journal (au fil de la collecte, dans l'ordre d'écriture).
+    added_ids: list[str] = field(default_factory=list)
+    #: Notes déjà écrites puis récrites (nouvelle version) : publication plus tôt vue par une autre source.
+    updated_ids: list[str] = field(default_factory=list)
+    #: Quota de la session et requêtes encore permises.
+    max_requests: int = 0
+    remaining: int = 0
+    #: Nature de l'arrêt : ``None``, ``"bloque"`` (403/429), ``"serveur"``, ``"politique"`` ou ``"quota"``.
+    stop_kind: str | None = None
+    #: Refus HTTP 403/429 : ``{"host", "status", "url", "since"}``, sinon ``None``.
+    blocked: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Bilan structuré (clés françaises, sérialisable en JSON)."""
+        return {
+            "notes_ajoutees": list(self.added_ids),
+            "notes_recrites": list(self.updated_ids),
+            "requetes": int(self.n_requests),
+            "quota": int(self.max_requests),
+            "quota_restant": int(self.remaining),
+            "arret": bool(self.stopped or self.stop_kind),
+            "raison_arret": self.stop_kind,
+            "motif_arret": self.stopped,
+            "blocage": dict(self.blocked) if self.blocked else None,
+            "elements_lus": int(self.n_items),
+            "nouvelles_notes": int(self.n_new),
+            "doublons": int(self.n_duplicates),
+            "ecartes": int(self.n_filtered),
+            "incidents": list(self.errors),
+            "listes": dict(self.lists),
+            "non_resolus": len(self.unresolved),
+            "reconstitution": bool(self.reconstructed),
+        }
 
     def summary(self) -> str:
         """Bilan en français, en phrases courtes (pour l'analyste)."""
@@ -3471,121 +3637,89 @@ def run_research(store: Any, targets: Iterable[str] | None = None, since: Any = 
     since_d = _as_date(since)
     pages = max_pages if max_pages is not None else (60 if since_d else 1)
 
-    raw: list[dict[str, Any]] = []
-    for key in (lists if lists is not None else BRVM_LISTS):
-        if sess.stopped or sess.n_requests >= sess.max_requests:
-            break
-        try:
-            got = collect_list(sess, key, since=since_d, known_urls=known_urls, max_pages=pages,
-                               resolver=resolver, errors=report.errors)
-        except ResearchError as exc:  # pragma: no cover - collect_list capture déjà
-            report.errors.append(f"{key} : {exc}")
-            got = []
-        report.lists[key] = len(got)
-        raw.extend(got)
-    if issuer_reports and not sess.stopped:
-        from brvm_alpha.reference import SYMBOLS_2026
-
-        stop_issuers = False
-        for sym in scope.issuer_symbols(SYMBOLS_2026):
-            if stop_issuers or sess.stopped or sym not in ISSUER_SLUGS:
-                continue
-            got = []
-            for slug in ISSUER_SLUGS[sym] if all_slugs else ISSUER_SLUGS[sym][:1]:
-                try:
-                    got += collect_issuer_reports(sess, sym, slug, since=since_d, known_urls=known_urls,
-                                                  resolver=resolver, errors=report.errors)
-                except ResearchError as exc:
-                    report.errors.append(f"rapports {sym} ({slug}) : {exc}")
-                    if isinstance(exc, (QuotaExceeded, AccessBlocked, ServerUnavailable)):
-                        stop_issuers = True
-                        break
-            report.lists[f"rapports:{sym}"] = len(got)
-            raw.extend(got)
-    if boc:
-        try:
-            got = collect_boc_events(boc_dir or DEFAULT_BOC_DIR, since=since_d, last_n=boc_last_n,
-                                     resolver=resolver, include_bonds=include_bonds)
-        except Exception as exc:  # BOC local illisible : on continue sans
-            report.errors.append(f"BOC : {type(exc).__name__}: {exc}")
-            got = []
-        report.lists["boc"] = len(got)
-        raw.extend(got)
-    report.n_items = len(raw)
-
     sigs = _signature_index(frame)
     events = _event_index(frame)
     known_ids = set(frame["note_id"].astype(str)) if "note_id" in frame.columns else set()
     kept_by_id: dict[str, dict[str, Any]] = {}
     kept_sigs: list[tuple[str, str, dt.date | None, dict[str, Any]]] = []
     selected: list[dict[str, Any]] = []
-    for it in raw:
-        nid = note_id_for(it)
-        if reconstructed:
-            try:
-                item_published_at(it, item_seen_at(it, now), calendar, strict_seen=True)
-            except PostdatedItem as exc:
-                report.n_filtered += 1
-                report.unresolved.append(f"reconstitution : {exc} | {it.get('symbol') or '-'} | {it.get('title')}")
+    history = frame if len(frame) else None
+    dividends = _dividends_for(panel_dir)
+    result = ResearchResult()
+    result.report = report
+    #: note écrite (ou retenue en simulation) : identifiant -> (empreinte de l'élément, rang dans ``result``).
+    written: dict[str, tuple[str, int]] = {}
+    n_pdf = 0
+
+    def select(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Filtrage et déduplication d'un lot d'éléments (même ordre et mêmes règles qu'une collecte entière)."""
+        new: list[dict[str, Any]] = []
+        for it in items:
+            nid = note_id_for(it)
+            if reconstructed:
+                try:
+                    item_published_at(it, item_seen_at(it, now), calendar, strict_seen=True)
+                except PostdatedItem as exc:
+                    report.n_filtered += 1
+                    report.unresolved.append(f"reconstitution : {exc} | {it.get('symbol') or '-'} | {it.get('title')}")
+                    continue
+            if nid in kept_by_id:  # même document vu par deux listes : publication la plus tôt
+                _merge_publication(kept_by_id[nid], it, now, calendar, strict_seen=reconstructed)
+                report.n_duplicates += 1
                 continue
-        if nid in kept_by_id:  # même document vu par deux listes : publication la plus tôt
-            _merge_publication(kept_by_id[nid], it, now, calendar, strict_seen=reconstructed)
-            report.n_duplicates += 1
-            continue
-        if not include_bonds and it.get("instrument") in ("obligation", "fctc") and not (
-                not scope.all_market and it.get("country") in scope.countries):
-            report.n_filtered += 1
-            continue
-        if skip_ancillary and it.get("ancillary"):
-            report.n_filtered += 1
-            continue
-        if (it.get("extra") or {}).get("date_inconnue") and not keep_unresolved:
-            # document sans date (ni colonne, ni nom de fichier) : impossible à placer dans le temps.
-            report.n_filtered += 1
-            report.unresolved.append(f"date inconnue | {it.get('symbol') or '-'} | {it.get('title')}")
-            continue
-        if not (it.get("symbol") or it.get("country") or it.get("market_level")) and not keep_unresolved:
-            # émetteur non reconnu (souvent un émetteur d'obligations ou un actionnaire) :
-            # signalé dans le bilan pour compléter la table d'alias, pas de note.
-            report.n_filtered += 1
-            report.unresolved.append(f"{it.get('doc_date')} | {it.get('issuer') or '-'} | {it.get('title')}")
-            continue
-        if not scope.matches(it):
-            report.n_filtered += 1
-            continue
-        sym = it.get("symbol") or ""
-        sig = content_signature(it.get("title"), sym or None)
-        d = _as_date(it.get("doc_date"))
-        twin = next((k for s2, g2, d2, k in kept_sigs if sig and s2 == sym and g2 == sig
-                     and (d is None or d2 is None or abs((d - d2).days) <= 5)), None)
-        if twin is not None:  # même document sous deux titres proches (liste et BOC)
-            _merge_publication(twin, it, now, calendar, strict_seen=reconstructed)
-            report.n_duplicates += 1
-            continue
-        if _store_has(store, nid, known_ids) or _is_duplicate(it, sigs) or _is_event_duplicate(it, events):
-            _reconcile_dividend_basis(it, selected)
-            report.n_duplicates += 1
-            continue
-        kept_by_id[nid] = it
-        kept_sigs.append((sym, sig, d, it))
-        et = dedup_event_type(it)
-        if sym and et:
-            events.add((sym, et), _event_date(it))
-        selected.append(it)
+            if not include_bonds and it.get("instrument") in ("obligation", "fctc") and not (
+                    not scope.all_market and it.get("country") in scope.countries):
+                report.n_filtered += 1
+                continue
+            if skip_ancillary and it.get("ancillary"):
+                report.n_filtered += 1
+                continue
+            if (it.get("extra") or {}).get("date_inconnue") and not keep_unresolved:
+                # document sans date (ni colonne, ni nom de fichier) : impossible à placer dans le temps.
+                report.n_filtered += 1
+                report.unresolved.append(f"date inconnue | {it.get('symbol') or '-'} | {it.get('title')}")
+                continue
+            if not (it.get("symbol") or it.get("country") or it.get("market_level")) and not keep_unresolved:
+                # émetteur non reconnu (souvent un émetteur d'obligations ou un actionnaire) :
+                # signalé dans le bilan pour compléter la table d'alias, pas de note.
+                report.n_filtered += 1
+                report.unresolved.append(f"{it.get('doc_date')} | {it.get('issuer') or '-'} | {it.get('title')}")
+                continue
+            if not scope.matches(it):
+                report.n_filtered += 1
+                continue
+            sym = it.get("symbol") or ""
+            sig = content_signature(it.get("title"), sym or None)
+            d = _as_date(it.get("doc_date"))
+            twin = next((k for s2, g2, d2, k in kept_sigs if sig and s2 == sym and g2 == sig
+                         and (d is None or d2 is None or abs((d - d2).days) <= 5)), None)
+            if twin is not None:  # même document sous deux titres proches (liste et BOC)
+                _merge_publication(twin, it, now, calendar, strict_seen=reconstructed)
+                report.n_duplicates += 1
+                continue
+            if _store_has(store, nid, known_ids) or _is_duplicate(it, sigs) or _is_event_duplicate(it, events):
+                _reconcile_dividend_basis(it, selected)
+                report.n_duplicates += 1
+                continue
+            kept_by_id[nid] = it
+            kept_sigs.append((sym, sig, d, it))
+            et = dedup_event_type(it)
+            if sym and et:
+                events.add((sym, et), _event_date(it))
+            selected.append(it)
+            new.append(it)
+        return new
 
-    # Dividendes « brut présumé » : rapprochés du montant net détaché au BOC quand le détachement est déjà
-    # dans le panel (aucune requête ; l'instant de collecte, borne de connaissance de la note, lui est postérieur).
-    reconcile_dividends_with_panel(selected, _dividends_for(panel_dir))
-
-    if download_pdfs:
+    def fetch_pdfs(items: list[dict[str, Any]]) -> None:
         # Hors ligne, seuls les PDF déjà en cache sont relus : une relecture hors ligne
         # reproduit ainsi la collecte en ligne (essai réel du 22/11/2026).
-        n_pdf = 0
-        for it in selected:
+        nonlocal n_pdf
+        for it in items:
             url = it.get("doc_url")
             if not url or not url.lower().endswith(".pdf") or n_pdf >= max_pdfs or sess.stopped:
                 continue
-            if sess.offline and not (sess.cache_dir / "docs" / f"{url_hash(url)}.json").exists():
+            docs = sess.cache_dir / "docs"
+            if sess.offline and not ((docs / f"{url_hash(url)}.json").exists() or (docs / f"{url_hash(url)}.pdf").exists()):
                 continue
             try:
                 doc = fetch_document(sess, url)  # cache : <cache de la session>/docs/<sha256>.pdf
@@ -3599,27 +3733,133 @@ def run_research(store: Any, targets: Iterable[str] | None = None, since: Any = 
             it["extra"]["ocr_needed"] = doc.get("ocr_needed")
             it["extra"]["n_pages"] = doc.get("n_pages")
 
-    result = ResearchResult()
-    history = frame if len(frame) else None
-    for it in selected:
-        note = item_to_note(it, now=now, calendar=calendar, analyze=analyze, panels=panels, history=history,
+    def fingerprint(it: Mapping[str, Any]) -> str:
+        return json.dumps(it, sort_keys=True, ensure_ascii=False, default=str)
+
+    def to_note(it: Mapping[str, Any]) -> Any:
+        # Dividendes « brut présumé » : rapprochés du montant net détaché au BOC quand le détachement est déjà
+        # dans le panel (aucune requête ; l'instant de collecte, borne de connaissance de la note, lui est
+        # postérieur). Sur une copie : un doublon vu plus tard (BOC) tranche encore comme avant.
+        it2 = copy.deepcopy(dict(it))
+        reconcile_dividends_with_panel([it2], dividends)
+        return item_to_note(it2, now=now, calendar=calendar, analyze=analyze, panels=panels, history=history,
                             reconstructed=reconstructed)
-        if not dry_run:
-            _store_add(store, note, now if explicit_now else None)
-        result.append(note)
-    report.n_new = len(result)
-    report.n_requests = sess.n_requests
-    report.stopped = sess.stopped
-    result.report = report
+
+    def flush(new_items: list[dict[str, Any]]) -> None:
+        """Écrit tout de suite les notes du lot ; récrit (nouvelle version) une note déjà écrite dont
+        l'élément a changé depuis (publication plus tôt vue par une autre source, montant net du BOC)."""
+        for nid, (fp, idx) in list(written.items()):
+            it = kept_by_id[nid]
+            if fingerprint(it) == fp:
+                continue
+            note = to_note(it)
+            old = result[idx]
+            changes = _note_changes(old, note)
+            if changes and not dry_run:
+                try:
+                    note = store.update(nid, now=now if explicit_now else None, reanalyze=False, **changes)
+                except TypeError:
+                    note = store.update(nid, **changes)
+                report.updated_ids.append(nid)
+            result[idx] = note
+            written[nid] = (fingerprint(it), idx)
+        for it in new_items:
+            note = to_note(it)
+            if not dry_run:
+                _store_add(store, note, now if explicit_now else None)
+            nid = note_id_for(it)
+            written[nid] = (fingerprint(it), len(result))
+            result.append(note)
+            report.added_ids.append(str(_note_get(note, "note_id") or nid))
+
+    def unit(got: list[dict[str, Any]]) -> None:
+        report.n_items += len(got)
+        new = select(got)
+        if download_pdfs:
+            fetch_pdfs(new)
+        flush(new)
+
+    try:
+        for key in (lists if lists is not None else BRVM_LISTS):
+            if sess.stopped or sess.n_requests >= sess.max_requests:
+                break
+            try:
+                got = collect_list(sess, key, since=since_d, known_urls=known_urls, max_pages=pages,
+                                   resolver=resolver, errors=report.errors)
+            except ResearchError as exc:  # pragma: no cover - collect_list capture déjà
+                report.errors.append(f"{key} : {exc}")
+                got = []
+            report.lists[key] = len(got)
+            unit(got)
+        if issuer_reports and not sess.stopped:
+            from brvm_alpha.reference import SYMBOLS_2026
+
+            stop_issuers = False
+            for sym in scope.issuer_symbols(SYMBOLS_2026):
+                if stop_issuers or sess.stopped or sym not in ISSUER_SLUGS:
+                    continue
+                got = []
+                for slug in ISSUER_SLUGS[sym] if all_slugs else ISSUER_SLUGS[sym][:1]:
+                    try:
+                        got += collect_issuer_reports(sess, sym, slug, since=since_d, known_urls=known_urls,
+                                                      resolver=resolver, errors=report.errors)
+                    except ResearchError as exc:
+                        report.errors.append(f"rapports {sym} ({slug}) : {exc}")
+                        if isinstance(exc, (QuotaExceeded, AccessBlocked, ServerUnavailable, PolicyRefused)):
+                            stop_issuers = True
+                            break
+                report.lists[f"rapports:{sym}"] = len(got)
+                unit(got)
+        if boc:
+            try:
+                got = collect_boc_events(boc_dir or DEFAULT_BOC_DIR, since=since_d, last_n=boc_last_n,
+                                         resolver=resolver, include_bonds=include_bonds)
+            except MemoryError:
+                raise
+            except Exception as exc:  # BOC local illisible : on continue sans
+                report.errors.append(f"BOC : {type(exc).__name__}: {exc}")
+                got = []
+            report.lists["boc"] = len(got)
+            unit(got)
+    finally:
+        _read_boc.cache_clear()  # jusqu'à 128 BOC en mémoire : rendus à la fin de la recherche
+        report.n_new = len(result)
+        report.n_requests = sess.n_requests
+        report.max_requests = sess.max_requests
+        report.remaining = sess.remaining
+        report.stopped = sess.stopped
+        report.stop_kind = sess.stop_kind or ("quota" if sess.n_requests >= sess.max_requests
+                                              or any("Quota" in e for e in report.errors) else None)
+        report.blocked = dict(sess.blocked) if sess.blocked else None
     return result
+
+
+#: Champs d'une note comparés pour récrire une note déjà écrite (les autres sont fixés par l'écriture).
+_NOTE_CHANGE_FIELDS = ("title", "text", "targets", "targets_unknown", "event_type", "stance", "conviction",
+                       "horizon_days", "tags", "status", "analysis", "published_at", "published_precision",
+                       "first_tradable_session", "url")
+
+
+def _note_changes(old: Any, new: Any) -> dict[str, Any]:
+    """Champs qui diffèrent entre deux notes de même identifiant (valeurs de ``new``)."""
+    def as_dict(n: Any) -> dict[str, Any]:
+        return n.to_dict() if hasattr(n, "to_dict") else dict(n)
+
+    a, b = as_dict(old), as_dict(new)
+    return {k: getattr(new, k, b.get(k)) for k in _NOTE_CHANGE_FIELDS if k in b and a.get(k) != b.get(k)}
 
 
 def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *,
                    session: PoliteSession | None = None, offline: bool = False, allow_disabled: bool = False,
                    author: str = "analyste", title: str | None = None, now: dt.datetime | None = None,
                    calendar: Any = None, panel_dir: str | Path | None = DEFAULT_PANEL_DIR,
-                   panels: Mapping[str, Any] | None = None, analyze: bool = True, delay_s: float = 3.0) -> Any:
+                   panels: Mapping[str, Any] | None = None, analyze: bool = True, delay_s: float = 3.0,
+                   hosts: Iterable[str] = ()) -> Any:
     """Crée une note à partir d'une page publique fournie par l'analyste.
+
+    - liste blanche (:mod:`brvm_alpha.net`) : www.brvm.org et brvm.org, plus les sources facultatives
+      avec ``allow_disabled=True`` et les hôtes donnés **explicitement** par ``hosts`` ; toute autre
+      adresse lève :class:`PolicyRefused` avant la moindre requête ;
 
     - le robots.txt du site est lu et respecté ; une page interdite lève
       :class:`RobotsDisallowed` (message en français), **sans contournement** ;
@@ -3646,7 +3886,8 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
     now = to_utc(now or utcnow())
     reconstructed = explicit_now and _is_backdated(now)
     sess = session or PoliteSession(delay_s=delay_s, max_requests=5, offline=offline, cache_dir=root / "cache",
-                                    log_path=root / "fetch_log.jsonl", backoff_s=5.0, allow_disabled=allow_disabled)
+                                    log_path=root / "fetch_log.jsonl", backoff_s=5.0, allow_disabled=allow_disabled,
+                                    hosts=hosts)
     res = sess.get(url, allow_disabled=allow_disabled)
     if res.status in STOP_STATUSES:  # pragma: no cover - déjà levé par la session
         raise AccessBlocked(f"{url_host(url)} refuse l'accès (HTTP {res.status}).")
@@ -3997,7 +4238,9 @@ def enrich_documents(store: Any, *, max_docs: int = 20, targets: Iterable[str] |
     history = history if len(history) else None
 
     def cached(url: str) -> bool:
-        return (docs_dir / f"{url_hash(url)}.json").exists() or sess.cache_get(url) is not None
+        h = url_hash(url)
+        return ((docs_dir / f"{h}.json").exists() or (docs_dir / f"{h}.pdf").exists()
+                or sess.cache_get(url) is not None)
 
     for cand in candidates:
         if out["n_selected"] >= int(max_docs):
@@ -4127,6 +4370,8 @@ def enrich_documents(store: Any, *, max_docs: int = 20, targets: Iterable[str] |
             detail["reason"] = str(exc)
             out["details"].append(detail)
             out["n_failed"] += 1
+        except (MemoryError, _err.ConfigurationError, _err.VerrouOccupe):
+            raise  # mémoire, extracteur absent, journal verrouillé : la commande s'arrête (codes 6, 8, 4)
         except Exception as exc:  # noqa: BLE001 - aucun document isolé ne doit interrompre la lecture
             detail["reason"] = f"{type(exc).__name__}: {exc}"
             out["details"].append(detail)
