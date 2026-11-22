@@ -549,8 +549,10 @@ def test_extract_rn_example_from_mission():
     assert ex["rn"] == pytest.approx(245.3e9) and ex["rn_prev"] == pytest.approx(210.1e9)
     assert ex["rn_growth"] == pytest.approx(0.168)
     assert ex["s_rn"] == pytest.approx(0.168 * 100 / 25)
-    assert a.s_num == pytest.approx(0.168 * 100 / 25 / 2)
-    assert a.score == pytest.approx(0.7 * a.s_num + 0.3 * a.tone)
+    assert a.s_num == pytest.approx(0.168 * 100 / 25 / 2)  # champ du contrat, [−1, 1] : affichage
+    # Document 07 §3.4 règle 5 : s = 0,7·clip(Δ%/25, ±2) + 0,3·tone (échelle native).
+    assert a.components["s_num_doc"] == pytest.approx(0.168 * 100 / 25)
+    assert a.score == pytest.approx(0.7 * a.components["s_num_doc"] + 0.3 * a.tone)
     figs = an.extract_figures("Résultat net : 245,3 milliards FCFA contre 210,1 milliards en 2024, soit +16,8 %")
     assert figs["rn"]["consistent"] is True  # 245,3 / 210,1 − 1 = 16,75 %
 
@@ -913,3 +915,369 @@ def test_regression_theme_exposure_propagation():
     assert a.primary_target == "THEME:PETROLE" and {"TTLC", "SHEC"} <= set(a.targets)
     expo = {e["target"] for e in a.components["theme_exposure"]["THEME:PETROLE"]}
     assert {"SMBC", "TTLS"} <= expo and "SMBC (+)" in a.reading and a.tone < 0
+
+
+def test_regression_resumption_does_not_raise_r1():
+    # Avis 068-2025 : le corps citait la rubrique « Suspension de cotation » du BOC.
+    a = an.analyze_note(_note(title="Avis 068-2025 (BRVM) : Levée de la suspension MOVIS CI",
+                              text="Bulletin officiel de la cote, avis de BRVM — Suspension de cotation — "
+                                   "Levée de la suspension MOVIS CI", source="boc"))
+    assert a.event_type == "RESUMPTION" and "R1" not in a.risk_flags
+    s = an.analyze_note(_note(title="Avis 269-2026 (BRVM) : Suspension de la cotation de SUCRIVOIRE S.A.", text="",
+                              source="boc"))
+    assert s.event_type == "SUSPENSION" and "R1" in s.risk_flags
+
+
+def test_regression_issuer_document_body_entities_are_context():
+    # Communiqué de BOA Niger : la liste des six pays du groupe n'en fait pas des cibles.
+    text = ("Pour la 10e année consécutive, la Direction Générale du Groupe BANK OF AFRICA a présenté les résultats "
+            "annuels des six banques du Groupe (Bénin, Burkina Faso, Côte d'Ivoire, Mali, Niger et Sénégal). "
+            "Le résultat net passe de 5 002 à 409 millions de FCFA.")
+    a = an.analyze_note(_note(title="BOA NG : Communiqué de presse", text=text, targets=["BOAN"]))
+    assert a.targets == ["BOAN"] and {"PAYS:BJ", "PAYS:CI"} <= set(a.components["context_entities"])
+    # Filtisac : « filières cacao, café, anacarde » ne fait ni un type MATIERES_PREMIERES ni des thèmes.
+    f = an.analyze_note(_note(title="FILTISAC CI : Communiqué", targets=["FTSC"],
+                              text="FILTISAC fabrique des emballages à destination des filières cacao, café, anacarde."))
+    assert f.event_type == "OTHER" and f.targets == ["FTSC"]
+    # Note de l'analyste : les mêmes entités du texte restent des cibles.
+    g = _analyst("Point sur Filtisac", "Filtisac dépend des filières cacao et anacarde en Côte d'Ivoire.")
+    assert {"FTSC", "THEME:CACAO", "PAYS:CI"} <= set(g.targets)
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        ("Bilan semestriel du contrat de liquidité -1er semestre 2026 - BOA ML", "OTHER"),
+        ("Bilan semestriel du contrat de liquidité - BOA BURKINA FASO", "OTHER"),
+        ("Rapport d'activités - 1er semestre 2026 - NSIA BANQUE CI", "RES_S1"),
+        ("Avis Décision N°PAMF- UMOA/2026/079 (AMF-UMOA) : Approbation du fractionnement de la valeur liquidative "
+         "de la SICAV ABDOU DIOUF et visa de son prospectus", "REGULATOR"),
+        ("Avis 20251125 (AMF-UMOA) : Communiqué AMF-UMOA - Nomination du Nouveau Président", "REGULATOR"),
+        ("Communiqué - Changement important dans la Direction - UNIWAX CI", "MGMT_CHANGE"),
+        ("Fractionnement de la valeur nominale des actions SONATEL", "SPLIT"),
+    ],
+)
+def test_regression_real_titles_misclassified_in_live_run(title, expected):
+    assert lx.detect_event_type(title)[0] == expected
+
+
+def test_regression_fund_split_and_capital_reduction_tone():
+    assert lx.score_text("Approbation du fractionnement de la valeur liquidative de la SICAV")["tone"] == 0
+    assert lx.score_text("Communiqué - Réduction du capital social - SUCRIVOIRE CI")["tone"] < 0
+    # IRVM d'un avis de dividende : pas un thème fiscal ; une réforme de l'IRVM, si.
+    assert "THEME:FISCALITE" not in en.link_entities("", "Paiement de dividendes de 8 F CFA par action (IRVM "
+                                                        "applicable de 12 %)").targets
+    assert "THEME:FISCALITE" in en.link_entities("La loi de finances prévoit une hausse de l'IRVM.").targets
+
+
+def test_regression_brvm_as_publisher_is_not_a_target_for_index_or_state_notices():
+    a = an.analyze_note(_note(title="Avis 166-2025 (BRVM) : Levée de la suspension des titres de l'ETAT DU NIGER - "
+                                    "Offre Publique d’Échange", text="", targets=["PAYS:NE"], source="boc"))
+    assert a.targets == ["PAYS:NE"] and a.event_type == "RESUMPTION"
+    b = an.analyze_note(_note(title="Avis 242-2025 (BRVM) : Composition de l'indice BRVM 30", text="",
+                              targets=["IDX:BRVM-30"], source="boc"))
+    assert b.targets == ["IDX:BRVM-30"] and b.event_type == "INDEX_CHANGE"
+    c = an.analyze_text("La BRVM a franchi le cap des 20 000 milliards de FCFA de capitalisation.")
+    assert c.targets == ["MARCHE"]
+
+
+@pytest.mark.parametrize(
+    "title, expected",
+    [
+        # Second échantillon de l'essai réel (hors des corrections du premier).
+        ("Rapport des Commissaires Aux Comptes sur les Conventions règlementées et les crédits accordés aux "
+         "dirigeants de la banque - Exercice 2025 - BOA NG", "OTHER"),
+        ("Rapport d'activité -Deuxième semestre 2025 - BOA BF", "RES_ANNUAL"),
+        ("Rapport du Conseil d·Administration à l·Assemblée Générale Ordinaire des Actionnaires - Exercice 2025 - "
+         "BOA NG (Annule et remplace le précédent)", "RES_ANNUAL"),
+        ("Rapport d'activités - 1er semestre 2025 - NSIA BANQUE CI", "RES_S1"),
+        ("Rapport d'activités - 2e trimestre 2026 - SONATEL SN", "RES_S1"),
+    ],
+)
+def test_regression_second_sample_titles(title, expected):
+    assert lx.detect_event_type(title)[0] == expected
+
+
+def test_regression_nsia_group_entities_are_not_nsbc():
+    assert en.link_entities("", "ERRATUM - Communiqué - NSIA ASSET MANAGEMENT").targets == []
+    assert en.link_entities("", "Communiqué - NSIA BANQUE CI").targets == ["NSBC"]
+    assert en.link_entities("NSIA Vie Assurances a publié ses comptes.").targets == []
+
+
+def test_regression_biic_full_name_does_not_add_country():
+    links = en.link_entities("", "BANQUE INTERNATIONALE POUR L'INDUSTRIE ET LE COMMERCE DU BENIN : ERRATUM - "
+                                 "Projet de résolutions - Assemblée Générale Ordinaire")
+    assert links.targets == ["BICB"]
+
+
+# ---------------------------------------------------------------------------
+# Régressions de la revue du 22/11/2026 (chaque test échouait avant la correction)
+# ---------------------------------------------------------------------------
+
+
+def test_regression_imposed_session_cannot_precede_cutoff_rule(tmp_path):
+    """Une séance négociable fournie (saisie, import, copie) ne peut pas précéder la coupure de 09h00."""
+    n = Note(title="SONATEL : avis", text="Résultat net en hausse.", targets=["SNTS"], author="auto", source="url",
+             url="https://exemple.test/a", published_at="2026-11-17T12:00:00Z", created_at="2026-11-17T12:00:00Z",
+             first_tradable_session="2026-11-17")
+    assert n.first_tradable_session == pd.Timestamp("2026-11-18")  # 12h00 UTC : séance suivante
+    later = n.copy(first_tradable_session="2026-11-20")
+    assert later.first_tradable_session == pd.Timestamp("2026-11-20")  # plus tard : accepté
+    # copy(published_at=…) sans séance explicite : la séance est recalculée.
+    early = Note(title="x", text="y", published_at="2026-11-17T07:00:00Z", created_at="2026-11-17T07:00:00Z")
+    assert early.first_tradable_session == pd.Timestamp("2026-11-17")
+    assert early.copy(published_at="2026-11-17T15:00:00Z").first_tradable_session == pd.Timestamp("2026-11-18")
+    assert early.copy(published_at="2026-11-17").published_precision == "date"
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    nid = st.add(n, now="2026-11-17T12:00:00Z")
+    assert st.get(nid).first_tradable_session == pd.Timestamp("2026-11-18")
+    st.update(nid, first_tradable_session="2026-11-16", now="2026-11-17T13:00:00Z")
+    assert st.get(nid).first_tradable_session == pd.Timestamp("2026-11-18")
+    from brvm_alpha.notes import signals as sg
+
+    assert "SNTS" not in sg.note_scores(st, "2026-11-17", calendar=list(biz_calendar()), equities=None).index
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("Le bénéfice net atteint 12 milliards FCFA, en dépit d'une baisse de 8 % du chiffre d'affaires.",
+         {"rn": (12e9, None), "ca": (None, -0.08)}),
+        ("Le chiffre d'affaires est en hausse de 15 %, porté par une hausse de 30 % du résultat net.",
+         {"ca": (None, 0.15), "rn": (None, 0.30)}),
+        ("Le résultat net atteint 12 milliards FCFA, malgré une baisse de 30 % du chiffre d'affaires.",
+         {"rn": (12e9, None), "ca": (None, -0.30)}),
+        ("Le coût du risque représente 35 % du PNB.", {}),  # un ratio n'est pas une variation
+    ],
+)
+def test_regression_percent_belongs_to_following_indicator(text, expected):
+    figs = an.extract_figures(text)
+    assert set(figs) == set(expected) or (not expected and "pnb" not in figs)
+    for ind, (value, growth) in expected.items():
+        assert figs[ind].get("value") == (pytest.approx(value) if value is not None else None)
+        assert figs[ind].get("growth") == (pytest.approx(growth) if growth is not None else None)
+
+
+def test_regression_no_false_r10_from_revenue_percent():
+    """« malgré une baisse de 30 % du chiffre d'affaires » ne fait pas un ΔRN de −30 % (faux R10)."""
+    note = Note(title="SONATEL SN : comptes annuels 2025",
+                text="Le résultat net atteint 12 milliards FCFA, malgré une baisse de 30 % du chiffre d'affaires.",
+                targets=["SNTS"], author="auto", source="brvm_list", url="https://exemple.test/rn.pdf",
+                event_type="RES_ANNUAL", published_at="2026-03-20T18:00:00Z", created_at="2026-03-20T18:00:00Z")
+    a = an.analyze_note(note)
+    assert a.extracted.get("rn_growth") is None and a.extracted["ca_growth"] == pytest.approx(-0.30)
+    assert "R10" not in a.risk_flags and not a.extracted.get("r10_candidate")
+    assert "résultat net 12,0 Md FCFA (" not in a.reading
+
+
+def test_regression_score_follows_doc07_formula():
+    """Document 07 §3.4 : s = 0,7·clip(Δ%/25, ±2) + 0,3·tone (« nombres d'abord »)."""
+    a = an.analyze_text("Le résultat net progresse de 10 %, mais la hausse du coût du risque et des dépréciations "
+                        "inquiète.")
+    s_doc = a.components["s_num_doc"]
+    assert s_doc == pytest.approx(0.4) and a.s_num == pytest.approx(0.2)  # s_num : affichage, [−1, 1]
+    assert a.tone < 0
+    assert a.score == pytest.approx(0.7 * s_doc + 0.3 * a.tone, abs=1e-3) and a.score > 0  # le chiffre l'emporte
+    plain = an.analyze_text("Le résultat net progresse de 10 %.")
+    assert plain.score == pytest.approx(0.28)
+    big = an.analyze_text("Le résultat net progresse de 60 %.")
+    assert big.score == pytest.approx(1.0)  # borné à [−1, 1] sans changer de signe
+
+
+@pytest.mark.parametrize(
+    "text, sign",
+    [
+        ("Le résultat net progresse.", 1), ("Le résultat net ne progresse pas.", -1),
+        ("Le résultat net ne recule pas.", 1), ("Le bénéfice net n'est pas en hausse.", -1),
+        ("Le dividende n'a pas été relevé.", -1), ("Le chiffre d'affaires n'est plus en baisse.", 1),
+    ],
+)
+def test_regression_verbal_negation_inverts_sign(text, sign):
+    tone = lx.tone_from_hits(lx.scan(text))["tone"]
+    assert np.sign(tone) == sign
+    assert abs(tone) > 0.3
+
+
+def test_regression_ne_que_is_restriction_not_negation():
+    hits = lx.scan("Le résultat net ne progresse que de 2 %.")
+    assert hits and hits[0].weight == pytest.approx(1.0) and "négation" not in hits[0].modifiers
+
+
+def test_regression_composite_amount_and_dividend_gross_then_net():
+    rn = an.extract_figures("Le résultat net s'élève à 12 milliards 500 millions de FCFA.")["rn"]
+    assert rn["value"] == pytest.approx(12.5e9)
+    assert an.extract_figures("Le chiffre d'affaires atteint 3 milliards et 200 millions FCFA.")["ca"]["value"] == \
+        pytest.approx(3.2e9)
+    div = an.extract_figures("Dividende brut par action : 2 612 FCFA ; dividende net : 2 298,75 FCFA. "
+                             "Paiement le 15/06/2026.")["div"]
+    assert div["gross"] == pytest.approx(2612.0) and div["net"] == pytest.approx(2298.75)
+
+
+def _journal_with_bad_tail(tmp_path, tail: bytes) -> NoteStore:
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    st.add(_note(), now="2026-11-17T19:00:00Z")
+    with st.path.open("ab") as fh:
+        fh.write(tail)
+    return NoteStore(tmp_path, calendar=biz_calendar())
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        '{"note_id": "abc", "title": "Société'.encode("utf-8")[:-1],  # coupure au milieu de « é »
+        '{"note_id": "def", "title": "Société générale"}\n'.encode("cp1252"),  # ligne en Windows-1252
+    ],
+)
+def test_regression_store_survives_truncated_multibyte_or_latin1_line(tmp_path, tail):
+    st = _journal_with_bad_tail(tmp_path, tail)
+    assert len(st) == 1 and len(st.list()) == 1 and len(st.asof("2026-11-18")) == 1
+    assert any("UTF-8" in e for e in st.errors)
+    st.add(Note(title="Après incident", text="x", created_at="2026-11-18T07:00:00Z"), now="2026-11-18T07:00:00Z")
+    assert len(NoteStore(tmp_path)) == 2
+
+
+@pytest.mark.parametrize(
+    "patch, reason",
+    [({"version": "v2"}, "version"), ({"published_at": "demain"}, "published_at"),
+     ({"first_tradable_session": "jamais"}, "first_tradable_session"), ({"targets": 12}, "targets")],
+)
+def test_regression_store_rejects_mistyped_lines(tmp_path, patch, reason):
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    st.add(_note(), now="2026-11-17T19:00:00Z")
+    bad = _note(title="Ligne éditée à la main", url="https://exemple.test/b").to_dict() | patch
+    with st.path.open("ab") as fh:
+        fh.write((json.dumps(bad, ensure_ascii=False) + "\n").encode("utf-8"))
+    st2 = NoteStore(tmp_path)
+    assert len(st2.list()) == 1 and len(st2.asof("2026-11-18")) == 1
+    assert any(reason in e for e in st2.errors)
+
+
+def test_regression_string_targets_are_not_split_into_letters(tmp_path):
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    rec = _note(url="https://exemple.test/c").to_dict() | {"targets": "SNTS", "tags": "a;b"}
+    st.root.mkdir(parents=True, exist_ok=True)
+    st.path.write_text(json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
+    df = st.list()
+    assert df["targets"].iloc[0] == ["SNTS"] and df["tags"].iloc[0] == ["a", "b"]
+
+
+def test_regression_manual_notes_citing_same_url_are_distinct(tmp_path):
+    url = "https://www.brvm.org/sites/default/files/20261116_-_communique_-_sonatel.pdf"
+    a = Note(title="", text="Première lecture : PNB en hausse, je reste acheteur.", url=url, targets=["SNTS"],
+             stance="haussier", conviction=4, created_at="2026-11-17T08:00:00Z")
+    b = Note(title="", text="Après la conférence : la taxe sur le mobile money va peser, je passe vendeur.", url=url,
+             targets=["SNTS"], stance="baissier", conviction=3, created_at="2026-11-18T08:00:00Z")
+    assert a.note_id != b.note_id
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    ids = [st.add(a, now="2026-11-17T08:00:00Z"), st.add(b, now="2026-11-18T08:00:00Z")]
+    assert len(set(ids)) == 2 and len(st) == 2
+    # Les pièces collectées gardent l'identifiant fondé sur l'URL (déduplication).
+    assert _note(url=url).note_id == _note(url=url, text="autre texte").note_id
+    # Même identifiant, contenu différent (cibles) : erreur explicite, rien n'est perdu en silence.
+    from brvm_alpha.notes.store import NoteConflictError
+
+    with pytest.raises(NoteConflictError, match="update"):
+        st.add(a.copy(targets=["ORAC"]), now="2026-11-18T09:00:00Z")
+    assert st.add(a, now="2026-11-18T09:00:00Z") == a.note_id  # vrai doublon : idempotent
+
+
+@pytest.mark.parametrize("change", [{"event_type": "RES_ANNUAL"}, {"horizon_days": 60}])
+def test_regression_manual_type_or_horizon_change_is_not_silently_dropped(tmp_path, change):
+    """Vérification finale : une saisie de l'analyste qui ne diffère que par le type d'événement
+    ou l'horizon (durée du tilt) était ignorée en silence (``add`` idempotent)."""
+    from brvm_alpha.notes.store import NoteConflictError
+
+    a = Note(title="SONATEL", text="Vue de l'analyste.", targets=["SNTS"], stance="haussier", conviction=4,
+             published_at="2026-11-17T07:00:00Z", created_at="2026-11-17T07:00:00Z")
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    st.add(a, now="2026-11-17T07:00:00Z")
+    with pytest.raises(NoteConflictError, match="update"):
+        st.add(a.copy(**change), now="2026-11-17T08:00:00Z")
+    assert st.add(a.copy(tags=["relu"]), now="2026-11-17T08:00:00Z") == a.note_id  # étiquettes : pas un conflit
+
+
+def test_regression_unknown_manual_target_is_kept_and_not_redirected(tmp_path):
+    n = Note(text="Je reste prudent sur le secteur, BOA CI déçoit ; SONATEL reste ma conviction.",
+             targets=["SNTSS"], stance="haussier", conviction=5, created_at="2026-11-16T07:00:00Z")
+    assert n.targets == [] and n.targets_unknown == ["SNTSS"]
+    assert Note.from_json(n.to_json()).targets_unknown == ["SNTSS"]
+    a = an.analyze_note(n)
+    assert any("SNTSS" in w for w in a.warnings)
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    st.add(n, analyze=True, now="2026-11-16T07:00:00Z")
+    from brvm_alpha.notes import signals as sg
+
+    sc = sg.note_scores(st, "2026-11-17", calendar=list(biz_calendar()), equities=None)
+    assert sc.empty  # ni BOAC ni SNTS : l'avis ne se reporte pas sur des cibles non visées
+    assert not len(sg.manual_overlays(st, "2026-11-17", calendar=list(biz_calendar()), equities=None)["tilt"])
+    # Un symbole coté présent dans le panel mais absent de la liste 2026 reste reconnu.
+    md.panel_symbols.cache_clear()
+    assert md.is_known_symbol("SNTS")
+
+
+def test_regression_backdated_write_is_marked_and_excluded_from_strict(tmp_path, monkeypatch):
+    monkeypatch.delenv(md.SIMULATED_CLOCK_ENV, raising=False)
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    n = _note(published_at="2025-06-30T08:00:00Z", created_at="2025-06-30T08:00:00Z")
+    nid = st.add(n, now="2025-06-30T08:00:00Z")  # « reprise d'historique » : instant antidaté
+    got = st.get(nid)
+    assert md.RECONSTRUCTED_TAG in got.tags
+    raw = json.loads(st.path.read_text(encoding="utf-8").splitlines()[0])
+    assert raw["backdated"] is True and raw["written_at"] > raw["recorded_at"]
+    assert st.asof("2025-07-01").empty  # vue stricte : jamais une note antidatée
+    assert len(st.asof("2025-07-01", strict=False)) == 1
+    # Une version écrite à l'heure réelle n'hérite pas de l'étiquette.
+    v2 = st.update(nid, title="Titre corrigé")
+    assert md.RECONSTRUCTED_TAG not in v2.tags and len(st.asof(md.utc_now())) == 1
+
+
+def test_regression_analysis_runs_outside_the_journal_lock(tmp_path, monkeypatch):
+    st = NoteStore(tmp_path, calendar=biz_calendar())
+    seen: list[bool] = []
+    real = NoteStore._analyze
+
+    def spy(self, note, panels=None):
+        seen.append(self.lock_path.exists())
+        return real(self, note, panels)
+
+    monkeypatch.setattr(NoteStore, "_analyze", spy)
+    nid = st.add(_note(), analyze=True, now="2026-11-17T19:00:00Z")
+    st.update(nid, text="Résultat net en baisse.", now="2026-11-18T10:00:00Z")
+    assert seen == [False, False]  # analyse faite sans tenir le verrou
+    long = an.analyze_text("Résultat net en hausse. " * 3000)
+    assert any("premiers sont analysés" in w for w in long.warnings)
+
+
+def test_regression_entity_false_positives_from_review():
+    cases = {
+        "BIDC : Emprunt obligataire BIDC 6,50 % 2026-2033 de la Banque d'Investissement et de Développement de la CEDEAO": [],
+        "Convocation AGO : Election d'administrateurs ; renouvellement du mandat des commissaires aux comptes": [],
+        "CORIS BOURSE : agrément de la SGI par l'AMF-UMOA": [],
+        "Coris Asset Management : lancement du FCP Coris Performance": [],
+        "Agrément du FCP AURORE SECURITE III": [],
+        "Circulaire relative à la sécurité des systèmes d'information": [],
+        "Circulaire relative à la lutte contre le financement du terrorisme": [],
+        "Notation financière - BANQUE DE L'HABITAT DU SENEGAL (BHS) : dégradation de la note": [],
+    }
+    for title, targets in cases.items():
+        assert en.link_entities("", title).targets == targets, title
+    assert an.analyze_text("", title=next(iter(cases))).event_type != "POLITIQUE"
+    # Les vrais sens restent liés.
+    assert en.link_entities("", "Sanctions de la CEDEAO contre le Mali").targets == ["THEME:SANCTIONS", "PAYS:ML"]
+    assert en.link_entities("", "Sénégal : la croissance ralentit").targets == ["PAYS:SN"]
+    assert en.link_entities("", "CORIS BANK INTERNATIONAL : résultats annuels").targets == ["CBIBF"]
+    assert "THEME:SECURITE" in en.link_entities("", "Burkina : la situation sécuritaire se dégrade").targets
+
+
+def test_regression_reading_states_session_from_knowledge_time():
+    """Vérification finale : une note publiée le 19/11 mais saisie le 22/11 n'agit (vues strictes)
+    qu'à la séance du 23/11 ; la lecture le dit au lieu de laisser croire au 20/11."""
+    n = Note(title="SONATEL : vue", text="Le résultat net progresse de 9 %.", targets=["SNTS"], stance="haussier",
+             conviction=4, published_at="2026-11-19T18:00:00Z", created_at="2026-11-22T10:00:00Z")
+    a = an.analyze_note(n, sessions=biz_calendar())
+    assert "négociable à partir de la séance du 20/11/2026" in a.reading
+    assert "connue le 22/11/2026 à 10h00 UTC" in a.reading and "séance du 23/11/2026" in a.reading
+    assert 2 <= len([s for s in a.reading.split(". ") if s.strip()]) <= 5
+    # Saisie avant la coupure de la séance négociable : rien n'est ajouté.
+    b = an.analyze_note(n.copy(created_at="2026-11-20T08:00:00Z"), sessions=biz_calendar())
+    assert "connue le" not in b.reading

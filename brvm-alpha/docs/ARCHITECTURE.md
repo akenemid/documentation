@@ -126,7 +126,21 @@ dictionnaire de panels larges : `close_adj`, `tr_index`, `volume`, `value`,
 ### `portfolio/construct.py`
 - `build_portfolio(alpha: pd.Series, cov: DataFrame, constraints: Constraints,
   liquidity: pd.Series | None, prev_weights: pd.Series | None) -> pd.Series`
+  (optionnels : `group_caps: list[GroupCap]`, `hrp_distance_of_distances`)
 - `to_lots(weights, prices, capital) -> pd.Series` (nombre entier de titres)
+
+Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
+`PORTFOLIO_V1_DEFAULTS`, surcharges par dict plat ou dict du YAML de stratégie) :
+- `n_holdings(n_eligible) -> int` (`clip(round(N/3), 12, 20)` ; N si N < 15, mode repli)
+- `select_with_band(scores, held, eligible, n_target, entry_pct=0.30, exit_pct=0.50) -> BandSelection`
+- `line_caps(symbols, country, liquidity_tier_flags, spread_flags, risk_flags, base=0.10, multipliers=None) -> pd.Series`
+- `sector_caps(sectors)`, `country_caps(countries, reference=None)`,
+  `aes_caps(countries, seat_reference=..., lambda_reference=...) -> list[GroupCap]`
+- `equal_weight_with_caps(selected, upper, groups, investable=0.98) -> pd.Series`
+  (projection exacte ; `attrs["feasible_full_budget"]`)
+- `target_portfolio(scores, eligible, held_weights, context, params) -> (pd.Series, dict)`
+  (`params["weighting"]` : `"equal"` (A), `"hrp_tilt"` (G), `"mv_alpha"` (H))
+- `weekly_covariance(returns, asof)` (Ledoit-Wolf, W-FRI, 104 semaines, min 52, plancher 0,5)
 
 ### `backtest/engine.py`
 - `Backtester(panels, costs: CostModel, constraints, capital, ...)`
@@ -140,6 +154,20 @@ dictionnaire de panels larges : `close_adj`, `tr_index`, `volume`, `value`,
 - `BrvmAlpha(config).signals(asof, panels) -> dict[str, pd.Series]`
 - `BrvmAlpha(config).target_weights(asof, panels) -> pd.Series`
 - `BrvmAlpha(config).explain(asof, panels, symbol) -> dict` (décomposition du score)
+
+Modèle v1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §9.1 ; paramètres = `configs/strategy_v1.yaml`) :
+- `BrvmAlpha(config=None, variant="A", capital=None, params=None, *, notes="auto", country_events=None,
+  dividend_calendar=None, history_start=None, risk_overlay=True, defer_sales=None, sectors=None)`
+  (`variant` ∈ A…H ; `params` = surcharges du YAML, validées par `settings.load_strategy_config`)
+- `.universe(asof, panels) -> DataFrame` (U1-U10 : `eligible`, `reason`, `codes`, MDV63, U6/U7…)
+- `.risk_flags(asof, panels, notes="default") -> DataFrame` (R1-R12 du panel, notes de l'analyste si
+  `brvm_alpha.notes` s'importe, règles pays)
+- `.decide(asof, panels, held=None) -> AlphaDecision` (univers, signaux, risque, score, poids, diagnostics)
+- `.strategy_fn(event_driven=False, calendar=None, mode="alpha"|"index")` : fonction
+  `(asof, view) -> poids | None` pour `Backtester.run` (mémorise positions et valeur liquidative)
+- `.disciplined_index_weights(asof, panels)` (mode « indice discipliné », §8.3)
+- `build_panels(panel_dir) -> dict` : panels du moteur et de la stratégie (`close_raw`, `tr_index`,
+  `shares`, `market_tr`, tables datées `dividends_table`, `corporate_actions`, `market`)
 
 ### `cli.py`
 `python -m brvm_alpha <commande>` avec `update`, `panel`, `live`, `news`,
@@ -184,8 +212,16 @@ sécurité, eurobond…) ; `MARCHE`.
   `event_type`, `stance` (`haussier` | `baissier` | `neutre` | None),
   `conviction` (1..5 | None), `horizon_days` (défaut 20 séances), `tags`,
   `status` (`active` | `archived`), `version`, `analysis: dict | None`.
+  Champs facultatifs ajoutés : `published_precision` (`date` | `datetime`),
+  `recorded_at`, `targets_unknown` (cibles saisies non reconnues : conservées et
+  signalées, jamais remplacées par les cibles détectées). Une `first_tradable_session`
+  fournie ne peut pas précéder la coupure de 09h00 appliquée à `published_at`.
+  Identifiant : fondé sur l'URL pour une pièce collectée ; sur le contenu (titre, texte,
+  `published_at`, URL, avis) pour une note de l'analyste.
 - `NoteAnalysis` : `targets` (manuelles + détectées), `event_type`, `tone`
-  [-1,1], `s_num` [-1,1] (chiffres : ΔRN, Δdividende…), `score` [-1,1],
+  [-1,1], `s_num` [-1,1] (chiffres : ΔRN, Δdividende… ; moitié de `s_num_doc`, affichage),
+  `score` [-1,1] = `clip(0,7·s_num_doc + 0,3·tone, −1, 1)` avec `s_num_doc =
+  clip(Δ%/25, ±2)` (formule du document 07 §3.4, dans `components`),
   `materiality` [0,1], `confidence` [0,1], `risk_flags` (R1..R10),
   `extracted` (rn, rn_prev, rn_growth, div_net, div_prev, ex_date, ag_date…),
   `reading` (explication en français, phrases courtes), `matched_terms`.
@@ -196,6 +232,10 @@ sécurité, eurobond…) ; `MARCHE`.
   `archive(note_id)`, `list(target=None, since=None, until=None, source=None,
   status="active") -> pd.DataFrame`, `asof(ts) -> pd.DataFrame` (notes connues
   à la date, version en vigueur à cette date), `export_markdown(path)`.
+- Lecture tolérante (ligne tronquée, non UTF-8 ou mal typée : ignorée et signalée dans
+  `errors`) ; analyse faite hors verrou. Un `now` antidaté (reprise d'historique) marque
+  la version `reconstitue` / `backdated` : elle est exclue des vues strictes (hors mode
+  horloge simulée des tests, variable `BRVM_ALPHA_SIMULATED_CLOCK=1`).
 
 ### `notes/analyze.py`
 - `analyze_note(note, panels=None, asof=None) -> NoteAnalysis`
@@ -209,16 +249,32 @@ sécurité, eurobond…) ; `MARCHE`.
 - `fetch_url_note(url, store, targets=None) -> Note` : une page publique
   fournie par l'analyste (respect de robots.txt, aucune contournement).
 - Politesse : `robots.txt` lu et respecté (brvm.org : `Crawl-delay: 10`),
-  User-Agent explicite, cache, arrêt immédiat sur 403/429/5xx répétés.
+  User-Agent explicite, cache, arrêt immédiat sur 403/429/5xx répétés. Le délai et le
+  blocage après un 403/429 valent **d'une session à l'autre** (`<cache>/politeness.json`,
+  levée explicite par `clear_block(hôte)`) ; redirections suivies à la main et contrôlées
+  à chaque saut ; hôte normalisé (port, casse, point final). `created_at` d'une note
+  collectée = instant où la page a été vue (borne de connaissance) ; `published_at` =
+  publication sur le marché.
 
 ### `notes/signals.py`
-- `note_scores(store_or_frame, asof, half_life=10, calendar=None) -> pd.DataFrame`
+- `note_scores(store_or_frame, asof, half_life=10·ln 2, calendar=None, ..., tau=None) -> pd.DataFrame`
   (une ligne par cible : score décroissant `Σ s_k·exp(−Δt/τ)`, n_notes,
-  dernière note, notes manuelles vs automatiques).
+  dernière note, notes manuelles vs automatiques). **Décroissance** : τ = 10 séances
+  (document 07 §3.4 règle 6 et §6.5 S5, `decay_tau_sessions: 10`). `half_life` reste une
+  demi-vie (`2^(−Δ/h)`) ; sa valeur par défaut `10·ln 2 ≈ 6,93` reproduit exactement
+  `exp(−Δ/10)` ; `tau`, s'il est fourni, est prioritaire. (Avant le 22/11/2026, le défaut
+  `half_life=10` donnait `exp(−Δ/14,4)` : corrigé.)
+- **Point-in-time strict** (`strict=True`, défaut de `note_scores`, `notes_asof`,
+  `manual_overlays`, `notes_panel`) : une note agit à la séance
+  `first_tradable_session(max(publication prudente, created_at, recorded_at))` — coupure de
+  09h00 appliquée à l'instant de **connaissance** (signaux calculés avant 09h00, document 07
+  §2.3) ; la version en vigueur à la séance J est la dernière écrite avant la coupure de J ;
+  Δ est compté depuis cette séance effective. `strict=False` : publication seule
+  (reconstitution d'historique).
 - `manual_overlays(store, asof) -> dict` : `veto` (exclusions), `tilt`
   (ajustement borné à ±0,5 écart-type), `flags` (R1..R10 actifs).
-- `notes_panel(store, calendar, symbols, half_life=10) -> pd.DataFrame`
-  (date × symbole, point-in-time) pour l'IC walk-forward.
+- `notes_panel(store, calendar, symbols, half_life=10·ln 2) -> pd.DataFrame`
+  (date × symbole, point-in-time, mêmes règles que `note_scores`) pour l'IC walk-forward.
 
 ### `notes/index_eval.py`
 - `evaluate_indices(panels, store=None, asof=None) -> pd.DataFrame` : une ligne
@@ -226,7 +282,9 @@ sécurité, eurobond…) ; `MARCHE`.
   régime, valorisation (PER et rendement du marché/des constituants vs
   percentile historique), largeur (part des titres au-dessus de leur moyenne
   50/200 séances, hausses/baisses), saison des dividendes, score des notes,
-  score composite, `stance`, `confidence`, `reasons` (liste de phrases).
+  score composite, `stance`, `confidence`, `reasons` (liste de phrases). La composante
+  « notes » n'est retenue que si au moins une note en vigueur a une contribution non nulle
+  (des notes de score nul ne diluent pas les autres composantes).
 - `index_dossier(index, panels, store=None, asof=None) -> dict` (détail :
   constituants, contributions, notes récentes, calendrier, « ce qui ferait
   changer d'avis »).

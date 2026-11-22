@@ -30,6 +30,7 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import os
 import re
 import unicodedata
 from dataclasses import asdict, dataclass, field, fields
@@ -180,6 +181,31 @@ THEMES: dict[str, str] = {
 #: Symboles historiques (radiés ou suspendus de longue date) présents dans le panel.
 HISTORICAL_SYMBOLS = ("SVOC", "TTRC")
 KNOWN_SYMBOLS: frozenset[str] = frozenset(SYMBOLS_2026) | frozenset(HISTORICAL_SYMBOLS)
+
+
+@lru_cache(maxsize=1)
+def panel_symbols() -> frozenset[str]:
+    """Symboles présents dans ``data/panel/equities.parquet`` (lecture paresseuse, mise en cache).
+
+    Complète :data:`KNOWN_SYMBOLS` (liste 2026) par les titres réellement cotés dans le
+    panel, par exemple une nouvelle cotation. Ensemble vide si le panel est absent.
+    """
+    path = Path(__file__).resolve().parents[2] / "data" / "panel" / "equities.parquet"
+    if not path.exists():
+        return frozenset()
+    try:
+        col = pd.read_parquet(path, columns=["symbol"])["symbol"]
+    except Exception:  # pragma: no cover - panel illisible
+        return frozenset()
+    return frozenset(str(s).strip().upper() for s in col.dropna().unique() if str(s).strip())
+
+
+def is_known_symbol(code: str) -> bool:
+    """Le code est-il un symbole connu (liste 2026, historiques, ou présent dans le panel) ?"""
+    c = str(code or "").strip().upper()
+    if not c:
+        return False
+    return c in KNOWN_SYMBOLS or c in panel_symbols()
 
 TARGET_KINDS = ("symbol", "index", "country", "sector", "theme", "market")
 
@@ -408,6 +434,8 @@ def normalize_target(value: Any, strict: bool = False) -> str | None:
         return "MARCHE"
     if up.replace(" ", "") in KNOWN_SYMBOLS:
         return up.replace(" ", "")
+    if re.fullmatch(r"[A-Z0-9]{3,6}", up.replace(" ", "")) and is_known_symbol(up.replace(" ", "")):
+        return up.replace(" ", "")
     if k in _INDEX_WORDS:
         return _INDEX_WORDS[k]
     if k in _INDEX_NAME_LOOKUP:
@@ -628,6 +656,37 @@ def utc_now() -> pd.Timestamp:
     return pd.Timestamp.now(tz="UTC")
 
 
+#: Variable d'environnement du « mode horloge simulée » (tests) : un instant d'écriture
+#: ``now`` antérieur à l'heure réelle y est accepté tel quel.
+SIMULATED_CLOCK_ENV = "BRVM_ALPHA_SIMULATED_CLOCK"
+#: Écart toléré entre un instant d'écriture fourni (``now``) et l'heure réelle.
+BACKDATE_TOLERANCE = pd.Timedelta(minutes=10)
+#: Étiquette des notes écrites avec un instant antérieur à l'heure réelle (reprise
+#: d'historique) : elles sont exclues des vues strictes (``asof(strict=True)``).
+RECONSTRUCTED_TAG = "reconstitue"
+
+
+def simulated_clock() -> bool:
+    """Le mode horloge simulée est-il actif (variable :data:`SIMULATED_CLOCK_ENV` à 1) ?"""
+    return os.environ.get(SIMULATED_CLOCK_ENV, "").strip().lower() in ("1", "true", "oui", "yes")
+
+
+def is_backdated(value: Any, reference: Any = None, tolerance: pd.Timedelta = BACKDATE_TOLERANCE) -> bool:
+    """``value`` est-il antérieur à l'heure réelle (``reference``) de plus de ``tolerance`` ?
+
+    Toujours ``False`` en mode horloge simulée (tests). Un instant d'écriture antidaté
+    ne prouve pas que l'information était connue à cet instant : la note est alors
+    marquée « reconstituée » et ne compte pas dans les vues strictes.
+    """
+    if simulated_clock():
+        return False
+    ts = to_utc(value)
+    if ts is None:
+        return False
+    ref = utc_now() if reference is None else to_utc(reference)
+    return ts < ref - tolerance
+
+
 def to_day(value: Any) -> pd.Timestamp | None:
     """Date (``pd.Timestamp`` sans fuseau, à minuit) d'une valeur quelconque."""
     if value is None:
@@ -820,6 +879,24 @@ def first_tradable_session(
     return cal.next_session(day, inclusive=False)
 
 
+def first_tradable_floor(published_at: Any, date_only: bool | None = None,
+                         cutoff: _dt.time = NEWS_CUTOFF_UTC) -> pd.Timestamp | None:
+    """Borne inférieure de ``first_tradable_session``, valable quel que soit le calendrier.
+
+    Le jour de publication si elle a lieu avant ``cutoff`` (09h00 UTC), sinon le
+    lendemain (date seule comprise). Aucune séance négociable ne peut la précéder.
+    """
+    ts = to_utc(published_at)
+    if ts is None:
+        return None
+    if date_only is None:
+        date_only = is_date_only(published_at)
+    day = ts.tz_localize(None).normalize()
+    if not date_only and ts.time() < cutoff:
+        return day
+    return day + pd.Timedelta(days=1)
+
+
 # ---------------------------------------------------------------------------
 # Identifiants
 # ---------------------------------------------------------------------------
@@ -836,23 +913,37 @@ def make_note_id(
     text: str = "",
     published_at: Any = None,
     author: str = "",
+    stance: str | None = None,
+    conviction: Any = None,
 ) -> str:
     """Identifiant stable (sha1, 40 caractères hexadécimaux).
 
-    - avec une URL : ``sha1(source | url | titre normalisé)`` — la même pièce collectée
-      deux fois a le même identifiant (déduplication) ;
-    - sans URL : ``sha1(source | auteur | titre | texte | published_at)`` — deux notes
-      manuelles identiques saisies à des instants différents restent distinctes.
-    Le titre et le texte sont normalisés (casse, accents, espaces) avant hachage.
+    - pièce **collectée** (URL fournie, ni ``source="manual"`` ni ``author="analyste"``) :
+      ``sha1(source | url | titre normalisé)`` — la même pièce collectée deux fois a le
+      même identifiant (déduplication) ;
+    - note **de l'analyste** (``source="manual"`` ou ``author="analyste"``), ou sans URL :
+      ``sha1(source | auteur | titre | texte | published_at [| url] [| avis | conviction])``
+      — deux notes manuelles différentes qui citent la même pièce source restent
+      distinctes, et deux notes identiques saisies à des instants différents aussi.
+    Le titre et le texte sont normalisés (casse, accents, espaces) avant hachage. L'URL,
+    l'avis et la conviction n'entrent dans la clé que s'ils sont renseignés (les
+    identifiants des notes manuelles sans URL ni avis sont inchangés).
     """
     url = (url or "").strip()
-    if url:
+    manual = (source or "") == "manual" or (author or "") == "analyste"
+    if url and not manual:
         key = "|".join([source or "", url, _norm_for_id(title)])
     else:
         ts = to_utc(published_at)
-        key = "|".join(
-            [source or "", author or "", _norm_for_id(title), _norm_for_id(text), ts.isoformat() if ts is not None else ""]
-        )
+        parts = [source or "", author or "", _norm_for_id(title), _norm_for_id(text),
+                 ts.isoformat() if ts is not None else ""]
+        if url:
+            parts.append("url=" + url)
+        if stance:
+            parts.append("avis=" + str(stance))
+        if conviction is not None and not (isinstance(conviction, float) and np.isnan(conviction)):
+            parts.append("conviction=" + str(int(round(float(conviction)))))
+        key = "|".join(parts)
     return hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
@@ -1012,7 +1103,7 @@ class NoteAnalysis:
 _NOTE_FIELD_ORDER = (
     "note_id", "created_at", "published_at", "first_tradable_session", "author", "source", "url",
     "title", "text", "targets", "event_type", "stance", "conviction", "horizon_days", "tags",
-    "status", "version", "analysis", "published_precision", "recorded_at",
+    "status", "version", "analysis", "published_precision", "recorded_at", "targets_unknown",
 )
 
 
@@ -1029,7 +1120,15 @@ class Note:
     - ``published_precision`` : ``"datetime"`` ou ``"date"`` (date seule : l'information
       est réputée connue en fin de journée) ;
     - ``recorded_at`` : instant d'écriture de cette version dans le journal (renseigné
-      par ``NoteStore``).
+      par ``NoteStore``) ;
+    - ``targets_unknown`` : cibles saisies **non reconnues** (faute de frappe, titre hors
+      liste et hors panel). Elles ne sont jamais remplacées en silence par les cibles
+      détectées dans le texte : une note de l'analyste dont toutes les cibles sont
+      inconnues ne se propage à aucun titre (voir ``signals.effective_targets``).
+
+    ``first_tradable_session`` fournie n'est jamais antérieure à la règle de coupure
+    appliquée à ``published_at`` (:func:`first_tradable_floor`) : une valeur plus tôt est
+    remplacée par la séance calculée.
     """
 
     note_id: str = ""
@@ -1052,6 +1151,7 @@ class Note:
     analysis: dict[str, Any] | None = None
     published_precision: str | None = None
     recorded_at: Any = None
+    targets_unknown: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # Auteur, source, statut.
@@ -1086,8 +1186,20 @@ class Note:
             if self.published_precision is None:
                 self.published_precision = "date" if is_date_only(raw_pub) else "datetime"
         self.recorded_at = to_utc(self.recorded_at)
-        # Cibles, type, avis de l'analyste.
-        self.targets = normalize_targets(_as_list(self.targets))
+        # Cibles, type, avis de l'analyste. Une cible non reconnue est conservée à part
+        # (``targets_unknown``) au lieu de disparaître sans avertissement.
+        codes: list[str] = []
+        unknown: list[str] = [str(u).strip() for u in _as_list(self.targets_unknown) if str(u).strip()]
+        for v in _as_list(self.targets):
+            code = normalize_target(v)
+            if code is None:
+                raw = str(v).strip() if v is not None else ""
+                if raw and raw not in unknown:
+                    unknown.append(raw)
+            elif code not in codes:
+                codes.append(code)
+        self.targets = codes
+        self.targets_unknown = unknown
         self.event_type = normalize_event_type(self.event_type)
         self.stance = normalize_stance(self.stance)
         if self.conviction is not None and not (isinstance(self.conviction, float) and np.isnan(self.conviction)):
@@ -1104,20 +1216,22 @@ class Note:
         self.version = int(self.version or 1)
         if self.analysis is not None and isinstance(self.analysis, NoteAnalysis):
             self.analysis = self.analysis.to_dict()
-        # Séance négociable.
-        if self.first_tradable_session in (None, ""):
-            self.first_tradable_session = first_tradable_session(
-                self.published_at, date_only=self.published_precision == "date"
-            )
+        # Séance négociable : jamais avant la coupure de 09h00 appliquée à published_at.
+        date_only = self.published_precision == "date"
+        given = None if self.first_tradable_session in (None, "") else to_day(self.first_tradable_session)
+        floor = first_tradable_floor(self.published_at, date_only=date_only)
+        if given is None or (floor is not None and given < floor):
+            self.first_tradable_session = first_tradable_session(self.published_at, date_only=date_only)
         else:
-            self.first_tradable_session = to_day(self.first_tradable_session)
+            self.first_tradable_session = given
         if not self.note_id:
             self.note_id = self.compute_id()
 
     # -- identifiant et dates ------------------------------------------------
     def compute_id(self) -> str:
         """Identifiant stable de la note (voir :func:`make_note_id`)."""
-        return make_note_id(self.source, self.url, self.title, self.text, self.published_at, self.author)
+        return make_note_id(self.source, self.url, self.title, self.text, self.published_at, self.author,
+                            stance=self.stance, conviction=self.conviction)
 
     @property
     def published_effective(self) -> pd.Timestamp:
@@ -1178,8 +1292,17 @@ class Note:
         return cls.from_dict(json.loads(line))
 
     def copy(self, **changes: Any) -> "Note":
-        """Copie modifiée (re-validée) ; ``note_id`` est conservé."""
+        """Copie modifiée (re-validée) ; ``note_id`` est conservé.
+
+        Changer ``published_at`` (ou ``published_precision``) sans fournir
+        ``first_tradable_session`` recalcule la séance négociable ; changer
+        ``published_at`` sans ``published_precision`` la redéduit de la nouvelle valeur.
+        """
         d = self.to_dict()
+        if ("published_at" in changes or "published_precision" in changes) and "first_tradable_session" not in changes:
+            d["first_tradable_session"] = None
+        if "published_at" in changes and "published_precision" not in changes:
+            d["published_precision"] = None
         d.update(changes)
         return Note.from_dict(d)
 
@@ -1187,7 +1310,9 @@ class Note:
 __all__ = [
     "AUTHORS", "SOURCES", "STANCES", "STATUSES", "EVENT_TYPES", "RISK_FLAGS", "INDEX_TARGETS",
     "SECTOR_LABELS", "SECTOR_INDEX_NAMES", "THEMES", "KNOWN_SYMBOLS", "FIXED_HOLIDAYS",
-    "NEWS_CUTOFF_UTC", "Note", "NoteAnalysis", "SessionCalendar", "first_tradable_session",
+    "NEWS_CUTOFF_UTC", "Note", "NoteAnalysis", "SessionCalendar", "first_tradable_session", "first_tradable_floor",
+    "panel_symbols", "is_known_symbol", "simulated_clock", "is_backdated", "SIMULATED_CLOCK_ENV",
+    "BACKDATE_TOLERANCE", "RECONSTRUCTED_TAG",
     "normalize_target", "normalize_targets", "target_kind", "target_label", "index_names",
     "target_symbols", "make_note_id", "to_utc", "to_day", "is_date_only", "fold",
     "fold_with_map", "slug", "normalize_stance", "stance_sign", "normalize_event_type",

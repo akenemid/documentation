@@ -13,8 +13,10 @@ jour, document 07 §3.6 et §7) : ses poids sont des hypothèses de départ.
   en eux-mêmes (piège Loughran-McDonald).
 
 Règles de calcul (§3.4) appliquées par :func:`scan` :
-1. négation (« pas de », « absence de », « aucun », « sans », « ne … pas », « non ») dans
-   les 3 mots qui précèdent le terme, dans la même proposition : signe inversé ;
+1. négation (« pas de », « absence de », « aucun », « sans », « non ») dans les 3 mots qui
+   précèdent le terme, dans la même proposition, ou négation verbale « ne / n' … pas |
+   plus | jamais » entre le sujet et le verbe (« le résultat net ne progresse pas »,
+   « le bénéfice n'est pas en hausse ») : signe inversé ; « ne … que » n'est pas une négation ;
 2. contraste : avec « malgré », « en dépit de », « bien que », la proposition concédée
    (qui suit) pèse ×0,5 ; avec « mais », « toutefois », « cependant », « néanmoins », la
    proposition qui précède pèse ×0,5 ;
@@ -73,6 +75,14 @@ ADJ = (
     r"significative|importante|spectaculaire|nouveau|net)\s+)?"
 )
 COPULA = r"(?:(?:est|reste|ressort|s'inscrit|s'affiche|se\s+situe|apparait|demeure|etait|sont)\s+)?"
+#: Négation verbale entre le sujet et le verbe (« le résultat net ne progresse pas »,
+#: « le bénéfice n'est pas en hausse ») : le « ne / n' » fait partie du motif, la particule
+#: (« pas », « plus », « jamais »…) est cherchée dans le motif ou juste après (§3.4 règle 1).
+NEG_V = r"(?:(?:ne|n')\s*)?"
+NEG_P = r"(?:(?:pas|plus|jamais|guere|nullement|aucunement)\s+)?"
+#: Sujet -> verbe : copule seule, ou « ne / n' » + copule + particule (la particule n'est
+#: admise qu'après un « ne » : « résultat net pas en hausse » n'est pas lu comme positif).
+SUBJ_V = rf"\s+(?:(?:ne|n')\s*{COPULA}{NEG_P}|{COPULA})"
 PRESS_UP = r"(?:bondi(?:t|ssent)|s'envole(?:nt)?|double(?:nt)?|triple(?:nt)?|explose(?:nt)?|grimpe(?:nt)?)"
 #: Jusqu'à deux mots entre l'indicateur et « en hausse » (« dividende Sonatel attendu en
 #: hausse ») ; les mots qui changeraient le sujet (« contre », « et », chiffres) sont exclus.
@@ -101,7 +111,7 @@ class Term:
 TERMS: tuple[Term, ...] = (
     # --- Positifs -----------------------------------------------------------
     Term("hausse du résultat net",
-         rf"{UP}{DET}\s+{RN}|{RN}\s+{COPULA}(?:en\s+)?{ADJ}(?:{UP}|{VERB_UP})|benefices?\s+en\s+hausse", 2, "pos", "rn"),
+         rf"{UP}{DET}\s+{RN}|{RN}{SUBJ_V}(?:en\s+)?{ADJ}(?:{UP}|{VERB_UP})|benefices?\s+en\s+hausse", 2, "pos", "rn"),
     Term("bénéfice record",
          r"(?:benefices?|resultats?(?:\s+nets?)?)\s+records?|plus\s+haut\s+historique|record\s+historique", 2, "pos", "rn"),
     Term("retour aux bénéfices",
@@ -118,12 +128,13 @@ TERMS: tuple[Term, ...] = (
     Term("verbe de presse sur le chiffre d'affaires",
          rf"{CA}\b[^.;]{{0,40}}?\b{PRESS_UP}|(?:accroit|ameliore|augmente|double|triple)\s+(?:son|sa|ses|leur|leurs)\s+{CA}",
          2, "pos", "ca"),
-    Term("hausse du PNB", rf"{UP}{DET}\s+{PNB}|{PNB}\s+{COPULA}(?:en\s+)?{ADJ}(?:{UP}|{VERB_UP})", 1, "pos", "pnb"),
-    Term("hausse du chiffre d'affaires", rf"{UP}{DET}\s+{CA}|{CA}\s+{COPULA}(?:en\s+)?{ADJ}(?:{UP}|{VERB_UP})", 1, "pos", "ca"),
-    Term("hausse de la marge", rf"{UP}{DET}\s+{MARGE}|{MARGE}\s+{COPULA}(?:en\s+)?{ADJ}(?:{UP}|{VERB_UP})", 1, "pos", "marge"),
+    Term("hausse du PNB", rf"{UP}{DET}\s+{PNB}|{PNB}{SUBJ_V}(?:en\s+)?{ADJ}(?:{UP}|{VERB_UP})", 1, "pos", "pnb"),
+    Term("hausse du chiffre d'affaires", rf"{UP}{DET}\s+{CA}|{CA}{SUBJ_V}(?:en\s+)?{ADJ}(?:{UP}|{VERB_UP})", 1, "pos", "ca"),
+    Term("hausse de la marge", rf"{UP}{DET}\s+{MARGE}|{MARGE}{SUBJ_V}(?:en\s+)?{ADJ}(?:{UP}|{VERB_UP})", 1, "pos", "marge"),
     Term("dividende en hausse",
          rf"{DIV}{GAP2}\s+en\s+{ADJ}hausse|(?:relevement|hausse|augmentation|progression)\s+du\s+dividende|"
-         rf"{DIV}\s+(?:est\s+|sera\s+|a\s+ete\s+)?(?:releve|augmente|revu\s+a\s+la\s+hausse)|"
+         rf"{DIV}\s+(?:(?:ne|n')\s*(?:est\s+|sera\s+|a\s+ete\s+|a\s+)?{NEG_P}(?:ete\s+)?|"
+         r"(?:est\s+|sera\s+|a\s+ete\s+|a\s+)?)(?:releve|augmente|revu\s+a\s+la\s+hausse)|"
          r"dividendes?\s+records?|acompte\s+sur\s+dividendes?|dividendes?\s+exceptionnels?", 2, "pos", "div"),
     Term("attribution gratuite d'actions",
          r"attribution\s+(?:gratuite\s+d'actions|d'actions\s+gratuites)|actions\s+gratuites|"
@@ -187,7 +198,7 @@ TERMS: tuple[Term, ...] = (
          r"redressements?\s+fiscaux|redressement\s+fiscal",
          -1, "neg", source="ext v0.2"),
     Term("baisse du résultat net",
-         rf"{DOWN}{DET}\s+{RN}|{RN}\s+{COPULA}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})|benefices?\s+en\s+baisse|"
+         rf"{DOWN}{DET}\s+{RN}|{RN}{SUBJ_V}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})|benefices?\s+en\s+baisse|"
          rf"(?:benefices?|resultats?(?:\s+nets?)?)\b[^.;]{{0,40}}?\b(?:plonge(?:nt)?|s'effondre(?:nt)?|fond(?:ent)?)",
          -2, "neg", "rn"),
     Term("perte nette",
@@ -250,10 +261,10 @@ TERMS: tuple[Term, ...] = (
     Term("réduction de capital, radiation",
          r"reduction\s+(?:de\s+(?:son\s+)?|du\s+)capital(?:\s+social)?(?:\s+pour\s+(?:apurer|resorber|absorber)\s+(?:des|les)\s+pertes)?|"
          r"radiations?(?:\s+de\s+la\s+cote)?|retrait\s+de\s+la\s+cote|retrait\s+obligatoire", -2, "neg"),
-    Term("baisse du PNB", rf"{DOWN}{DET}\s+{PNB}|{PNB}\s+{COPULA}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})", -1, "neg", "pnb", source="ext v0.1"),
-    Term("baisse du chiffre d'affaires", rf"{DOWN}{DET}\s+{CA}|{CA}\s+{COPULA}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})", -1, "neg", "ca",
+    Term("baisse du PNB", rf"{DOWN}{DET}\s+{PNB}|{PNB}{SUBJ_V}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})", -1, "neg", "pnb", source="ext v0.1"),
+    Term("baisse du chiffre d'affaires", rf"{DOWN}{DET}\s+{CA}|{CA}{SUBJ_V}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})", -1, "neg", "ca",
          source="ext v0.1"),
-    Term("baisse de la marge", rf"{DOWN}{DET}\s+{MARGE}|{MARGE}\s+{COPULA}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})", -1, "neg", "marge",
+    Term("baisse de la marge", rf"{DOWN}{DET}\s+{MARGE}|{MARGE}{SUBJ_V}(?:en\s+)?{ADJ}(?:{DOWN}|{VERB_DOWN})", -1, "neg", "marge",
          source="ext v0.1"),
     Term("baisse de l'activité", rf"{DOWN}{DET}\s+{ACTIVITY}|{ACTIVITY}\s+en\s+(?:baisse|recul|repli)", -1, "neg", "activity",
          source="ext v0.1"),
@@ -306,6 +317,9 @@ CONCESSIVE = ("malgre", "en depit de", "en depit d'", "bien que", "quoique", "me
 ADVERSATIVE = ("mais", "toutefois", "cependant", "neanmoins", "pourtant", "en revanche")
 
 NEGATION_WINDOW = 3
+#: Particules qui complètent un « ne / n' » verbal (« ne … pas »).
+NEGATION_PARTICLES = frozenset({"pas", "plus", "jamais", "guere", "nullement", "aucunement", "point"})
+_VERBAL_NE = re.compile(r"(?<![a-z0-9])(?:ne\s|n')")
 CONCESSION_WEIGHT = 0.5
 INTENSIFIER_MULT = 1.5
 ATTENUATOR_MULT = 0.5
@@ -487,9 +501,22 @@ def _apply_modifiers(hit: TermHit, norm: str, sa: int, sb: int, term: Term) -> N
             nxt = toks[j + 1] if j + 1 < len(toks) else ""
             if w in NEGATIONS and nxt not in NEGATION_BLOCKERS:
                 negated = True
+        # « ne … pas » entre le sujet et le verbe, à l'intérieur du motif (« le résultat net ne
+        # progresse pas », « n'est pas en hausse ») ; « ne … que » (restriction) n'est pas une négation.
+        restricted = False
+        if not negated and _VERBAL_NE.search(norm, s, e):
+            inside = _TOKEN.findall(norm[s:e])
+            after = [m.group(0) for m in _TOKEN.finditer(norm, e, min(sb, e + 40))][:3]
+            if after[:1] in (["que"], ["qu"]):
+                restricted = True  # « ne progresse que de 2 % » : restriction, pas négation
+            elif (set(inside) | set(after)) & NEGATION_PARTICLES:
+                negated = True
         if negated:
             hit.weight = -hit.weight
             hit.modifiers.append("négation")
+        if restricted:
+            hit.weight *= ATTENUATOR_MULT
+            hit.modifiers.append("restriction « ne … que » ×0,5")
     # 2) Contraste.
     for a, b in _conceded_spans(norm, sa, sb):
         if a <= s < b:
@@ -579,7 +606,9 @@ class EventRule:
 #: Documents qui ressemblent à une publication de résultats sans en être une : bilan
 #: semestriel du contrat de liquidité (56 notes sur 1 097 classées RES_S1 lors de l'essai
 #: réel du 22/11/2026), rapport RSE.
-_NOT_RESULTS = r"contrat\s+de\s+liquidite|\brse\b|responsabilite\s+societale"
+_NOT_RESULTS = (r"contrat\s+de\s+liquidite|\brse\b|responsabilite\s+societale|conventions?\s+reglementees?")
+#: Second semestre : rapport d'activité de l'année entière (publié en février), pas un S1.
+_SECOND_HALF = r"(?:2\s?(?:e|eme|ieme)|deuxieme|second)\s+semestre"
 #: Fonds (SICAV, FCP, OPCVM, FCTC) : un « fractionnement de la valeur liquidative » n'est
 #: pas un fractionnement d'actions (essai réel du 22/11/2026).
 _FUND_CONTEXT = r"\bsicav\b|\bfcp\b|\bfcpr\b|\bopcvm\b|\bfctc\b|valeur\s+liquidative"
@@ -634,12 +663,13 @@ EVENT_RULES: tuple[EventRule, ...] = (
               r"(?:third|3rd)\s+quar?ter(?:ly)?|\bq3\b", exclude=_NOT_RESULTS),
     EventRule("RES_S1",
               r"semestre|semestriel(?:le)?s?|examen\s+limite|\bs1\b|30\s+juin|2\s?(?:e|eme|ieme)\s+trimestre|"
-              r"deuxieme\s+trimestre|half[\s-]year|(?:first|1st)\s+half|semi[\s-]annual|\bh1\b", exclude=_NOT_RESULTS),
+              r"deuxieme\s+trimestre|half[\s-]year|(?:first|1st)\s+half|semi[\s-]annual|\bh1\b", exclude=_NOT_RESULTS + "|" + _SECOND_HALF),
     EventRule("RES_ANNUAL",
               r"etats\s+financiers|commissaires\s+aux\s+comptes|comptes\s+annuels|rapport\s+annuel|resultats?\s+annuels?|"
               r"exercice\s+clos|31\s+decembre|rapport\s+de\s+gestion|attestation\s+(?:d'execution\s+de\s+la\s+mission\s+de\s+)?commissari|"
               r"rapports?\s+d'activites?\s+annuel|rapports?\s+d'activites?\s+(?:de\s+l'(?:exercice|annee)\s+)?20\d\d\b|"
-              r"4\s?(?:e|eme|ieme)\s+trimestre|quatrieme\s+trimestre|rapport\s+du\s+conseil\s+d'administration|"
+              r"4\s?(?:e|eme|ieme)\s+trimestre|quatrieme\s+trimestre|rapport\s+du\s+conseil\s+d.?administration|"
+              rf"{_SECOND_HALF}|"
               r"financial\s+statements|annual\s+report|\bcac\b", exclude=_NOT_RESULTS),
     EventRule("REGULATOR",
               r"amf-umoa|\bamf\b|crepmf|commission\s+bancaire|mise\s+en\s+demeure|"
@@ -647,8 +677,13 @@ EVENT_RULES: tuple[EventRule, ...] = (
               exclude=r"coups?\s+d'etat|cedeao|election"),
     # Types propres aux notes (macro, politique…) : titre puis texte.
     EventRule("POLITIQUE",
-              r"\belections?\b|presidentielle|legislatives|coups?\s+d'etat|putsch|\bjunte\b|sanctions\s+(?:de\s+la\s+)?(?:cedeao|uemoa)|"
-              r"\bcedeao\b|\baes\b|confederation\s+des\s+etats|remaniement|referendum|transition\s+politique|"
+              # « élection d'administrateurs » (AG) et « CEDEAO » seule (emprunt de la BIDC) ne sont
+              # pas des événements politiques (essai du 22/11/2026).
+              r"\belections?\b(?!\s+(?:d'|des\s+|du\s+|de\s+(?:nouveaux\s+|la\s+)?)?(?:administrateurs?|membres|"
+              r"commissaires|president\s+du\s+conseil|dirigeants?|representants?))|presidentielle|legislatives|"
+              r"coups?\s+d'etat|putsch|\bjunte\b|sanctions\s+(?:de\s+la\s+)?(?:cedeao|uemoa)|"
+              r"(?:sommet|chefs\s+d'etat|retrait|sortie|mediation|suspension)\s+(?:de\s+la\s+|du\s+|de\s+)?cedeao|"
+              r"\baes\b|confederation\s+des\s+etats|remaniement|referendum|transition\s+politique|"
               r"crise\s+politique|tensions?\s+politiques?", source="notes"),
     EventRule("SECURITE",
               r"securitaire|insecurite|terroris|jihadist|djihadist|attaques?\s+(?:armees?|terroristes?)|groupes\s+armes",
@@ -677,14 +712,16 @@ def _compiled_rules() -> tuple[tuple[EventRule, re.Pattern, re.Pattern | None], 
     )
 
 
-def detect_event_type(title: str = "", text: str = "", text_chars: int = 400) -> tuple[str, str]:
+def detect_event_type(title: str = "", text: str = "", text_chars: int = 400, macro_text: bool = True) -> tuple[str, str]:
     """Type d'événement et origine de la détection.
 
     Renvoie ``(type, origine)`` avec origine ∈ ``title`` (règle §6.4 sur le titre),
     ``text`` (règle trouvée dans les ``text_chars`` premiers caractères du texte),
     ``weak`` (mot « résultats » seul) ou ``none`` (``OTHER``).
     Les types macro (POLITIQUE, SECURITE, MATIERES_PREMIERES, MACRO) sont cherchés dans
-    le titre puis dans tout le texte, après les types propres aux émetteurs.
+    le titre puis dans tout le texte, après les types propres aux émetteurs ;
+    ``macro_text=False`` les limite au titre (document d'un émetteur : « filières cacao,
+    café, anacarde » dans un communiqué de Filtisac n'en fait pas une note sur le cacao).
     """
     nt = fold(title or "")
     nx = fold(text or "")
@@ -697,7 +734,7 @@ def detect_event_type(title: str = "", text: str = "", text_chars: int = 400) ->
                 continue
             if rx.search(zone) and not (ex and ex.search(zone)):
                 return rule.event_type, origin
-    for zone, origin in ((nt, "title"), (nx, "text")):
+    for zone, origin in ((nt, "title"), (nx if macro_text else "", "text")):
         if not zone:
             continue
         for rule, rx, ex in rules:

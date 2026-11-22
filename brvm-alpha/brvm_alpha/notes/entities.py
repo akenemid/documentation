@@ -125,6 +125,7 @@ COMPANY_ALIASES: dict[str, str] = {
     "safca": "SAFC", "alios finance": "SAFC", "safca alios finance": "SAFC", "alios finance ci": "SAFC",
     "biic": "BICB", "biic benin": "BICB", "biic bn": "BICB",
     "banque internationale pour l'industrie et le commerce": "BICB",
+    "banque internationale pour l'industrie et le commerce du benin": "BICB",
     "coris": "CBIBF", "coris bank": "CBIBF", "coris bank international": "CBIBF", "coris bank bf": "CBIBF",
     "coris bank international burkina faso": "CBIBF",
     "oragroup": "ORGT", "oragroup togo": "ORGT", "oragroup tg": "ORGT", "orabank": "ORGT",
@@ -194,6 +195,8 @@ ALIAS_EVIDENCE: dict[str, str] = {
     "societe multinationale de bitumes": "raison sociale de SMB (doc 06b SMBC)",
     "societe de distribution d'eau de cote d'ivoire": "raison sociale de la SODECI (doc 06b SDCC)",
     "banque internationale pour l'industrie et le commerce": "raison sociale de la BIIC (doc 06a §5.10)",
+    "banque internationale pour l'industrie et le commerce du benin": "libellé de la liste « Projets de résolution » "
+                                                                      "de brvm.org (essai réel du 22/11/2026)",
     "bollore transport et logistique": "forme française de « BOLLORE TRANSPORT & LOGISTICS » (libellé panel)",
     "moov burkina": "communiqué brvm.org « MOOV BURKINA FASO (ex ONATEL BF) » (doc 07 §1.2)",
     "moov burkina faso": "communiqué brvm.org « MOOV BURKINA FASO (ex ONATEL BF) »",
@@ -220,14 +223,50 @@ AMBIGUOUS_ALIASES: dict[str, str] = {
     "moov africa cote d'ivoire": "Moov Africa CI, non coté",
     "air liquide international": "actionnaire d'Erium CI (franchissement de seuil) : non coté",
     "nsia participations": "actionnaire de NSIA Banque CI : non coté",
+    # Essai réel du 22/11/2026 : « Communiqué - NSIA ASSET MANAGEMENT » était lié à NSBC.
+    "nsia asset management": "société de gestion du groupe NSIA : non cotée",
+    "nsia vie": "assureur du groupe NSIA : non coté", "nsia assurances": "assureur du groupe NSIA : non coté",
+    "nsia finance": "filiale du groupe NSIA : non cotée", "groupe nsia": "groupe NSIA (holding non cotée)",
     "nsia holding financiere": "actionnaire de NSIA Banque CI : non coté",
     "securite sociale": "protection sociale (pas le thème sécurité)",
     "total des": "« total » au sens comptable",
     "election des administrateurs": "gouvernance d'entreprise (pas une élection politique)",
     "election d'un administrateur": "gouvernance d'entreprise (pas une élection politique)",
     "election du president du conseil d'administration": "gouvernance d'entreprise",
+    "election d'administrateurs": "gouvernance d'entreprise (convocation d'AG, pas une élection politique)",
+    "elections d'administrateurs": "gouvernance d'entreprise (convocation d'AG)",
+    "election de nouveaux administrateurs": "gouvernance d'entreprise (convocation d'AG)",
+    "election des membres du conseil d'administration": "gouvernance d'entreprise",
+    "election des commissaires aux comptes": "gouvernance d'entreprise",
+    "scrutin des administrateurs": "gouvernance d'entreprise",
     "au total": "« total » au sens comptable",
+    # Essai réel du 22/11/2026 : « CORIS BOURSE : agrément de la SGI » était lié à CBIBF.
+    "coris bourse": "SGI du groupe Coris : non cotée", "coris asset management": "société de gestion Coris : non cotée",
+    "coris holding": "holding du groupe Coris : non cotée",
+    # « sécurité » hors du sens sécuritaire (circulaires des BOC, agréments de FCP).
+    "securite des systemes d'information": "sécurité informatique (circulaire), pas le thème sécurité",
+    "securite des systemes": "sécurité informatique (circulaire), pas le thème sécurité",
+    "securite informatique": "sécurité informatique, pas le thème sécurité",
+    "securite des transactions": "sécurité des opérations de marché, pas le thème sécurité",
+    "securite financiere": "stabilité financière, pas le thème sécurité",
+    "securite juridique": "droit, pas le thème sécurité",
+    "securite alimentaire": "agriculture, pas le thème sécurité",
+    "financement du terrorisme": "lutte anti-blanchiment (conformité), pas le thème sécurité",
+    "lutte contre le terrorisme et son financement": "lutte anti-blanchiment (conformité)",
 }
+
+#: Nom d'un fonds (« FCP AURORE SÉCURITÉ III », « SICAV … ») : un thème lu dans ce nom
+#: n'est pas un thème macro (essai réel du 22/11/2026 : trois agréments de FCP liés à SÉCURITÉ).
+_FUND_BEFORE = re.compile(
+    r"(?<![a-z0-9])(?:fcp|fcpe|fcpr|fcpi|sicav|opcvm|fonds\s+commun\s+de\s+placement)\s+(?:[a-z0-9'-]+\s+){0,3}$"
+)
+#: Pays à la fin du nom d'un organisme (« BANQUE DE L'HABITAT DU SÉNÉGAL », « PORT AUTONOME
+#: DE DAKAR ») : c'est un émetteur, pas une note sur le pays (pas de propagation aux titres).
+_ORG_BEFORE_COUNTRY = re.compile(
+    r"(?<![a-z0-9])(?:banque|port|societe|compagnie|caisse|fonds|office|agence|credit|assurances?|mutuelle|"
+    r"holding|loterie|regie|entreprise|cimenterie|raffinerie|sgi)\s+(?:[a-z0-9'-]+\s+){0,3}?"
+    r"(?:du|de\s+la|de\s+l'|de|d'|des)\s*$"
+)
 
 #: Mots courants : jamais retenus comme alias dérivés d'un libellé du panel.
 COMMON_WORDS = frozenset({
@@ -370,7 +409,9 @@ THEME_ALIASES: dict[str, str] = {
     "transition militaire": "COUP_ETAT", "tentative de coup d'etat": "COUP_ETAT",
     "sanctions de la cedeao": "SANCTIONS", "sanctions cedeao": "SANCTIONS", "sanctions de l'uemoa": "SANCTIONS",
     "sanctions economiques": "SANCTIONS", "sanctions financieres": "SANCTIONS", "embargo": "SANCTIONS",
-    "gel des avoirs": "SANCTIONS", "cedeao": "SANCTIONS", "ecowas": "SANCTIONS",
+    "gel des avoirs": "SANCTIONS", "sanctions de la communaute economique": "SANCTIONS",
+    "ecowas sanctions": "SANCTIONS",
+    # « CEDEAO » seule n'est pas une sanction (« emprunt obligataire de la BIDC … de la CEDEAO »).
     "aes": "AES", "alliance des etats du sahel": "AES", "confederation des etats du sahel": "AES",
     "confederation aes": "AES", "liptako-gourma": "AES",
     # Sécurité
@@ -381,7 +422,11 @@ THEME_ALIASES: dict[str, str] = {
     # Fiscalité, mobile money
     "fiscalite": "FISCALITE", "nouvelle taxe": "FISCALITE", "nouvelles taxes": "FISCALITE",
     "loi de finances": "FISCALITE", "pression fiscale": "FISCALITE", "redressement fiscal": "FISCALITE",
-    "controle fiscal": "FISCALITE", "irvm": "FISCALITE", "taxe sur la monnaie electronique": "MOBILE_MONEY",
+    "controle fiscal": "FISCALITE",
+    # « IRVM applicable de 12 % » figure dans chaque avis de dividende : seule une réforme
+    # de l'IRVM est un thème fiscal (essai réel du 22/11/2026 : 21 faux THEME:FISCALITE).
+    "hausse de l'irvm": "FISCALITE", "baisse de l'irvm": "FISCALITE", "reforme de l'irvm": "FISCALITE",
+    "taux de l'irvm": "FISCALITE", "relevement de l'irvm": "FISCALITE", "taxe sur la monnaie electronique": "MOBILE_MONEY",
     "mobile money": "MOBILE_MONEY", "monnaie electronique": "MOBILE_MONEY", "wave": "MOBILE_MONEY",
     "moov money": "MOBILE_MONEY", "paiement mobile": "MOBILE_MONEY", "transfert d'argent": "MOBILE_MONEY",
     # Matières premières
@@ -833,6 +878,14 @@ def _link_one(text: str, fld: str, table: AliasTable, kinds: Iterable[str] | Non
             continue
         # Lieu de signature (« Lomé, le 23 octobre 2026 ») : ce n'est pas le sujet de la note.
         if kind == "country" and key in _CITY_KEYS and _SIGNATURE_AFTER.match(norm, b):
+            continue
+        # Pays dans le nom d'un organisme non coté (« Banque de l'Habitat du Sénégal ») ;
+        # thème dans le nom d'un fonds (« FCP Aurore Sécurité ») : ni pays, ni thème visés.
+        if kind == "country" and _ORG_BEFORE_COUNTRY.search(norm[max(0, a - 70) : a]):
+            ambiguous.append(surface)
+            continue
+        if kind in ("theme", "symbol", "country") and _FUND_BEFORE.search(norm[max(0, a - 70) : a]):
+            ambiguous.append(surface)  # « FCP Coris Performance » : un fonds, pas les actions CBIBF
             continue
         matches.append(EntityMatch(al.code, kind, surface, al.text, o_start, o_end, fld))
     return matches, ambiguous

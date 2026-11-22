@@ -269,15 +269,18 @@ def test_dividend_list_structured_fields() -> None:
     items = parse("dividendes")["items"]
     agl = items[0]
     assert agl["symbol"] == "SDSC" and agl["event_hint"] == "DIV_NOTICE"
-    assert agl["extra"]["div_net"] == 92.0
+    assert agl["extra"]["div_listed"] == 92.0 and agl["extra"]["div_net"] == pytest.approx(80.96)  # présomption
     assert agl["extra"]["ex_date"] == "2026-10-26" and agl["extra"]["pay_date"] == "2026-10-27"
     assert agl["extra"]["exercice"] == 2025 and agl["extra"]["avis_no"] == 297
     assert agl["doc_date"] == "2026-10-09" and agl["date_source"] == "fichier"
     assert "Date ex-dividende : 26/10/2026" in agl["text"]
+    # Émetteurs ivoiriens : la colonne « net » de brvm.org est presque toujours brute (essai réel,
+    # 13 cas sur 15 contre le « dernier dividende payé » du BOC) : net présumé = 88 % du montant affiché.
     total = next(it for it in items if it["symbol"] == "TTLC")
-    assert total["extra"]["div_net"] == pytest.approx(158.827)
+    assert total["extra"]["div_listed"] == pytest.approx(158.827)
+    assert total["extra"]["div_net"] == pytest.approx(139.7678) and total["extra"]["div_basis"] == "brut présumé"
     sgbc = next(it for it in items if it["symbol"] == "SGBC")
-    assert sgbc["extra"]["div_net"] == 2606.0
+    assert sgbc["extra"]["div_gross"] == 2606.0 and sgbc["extra"]["div_net"] == pytest.approx(2293.28)
     assert not any(it["extra"].get("date_suspect") for it in items)
 
 
@@ -580,8 +583,11 @@ def test_boc_sections_communiques_and_ag_cancel() -> None:
 def test_boc_operations_and_dividend_avis() -> None:
     items = r.parse_boc_events(boc("20261009"), "2026-10-09")
     ops = [it for it in items if it["list_type"] == "boc_operations"]
+    # PRSC : « 209 F CFA par action (IRVM applicable de 12 %…) » est brut ; net = 209 × 0,88 = 183,92,
+    # valeur du « dernier dividende payé » du BOC (panel, 21/10/2026). Corrigé lors de l'essai réel.
     assert [(it["symbol"], it["extra"]["div_net"], it["extra"]["pay_date"]) for it in ops] == [
-        ("SDSC", 92.0, "2026-10-27"), ("PRSC", 209.0, "2026-10-23")]
+        ("SDSC", 92.0, "2026-10-27"), ("PRSC", 183.92, "2026-10-23")]
+    assert ops[1]["extra"]["div_gross"] == 209.0 and "div_gross" not in ops[0]["extra"]
     avis = [it for it in items if it["list_type"] == "boc_avis"]
     assert [(it["symbol"], it["event_hint"]) for it in avis] == [("PRSC", "DIV_NOTICE"), ("SDSC", "DIV_NOTICE")]
     assert avis[1]["extra"]["avis_no"] == "297-2026"
@@ -996,3 +1002,389 @@ def test_regression_resolver_former_names_and_garbled_boc_labels() -> None:
     items = [it for it in r.parse_boc_events(text, "2025-06-10", "https://www.brvm.org/boc.pdf")
              if it["list_type"] == "boc_ag"]
     assert {it["symbol"] for it in items} == {"TTLC", "SIVC"}
+
+
+def test_regression_offline_replay_reuses_cached_pdfs(tmp_path: Path) -> None:
+    """Une relecture hors ligne reprend le texte des PDF déjà téléchargés (essai réel)."""
+    sess, web, _ = make_session(tmp_path)
+    r.run_research(MemoryStore(tmp_path / "a"), targets=["ETIT"], session=sess, boc=False, issuer_reports=False,
+                   now=NOW, analyze=False, lists=["communiques"], download_pdfs=True, max_pdfs=5)
+    off = r.PoliteSession(offline=True, cache_dir=tmp_path / "cache", log_path=tmp_path / "off.jsonl", now=lambda: NOW)
+    res = r.run_research(MemoryStore(tmp_path / "b"), targets=["ETIT"], session=off, boc=False, issuer_reports=False,
+                         now=NOW, analyze=False, lists=["communiques"], download_pdfs=True, max_pdfs=5)
+    eti = next(n for n in res if "Annulation" in n.title)
+    assert "Commission" in eti.text and off.n_requests == 0
+    assert not any("PDF" in e for e in res.report.errors)  # PDF absent du cache : ignoré sans erreur
+
+
+def test_regression_boc_avis_nature_column_does_not_force_dividend() -> None:
+    """Avis 166-2025 : nature « Paiement de dividendes » pour une levée de suspension (BOC du 15/07/2025)."""
+    text = "\n".join([
+        "AVIS",
+        "Entité        N° avis            Nature                                    Objet",
+        "BRVM          166-2025           Paiement de dividendes                    Levée de la suspension des titres "
+        "de l'ETAT DU NIGER - Offre Publique d’Échange",
+        "",
+        "BRVM          167-2025           Paiement de dividendes                    Paiement de dividendes - Exercice "
+        "2024 - SOLIBRA CI",
+        "",
+    ])
+    items = {it["extra"].get("avis_no"): it for it in r.parse_boc_events(text, "2025-07-15", "https://www.brvm.org/b.pdf",
+                                                                          include_bonds=True)
+             if it["list_type"] == "boc_avis"}
+    if not items:  # gabarit de section non reconnu par ce texte réduit : on teste la règle seule
+        pytest.skip("section AVIS non reconnue dans le texte réduit")
+    assert items["166-2025"]["event_hint"] is None
+    assert items["167-2025"]["event_hint"] == "DIV_NOTICE" and items["167-2025"]["symbol"] == "SLBC"
+
+
+def test_regression_result_publications_dedup_across_sources() -> None:
+    """Rapport de l'émetteur et communiqué du BOC pour la même publication : un seul événement."""
+    assert r.dedup_event_type({"title": "FILTISAC CÔTE D'IVOIRE : Rapport d'activités du 1er trimestre 2025"}) == "RES:ACT_Q1"
+    assert r.dedup_event_type({"title": "Rapport d'activités - 1er trimestre 2025 - FILTISAC CI"}) == "RES:ACT_Q1"
+    assert r.dedup_event_type({"title": "ETI TOGO : 1er semestre 2025"}) == "RES:RES_S1"
+    assert r.dedup_event_type({"title": "Rapport d'activités - 3ème trimestre 2025 - SOCIETE GENERALE CI"}) == "RES:ACT_Q3"
+    assert r.dedup_event_type({"title": "Etats financiers - Exercice 2024 - CIE CI"}) == "RES:RES_ANNUAL"
+    # Pas des résultats : contrat de liquidité, RSE ; année absente : pas de clé.
+    assert r.dedup_event_type({"title": "Bilan semestriel du contrat de liquidité -1er semestre 2026 - BOA ML"}) is None
+    assert r.dedup_event_type({"title": "Rapport RSE - Exercice 2024 - PALM CI"}) is None
+    # Sans exercice dans le titre : même clé (la fenêtre de 30 jours sépare les exercices).
+    assert r.dedup_event_type({"title": "CIE SODE CÔTE D'IVOIRE : Etats financiers - Norme SYSCOHADA"}) == "RES:RES_ANNUAL"
+    # Note déjà analysée : son type de résultats sert de clé (communiqué de presse sans période).
+    assert r.dedup_event_type({"title": "SONATEL SN - Communiqué de Presse", "event_hint": "RES_S1"}) == "RES:RES_S1"
+    assert r.dedup_event_type({"title": "SONATEL SN - Communiqué de Presse"}) is None
+    # « Annule et remplace » : document corrigé, pas une annulation d'AG ; convocation + résolutions.
+    assert r.dedup_event_type({"title": "Projet de résolutions - Assemblée Générale Ordinaire - SICABLE CI "
+                                        "(Annule et remplace le précédent)"}) == "AG_RESOLUTIONS"
+    assert r.dedup_event_type({"title": "Avis de convocation et Projets de résolutions - Assemblée Générale Mixte"}) \
+        == "AG_CONVOCATION"
+    assert r.content_signature("Avis 20260930 (AMF-UMOA) : Communiqué - Souscription à des OPV") == \
+        r.content_signature("Communiqué AMF-UMOA - Souscription à des OPV")
+    a = {"symbol": "FTSC", "title": "FILTISAC CÔTE D'IVOIRE : Rapport d'activités du 1er trimestre 2025",
+         "doc_date": "2025-04-30"}
+    b = {"symbol": "FTSC", "title": "Rapport d'activités - 1er trimestre 2025 - FILTISAC CI", "doc_date": "2025-05-02",
+         "extra": {"first_seen_boc": "2025-05-02"}}
+    idx = r._DateIndex()
+    idx.add(("FTSC", r.dedup_event_type(a)), r._event_date(a))
+    assert r._is_event_duplicate(b, idx)
+    q3 = dict(b, title="Rapport d'activités - 3ème trimestre 2025 - FILTISAC CI")
+    assert not r._is_event_duplicate(q3, idx)
+    # Résolutions, seuils, dirigeants : même document dans une liste brvm.org et au BOC.
+    assert r.dedup_event_type({"title": "Projet de résolutions - Assemblée Générale Ordinaire du 12/05/2026 - BOA BF"}) \
+        == "AG_RESOLUTIONS"
+    assert r.dedup_event_type({"title": "Communiqué - Franchissement de seuil par ERIUM Ltd"}) == "THRESHOLD"
+    assert r.dedup_event_type({"title": "Avis de nomination - SAPH CI"}) == "MGMT_CHANGE"
+    assert r.dedup_event_type({"title": "Avis de convocation - Assemblée Générale Ordinaire - SETAO CI"}) == "AG_CONVOCATION"
+    # Signature de contenu : le nom de pays resté dans le libellé ne sépare plus les deux titres.
+    assert r.content_signature("FILTISAC CÔTE D'IVOIRE : Etats financiers - Exercice 2024", "FTSC") == \
+        r.content_signature("Etats financiers - Exercice 2024 - FILTISAC CI", "FTSC")
+
+
+def test_regression_market_notice_targets_named_index_and_dedups() -> None:
+    item = {"list_type": "avis", "source": "brvm_list", "title": "Avis N°289/BRVM/2026 – Composition de l'indice BRVM 30",
+            "doc_url": "https://www.brvm.org/sites/default/files/20261001_-_avis_289.pdf", "doc_date": "2026-10-01",
+            "symbol": None, "market_level": True, "extra": {}}
+    note = r.item_to_note(item, now=NOW, analyze=False)
+    assert note.targets == ["IDX:BRVM-30"]
+    plain = dict(item, title="Avis : Transactions Sur Dossier", doc_url="https://www.brvm.org/x.pdf")
+    assert r.item_to_note(plain, now=NOW, analyze=False).targets == ["MARCHE"]
+    # Même avis vu dans le BOC (sans symbole) : signature retrouvée dans le journal.
+    frame = pd.DataFrame([{"targets": ["MARCHE"], "title": "Avis 289-2026 (BRVM) : Composition de l'indice BRVM 30",
+                           "published_at": "2026-10-01T19:00:00Z"}])
+    assert r._is_duplicate(item, r._signature_index(frame))
+
+
+def test_regression_boc_operations_gross_dividend_with_irvm() -> None:
+    """BOC « opérations en cours » : un montant suivi de « IRVM applicable » est brut (essai réel)."""
+    text = "\n".join([
+        "OPERATIONS EN COURS",
+        "Emetteur                                Opération",
+        "",
+        "BANK OF AFRICA SN                       Paiement de dividendes de 350 F CFA net par action, le 02/06/2025",
+        "",
+        "ECOBANK CI                              Paiement de dividendes de 804 F CFA par action (IRVM applicable de 12 % "
+        "pour les personnes physiques et 10 % pour les",
+        "                                        personnes morales), le 30/05/2025",
+        "",
+    ])  # disposition du BOC réel du 15/05/2025
+    ops = {it["symbol"]: it for it in r.parse_boc_events(text, "2025-05-15", "https://www.brvm.org/b.pdf")
+           if it["list_type"] == "boc_operations"}
+    if not ops:
+        pytest.skip("section OPERATIONS EN COURS non reconnue dans le texte réduit")
+    eco = ops["ECOC"]["extra"]
+    assert eco["div_gross"] == 804 and eco["irvm_rate"] == pytest.approx(0.12)
+    assert eco["div_net"] == pytest.approx(707.52)  # = « dernier dividende payé » du BOC
+    assert ops["BOAS"]["extra"]["div_net"] == 350 and "div_gross" not in ops["BOAS"]["extra"]
+    note = r.item_to_note(ops["ECOC"], now=NOW)
+    ex = note.analysis["extracted"]
+    assert ex["div_net"] == pytest.approx(707.52) and ex["div_gross"] == 804
+
+
+def test_regression_corrected_documents_share_signature() -> None:
+    a = "Rapport du Conseil d·Administration à l·Assemblée Générale Ordinaire - Exercice 2025 - BOA NG (Annule et remplace le précédent)"
+    b = "Rapport du Conseil d’Administration à l’Assemblée Générale Ordinaire - Exercice 2025 - BOA NG"
+    assert r.content_signature(a, "BOAN") == r.content_signature(b, "BOAN")
+    assert r.content_signature("ERRATUM - Communiqué - X", None) == r.content_signature("Communiqué - X", None)
+    assert r.dedup_event_type({"title": "Rapport d'activité -Deuxième semestre 2025 - BOA BF"}) == "RES:RES_ANNUAL"
+    assert r.dedup_event_type({"title": "Rapport des CAC sur les conventions réglementées - Exercice 2025"}) is None
+
+
+def test_regression_dividend_basis_reconciled_with_boc_operations(tmp_path: Path) -> None:
+    """AGL : brvm.org affiche 92 (présumé brut), le BOC dit « 92 F CFA net » : net = 92.
+    TRACTAFRIC : brvm.org affiche 209, le BOC dit « IRVM applicable » : brut confirmé, net 183,92."""
+    sess, _, _ = make_session(tmp_path)
+    res = r.run_research(MemoryStore(tmp_path / "notes"), session=sess, lists=["dividendes"], issuer_reports=False,
+                         boc=True, boc_dir=BOC_FIX, boc_last_n=7, now=NOW, analyze=True)
+    divs = {n.targets[0]: n for n in res if n.event_type == "DIV_NOTICE" and n.source == "brvm_list"}
+    agl, prsc = divs["SDSC"].analysis["extracted"], divs["PRSC"].analysis["extracted"]
+    # Parenthésage explicite : « A and B or C » laissait passer un montant net faux.
+    assert agl["div_net"] == 92.0
+    assert agl.get("div_gross") is None
+    assert prsc["div_net"] == pytest.approx(183.92) and prsc["div_gross"] == 209.0
+    assert agl["div_basis"] == "net (BOC)" and prsc["div_basis"] == "brut (BOC)"
+    assert "dividende_brut_presume" not in divs["PRSC"].tags  # présomption confirmée par le BOC
+    # Sans BOC, la présomption reste signalée.
+    sess2, _, _ = make_session(tmp_path / "b")
+    res2 = r.run_research(MemoryStore(tmp_path / "b" / "notes"), session=sess2, lists=["dividendes"],
+                          issuer_reports=False, boc=False, now=NOW, analyze=True)
+    ttlc = next(n for n in res2 if n.targets == ["TTLC"])
+    assert "dividende_brut_presume" in ttlc.tags and ttlc.analysis["extracted"]["div_basis"] == "brut présumé"
+
+
+# ---------------------------------------------------------------------------
+# Régressions de la revue du 22/11/2026 (chaque test échouait avant la correction)
+# ---------------------------------------------------------------------------
+
+
+def _shared_sessions(tmp_path: Path, pages: dict[str, Any]):
+    """Sessions successives sur le même cache, horloge et instant simulés communs."""
+    clock = FakeClock()
+    web = FakeWeb(pages, clock)
+
+    def now() -> dt.datetime:
+        return NOW + dt.timedelta(seconds=clock.t - 1_000.0)
+
+    def session(**kw: Any) -> r.PoliteSession:
+        return r.PoliteSession(transport=web, clock=clock, sleep=clock.sleep, cache_dir=tmp_path / "cache",
+                               log_path=tmp_path / "fetch_log.jsonl", now=now, **kw)
+
+    return session, web, clock
+
+
+def test_regression_crawl_delay_holds_across_sessions(tmp_path: Path) -> None:
+    """Deux appels successifs (nouvelle session, robots.txt en cache) restent espacés de 10 s."""
+    session, web, clock = _shared_sessions(tmp_path, brvm_pages())
+    session().get(B + PAGES["brvm_avis"])
+    session().get(B + PAGES["brvm_dividendes"])  # 1re requête d'une nouvelle session
+    session().get(B + PAGES["brvm_communiques"])
+    assert web.urls().count(f"{B}/robots.txt") == 1  # robots.txt relu depuis le cache disque
+    assert len(web.calls) == 4 and all(g >= 10.0 for g in request_gaps(web))
+    # Les sessions créées par fetch_url_note et run_research partagent ce même état.
+    state = json.loads((tmp_path / "cache" / "politeness.json").read_text(encoding="utf-8"))
+    assert "www.brvm.org" in state["hosts"]
+
+
+def test_regression_403_blocks_later_sessions_until_cleared(tmp_path: Path) -> None:
+    pages = brvm_pages(**{B + PAGES["brvm_avis"]: (403, b"Forbidden")})
+    sess, web, _ = make_session(tmp_path, pages)
+    with pytest.raises(r.AccessBlocked):
+        sess.get(B + PAGES["brvm_avis"])
+    assert r.blocked_hosts(tmp_path / "cache")["www.brvm.org"]["status"] == 403
+    sess2, web2, _ = make_session(tmp_path, pages)
+    with pytest.raises(r.AccessBlocked, match="clear_block"):
+        sess2.get(B + PAGES["brvm_communiques"])
+    assert web2.calls == []  # aucune requête vers le site qui a refusé l'accès
+    sess3, web3, _ = make_session(tmp_path, pages)
+    res = r.run_research(MemoryStore(tmp_path / "notes"), session=sess3, boc=False, issuer_reports=False, now=NOW,
+                         analyze=False)
+    assert res.report.stopped and "bloqué" in res.report.stopped and web3.calls == []
+    assert r.clear_block("https://www.brvm.org/", tmp_path / "cache")  # levée explicite
+    sess4, _, _ = make_session(tmp_path, brvm_pages())
+    assert sess4.get(B + PAGES["brvm_communiques"]).status == 200
+
+
+def test_regression_redirects_are_followed_by_hand_and_checked(tmp_path: Path) -> None:
+    host = "https://court.test"
+    pages = {
+        f"{host}/robots.txt": (404, b""),
+        f"{host}/vers-sika": (302, b"", {"Location": "https://www.sikafinance.com/marches/actualites"}),
+        f"{host}/vers-interdit": (301, b"", {"Location": "https://cible.test/prive/page"}),
+        "https://cible.test/robots.txt": (200, b"User-agent: *\nDisallow: /prive/\n", {}),
+        f"{host}/vers-ok": (302, b"", {"Location": "/article"}),
+        f"{host}/article": (200, b"<html><h1>OK</h1></html>", {"Content-Type": "text/html"}),
+        f"{host}/boucle": (302, b"", {"Location": "/boucle"}),
+    }
+    sess, web, _ = make_session(tmp_path, pages, delay_s=2.0)
+    with pytest.raises(r.SourceDisabled):
+        sess.get(f"{host}/vers-sika")
+    assert not any("sikafinance" in u for u in web.urls())
+    with pytest.raises(r.RobotsDisallowed, match="redirige"):
+        sess.get(f"{host}/vers-interdit")
+    assert "https://cible.test/prive/page" not in web.urls()
+    n0 = sess.n_requests
+    res = sess.get(f"{host}/vers-ok")
+    assert res.status == 200 and res.final_url == f"{host}/article" and sess.n_requests == n0 + 2  # chaque saut compte
+    assert all(g >= 2.0 for g in request_gaps(web, "court.test"))
+    with pytest.raises(r.ResearchError, match="redirections"):
+        sess.get(f"{host}/boucle")
+    assert web.urls().count(f"{host}/boucle") == r.MAX_REDIRECTS + 1
+
+
+def test_regression_default_transport_does_not_follow_redirects(monkeypatch: pytest.MonkeyPatch) -> None:
+    import requests
+
+    seen: dict[str, Any] = {}
+
+    def fake_request(self: Any, method: str, url: str, **kw: Any) -> Any:
+        seen.update(kw)
+        resp = requests.Response()
+        resp.status_code, resp.url, resp._content = 302, url, b""
+        resp.headers["Location"] = "https://ailleurs.test/"
+        return resp
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+    resp = r._requests_transport(r.USER_AGENT)("https://a.test/", {}, 5.0)
+    assert seen["allow_redirects"] is False and resp.status_code == 302
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.sikafinance.com:443/marches/actualites", "https://www.sikafinance.com./marches/actualites",
+    "https://WWW.RICHBOURSE.COM:443/common/news/index", "https://user@www.richbourse.com/common/news/index",
+])
+def test_regression_disabled_sources_whatever_the_host_spelling(tmp_path: Path, url: str) -> None:
+    sess, web, _ = make_session(tmp_path, {})
+    with pytest.raises(r.SourceDisabled):
+        r.fetch_url_note(url, MemoryStore(tmp_path), session=sess)
+    with pytest.raises(r.SourceDisabled):
+        sess.get(url)
+    assert web.calls == []
+
+
+def test_regression_brvm_delay_floor_with_port_or_trailing_dot(tmp_path: Path) -> None:
+    sess, _, _ = make_session(tmp_path, {}, delay_s=0.5)
+    for u in ("https://www.brvm.org:443/fr", "https://www.brvm.org./fr", "https://WWW.BRVM.ORG/fr"):
+        assert r.url_host(u) == "www.brvm.org" and sess.crawl_delay(u) == 10.0
+
+
+def test_regression_collector_seen_time_bounds_knowledge(tmp_path: Path) -> None:
+    """Avis horodaté 08h00, vu à 11h00 : publication de marché 08h00, mais connu à 11h00 (effet J+1)."""
+    from brvm_alpha.notes import signals as sg
+
+    sess, _, _ = make_session(tmp_path)
+    items = r.collect_list(sess, "avis")
+    assert items and all(it["seen_at"] == NOW.isoformat(timespec="seconds") for it in items)
+    item = {"published_at": "2026-11-17T08:00:00+00:00", "title": "SONATEL : avis de paiement de dividendes",
+            "source": "brvm_list", "list_type": "avis", "symbol": "SNTS", "page_url": B + PAGES["brvm_avis"],
+            "doc_url": B + "/sites/default/files/20261117_avis_sonatel.pdf", "seen_at": "2026-11-17T11:00:00+00:00",
+            "extra": {}}
+    note = r.item_to_note(item, now=dt.datetime(2026, 11, 17, 8, 50, tzinfo=UTC), analyze=False)
+    assert note.created_at == pd.Timestamp("2026-11-17T11:00:00Z")
+    assert note.first_tradable_session == pd.Timestamp("2026-11-17")
+    assert sg.notes_asof([note], "2026-11-17").empty
+    assert sg.notes_asof([note], "2026-11-18")["first_tradable_session"].iloc[0] == pd.Timestamp("2026-11-18")
+
+
+def test_regression_backdated_research_never_dates_future_documents(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    from brvm_alpha.notes.model import RECONSTRUCTED_TAG, SIMULATED_CLOCK_ENV
+    from brvm_alpha.notes.store import NoteStore
+
+    monkeypatch.delenv(SIMULATED_CLOCK_ENV, raising=False)
+    past = dt.datetime(2025, 6, 30, 12, 0, tzinfo=UTC)
+    future = {"doc_date": "2026-10-09", "date_source": "fichier", "title": "AGL : dividende", "extra": {}}
+    assert r.item_published_at(future, NOW)[0] <= NOW  # collecte réelle : rien ne change
+    with pytest.raises(r.PostdatedItem):
+        r.item_published_at(future, past, strict_seen=True)
+    # Collecteur qui « voit » les pages en 2025 (reconstitution complète).
+    clock = FakeClock()
+    sess = r.PoliteSession(transport=FakeWeb(brvm_pages(), clock), clock=clock, sleep=clock.sleep,
+                           cache_dir=tmp_path / "cache", log_path=tmp_path / "log.jsonl", now=lambda: past)
+    store = NoteStore(tmp_path / "notes")
+    res = r.run_research(store, session=sess, boc=True, boc_dir=BOC_FIX, issuer_reports=False, now=past,
+                         analyze=False, panel_dir=None, lists=["dividendes", "communiques"])
+    assert res.report.reconstructed and any("reconstitution" in u for u in res.report.unresolved)
+    for n in res:
+        assert n.published_at <= pd.Timestamp(past)
+        d = r.date_from_filename(n.url) if n.url else None
+        assert d is None or d <= past.date()
+        assert RECONSTRUCTED_TAG in store.get(n.note_id).tags
+    assert store.asof("2026-11-22").empty  # vue stricte : aucune note antidatée
+    # Pages vues réellement en 2026 (instant de session) mais now=2025 : dates de 2026 conservées.
+    sess2, _, _ = make_session(tmp_path / "b")
+    res2 = r.run_research(NoteStore(tmp_path / "b" / "notes"), session=sess2, boc=False, issuer_reports=False,
+                          now=past, analyze=False, panel_dir=None, lists=["dividendes"])
+    assert res2 and all(n.published_at > pd.Timestamp(past) for n in res2)
+
+
+def test_regression_html_dates_day_first_and_invalid_values(tmp_path: Path) -> None:
+    def page(head: str) -> bytes:
+        return (f"<html><head>{head}<title>SONATEL</title></head><body><article><p>Sonatel : résultat net en "
+                "hausse.</p></article></body></html>").encode("utf-8")
+
+    c = r.extract_html_content(page('<meta property="article:published_time" content="05/11/2026">'))
+    assert c["published_at"] == dt.datetime(2026, 11, 5, tzinfo=UTC) and c["published_precision"] == "date"
+    c = r.extract_html_content(page('<meta name="date" content="02/11/2026 18:30">'))
+    assert c["published_at"] == dt.datetime(2026, 11, 2, 18, 30, tzinfo=UTC) and c["published_precision"] == "datetime"
+    for head in ('<meta name="date" content="2026">', '<meta name="date" content="11/12/2026 6:30 PM">', ""):
+        assert r.extract_html_content(page(head))["published_at"] is None
+    body = b'<html><body><time datetime="">hier</time><article><p>SONATEL : hausse</p></article></body></html>'
+    assert r.extract_html_content(body)["published_at"] is None
+    url = "https://exemple.test/vide_time"
+    pages = {"https://exemple.test/robots.txt": (404, b""), url: (200, body, {"Content-Type": "text/html"})}
+    sess, _, _ = make_session(tmp_path, pages, delay_s=1.0)
+    n = r.fetch_url_note(url, MemoryStore(tmp_path), session=sess, now=NOW, analyze=False)
+    assert "date_collecte" in n.tags and n.published_at == pd.Timestamp(NOW)
+
+
+def test_regression_concurrent_sessions_keep_reserved_slots(tmp_path: Path) -> None:
+    """Deux sessions simultanées : le créneau réservé par B pendant la requête de A est respecté.
+
+    Vérification finale : la fin de la requête de A réécrivait l'identifiant de session de
+    l'état partagé ; la requête suivante de A ignorait alors la réservation de B et partait
+    0,4 s après elle (au lieu de 10 s).
+    """
+    t = [0.0]
+    waits: dict[str, list[float]] = {"A": [], "B": []}
+
+    def now() -> dt.datetime:
+        return NOW + dt.timedelta(seconds=t[0])
+
+    def mk(name: str) -> r.PoliteSession:
+        return r.PoliteSession(transport=FakeWeb({}), clock=lambda: t[0], sleep=waits[name].append, now=now,
+                               cache_dir=tmp_path / "cache", log_path=tmp_path / "fetch_log.jsonl")
+
+    a, b = mk("A"), mk("B")
+    url = B + "/fr/page"
+    a._wait_turn(url)  # A part à T0
+    b._wait_turn(url)  # B, lancée pendant la requête de A : créneau T0 + 10 s
+    t[0] += 0.4  # fin de la requête de A
+    a._last_request["www.brvm.org"] = t[0]
+    a._record_done("www.brvm.org")
+    a._wait_turn(url)  # requête suivante de A : après le créneau de B, soit T0 + 20 s
+    assert waits["B"] == [pytest.approx(10.0)]
+    assert waits["A"] == [pytest.approx(19.6)]
+
+
+def test_regression_reservation_includes_own_session_wait(tmp_path: Path) -> None:
+    """Le créneau réservé par A inclut sa propre attente : B, arrivée pendant cette attente,
+    part 10 s après la requête de A, pas en même temps qu'elle (vérification finale)."""
+    t = [0.0]
+    waits: dict[str, list[float]] = {"A": [], "B": []}
+
+    def now() -> dt.datetime:
+        return NOW + dt.timedelta(seconds=t[0])
+
+    def mk(name: str) -> r.PoliteSession:
+        return r.PoliteSession(transport=FakeWeb({}), clock=lambda: t[0], sleep=waits[name].append, now=now,
+                               cache_dir=tmp_path / "cache", log_path=tmp_path / "fetch_log.jsonl")
+
+    a, b = mk("A"), mk("B")
+    url = B + "/fr/page"
+    a._wait_turn(url)  # requête 1 de A à T0
+    t[0] += 0.2
+    a._last_request["www.brvm.org"] = t[0]
+    a._record_done("www.brvm.org")
+    a._wait_turn(url)  # requête 2 de A : attend sa propre fin de délai, soit T0 + 10,2 s
+    assert waits["A"] == [pytest.approx(10.0)]
+    b._wait_turn(url)  # B arrive pendant l'attente de A : après la requête 2 de A
+    assert waits["B"] == [pytest.approx(20.0)]

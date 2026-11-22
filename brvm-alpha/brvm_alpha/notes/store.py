@@ -5,11 +5,20 @@ Principes :
   aucune ligne n'est jamais réécrite ni supprimée (historique complet, auditable) ;
 - écriture sous **verrou** (fichier ``.lock`` créé en exclusif, verrou périmé levé après
   ``stale_after_s``) et ``fsync`` après chaque ajout ;
-- une ligne illisible (écriture interrompue) est ignorée à la lecture et signalée dans
-  ``errors`` ; le fichier n'est pas réparé en place ;
+- une ligne illisible est ignorée à la lecture et signalée dans ``errors`` : écriture
+  interrompue (y compris au milieu d'un caractère accentué), octets non UTF-8 (ligne
+  éditée en Windows-1252), JSON invalide, ou enregistrement mal typé (version non
+  entière, date illisible, cibles d'un type inattendu) ; le fichier n'est pas réparé ;
 - ``asof(ts)`` ne renvoie que les notes **connues** à ``ts`` : ``created_at <= ts``,
   publication (prudente) ``<= ts`` et version **en vigueur** à ``ts`` (dernière version
-  écrite avant ``ts``). Une date seule ``ts`` désigne la fin de cette journée.
+  écrite avant ``ts``). Une date seule ``ts`` désigne la fin de cette journée ;
+- l'analyse d'une note (``add(analyze=True)``, ``update``) est faite **hors verrou** :
+  un texte long ne bloque pas les autres écrivains ;
+- un instant d'écriture ``now`` antérieur à l'heure réelle (reprise d'historique) est
+  accepté mais **marqué** : étiquette ``reconstitue`` et champ ``backdated``. Une telle
+  version n'est jamais retenue par ``asof(strict=True)`` (aucun biais d'anticipation
+  par antidatage). En mode horloge simulée (tests, ``model.SIMULATED_CLOCK_ENV``), ``now``
+  est accepté tel quel.
 """
 
 from __future__ import annotations
@@ -25,10 +34,17 @@ from typing import Any, Iterator
 import pandas as pd
 
 from .model import (
+    AUTHORS,
+    RECONSTRUCTED_TAG,
+    SOURCES,
+    STATUSES,
     Note,
+    _as_list,
     asof_utc,
     first_tradable_session,
+    is_backdated,
     normalize_targets,
+    to_day,
     to_utc,
     utc_now,
 )
@@ -56,8 +72,73 @@ COLUMNS = [
     "note_id", "version", "recorded_at", "created_at", "published_at", "published_precision",
     "first_tradable_session", "author", "source", "url", "title", "text", "targets", "all_targets",
     "event_type", "stance", "conviction", "horizon_days", "tags", "status", "score", "tone", "s_num",
-    "materiality", "confidence", "risk_flags", "reading", "analysis", "op",
+    "materiality", "confidence", "risk_flags", "reading", "analysis", "op", "targets_unknown", "backdated",
 ]
+
+#: Champs comparés pour détecter deux notes de l'analyste différentes sous un même identifiant
+#: (le type d'événement et l'horizon sont des saisies de l'analyste : les ignorer en silence
+#: perdrait sa correction ; les étiquettes n'en font pas partie).
+MANUAL_CONTENT_FIELDS = ("title", "text", "targets", "targets_unknown", "event_type", "stance", "conviction",
+                         "horizon_days", "published_at", "url")
+
+
+class NoteConflictError(ValueError):
+    """Un identifiant existe déjà dans le journal avec un contenu différent (utiliser ``update``)."""
+
+
+def _validate_record(d: dict[str, Any]) -> str | None:
+    """Contrôle (et normalise en place) un enregistrement du journal ; motif du rejet ou ``None``.
+
+    Une ligne JSON valide mais mal typée (éditée à la main) ne doit pas rendre tout le
+    journal illisible : elle est rejetée, et signalée dans ``NoteStore.errors``.
+    """
+    try:
+        v = d.get("version")
+        v = 1 if v in (None, "") else int(v)
+        if isinstance(d.get("version"), float) and d["version"] != int(d["version"]):
+            return "version non entière"
+        if v < 1:
+            return "version < 1"
+        d["version"] = v
+    except (TypeError, ValueError):
+        return f"version illisible ({d.get('version')!r})"
+    for k in ("created_at", "published_at", "recorded_at"):
+        val = d.get(k)
+        if val in (None, ""):
+            continue
+        try:
+            to_utc(val)
+        except (TypeError, ValueError):
+            return f"{k} illisible ({val!r})"
+    if d.get("first_tradable_session") not in (None, ""):
+        try:
+            to_day(d["first_tradable_session"])
+        except (TypeError, ValueError):
+            return f"first_tradable_session illisible ({d['first_tradable_session']!r})"
+    for k in ("targets", "tags", "targets_unknown"):
+        val = d.get(k)
+        if val is None:
+            continue
+        if isinstance(val, str):
+            d[k] = _as_list(val)
+        elif isinstance(val, list):
+            d[k] = [str(x) for x in val if x is not None and str(x).strip()]
+        else:
+            return f"{k} d'un type inattendu ({type(val).__name__})"
+    if d.get("author") not in (None, "") and str(d["author"]).strip().lower() not in AUTHORS:
+        return f"author inconnu ({d['author']!r})"
+    if d.get("source") not in (None, "") and str(d["source"]).strip().lower() not in SOURCES:
+        return f"source inconnue ({d['source']!r})"
+    if d.get("status") not in (None, "") and str(d["status"]).strip().lower() not in STATUSES:
+        return f"status inconnu ({d['status']!r})"
+    if d.get("analysis") is not None and not isinstance(d["analysis"], dict):
+        return "analysis n'est pas un objet"
+    return None
+
+
+def _is_backdated_record(r: dict[str, Any]) -> bool:
+    """Version écrite avec un instant antidaté (reprise d'historique) ?"""
+    return bool(r.get("backdated")) or RECONSTRUCTED_TAG in (r.get("tags") or [])
 
 
 def _repo_root() -> Path:
@@ -142,9 +223,15 @@ class NoteStore:
                 return self._records
             recs: list[dict[str, Any]] = []
             errors: list[str] = []
-            with self.path.open("r", encoding="utf-8") as fh:
-                for i, line in enumerate(fh, start=1):
-                    line = line.strip()
+            # Lecture binaire, décodage ligne par ligne : une coupure au milieu d'un
+            # caractère multi-octet ou une ligne en Windows-1252 n'invalide qu'elle-même.
+            with self.path.open("rb") as fh:
+                for i, raw in enumerate(fh, start=1):
+                    try:
+                        line = raw.decode("utf-8").strip()
+                    except UnicodeDecodeError:
+                        errors.append(f"ligne {i} : octets non UTF-8 (écriture interrompue ou autre encodage), ignorée")
+                        continue
                     if not line:
                         continue
                     try:
@@ -154,6 +241,10 @@ class NoteStore:
                         continue
                     if not isinstance(d, dict) or not d.get("note_id"):
                         errors.append(f"ligne {i} sans note_id (ignorée)")
+                        continue
+                    why = _validate_record(d)
+                    if why:
+                        errors.append(f"ligne {i} invalide : {why} (ignorée)")
                         continue
                     recs.append(d)
             self._records, self._cache_key, self.errors = recs, key, errors
@@ -206,39 +297,92 @@ class NoteStore:
     # Écriture
     # ------------------------------------------------------------------
     def _with_calendar(self, note: Note) -> None:
-        """Recalcule la séance négociable avec le calendrier du journal, sauf valeur imposée."""
+        """Séance négociable avec le calendrier du journal, jamais avant la règle de coupure.
+
+        Valeur vide ou valeur automatique (calendrier par défaut) : recalculée avec le
+        calendrier du journal. Valeur imposée : conservée si elle n'est pas antérieure à la
+        séance calculée, sinon remplacée par celle-ci (``max``).
+        """
         if self.calendar is None or note.published_at is None:
             return
-        auto = first_tradable_session(note.published_at, date_only=note.published_precision == "date")
-        if note.first_tradable_session is None or note.first_tradable_session == auto:
-            note.recompute_first_tradable(self.calendar)
+        date_only = note.published_precision == "date"
+        computed = first_tradable_session(note.published_at, sessions=self.calendar, date_only=date_only)
+        auto = first_tradable_session(note.published_at, date_only=date_only)
+        cur = note.first_tradable_session
+        if cur is None or cur == auto or (computed is not None and cur < computed):
+            note.first_tradable_session = computed
 
     def _analyze(self, note: Note, panels: dict | None = None) -> dict[str, Any]:
         from .analyze import analyze_note  # import tardif (évite un cycle)
 
         return analyze_note(note, panels=panels, sessions=self.calendar).to_dict()
 
+    def _stamp(self, note: Note, rec: dict[str, Any], now: Any) -> None:
+        """Instant d'écriture : ``recorded_at`` (``now`` ou heure réelle), ``written_at`` (heure réelle).
+
+        Un ``now`` antérieur à l'heure réelle (hors mode horloge simulée) marque la version
+        comme reconstituée : étiquette ``reconstitue`` et ``backdated: true``.
+        """
+        real = utc_now()
+        rec_at = to_utc(now) or real
+        note.recorded_at = rec_at
+        rec["recorded_at"] = rec_at.isoformat()
+        rec["written_at"] = real.isoformat()
+        if is_backdated(rec_at, real):
+            rec["backdated"] = True
+            if RECONSTRUCTED_TAG not in note.tags:
+                note.tags.append(RECONSTRUCTED_TAG)
+            rec["tags"] = list(note.tags)
+
+    def _check_conflict(self, note: Note) -> None:
+        """Une note de l'analyste ne doit pas être ignorée en silence sous un identifiant existant."""
+        if note.author != "analyste":
+            return
+        versions = self._versions_raw(note.note_id)
+        if not versions:
+            return
+        new = note.to_dict()
+        diff: list[str] = []
+        for r in versions:  # identique à l'une des versions : simple doublon
+            cur = Note.from_dict(r).to_dict()
+            diff = [k for k in MANUAL_CONTENT_FIELDS if cur.get(k) != new.get(k)]
+            if not diff:
+                return
+        if diff:
+            raise NoteConflictError(
+                f"l'identifiant {note.note_id[:12]} existe déjà avec un contenu différent ({', '.join(diff)}) : "
+                "utiliser update() pour écrire une nouvelle version, ou créer une note distincte."
+            )
+
     def add(self, note: Note, analyze: bool = False, panels: dict | None = None, now: Any = None) -> str:
         """Ajoute une note (version 1) et renvoie son ``note_id``.
 
-        Idempotent : si ``note_id`` est déjà dans le journal, rien n'est écrit (utiliser
-        :meth:`update` pour modifier). ``analyze=True`` calcule l'analyse si elle manque.
-        ``now`` (UTC) fixe l'instant d'écriture (tests, reprise d'historique).
+        Idempotent : si ``note_id`` est déjà dans le journal avec le même contenu, rien n'est
+        écrit (utiliser :meth:`update` pour modifier). Pour une note de l'analyste dont
+        l'identifiant existe avec un **contenu différent**, :class:`NoteConflictError` est
+        levée (aucune saisie n'est perdue en silence). ``analyze=True`` calcule l'analyse
+        si elle manque, **hors verrou**. ``now`` (UTC) fixe l'instant d'écriture (tests,
+        reprise d'historique) ; antérieur à l'heure réelle, il marque la note
+        « reconstituée » (exclue des vues strictes).
         """
         if not isinstance(note, Note):
             raise TypeError("add() attend une Note")
+        self._cache_key = None
+        if note.note_id in self:  # lecture sans verrou : évite une analyse inutile
+            self._check_conflict(note)
+            return note.note_id
+        note = note.copy()
+        note.version = 1
+        self._with_calendar(note)
+        if analyze and note.analysis is None:
+            note.analysis = self._analyze(note, panels)  # hors verrou (texte long, autres écrivains)
         with self._locked():
             self._cache_key = None
-            if note.note_id in self:
+            if note.note_id in self:  # ajoutée entre-temps par un autre écrivain
+                self._check_conflict(note)
                 return note.note_id
-            rec_at = to_utc(now) or utc_now()
-            note = note.copy()
-            note.version = 1
-            note.recorded_at = rec_at
-            self._with_calendar(note)
-            if analyze and note.analysis is None:
-                note.analysis = self._analyze(note, panels)
             rec = note.to_dict()
+            self._stamp(note, rec, now)
             rec["op"] = "add"
             rec["store_format"] = STORE_FORMAT
             self._append(rec)
@@ -260,22 +404,28 @@ class NoteStore:
         """Écrit une **nouvelle version** de la note (l'ancienne est conservée).
 
         ``note_id``, ``version``, ``created_at`` et ``recorded_at`` ne sont pas modifiables.
-        Changer ``published_at`` recalcule ``first_tradable_session`` (sauf valeur fournie).
-        Si le contenu change et que la note avait une analyse, l'analyse est recalculée
-        (``reanalyze=False`` pour l'éviter). Sans changement effectif, rien n'est écrit.
+        Changer ``published_at`` recalcule ``first_tradable_session`` (sauf valeur fournie,
+        qui ne peut pas précéder la séance calculée). Si le contenu change et que la note
+        avait une analyse, l'analyse est recalculée **hors verrou** (``reanalyze=False``
+        pour l'éviter) ; si une autre version est écrite entre-temps, la mise à jour est
+        reprise sur cette nouvelle base. Sans changement effectif, rien n'est écrit.
         """
         bad = PROTECTED_FIELDS & set(changes)
         if bad:
             raise ValueError(f"champs non modifiables : {', '.join(sorted(bad))}")
         if not changes:
             raise ValueError("aucune modification demandée")
-        with self._locked():
+        for _attempt in range(5):
             self._cache_key = None
             versions = self._versions_raw(note_id)
             if not versions:
                 raise KeyError(note_id)
             base = Note.from_dict(versions[-1])
             d = base.to_dict()
+            if "tags" not in changes:
+                # L'étiquette « reconstitue » qualifie une écriture, pas la note : elle n'est
+                # pas héritée par une version écrite à l'heure réelle.
+                d["tags"] = [t for t in d.get("tags") or [] if t != RECONSTRUCTED_TAG]
             d.update(changes)
             if "published_at" in changes:
                 if "first_tradable_session" not in changes:
@@ -284,21 +434,28 @@ class NoteStore:
                     d["published_precision"] = None
             new = Note.from_dict(d)
             new.version = base.version + 1
-            new.recorded_at = to_utc(now) or utc_now()
-            if "published_at" in changes and "first_tradable_session" not in changes:
-                self._with_calendar(new)
-            if new.to_dict() | {"version": base.version, "recorded_at": None} == base.to_dict() | {"recorded_at": None}:
+            self._with_calendar(new)
+            base_cmp = base.to_dict() | {"recorded_at": None}
+            base_cmp["tags"] = [t for t in base_cmp.get("tags") or [] if t != RECONSTRUCTED_TAG]
+            if new.to_dict() | {"version": base.version, "recorded_at": None} == base_cmp:
                 return base  # aucun changement effectif
             content_changed = any(
                 getattr(new, k) != getattr(base, k) for k in CONTENT_FIELDS if k in changes
             )
             if "analysis" not in changes and reanalyze and content_changed and base.analysis is not None:
-                new.analysis = self._analyze(new, panels)
-            rec = new.to_dict()
-            rec["op"] = "archive" if changes.get("status") == "archived" and base.status != "archived" else "update"
-            rec["store_format"] = STORE_FORMAT
-            self._append(rec)
-        return new
+                new.analysis = self._analyze(new, panels)  # hors verrou
+            with self._locked():
+                self._cache_key = None
+                latest = self._versions_raw(note_id)
+                if int(latest[-1].get("version") or 1) != base.version:
+                    continue  # une autre version a été écrite entre-temps : on recommence
+                rec = new.to_dict()
+                self._stamp(new, rec, now)
+                rec["op"] = "archive" if changes.get("status") == "archived" and base.status != "archived" else "update"
+                rec["store_format"] = STORE_FORMAT
+                self._append(rec)
+            return new
+        raise StoreLockError(f"mise à jour de {note_id} abandonnée : journal modifié en continu par d'autres écrivains")
 
     def archive(self, note_id: str, reason: str | None = None, now: Any = None) -> Note:
         """Archive la note (nouvelle version ``status="archived"``) ; l'historique est conservé."""
@@ -357,7 +514,10 @@ class NoteStore:
 
         ``strict=True`` (défaut, sans biais d'anticipation) : une note n'apparaît que si
         ``created_at <= ts`` **et** sa publication (fin de journée pour une date seule)
-        ``<= ts`` ; la version retenue est la dernière écrite (``recorded_at``) avant ``ts``.
+        ``<= ts`` ; la version retenue est la dernière écrite (``recorded_at``) avant ``ts``,
+        hors versions **reconstituées** (écrites avec un ``now`` antidaté). Cette vue dit ce
+        qui était *connu* à ``ts`` ; la séance où une note peut *agir* (coupure de 09h00
+        appliquée à l'instant de connaissance) est calculée par ``signals.notes_asof``.
         ``strict=False`` (reconstitution d'historique rétro-collecté) : seule la
         publication compte et la dernière version connue est utilisée ; les corrections
         ultérieures sont alors employées, à réserver aux notes ``auto`` reconstituées.
@@ -372,7 +532,8 @@ class NoteStore:
         for nid, recs in by_id.items():
             recs = sorted(recs, key=lambda r: int(r.get("version") or 1))
             if strict:
-                in_force = [r for r in recs if (to_utc(r.get("recorded_at")) or to_utc(r.get("created_at"))) <= t]
+                in_force = [r for r in recs if not _is_backdated_record(r)
+                            and (to_utc(r.get("recorded_at")) or to_utc(r.get("created_at"))) <= t]
                 if not in_force:
                     continue
                 r = in_force[-1]
@@ -472,9 +633,11 @@ def _to_frame(recs: list[dict[str, Any]]) -> pd.DataFrame:
     rows = []
     for r in recs:
         an = r.get("analysis") or {}
-        targets = list(r.get("targets") or [])
+        if not isinstance(an, dict):
+            an = {}
+        targets = [str(t) for t in _as_list(r.get("targets"))]
         all_t = list(targets)
-        for t in an.get("targets") or []:
+        for t in _as_list(an.get("targets")):
             if t not in all_t:
                 all_t.append(t)
         rows.append({
@@ -496,7 +659,7 @@ def _to_frame(recs: list[dict[str, Any]]) -> pd.DataFrame:
             "stance": r.get("stance"),
             "conviction": r.get("conviction"),
             "horizon_days": r.get("horizon_days"),
-            "tags": list(r.get("tags") or []),
+            "tags": [str(t) for t in _as_list(r.get("tags"))],
             "status": r.get("status") or "active",
             "score": an.get("score"),
             "tone": an.get("tone"),
@@ -507,6 +670,8 @@ def _to_frame(recs: list[dict[str, Any]]) -> pd.DataFrame:
             "reading": an.get("reading") or "",
             "analysis": an or None,
             "op": r.get("op") or "add",
+            "targets_unknown": [str(t) for t in _as_list(r.get("targets_unknown"))],
+            "backdated": bool(r.get("backdated")),
         })
     df = pd.DataFrame(rows, columns=COLUMNS)
     for c in ("recorded_at", "created_at", "published_at"):
@@ -555,4 +720,4 @@ def _filter(
     return df[mask].reset_index(drop=True)
 
 
-__all__ = ["NoteStore", "StoreLockError", "COLUMNS", "PROTECTED_FIELDS"]
+__all__ = ["NoteStore", "StoreLockError", "NoteConflictError", "COLUMNS", "PROTECTED_FIELDS"]

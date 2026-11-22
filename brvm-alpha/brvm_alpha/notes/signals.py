@@ -4,22 +4,35 @@ Contrat : ``docs/ARCHITECTURE.md``, section « Module Notes de l'analyste » (``
 
 Principes
 ---------
-- **Point-in-time strict** : à la date ``asof`` (une date seule désigne la fin de cette
-  journée), une note n'est prise en compte que si elle est **connue** (``NoteStore.asof`` :
-  saisie, publication et version en vigueur ``<= asof``) **et** négociable
-  (``first_tradable_session <= asof``). Une note publiée après la séance n'agit qu'à la
-  séance suivante (document 07 §2.3, coupure 09h00 UTC).
-- **Score de nouvelles** (document 07 §3.4-6, signal S5 §6.5) :
+- **Point-in-time strict** (``strict=True``, défaut) : une décision prise à la séance J
+  (signaux calculés avant 09h00 UTC, document 07 §2.3 point 2) n'utilise que ce que le
+  système **connaissait** avant la coupure de J. La séance où une note agit est donc
+  ``first_tradable_session(max(publication prudente, created_at, recorded_at))`` —
+  coupure 09h00 UTC appliquée à l'**instant de connaissance**, et non à la seule
+  publication : une note publiée à 08h00 mais saisie à 20h00 n'agit qu'à J+1. De même, la
+  version en vigueur à J est la dernière dont l'écriture précède la coupure de J, et un
+  archivage écrit pendant la séance ne prend effet qu'à la séance suivante. Les versions
+  reconstituées (écrites avec un ``now`` antidaté, étiquette ``reconstitue``) sont
+  ignorées. ``Δ`` est compté depuis cette séance effective (colonne
+  ``first_tradable_session`` des sorties ; la valeur fondée sur la seule publication
+  reste dans ``first_tradable_session_published``).
+- ``strict=False`` (reconstitution d'historique rétro-collecté) : seule la publication
+  compte (``first_tradable_session`` stockée), dernière version connue.
+- **Score de nouvelles** (document 07 §3.4-6, signal S5 §6.5, spécification §S5) :
   ``S(t) = Σ_k s_k · w_k · d_k(t)``, où ``s_k`` est le score de la note (``analyze``, dans
   [−1, 1]), ``w_k`` le poids de propagation (1 pour la cible elle-même) et
-  ``d_k(t) = 2^(−Δ_k/h)`` la décroissance, ``Δ_k`` étant le nombre de séances écoulées
-  depuis ``first_tradable_session`` (``h`` = demi-vie, 10 séances par défaut). Le
-  document 07 écrit ``exp(−Δ/τ)`` avec τ = 10 séances (constante de temps) : c'est une
-  demi-vie de ``10·ln 2 ≈ 6,9`` séances ; ``tau=10`` reproduit exactement cette formule.
+  ``d_k(t) = exp(−Δ_k/τ)`` la décroissance, ``Δ_k`` étant le nombre de séances écoulées
+  depuis la séance effective, avec **τ = 10 séances par défaut** (document 07 :
+  ``decay_tau_sessions: 10``). Le paramètre ``half_life`` (demi-vie, ``2^(−Δ/h)``) reste
+  disponible : sa valeur par défaut :data:`DEFAULT_HALF_LIFE` vaut ``10·ln 2 ≈ 6,93``
+  séances, ce qui reproduit exactement ``exp(−Δ/10)`` ; ``tau`` est prioritaire s'il est donné.
 - **Propagation** (paramètres explicites, :data:`DEFAULT_PROPAGATION`) : une note sur un
   pays ou un secteur se répercute sur les titres concernés avec un poids 0,5, une note sur
   le marché avec 0,25, une note sur un indice sur ses constituants avec 0,25, une note sur
-  un thème sur les sociétés exposées (:data:`THEME_EXPOSURE`, document 05 §10.1) avec 0,25.
+  un thème sur les sociétés exposées (``entities.theme_exposure``, documents 05 §10.1 et
+  06b §7.5) avec ``0,25 × signe`` : le score d'une note de thème est lu comme le sens
+  d'évolution du facteur, le signe donne l'effet d'une hausse du facteur sur la société
+  (0 = ambigu, pas de propagation).
   Pour une même note, un titre reçoit le **plus grand** des poids applicables (pas de double
   compte). La composition (secteur, compartiment, indice) est celle de la séance
   ``first_tradable_session`` de la note.
@@ -47,13 +60,15 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from brvm_alpha.reference import AES_COUNTRIES, country_of
+from brvm_alpha.reference import country_of
 
 from .model import (
     DEFAULT_HORIZON_DAYS,
     FIXED_HOLIDAYS,
     HISTORICAL_SYMBOLS,
     KNOWN_SYMBOLS,
+    NEWS_CUTOFF_UTC,
+    RECONSTRUCTED_TAG,
     RISK_FLAGS,
     Note,
     SessionCalendar,
@@ -66,7 +81,6 @@ from .model import (
     target_kind,
     target_label,
     to_day,
-    to_utc,
 )
 from .store import COLUMNS as STORE_COLUMNS
 from .store import NoteStore, _to_frame
@@ -75,8 +89,11 @@ from .store import NoteStore, _to_frame
 # Paramètres
 # ---------------------------------------------------------------------------
 
-#: Demi-vie par défaut du score de nouvelles, en séances (contrat : ``half_life=10``).
-DEFAULT_HALF_LIFE = 10.0
+#: Constante de temps du score de nouvelles, en séances : ``exp(−Δ/τ)`` avec τ = 10
+#: (document 07 §3.4 règle 6, §6.5 S5, ``decay_tau_sessions: 10`` ; spécification §S5).
+DEFAULT_TAU = 10.0
+#: Demi-vie équivalente à τ = 10 séances : ``10·ln 2 ≈ 6,93`` (``2^(−Δ/h) = exp(−Δ/τ)``).
+DEFAULT_HALF_LIFE = DEFAULT_TAU * math.log(2.0)
 #: Poids de propagation d'une note vers les titres concernés (choix de conception, non
 #: validés : à mesurer par l'IC walk-forward avant tout usage pondéré).
 DEFAULT_PROPAGATION: dict[str, float] = {
@@ -87,7 +104,7 @@ DEFAULT_PROPAGATION: dict[str, float] = {
     "theme": 0.25,
 }
 #: En dessous de ce facteur de décroissance, une note est considérée comme éteinte
-#: (≈ 100 séances pour une demi-vie de 10).
+#: (≈ 69 séances pour τ = 10).
 MIN_DECAY = 1e-3
 #: Borne de la surcouche manuelle (en écarts-types du score multifacteur).
 TILT_MAX_SD = 0.5
@@ -130,32 +147,55 @@ RISK_RULES: dict[str, dict[str, Any]] = {
             "action": "alerte « alerte sur résultats manquante » ; −0,5 en qualité", "duration": "120 séances"},
 }
 
-#: Exposition des thèmes aux sociétés cotées (document 05 §10.1, carte des expositions ;
-#: §2.3 pour la BCEAO). Valeurs : symboles, ``SECT:<code>``, ``PAYS:<code>`` ou ``MARCHE``.
-#: Un score positif sur un thème est lu comme favorable aux sociétés exposées (le sens
-#: économique d'une hausse de prix dépend de la société : à préciser par l'analyste avec
-#: une cible explicite quand il compte).
-THEME_EXPOSURE: dict[str, tuple[str, ...]] = {
-    "CAOUTCHOUC": ("SPHC", "SOGC"),
-    "HUILE_PALME": ("PALC", "SOGC"),
-    "SUCRE": ("SCRC",),
-    "CACAO": ("SDSC", "FTSC", "NTLC"),
-    "CAFE": ("NTLC",),
-    "PETROLE": ("TTLC", "TTLS", "SHEC", "SMBC"),
-    "GAZ": ("CIEC",),
-    "ENERGIE": ("CIEC", "SDCC", "SNTS", "ONTBF", "ORAC", "SCRC"),
-    "OR": ("BOAM", "BOABF", "CBIBF", "ONTBF"),
-    "COTON": ("UNXC",),
-    "LOGISTIQUE": ("SDSC",),
-    "CLIMAT": ("SPHC", "SOGC", "PALC", "SCRC"),
-    "MOBILE_MONEY": ("SNTS", "ORAC", "ONTBF"),
-    "TAUX_BCEAO": ("SECT:FIN",),
-    "AES": tuple(f"PAYS:{c}" for c in AES_COUNTRIES),
-    "INFLATION": ("MARCHE",),
-    "CROISSANCE": ("MARCHE",),
-    "MONNAIE": ("MARCHE",),
-    "FISCALITE": ("MARCHE",),
+#: Exposition des thèmes, table de repli utilisée seulement si ``entities.theme_exposure``
+#: est indisponible (source de vérité : ``entities.THEME_EXPOSURES``, documents 05 §10.1 et
+#: 06b §7.5). Entrées : (cible, signe de l'effet d'une **hausse du facteur**) ; signe 0 =
+#: effet ambigu (pas de propagation du score).
+THEME_EXPOSURE: dict[str, tuple[tuple[str, int], ...]] = {
+    "CAOUTCHOUC": (("SPHC", 1), ("SOGC", 1)),
+    "HUILE_PALME": (("PALC", 0), ("SOGC", 1)),
+    "SUCRE": (("SCRC", 0),),
+    "CACAO": (("FTSC", 1), ("SDSC", 1), ("NTLC", 0)),
+    "CAJOU": (("FTSC", 1), ("SDSC", 1)),
+    "PETROLE": (("SMBC", 1), ("TTLC", 0), ("TTLS", 0), ("SHEC", 0)),
+    "ENERGIE": (("SNTS", -1), ("ORAC", -1), ("ONTBF", -1), ("SCRC", -1)),
+    "GAZ": (("CIEC", 0),),
+    "OR": (("BOAM", 1), ("BOABF", 1), ("CBIBF", 1), ("ONTBF", 1)),
+    "COTON": (("UNXC", 0),),
+    "MOBILE_MONEY": (("SNTS", -1), ("ORAC", -1), ("ONTBF", -1)),
+    "SECURITE": (("ONTBF", -1), ("ORAC", -1), ("SNTS", -1)),
+    "LOGISTIQUE": (("SPHC", -1), ("CABC", -1)),
+    "TAUX_BCEAO": (("SECT:FIN", -1),),
 }
+
+
+def theme_exposures(code: str) -> list[tuple[str, int]]:
+    """Cibles exposées à un thème et signe de l'effet d'une hausse du facteur.
+
+    Convention de propagation : le score d'une note de thème (et l'avis « haussier » d'une
+    note manuelle sur un thème) est lu comme le **sens d'évolution du facteur** (hausse du
+    cours du cacao, des taux directeurs, du coût de l'énergie…). La contribution propagée à
+    un titre vaut ``score × signe × poids`` ; un signe nul (effet ambigu : marges encadrées,
+    effets de stock) ne propage rien. Les thèmes sans exposition documentée (inflation,
+    élections…) ne se propagent pas : cibler alors le pays ou le marché.
+    """
+    key = str(code or "").upper()
+    key = key[6:] if key.startswith("THEME:") else key
+    try:
+        from . import entities
+
+        fn = getattr(entities, "theme_exposure", None)
+        if callable(fn):
+            out = []
+            for e in fn(key) or []:
+                t = e.get("target") if isinstance(e, Mapping) else None
+                if t:
+                    out.append((str(t), int(e.get("sign", 0) or 0)))
+            return out
+    except Exception:  # pragma: no cover - module en cours de modification
+        pass
+    return list(THEME_EXPOSURE.get(key, ()))
+
 
 _RELATION = {"country": "pays", "sector": "secteur", "market": "marché", "index": "indice", "theme": "thème"}
 
@@ -206,6 +246,7 @@ class SessionClock:
         self._lo: np.datetime64 | None = None
         self._cum: np.ndarray = np.array([], dtype=np.int64)
         self._sess: np.ndarray = np.array([], dtype=bool)
+        self._offset = 0  # les comptes restent absolus quand la plage est étendue vers le passé
 
     def _is_session_vec(self, days: np.ndarray) -> np.ndarray:
         cal = self.calendar
@@ -220,16 +261,24 @@ class SessionClock:
         known = np.isin(days, dts)
         return np.where(unknown, np.asarray(open_wd), known)
 
+    def _hi(self) -> np.datetime64:
+        return self._lo + np.timedelta64(len(self._cum) - 1, "D")
+
     def _ensure(self, lo: np.datetime64, hi: np.datetime64) -> None:
-        if self._lo is not None and lo >= self._lo and hi < self._lo + len(self._cum):
+        if self._lo is not None and lo >= self._lo and hi <= self._hi():
             return
-        cur_lo = self._lo if self._lo is not None else lo
-        cur_hi = self._lo + len(self._cum) - 1 if self._lo is not None else hi
-        new_lo = min(lo, cur_lo) - np.timedelta64(30, "D")
-        new_hi = max(hi, cur_hi) + np.timedelta64(400, "D")
+        old_lo = self._lo
+        old_first = int(self._cum[0]) + self._offset if old_lo is not None else 0
+        cur_lo = old_lo if old_lo is not None else lo
+        cur_hi = self._hi() if old_lo is not None else hi
+        new_lo = min(lo - np.timedelta64(30, "D"), cur_lo)
+        new_hi = max(hi + np.timedelta64(400, "D"), cur_hi)
         days = np.arange(new_lo, new_hi + np.timedelta64(1, "D"), dtype="datetime64[D]")
         sess = self._is_session_vec(days)
-        self._lo, self._sess, self._cum = new_lo, sess, np.cumsum(sess.astype(np.int64))
+        cum = np.cumsum(sess.astype(np.int64))
+        if old_lo is not None:
+            self._offset = old_first - int(cum[int((old_lo - new_lo).astype(np.int64))])
+        self._lo, self._sess, self._cum = new_lo, sess, cum
 
     @staticmethod
     def _days(values: Any) -> np.ndarray:
@@ -244,21 +293,51 @@ class SessionClock:
         if not len(d):
             return np.array([], dtype=np.int64)
         self._ensure(d.min(), d.max())
-        return self._cum[(d - self._lo).astype(np.int64)]
+        return self._cum[(d - self._lo).astype(np.int64)] + self._offset
 
     def between(self, a: Any, b: Any) -> int:
         """Nombre de séances dans ``]a, b]`` (0 si ``b <= a``)."""
         ca, cb = self.count([a, b])
         return int(max(cb - ca, 0))
 
+    def first_tradable(self, instants: Any, cutoff: Any = NEWS_CUTOFF_UTC) -> np.ndarray:
+        """Première séance négociable de chaque instant (vectorisé ; ``NaT`` si vide).
+
+        Même règle que :func:`brvm_alpha.notes.model.first_tradable_session` pour un
+        instant précis : avant ``cutoff`` (09h00 UTC) un jour de séance, la séance du jour ;
+        sinon la séance suivante. Renvoie un tableau ``datetime64[ns]`` (minuit, sans fuseau).
+        """
+        idx = pd.DatetimeIndex(pd.to_datetime(pd.Index(np.atleast_1d(instants)), utc=True))
+        out = np.full(len(idx), np.datetime64("NaT", "ns"), dtype="datetime64[ns]")
+        valid = ~idx.isna()
+        if not valid.any():
+            return out
+        tv = idx[valid].tz_convert("UTC").tz_localize(None)
+        days = tv.normalize().values.astype("datetime64[D]")
+        tod = (tv - tv.normalize()).values
+        before = tod < np.timedelta64(cutoff.hour * 3600 + cutoff.minute * 60, "s")
+        self._ensure(days.min(), days.max() + np.timedelta64(40, "D"))
+        i = (days - self._lo).astype(np.int64)
+        target = np.where(before & self._sess[i], self._cum[i], self._cum[i] + 1)
+        while int(self._cum[-1]) < int(target.max()):  # pragma: no cover - garde-fou
+            self._ensure(days.min(), self._hi() + np.timedelta64(400, "D"))
+            i = (days - self._lo).astype(np.int64)
+            target = np.where(before & self._sess[i], self._cum[i], self._cum[i] + 1)
+        pos = np.searchsorted(self._cum, target, side="left")
+        out[np.asarray(valid)] = (self._lo + pos.astype("timedelta64[D]")).astype("datetime64[ns]")
+        return out
+
     def nth_session(self, day: Any, n: int) -> pd.Timestamp:
         """``n``-ième séance après ``day`` (``n >= 1``) ; ``n = 0`` : ``day`` s'il est une séance, sinon la suivante."""
         d = self._days([day])[0]
         self._ensure(d, d + np.timedelta64(int(2 * n + 30), "D"))
-        base = self._cum[int((d - self._lo).astype(np.int64))]
-        target = base + n if n >= 1 else base + (0 if self._sess[int((d - self._lo).astype(np.int64))] else 1)
-        while self._cum[-1] < target:
-            self._ensure(d, self._lo + len(self._cum) + np.timedelta64(400, "D"))
+        i = int((d - self._lo).astype(np.int64))
+        base = int(self._cum[i])
+        target = base + n if n >= 1 else base + (0 if self._sess[i] else 1)
+        while int(self._cum[-1]) < target:
+            self._ensure(d, self._hi() + np.timedelta64(400, "D"))
+            i = int((d - self._lo).astype(np.int64))
+            target = int(self._cum[i]) + (n if n >= 1 else (0 if self._sess[i] else 1))
         pos = int(np.searchsorted(self._cum, target, side="left"))
         return pd.Timestamp(self._lo + np.timedelta64(pos, "D"))
 
@@ -281,16 +360,31 @@ def _clock(calendar: Any) -> SessionClock:
     return clk
 
 
-def decay_factor(elapsed: Any, half_life: float = DEFAULT_HALF_LIFE, tau: float | None = None) -> np.ndarray:
-    """Facteur de décroissance : ``2^(−Δ/h)`` (demi-vie) ou ``exp(−Δ/τ)`` si ``tau`` est donné."""
+def decay_factor(elapsed: Any, half_life: float | None = DEFAULT_HALF_LIFE, tau: float | None = None) -> np.ndarray:
+    """Facteur de décroissance : ``exp(−Δ/τ)`` si ``tau`` est donné, sinon ``2^(−Δ/h)``.
+
+    Par défaut (``half_life = 10·ln 2``), c'est la formule du document 07 : ``exp(−Δ/10)``.
+    ``half_life=None`` sans ``tau`` : τ = :data:`DEFAULT_TAU`.
+    """
     e = np.asarray(elapsed, dtype=float)
+    if tau is None and (half_life is None or half_life == DEFAULT_HALF_LIFE):
+        tau = DEFAULT_TAU  # valeur par défaut : formule exacte du document 07
     if tau is not None:
         if tau <= 0:
             raise ValueError("tau doit être > 0")
         return np.exp(-e / float(tau))
-    if half_life is None or half_life <= 0:
+    if half_life <= 0:
         raise ValueError("half_life doit être > 0")
     return np.power(0.5, e / float(half_life))
+
+
+def _decay_horizon(half_life: float | None, tau: float | None, min_decay: float) -> int:
+    """Nombre de séances au-delà duquel le facteur de décroissance passe sous ``min_decay``."""
+    if tau is None and (half_life is None or half_life == DEFAULT_HALF_LIFE):
+        tau = DEFAULT_TAU
+    if tau is not None:
+        return int(math.ceil(tau * math.log(1.0 / min_decay))) + 1
+    return int(math.ceil(half_life * math.log2(1.0 / min_decay))) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -408,12 +502,13 @@ class Universe:
                 return sorted(snap.loc[snap["sector"] == sec, "symbol"].unique()), "secteur du BOC à la date"
             return [s for s in listed if ref.SECTOR_2025.get(s) == sec], "secteur BRVM 2025 (reference)"
         if kind == "theme":
-            th = code[6:]
             out: list[str] = []
-            for item in THEME_EXPOSURE.get(th, ()):
+            for item, sign in theme_exposures(code):
+                if sign == 0:
+                    continue
                 syms = self.members(item, day)[0] if target_kind(item) != "symbol" else [item]
                 out.extend(s for s in syms if s in listed and s not in out)
-            return sorted(out), "exposition du thème (document 05 §10.1)"
+            return sorted(out), "exposition du thème (entities.theme_exposure, signe non nul)"
         if kind == "index":
             from . import index_eval  # import tardif (index_eval importe ce module)
 
@@ -441,6 +536,9 @@ def _ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
     df["version"] = pd.to_numeric(df["version"], errors="coerce").fillna(1).astype(int)
     df["status"] = df["status"].fillna("active")
     df["published_precision"] = df["published_precision"].fillna("datetime")
+    for c in ("tags", "targets", "targets_unknown"):
+        df[c] = df[c].apply(lambda v: list(v) if isinstance(v, (list, tuple, np.ndarray)) else
+                            ([] if v is None or (isinstance(v, float) and math.isnan(v)) else [v]))
     return df
 
 
@@ -470,25 +568,105 @@ def all_versions(store_or_frame: Any) -> pd.DataFrame:
     return _ensure_columns(_to_frame(recs))
 
 
-def notes_asof(store_or_frame: Any, asof: Any, strict: bool = True) -> pd.DataFrame:
-    """Notes connues et négociables à ``asof`` : ``store.asof`` puis ``first_tradable_session <= asof``.
+def notes_asof(store_or_frame: Any, asof: Any, strict: bool = True, calendar: Any = None) -> pd.DataFrame:
+    """Notes connues et négociables à ``asof`` (une ligne par note, version en vigueur).
 
-    Pour un ``DataFrame`` (ou une liste de notes), la règle de ``NoteStore.asof`` est
-    reproduite : version en vigueur (dernière écrite avant ``asof`` si ``strict``),
-    ``created_at <= asof`` (si ``strict``), publication prudente ``<= asof``, notes actives.
+    ``strict=True`` (défaut) : règle de connaissance du module (voir l'en-tête) —
+    version en vigueur = dernière version non reconstituée écrite avant la coupure de la
+    séance (et avant ``asof`` si c'est un instant), note active, publication prudente
+    ``<= asof``, et séance effective ``first_tradable_session(max(publication prudente,
+    created_at, recorded_at de la 1re version connue))`` ``<= asof``. La colonne
+    ``first_tradable_session`` contient cette séance effective ; ``known_at`` l'instant de
+    connaissance ; ``first_tradable_session_published`` la séance fondée sur la seule
+    publication.
+
+    ``strict=False`` : ``NoteStore.asof(strict=False)`` (dernière version, publication
+    ``<= asof``), puis ``first_tradable_session <= asof``.
+
+    ``calendar`` : calendrier des séances (défaut : celui du ``NoteStore``, sinon le
+    calendrier du panel).
     """
     t = asof_utc(asof)
     if t is None:
         raise ValueError("asof : date vide")
     day = t.tz_localize(None).normalize()
+    if strict:
+        if calendar is None and isinstance(store_or_frame, NoteStore):
+            calendar = store_or_frame.calendar
+        df = all_versions(store_or_frame)
+        return _select_strict(df, t, day, _clock(calendar))
     if isinstance(store_or_frame, NoteStore):
-        df = _ensure_columns(store_or_frame.asof(asof, strict=strict))
+        df = _ensure_columns(store_or_frame.asof(asof, strict=False))
     else:
-        df = _select_in_force(all_versions(store_or_frame), t, strict)
+        df = _select_in_force(all_versions(store_or_frame), t, strict=False)
     if not len(df):
         return df
     fts = df["first_tradable_session"]
-    return df[fts.notna() & (fts <= day)].reset_index(drop=True)
+    out = df[fts.notna() & (fts <= day)].reset_index(drop=True)
+    return out.assign(first_tradable_session_published=out["first_tradable_session"],
+                      known_at=_published_effective(out))
+
+
+def _is_reconstructed(tags: Any) -> bool:
+    return isinstance(tags, (list, tuple)) and RECONSTRUCTED_TAG in tags
+
+
+def _knowledge(df: pd.DataFrame, clock: SessionClock) -> pd.DataFrame:
+    """Colonnes de connaissance par version : ``_known`` (max(created_at, recorded_at)),
+    ``_fts_known`` (séance à partir de laquelle la version est connue avant la coupure),
+    ``_eligible`` (version utilisable en mode strict) et ``_first_known`` (par note)."""
+    rec = df["recorded_at"].fillna(df["created_at"])
+    created = df["created_at"].fillna(rec)
+    known = pd.concat([created, rec], axis=1).max(axis=1)
+    known = pd.to_datetime(known, utc=True)
+    recon = df["tags"].apply(_is_reconstructed) if "tags" in df.columns else pd.Series(False, index=df.index)
+    if "backdated" in df.columns:
+        recon = recon | df["backdated"].apply(lambda v: v is True or (isinstance(v, (int, np.integer)) and v == 1))
+    eligible = known.notna() & df["created_at"].notna() & ~recon
+    fts_known = pd.Series(clock.first_tradable(known.values), index=df.index)
+    first_known = known.where(eligible).groupby(df["note_id"]).transform("min")
+    return df.assign(_rec=rec, _known=known, _fts_known=fts_known, _eligible=eligible, _first_known=first_known)
+
+
+def _effective_session(df: pd.DataFrame, clock: SessionClock) -> tuple[pd.Series, pd.Series]:
+    """Séance effective (mode strict) et instant de connaissance de chaque ligne.
+
+    ``max(first_tradable_session stockée, first_tradable_session(max(publication prudente,
+    première connaissance de la note)))``.
+    """
+    pub = _published_effective(df)
+    anchor = pd.concat([pub, df["_first_known"]], axis=1).max(axis=1)
+    anchor = pd.to_datetime(anchor, utc=True)
+    fts_k = pd.Series(clock.first_tradable(anchor.values), index=df.index)
+    stored = df["first_tradable_session"]
+    eff = pd.concat([stored, fts_k], axis=1).max(axis=1)
+    return pd.to_datetime(eff), anchor
+
+
+def _select_strict(df: pd.DataFrame, t: pd.Timestamp, day: pd.Timestamp, clock: SessionClock) -> pd.DataFrame:
+    if not len(df):
+        return df.assign(first_tradable_session_published=df["first_tradable_session"], known_at=df["created_at"])
+    df = _knowledge(df, clock)
+    ok = df["_eligible"] & (df["_rec"] <= t) & (df["_fts_known"] <= day)
+    cand = df[ok]
+    if not len(cand):
+        return _drop_tmp(cand).assign(first_tradable_session_published=cand["first_tradable_session"],
+                                      known_at=cand["created_at"])
+    cand = cand.sort_values(["note_id", "version"])
+    out = cand.groupby("note_id", sort=False).tail(1)
+    eff, anchor = _effective_session(out, clock)
+    pub = _published_effective(out)
+    keep = pub.notna() & (pub <= t) & (out["status"] != "archived") & eff.notna() & (eff <= day)
+    out = out.assign(first_tradable_session_published=out["first_tradable_session"], known_at=anchor,
+                     first_tradable_session=eff)
+    out = _drop_tmp(out[keep])
+    if len(out):
+        out = out.sort_values(["published_at", "note_id"])
+    return out.reset_index(drop=True)
+
+
+def _drop_tmp(df: pd.DataFrame) -> pd.DataFrame:
+    return df.drop(columns=[c for c in ("_rec", "_known", "_fts_known", "_eligible", "_first_known") if c in df.columns])
 
 
 def _select_in_force(df: pd.DataFrame, t: pd.Timestamp, strict: bool) -> pd.DataFrame:
@@ -499,7 +677,7 @@ def _select_in_force(df: pd.DataFrame, t: pd.Timestamp, strict: bool) -> pd.Data
     for _, g in df.assign(_rec=rec).groupby("note_id", sort=False):
         g = g.sort_values("version")
         if strict:
-            g = g[g["_rec"] <= t]
+            g = g[(g["_rec"] <= t) & ~g["tags"].apply(_is_reconstructed)]
             if not len(g):
                 continue
         keep.append(g.index[-1])
@@ -517,15 +695,16 @@ _ANALYSIS_CACHE: dict[tuple[str, int, str], dict[str, Any]] = {}
 def _row_note(row: Mapping[str, Any]) -> Note:
     d = {k: row.get(k) for k in ("note_id", "created_at", "published_at", "first_tradable_session", "author",
                                  "source", "url", "title", "text", "targets", "event_type", "stance", "conviction",
-                                 "horizon_days", "tags", "status", "version", "published_precision", "recorded_at")}
-    for k in ("conviction", "horizon_days"):
-        v = d.get(k)
-        if v is not None and isinstance(v, float) and math.isnan(v):
+                                 "horizon_days", "tags", "status", "version", "published_precision", "recorded_at",
+                                 "targets_unknown")}
+    for k, v in list(d.items()):
+        if not isinstance(v, (list, tuple, dict)) and v is not None and pd.isna(v):
             d[k] = None
     if d.get("horizon_days") is None:
         d["horizon_days"] = DEFAULT_HORIZON_DAYS
     d["targets"] = list(d.get("targets") or [])
     d["tags"] = list(d.get("tags") or [])
+    d["targets_unknown"] = list(d.get("targets_unknown") or [])
     return Note.from_dict(d)
 
 
@@ -567,10 +746,16 @@ def effective_targets(row: Mapping[str, Any], analysis: Mapping[str, Any] | None
 
     Les cibles saisies font foi. À défaut, cibles détectées ; si un symbole est détecté,
     les cibles plus larges détectées ne sont que du contexte (elles ne propagent pas).
+    Une note de l'analyste dont les cibles saisies sont **toutes inconnues**
+    (``targets_unknown``, faute de frappe ou titre hors liste) n'a aucune cible : son avis
+    n'est jamais reporté sur des sociétés détectées dans le texte qu'elle ne visait pas.
     """
     manual = normalize_targets(list(row.get("targets") or []))
     if manual:
         return [(t, "saisie") for t in manual]
+    unknown = row.get("targets_unknown")
+    if isinstance(unknown, (list, tuple, np.ndarray)) and len(unknown) and row.get("author") == "analyste":
+        return []
     an = analysis if analysis is not None else (row.get("analysis") or {})
     detected = normalize_targets(list((an or {}).get("targets") or row.get("all_targets") or []))
     if any(target_kind(t) == "symbol" for t in detected):
@@ -584,24 +769,41 @@ def _target_weights(
     universe: Universe,
     propagation: Mapping[str, float],
 ) -> dict[str, tuple[float, str, str]]:
-    """Poids par cible atteinte : ``{cible: (poids, cible source, relation)}`` (poids maximal)."""
+    """Poids par cible atteinte : ``{cible: (poids, cible source, relation)}``.
+
+    Poids 1 pour les cibles de la note ; sinon poids de propagation de la nature de la cible
+    source (signé pour un thème : ``poids × signe``). Pour un même titre, le poids de plus
+    grande valeur absolue l'emporte (pas de double compte).
+    """
     out: dict[str, tuple[float, str, str]] = {}
     for code, _origin in targets:
-        cur = out.get(code)
-        if cur is None or cur[0] < 1.0:
-            out[code] = (1.0, code, "directe")
+        out[code] = (1.0, code, "directe")
+
+    def offer(sym: str, w: float, src: str, rel: str) -> None:
+        cur = out.get(sym)
+        if cur is None or abs(w) > abs(cur[0]):
+            out[sym] = (w, src, rel)
+
     for code, _origin in targets:
         kind = target_kind(code)
         if kind == "symbol":
             continue
         w = float(propagation.get(kind, 0.0))
-        if w <= 0:
+        if w == 0:
+            continue
+        if kind == "theme":
+            listed = set(universe.listed(day))
+            for item, sign in theme_exposures(code):
+                if sign == 0:
+                    continue
+                syms = [item] if target_kind(item) == "symbol" else universe.members(item, day)[0]
+                for s in syms:
+                    if s in listed:
+                        offer(s, w * sign, code, _RELATION["theme"])
             continue
         syms, _method = universe.members(code, day)
         for s in syms:
-            cur = out.get(s)
-            if cur is None or w > cur[0]:
-                out[s] = (w, code, _RELATION.get(kind, kind))
+            offer(s, w, code, _RELATION.get(kind, kind))
     return out
 
 
@@ -638,7 +840,7 @@ def note_contributions(
     if t is None:
         raise ValueError("asof : date vide")
     day = t.tz_localize(None).normalize()
-    df = notes_asof(store_or_frame, asof, strict=strict)
+    df = notes_asof(store_or_frame, asof, strict=strict, calendar=calendar)
     if not len(df):
         return pd.DataFrame(columns=CONTRIBUTION_COLUMNS)
     clock = _clock(calendar)
@@ -689,14 +891,15 @@ def note_scores(
     min_decay: float = MIN_DECAY,
     propagate: bool = True,
 ) -> pd.DataFrame:
-    """Score de nouvelles par cible à la date ``asof`` : ``Σ s_k · w_k · 2^(−Δ_k/h)``.
+    """Score de nouvelles par cible à la date ``asof`` : ``Σ s_k · w_k · exp(−Δ_k/τ)`` (τ = 10).
 
     - ``store_or_frame`` : ``NoteStore``, ``DataFrame`` du journal (``store.frame``,
       ``store.asof``…) ou liste de ``Note`` ;
-    - ``asof`` : date (fin de journée) ou instant UTC ; seules les notes connues à cet
-      instant et négociables (``first_tradable_session <= asof``) comptent ;
-    - ``half_life`` : demi-vie en séances (``tau`` : constante de temps du document 07,
-      ``exp(−Δ/τ)``, prioritaire si donnée) ; ``calendar`` : calendrier des séances
+    - ``asof`` : date (fin de journée) ou instant UTC ; seules les notes connues avant la
+      coupure de la séance et négociables comptent (:func:`notes_asof`) ;
+    - ``half_life`` : demi-vie en séances, ``2^(−Δ/h)`` ; défaut ``10·ln 2`` (= τ 10) ;
+      ``tau`` : constante de temps du document 07, ``exp(−Δ/τ)``, prioritaire si donnée
+      (défaut effectif : τ = 10) ; ``calendar`` : calendrier des séances
       (``load_sessions``, liste de dates, ``SessionCalendar``) ; défaut : panel du dépôt ;
     - ``propagation`` : poids par nature de cible (:data:`DEFAULT_PROPAGATION`) ;
       ``propagate=False`` : cibles directes seulement ;
@@ -763,9 +966,10 @@ def notes_panel(
 
     ``calendar`` : dates des lignes (``load_sessions`` : séances avec date ; liste de dates ;
     ``SessionCalendar``) et calendrier de comptage des séances. Chaque valeur est égale à
-    ``note_scores(store, t, ...)["score"]`` pour le symbole à la date ``t`` : version en
-    vigueur à ``t``, note connue à ``t``, ``first_tradable_session <= t`` (aucune information
-    postérieure). ``symbols=None`` : tous les symboles atteints ; ``targets`` : codes non
+    ``note_scores(store, t, ...)["score"]`` pour le symbole à la date ``t`` (mêmes règles,
+    voir :func:`notes_asof`) : en mode strict, version en vigueur à la séance ``t`` (écrite
+    avant sa coupure), note connue avant la coupure, séance effective ``<= t`` (aucune
+    information postérieure). ``symbols=None`` : tous les symboles atteints ; ``targets`` : codes non
     symboles à ajouter en colonnes (``IDX:BRVM-30``, ``PAYS:CI``…). 0 en l'absence de note.
     """
     prop = dict(DEFAULT_PROPAGATION if propagation is None else propagation)
@@ -788,69 +992,63 @@ def notes_panel(
     c_dates = clock.count(dates.values)
     day_ns = dates.values.astype("datetime64[D]")
     acc: dict[str, np.ndarray] = {c: np.zeros(len(dates)) for c in cols}
-    rec_all = df["recorded_at"].fillna(df["created_at"])
-    pub_eff = _published_effective(df)
-    df = df.assign(_rec=rec_all, _pub=pub_eff)
-    max_len = None
-    if tau is None:
-        max_len = int(math.ceil(half_life * math.log2(1.0 / min_decay))) + 1
+    max_len = _decay_horizon(half_life, tau, min_decay)
+    if strict:
+        df = _knowledge(df, clock)
+        df = df[df["_eligible"]]
+        if len(df):
+            eff, _anchor = _effective_session(df, clock)
+            df = df.assign(_eff=eff)
     else:
-        max_len = int(math.ceil(tau * math.log(1.0 / min_decay))) + 1
+        df = df.assign(_eff=df["first_tradable_session"])
 
-    def _day(ts: Any) -> np.datetime64 | None:
+    def _d(ts: Any) -> np.datetime64 | None:
         if ts is None or pd.isna(ts):
             return None
-        return np.datetime64(pd.Timestamp(ts).tz_convert("UTC").tz_localize(None).normalize(), "D") \
-            if pd.Timestamp(ts).tzinfo is not None else np.datetime64(pd.Timestamp(ts).normalize(), "D")
+        return np.datetime64(pd.Timestamp(ts).normalize(), "D")
 
     for _nid, g in df.groupby("note_id", sort=False):
         g = g.sort_values("version")
-        recs = list(g["_rec"]) if strict else [None] * len(g)
         rows = list(g.iterrows())
-        if not strict:
+        if strict:
+            # Version i en vigueur à la séance D : fts_known_i <= D < min(fts_known_j, j > i).
+            starts = [_d(r["_fts_known"]) for _, r in rows]
+            ends: list[np.datetime64 | None] = []
+            for i in range(len(rows)):
+                later = [x for x in starts[i + 1:] if x is not None]
+                ends.append(min(later) if later else None)
+        else:
             rows = rows[-1:]
-            recs = [None]
+            starts, ends = [None], [None]
         for i, (_, r) in enumerate(rows):
             if r["status"] == "archived":
                 continue
-            fts = r["first_tradable_session"]
-            if fts is None or pd.isna(fts):
+            eff = _d(r["_eff"])
+            if eff is None:
                 continue
-            starts = [np.datetime64(pd.Timestamp(fts), "D")]
-            if strict:
-                for v in (_day(r["created_at"]), _day(recs[i])):
-                    if v is None:
-                        starts = []
-                        break
-                    starts.append(v)
-                if not starts:
-                    continue
-            pd_ = _day(r["_pub"])
-            if pd_ is None:
+            start = eff if starts[i] is None else max(eff, starts[i])
+            end = ends[i]
+            if end is not None and end <= start:
                 continue
-            starts.append(pd_)
-            start = max(starts)
-            end = None
-            if strict and i + 1 < len(rows):
-                end = _day(recs[i + 1])
             lo = int(np.searchsorted(day_ns, start, side="left"))
             hi = len(dates) if end is None else int(np.searchsorted(day_ns, end, side="left"))
             if hi <= lo:
                 continue
             row = r.to_dict()
+            row["first_tradable_session"] = pd.Timestamp(eff)
             s, an = note_score_value(row, cal)
             if s == 0.0:
                 continue
             tg = effective_targets(row, an)
             if not tg:
                 continue
-            weights = _target_weights(tg, pd.Timestamp(fts), uni, prop)
+            weights = _target_weights(tg, pd.Timestamp(eff), uni, prop)
             wanted = {c: w for c, (w, _src, _rel) in weights.items()
                       if (c in acc) or (symbols is None and target_kind(c) == "symbol")}
             if not wanted:
                 continue
-            c_fts = clock.count([fts])[0]
-            el = c_dates[lo:hi] - c_fts
+            c_eff = clock.count([pd.Timestamp(eff)])[0]
+            el = c_dates[lo:hi] - c_eff
             keep = el <= max_len
             if not keep.any():
                 continue
@@ -948,7 +1146,7 @@ def manual_overlays(
     if t is None:
         raise ValueError("asof : date vide")
     day = t.tz_localize(None).normalize()
-    df = notes_asof(store, asof, strict=strict)
+    df = notes_asof(store, asof, strict=strict, calendar=calendar)
     clock = _clock(calendar)
     uni = Universe(equities)
     rows: list[dict[str, Any]] = []
@@ -1174,7 +1372,8 @@ def manual_overlays(
 
 
 __all__ = [
-    "DEFAULT_HALF_LIFE", "DEFAULT_PROPAGATION", "RISK_RULES", "THEME_EXPOSURE", "TILT_MAX_SD", "SessionClock",
+    "DEFAULT_HALF_LIFE", "DEFAULT_TAU", "DEFAULT_PROPAGATION", "RISK_RULES", "THEME_EXPOSURE", "TILT_MAX_SD", "SessionClock",
+    "theme_exposures",
     "Universe", "decay_factor", "note_contributions", "note_scores", "aggregate_contributions", "notes_panel",
     "manual_overlays", "notes_asof", "effective_targets", "all_versions",
 ]

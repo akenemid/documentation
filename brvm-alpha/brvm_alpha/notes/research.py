@@ -32,11 +32,20 @@ Politesse et sûreté (document 07, §6.2 et §6.7) :
 - seul www.brvm.org est interrogé automatiquement ; Sika Finance, Richbourse et la
   presse sont **désactivés par défaut** ;
 - ``robots.txt`` est lu et respecté (``urllib.robotparser``), ``Crawl-delay: 10`` de
-  brvm.org compris (au moins 10 s entre deux requêtes vers ce site) ;
+  brvm.org compris (au moins 10 s entre deux requêtes vers ce site), **d'une session à
+  l'autre** : l'heure de la dernière requête vers chaque site est conservée sous
+  ``<cache>/politeness.json`` (fichier verrouillé), si bien que deux appels successifs
+  (``fetch_url_note`` en boucle, deux ``run_research``) restent espacés du délai ;
+- les redirections HTTP ne sont **pas** suivies par le transport : chaque saut est
+  contrôlé (source désactivée, robots.txt de l'hôte d'arrivée, délai, quota), 5 au plus ;
+- l'hôte est normalisé (``hostname`` en minuscules, sans port ni point final) pour les
+  sources désactivées, les délais et robots.txt ;
 - User-Agent explicite, cache disque avec ``ETag`` / ``If-Modified-Since``,
   quota ``max_requests`` ;
-- **arrêt définitif** de la session au premier HTTP 403 ou 429 ; 3 essais avec
-  attente exponentielle sur 5xx, puis arrêt ;
+- **arrêt définitif** au premier HTTP 403 ou 429 : la session s'arrête, et le site est
+  inscrit comme **bloqué** dans ``politeness.json`` ; toute session ultérieure refuse de
+  l'interroger tant que l'analyste n'a pas levé le blocage (:func:`clear_block`) ;
+  3 essais avec attente exponentielle sur 5xx, puis arrêt ;
 - journal de chaque requête dans ``data/notes/fetch_log.jsonl`` ;
 - mode ``offline=True`` : seul le cache disque est lu, aucune requête réseau.
 
@@ -68,13 +77,16 @@ import hashlib
 import html as html_lib
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 import time
 import unicodedata
+import uuid
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -99,6 +111,11 @@ DEFAULT_DELAY_S = 10.0
 HOST_MIN_DELAY_S = {BRVM_HOST: 10.0, "brvm.org": 10.0}
 #: Codes HTTP qui arrêtent définitivement la session (aucun nouvel essai).
 STOP_STATUSES = frozenset({403, 429})
+#: Redirections suivies à la main (chaque saut est contrôlé), au plus :data:`MAX_REDIRECTS`.
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+MAX_REDIRECTS = 5
+#: État de politesse partagé entre sessions (sous le répertoire de cache).
+POLITENESS_STATE = "politeness.json"
 MAX_RETRIES = 3
 BACKOFF_S = 10.0
 
@@ -116,6 +133,8 @@ BOC_PUBLICATION_UTC = dt.time(19, 0)
 OCR_MIN_CHARS_PER_PAGE = 200
 #: Longueur maximale du texte conservé dans une note.
 MAX_TEXT_CHARS = 20_000
+#: Taux d'IRVM des personnes physiques en Côte d'Ivoire, base du « dernier dividende payé » du BOC.
+CI_IRVM_RATE = 0.12
 #: Écart p10 avis de paiement -> détachement (document 07, §2.1) : borne prudente.
 NOTICE_TO_EX_MIN_DAYS = 10
 
@@ -324,13 +343,20 @@ _ANCILLARY_RE = re.compile(
 _DEDUP_TYPES: tuple[tuple[str, re.Pattern[str], int], ...] = (
     ("RESUMPTION", re.compile(r"lev[ée]e de (la )?suspension|reprise de (la )?cotation", re.I), 10),
     ("SUSPENSION", re.compile(r"\bsuspen(sion|du)", re.I), 10),
-    ("AG_CANCEL", re.compile(r"annulation.*assembl|report.*assembl|assembl.*(annul|report)", re.I), 30),
+    # « (Annule et remplace le précédent) » corrige un document : ce n'est pas une annulation d'AG.
+    ("AG_CANCEL", re.compile(r"annulation.*assembl|report.*assembl|assembl.*(annul(?!e et remplace)|report)", re.I), 30),
     ("DIV_NOTICE", re.compile(r"paiement de dividendes?|dividendes? de [\d ,.]+ ?f ?cfa", re.I), 45),
     ("REVERSE_SPLIT", re.compile(r"regroupement|consolidation des actions", re.I), 30),
     ("SPLIT", re.compile(r"fractionnement", re.I), 30),
     ("CAP_INC", re.compile(r"augmentation de capital", re.I), 30),
     ("DELISTING", re.compile(r"radiation", re.I), 30),
+    # Avant AG_CONVOCATION : « Projet de résolutions - Assemblée Générale Ordinaire du … ».
+    ("AG_RESOLUTIONS", re.compile(r"^(?!.*convocation).*projets? de r[ée]solutions?", re.I), 15),
     ("AG_CONVOCATION", re.compile(r"avis de convocation|assembl[ée]e g[ée]n[ée]rale (ordinaire|extraordinaire|mixte) du", re.I), 15),
+    # Essai réel du 22/11/2026 : mêmes documents dans les listes brvm.org et les communiqués du BOC.
+    ("THRESHOLD", re.compile(r"franchissements? de seuils?", re.I), 10),
+    ("MGMT_CHANGE", re.compile(r"changements? importants? (?:dans|au sein de) la direction|\bnomination\b|"
+                               r"changements? de dirigeants?", re.I), 10),
 )
 
 # ---------------------------------------------------------------------------
@@ -360,6 +386,10 @@ class ServerUnavailable(ResearchError):
 
 class OfflineCacheMiss(ResearchError):
     """Mode hors ligne : la page n'est pas dans le cache."""
+
+
+class PostdatedItem(ResearchError):
+    """Élément qu'un collecteur n'aurait pas pu voir à l'instant de collecte annoncé (reconstitution)."""
 
 
 class SourceDisabled(ResearchError):
@@ -485,6 +515,14 @@ def _fmt(d: dt.date | None) -> str:
     return d.strftime("%d/%m/%Y") if d else "?"
 
 
+def _fmt_amount(x: float | None) -> str:
+    """Montant au format français (« 183,92 FCFA »)."""
+    if x is None:
+        return "?"
+    txt = f"{x:,.2f}".rstrip("0").rstrip(".").replace(",", " ").replace(".", ",")
+    return f"{txt} FCFA"
+
+
 def _iso(d: dt.date | dt.datetime | None) -> str | None:
     return d.isoformat() if d else None
 
@@ -564,16 +602,117 @@ class FetchResult:
 
 
 def _requests_transport(user_agent: str) -> Callable[..., Any]:
-    """Transport réseau par défaut (``requests``), créé à la première requête."""
+    """Transport réseau par défaut (``requests``), créé à la première requête.
+
+    Les redirections ne sont **pas** suivies ici : :meth:`PoliteSession.get` les suit une à
+    une, avec les mêmes contrôles que la première requête.
+    """
     import requests
 
     sess = requests.Session()
     sess.headers["User-Agent"] = user_agent
 
     def transport(url: str, headers: Mapping[str, str], timeout: float) -> Any:
-        return sess.get(url, headers=dict(headers), timeout=timeout, allow_redirects=True)
+        return sess.get(url, headers=dict(headers), timeout=timeout, allow_redirects=False)
 
     return transport
+
+
+def url_host(url: str) -> str:
+    """Hôte normalisé d'une URL : ``hostname`` en minuscules, sans port ni point final."""
+    try:
+        host = urlparse(str(url or "")).hostname or ""
+    except ValueError:
+        return ""
+    return host.lower().rstrip(".")
+
+
+def _url_origin(url: str) -> str:
+    """Origine normalisée (``https://www.brvm.org`` ; port gardé s'il n'est pas le port par défaut)."""
+    p = urlparse(url)
+    scheme = (p.scheme or "https").lower()
+    host = url_host(url)
+    try:
+        port = p.port
+    except ValueError:
+        port = None
+    default = {"http": 80, "https": 443}.get(scheme)
+    return f"{scheme}://{host}" + (f":{port}" if port and port != default else "")
+
+
+def _state_path(cache_dir: str | Path) -> Path:
+    return Path(cache_dir) / POLITENESS_STATE
+
+
+@contextmanager
+def _state_locked(cache_dir: str | Path, timeout_s: float = 15.0, stale_s: float = 60.0):
+    """Verrou exclusif du fichier d'état de politesse (fichier ``.lock`` créé en exclusif)."""
+    path = _state_path(cache_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_name(path.name + ".lock")
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > stale_s:
+                    lock.unlink(missing_ok=True)  # verrou abandonné
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() > deadline:
+                raise ResearchError(f"état de politesse verrouillé ({lock}) : collecte reportée par prudence.")
+            time.sleep(0.02)
+    try:
+        yield path
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _state_load(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"hosts": {}}
+    except (OSError, ValueError):
+        log.warning("état de politesse illisible : %s", path)
+        return {"hosts": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("hosts"), dict):
+        return {"hosts": {}}
+    return data
+
+
+def _state_save(path: Path, data: dict[str, Any]) -> None:
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def blocked_hosts(cache_dir: str | Path | None = None) -> dict[str, dict[str, Any]]:
+    """Sites bloqués après un HTTP 403/429 : ``{hôte: {ts, status, url, reason}}``."""
+    path = _state_path(cache_dir if cache_dir is not None else DEFAULT_NOTES_DIR / "cache")
+    hosts = _state_load(path).get("hosts", {})
+    return {h: dict(e["blocked"]) for h, e in hosts.items() if isinstance(e, dict) and e.get("blocked")}
+
+
+def clear_block(host: str, cache_dir: str | Path | None = None) -> bool:
+    """Lève **explicitement** le blocage d'un site (à faire seulement avec l'accord du site).
+
+    Renvoie ``True`` si un blocage a été levé. ``host`` peut être une URL.
+    """
+    h = url_host(host) if "://" in str(host) else str(host or "").strip().lower().rstrip(".")
+    cdir = cache_dir if cache_dir is not None else DEFAULT_NOTES_DIR / "cache"
+    with _state_locked(cdir) as path:
+        data = _state_load(path)
+        entry = data["hosts"].get(h)
+        if not isinstance(entry, dict) or not entry.get("blocked"):
+            return False
+        entry["unblocked"] = {"ts": utcnow().isoformat(timespec="seconds"), "previous": entry.pop("blocked")}
+        _state_save(path, data)
+    return True
 
 
 class PoliteSession:
@@ -592,7 +731,15 @@ class PoliteSession:
       (aucun accès réseau, horloge simulée).
 
     Un HTTP 403 ou 429 arrête **définitivement** la session (attribut ``stopped``) :
-    aucune requête ultérieure n'est envoyée, à aucun site.
+    aucune requête ultérieure n'est envoyée, à aucun site. Le site est aussi inscrit
+    comme bloqué dans ``<cache_dir>/politeness.json`` : une session ultérieure qui partage
+    ce cache refuse de l'interroger (:class:`AccessBlocked`) tant que le blocage n'a pas
+    été levé explicitement (:func:`clear_block`). Le même fichier conserve l'heure de la
+    dernière requête vers chaque site : le délai s'applique aussi à la première requête
+    d'une nouvelle session.
+
+    ``allow_disabled`` : autorise les sources désactivées par défaut (accord du site) ;
+    sinon toute URL (ou redirection) vers l'une d'elles lève :class:`SourceDisabled`.
     """
 
     def __init__(
@@ -611,6 +758,7 @@ class PoliteSession:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], dt.datetime] = utcnow,
+        allow_disabled: bool = False,
     ) -> None:
         self.user_agent = user_agent
         self.delay_s = float(delay_s)
@@ -630,6 +778,9 @@ class PoliteSession:
         self._robots: dict[str, robotparser.RobotFileParser | None] = {}
         self._last_request: dict[str, float] = {}
         self.history: list[dict[str, Any]] = []
+        self.allow_disabled = bool(allow_disabled)
+        #: Identifiant de la session dans l'état partagé (ses propres requêtes y sont reconnues).
+        self.session_id = uuid.uuid4().hex
 
     # -- journal ------------------------------------------------------------
     def _log(self, **entry: Any) -> None:
@@ -677,8 +828,39 @@ class PoliteSession:
     # -- robots.txt ---------------------------------------------------------
     @staticmethod
     def _origin(url: str) -> str:
+        return _url_origin(url)
+
+    # -- état partagé entre sessions (délai, blocage) ------------------------
+    def _state_update(self, host: str, fn: Callable[[dict[str, Any]], Any]) -> Any:
+        """Applique ``fn`` à l'entrée de ``host`` de l'état partagé, sous verrou ; renvoie son résultat."""
+        with _state_locked(self.cache_dir) as path:
+            data = _state_load(path)
+            entry = data["hosts"].setdefault(host, {})
+            out = fn(entry)
+            _state_save(path, data)
+        return out
+
+    def persistent_block(self, url_or_host: str) -> dict[str, Any] | None:
+        """Blocage enregistré pour ce site (403/429 d'une session antérieure), ou ``None``."""
+        host = url_host(url_or_host) if "://" in str(url_or_host) else str(url_or_host).lower().rstrip(".")
+        entry = _state_load(_state_path(self.cache_dir)).get("hosts", {}).get(host)
+        if isinstance(entry, dict) and entry.get("blocked"):
+            return dict(entry["blocked"])
+        return None
+
+    def _check_source(self, url: str, allow_disabled: bool | None = None) -> None:
+        """Refuse une URL non http(s) ou une source désactivée par défaut (hôte normalisé)."""
         p = urlparse(url)
-        return f"{p.scheme}://{p.netloc}"
+        if p.scheme not in ("http", "https") or not url_host(url):
+            raise ResearchError(f"URL refusée : {url!r} (http ou https attendu).")
+        allow = self.allow_disabled if allow_disabled is None else bool(allow_disabled)
+        why = _disabled_domain(url)
+        if why and not allow:
+            self._log(event="source_disabled", url=url, reason=why)
+            raise SourceDisabled(
+                f"La source {url_host(url)} est désactivée par défaut ({why}). Elle ne sera lue qu'avec l'accord "
+                "du site (allow_disabled=True) ; aucune protection anti-robot n'est contournée."
+            )
 
     def robots_for(self, url: str) -> robotparser.RobotFileParser | None:
         """Règles robots.txt du site de ``url`` (lues une fois par session ; ``None`` = tout permis)."""
@@ -704,6 +886,20 @@ class PoliteSession:
         else:
             try:
                 res = self._network_get(robots_url, {}, purpose="robots")
+                # RFC 9309 : au plus 5 redirections pour robots.txt ; une redirection vers une
+                # source désactivée, ou trop de redirections, valent « tout interdit ».
+                cur = robots_url
+                for _hop in range(MAX_REDIRECTS + 1):
+                    loc = res.headers.get("Location") or res.headers.get("location")
+                    if res.status not in REDIRECT_STATUSES or not loc:
+                        break
+                    nxt = urljoin(cur, loc)
+                    if _hop == MAX_REDIRECTS or urlparse(nxt).scheme not in ("http", "https") or _disabled_domain(nxt):
+                        res = FetchResult(url=robots_url, status=403, content=b"", final_url=nxt)
+                        break
+                    self._log(event="redirect", url=cur, location=nxt, status=res.status, purpose="robots")
+                    cur = nxt
+                    res = self._network_get(cur, {}, purpose="robots")
             except ServerUnavailable as exc:
                 raise ServerUnavailable(
                     f"robots.txt de {origin} inaccessible ({exc}) : par prudence, aucune page n'est lue."
@@ -731,7 +927,7 @@ class PoliteSession:
 
     def crawl_delay(self, url: str) -> float:
         """Délai effectif entre deux requêtes vers le site de ``url``."""
-        host = urlparse(url).netloc.lower()
+        host = url_host(url)
         delay = max(self.delay_s, HOST_MIN_DELAY_S.get(host, 0.0))
         rp = self._robots.get(self._origin(url))
         if rp is not None:
@@ -745,12 +941,73 @@ class PoliteSession:
 
     # -- requêtes -------------------------------------------------------------
     def _wait_turn(self, url: str) -> None:
-        host = urlparse(url).netloc.lower()
+        """Attend son tour : délai depuis la dernière requête de cette session (horloge
+        ``clock``) **et** depuis la dernière requête d'une autre session vers ce site (état
+        partagé, horloge ``now``), y compris pour la première requête de la session. Le
+        créneau est réservé sous verrou : deux sessions simultanées ne partent pas ensemble.
+        Le créneau réservé inclut l'attente propre à la session : une autre session qui arrive
+        pendant cette attente part après lui, pas en même temps."""
+        host = url_host(url)
+        delay = self.crawl_delay(url)
+        wait = 0.0
         last = self._last_request.get(host)
         if last is not None:
-            wait = last + self.crawl_delay(url) - self.clock()
-            if wait > 0:
-                self.sleep(wait)
+            wait = max(0.0, last + delay - self.clock())
+        now = to_utc(self.now())
+        sid = self.session_id
+        own = wait
+
+        def reserve(entry: dict[str, Any]) -> float:
+            slot = now + dt.timedelta(seconds=own)
+            prev = entry.get("last")
+            if prev and entry.get("session") != sid:
+                try:
+                    slot = max(slot, to_utc(prev) + dt.timedelta(seconds=delay))
+                except (TypeError, ValueError):
+                    pass
+            entry["last"] = slot.isoformat()
+            entry["session"] = sid
+            return (slot - now).total_seconds()
+
+        try:
+            wait = max(wait, self._state_update(host, reserve))
+        except OSError as exc:  # l'état partagé est une sécurité de plus, jamais un blocage
+            log.warning("état de politesse non écrit : %s", exc)
+        if wait > 0:
+            self.sleep(wait)
+
+    def _record_done(self, host: str) -> None:
+        now = to_utc(self.now())
+        sid = self.session_id
+
+        def done(entry: dict[str, Any]) -> None:
+            prev = entry.get("last")
+            try:
+                later = prev is None or to_utc(prev) < now
+            except (TypeError, ValueError):
+                later = True
+            # Une réservation plus tardive d'une autre session (faite pendant cette requête)
+            # reste à son nom : sinon la requête suivante de cette session l'ignorerait.
+            if later:
+                entry["last"] = now.isoformat()
+                entry["session"] = sid
+
+        try:
+            self._state_update(host, done)
+        except (OSError, ResearchError) as exc:
+            log.warning("état de politesse non écrit : %s", exc)
+
+    def _record_block(self, host: str, url: str, status: int) -> None:
+        info = {"ts": to_utc(self.now()).isoformat(timespec="seconds"), "status": int(status), "url": url,
+                "reason": f"HTTP {status} : arrêt définitif, levée explicite requise (clear_block)"}
+
+        def block(entry: dict[str, Any]) -> None:
+            entry["blocked"] = info
+
+        try:
+            self._state_update(host, block)
+        except (OSError, ResearchError) as exc:  # pragma: no cover - le journal garde l'événement
+            log.warning("blocage de %s non enregistré : %s", host, exc)
 
     def _network_get(self, url: str, headers: Mapping[str, str], purpose: str = "page") -> FetchResult:
         """Une requête GET réseau, avec délai, quota, nouveaux essais et arrêts."""
@@ -758,10 +1015,19 @@ class PoliteSession:
             raise AccessBlocked(f"Session arrêtée ({self.stopped}) : aucune nouvelle requête n'est envoyée.")
         if self.offline:
             raise OfflineCacheMiss(f"Mode hors ligne : {url} n'est pas dans le cache.")
+        host = url_host(url)
+        blocked = self.persistent_block(host)
+        if blocked:
+            self.stopped = f"{host} bloqué depuis le {blocked.get('ts')} (HTTP {blocked.get('status')} sur {blocked.get('url')})"
+            self._log(event="blocked", url=url, reason=self.stopped)
+            raise AccessBlocked(
+                f"Le site {host} a refusé l'accès (HTTP {blocked.get('status')}, {blocked.get('ts')}) : aucune requête "
+                "n'est envoyée, sans aucune tentative de contournement. Le blocage ne sera levé qu'explicitement, "
+                f"après accord du site (research.clear_block({host!r}))."
+            )
         if self._transport is None:
             self._transport = _requests_transport(self.user_agent)
         hdrs = {"User-Agent": self.user_agent, **dict(headers)}
-        host = urlparse(url).netloc.lower()
         last_error = ""
         for attempt in range(1, self.max_retries + 1):
             if self.n_requests >= self.max_requests:
@@ -780,10 +1046,12 @@ class PoliteSession:
             except Exception as exc:  # erreur réseau : traitée comme un 5xx
                 status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
             self._last_request[host] = self.clock()
+            self._record_done(host)
             self._log(event=purpose, url=url, status=status, bytes=len(content), attempt=attempt,
                       elapsed_s=round(self.clock() - t0, 3), final_url=final_url, error=error)
             if status in STOP_STATUSES:
                 self.stopped = f"HTTP {status} sur {url}"
+                self._record_block(host, url, status)
                 self._log(event="stop", url=url, status=status, reason=self.stopped)
                 raise AccessBlocked(
                     f"Le site {host} a répondu HTTP {status} : la collecte est arrêtée définitivement "
@@ -806,17 +1074,23 @@ class PoliteSession:
                                final_url=final_url, fetched_at=self.now().isoformat(timespec="seconds"))
         raise ServerUnavailable(f"{url} : {last_error}")  # pragma: no cover
 
-    def get(self, url: str, *, max_age_s: float | None = None, immutable: bool = False) -> FetchResult:
+    def get(self, url: str, *, max_age_s: float | None = None, immutable: bool = False,
+            allow_disabled: bool | None = None) -> FetchResult:
         """GET poli de ``url``.
 
         - hors ligne : réponse du cache ou :class:`OfflineCacheMiss` ;
         - ``immutable=True`` (PDF) : le cache suffit, aucune revalidation ;
         - ``max_age_s`` : âge maximal du cache accepté sans requête ;
         - sinon requête conditionnelle (``If-None-Match`` / ``If-Modified-Since``) ;
-          une réponse 304 renvoie le corps en cache.
+          une réponse 304 renvoie le corps en cache ;
+        - redirections (301, 302, 303, 307, 308) suivies **à la main**, 5 au plus : chaque
+          saut repasse par les contrôles (source désactivée, robots.txt de l'hôte d'arrivée,
+          délai, quota, blocage) et compte comme une requête.
 
-        Lève :class:`RobotsDisallowed` si robots.txt interdit la page.
+        Lève :class:`SourceDisabled` pour une source désactivée (sauf ``allow_disabled``),
+        :class:`RobotsDisallowed` si robots.txt interdit la page ou une étape de redirection.
         """
+        self._check_source(url, allow_disabled)
         cached = self.cache_get(url)
         if self.offline:
             if cached is None:
@@ -850,6 +1124,30 @@ class PoliteSession:
             if lastmod:
                 headers["If-Modified-Since"] = lastmod
         res = self._network_get(url, headers)
+        cur = url
+        for hop in range(MAX_REDIRECTS + 1):
+            loc = res.headers.get("Location") or res.headers.get("location")
+            if res.status not in REDIRECT_STATUSES or not loc:
+                break
+            if hop == MAX_REDIRECTS:
+                self._log(event="too_many_redirects", url=url, last=cur)
+                raise ResearchError(f"{url} : plus de {MAX_REDIRECTS} redirections, page non lue.")
+            nxt = urljoin(cur, loc)
+            self._log(event="redirect", url=cur, location=nxt, status=res.status)
+            self._check_source(nxt, allow_disabled)
+            if self.stopped:
+                raise AccessBlocked(f"Session arrêtée ({self.stopped}) : aucune nouvelle requête n'est envoyée.")
+            if not self.allowed(nxt):
+                self._log(event="robots_disallow", url=nxt, redirected_from=url)
+                raise RobotsDisallowed(
+                    f"{url} redirige vers {nxt}, que le robots.txt de {url_host(nxt)} interdit à un robot : "
+                    "la page n'est pas lue (aucun contournement)."
+                )
+            cur = nxt
+            hop_headers = headers if cached is not None and cur == cached.final_url else {}
+            res = self._network_get(cur, hop_headers)
+        if cur != url:
+            res = dataclasses.replace(res, url=url, final_url=cur)
         if res.status == 304 and cached is not None:
             self.cache_put(url, cached.content, 200, cached.headers, cached.final_url)
             return dataclasses.replace(cached, from_cache=True, fetched_at=res.fetched_at)
@@ -1256,6 +1554,17 @@ def _esv_item(row, spec: BrvmList, page_url: str, resolver: IssuerResolver) -> d
         lines = [f"Dividende net : {amount_txt or '?'} par action.", f"Date ex-dividende : {_fmt(ex)}.",
                  f"Date de paiement : {_fmt(pay)}.", f"Exercice : {exercice or '?'}."]
         extra.update({"div_net": div, "ex_date": _iso(ex), "pay_date": _iso(pay), "exercice": exercice})
+        if div and _country_of(symbol) == "CI":
+            # La colonne « montant du dividende net » de brvm.org porte pour les émetteurs
+            # ivoiriens presque toujours le montant BRUT : 13 cas sur 15 vérifiés le 22/11/2026
+            # contre le « dernier dividende payé » du BOC (net = brut × 0,88, IRVM 12 %) ; seuls
+            # AGL et SITAB y affichaient le net. Le net est donc présumé à 88 % du montant affiché
+            # (base du dividende précédent du panel) ; un BOC « opérations en cours » qui dit
+            # « net » lève la présomption (voir run_research).
+            extra.update({"div_listed": div, "div_gross": div, "irvm_rate": CI_IRVM_RATE,
+                          "div_net": round(div * (1.0 - CI_IRVM_RATE), 4), "div_basis": "brut présumé"})
+            lines[0] = (f"Dividende affiché : {amount_txt} par action (colonne « net » du site, montant brut "
+                        f"présumé ; net estimé {_fmt_amount(extra['div_net'])} après IRVM de 12 %).")
         extra.update(_dividend_date_checks(file_date, ex, pay))
         m = re.search(r"avis_n(?:deg)?_?(\d+)", doc_url or "", re.IGNORECASE)
         if m:
@@ -1457,8 +1766,10 @@ def collect_list(session: PoliteSession, list_key: str, *, since: Any = None,
             break
         parsed = parse_list_page(res.content, list_key, url, resolver)
         stop = False
+        seen = res.fetched_at or session.now().isoformat(timespec="seconds")
         for it in parsed["items"]:
             it["page"] = page
+            it["seen_at"] = seen
             d = _as_date(it.get("doc_date"))
             if it.get("doc_url") and normalize_url(it["doc_url"]) in known:
                 stop = True
@@ -1521,7 +1832,9 @@ def collect_issuer_reports(session: PoliteSession, symbol: str | None = None, sl
             break
         parsed = parse_issuer_reports(res.content, url, symbol, resolver)
         stop = False
+        seen = res.fetched_at or session.now().isoformat(timespec="seconds")
         for it in parsed["items"]:
+            it["seen_at"] = seen
             if it.get("doc_url") and normalize_url(it["doc_url"]) in known:
                 stop = True
                 continue
@@ -1700,9 +2013,21 @@ def parse_boc_events(text: str, boc_date: Any = None, source_url: str | None = N
         sym = resolver.resolve(issuer, op)
         hint = "DIV_NOTICE" if re.search(r"dividende", op, re.IGNORECASE) else None
         extra: dict[str, Any] = {}
-        m = re.search(r"dividendes? de ([\d ,.]+)\s*F\s*CFA", op, re.IGNORECASE)
+        m = re.search(r"dividendes? de ([\d ,.]+)\s*F\s*CFA(\s+net\b)?", op, re.IGNORECASE)
         if m:
-            extra["div_net"] = _parse_amount(m.group(1))
+            amount = _parse_amount(m.group(1))
+            irvm = re.search(r"IRVM\s+applicable\s+de\s+(\d+(?:[,.]\d+)?)\s*%", op, re.IGNORECASE)
+            if m.group(2) or not irvm or amount is None:
+                extra["div_net"] = amount  # « 450 F CFA net par action »
+            else:
+                # « 804 F CFA par action (IRVM applicable de 12 % pour les personnes physiques…) » :
+                # montant BRUT. Net = brut × (1 − taux des personnes physiques), base du « dernier
+                # dividende payé » du BOC (ECOC 2025 : 804 × 0,88 = 707,52). Essai réel du 22/11/2026 :
+                # le brut comparé au net précédent gonflait la hausse (TTLC +11 % au lieu de −2 %).
+                rate = float(irvm.group(1).replace(",", ".")) / 100.0
+                extra["div_gross"] = amount
+                extra["irvm_rate"] = rate
+                extra["div_net"] = round(amount * (1.0 - rate), 4)
             pay = re.search(r"le (\d{1,2}/\d{1,2}/\d{4})", op)
             extra["pay_date"] = _iso(parse_date_fr(pay.group(1))) if pay else None
         add("boc_operations", f"{issuer} : {op}", issuer, sym, hint,
@@ -1716,9 +2041,20 @@ def parse_boc_events(text: str, boc_date: Any = None, source_url: str | None = N
             continue
         tail = re.split(r"\s+-\s+", obj)[-1] if obj else ""
         sym = resolver.resolve(tail, obj)
-        hint = "DIV_NOTICE" if re.search(r"dividende", nature + obj, re.IGNORECASE) else None
+        # La colonne « nature » du BOC est parfois fausse (avis 166-2025 : « Paiement de
+        # dividendes » pour une levée de suspension de titres d'État) : l'objet prime.
+        obj_type = dedup_event_type({"title": obj}) if obj else None
+        if re.search(r"dividende", obj, re.IGNORECASE):
+            hint = "DIV_NOTICE"
+        elif re.search(r"dividende", nature, re.IGNORECASE) and obj_type in (None, "DIV_NOTICE"):
+            hint = "DIV_NOTICE"
+        else:
+            hint = None
+        # La rubrique (« Suspension de cotation ») n'est pas le contenu : sur une levée de
+        # suspension, elle donnait un faux R1 (essai réel du 22/11/2026). Elle reste dans extra.
         add("boc_avis", f"Avis {no} ({entity}) : {obj or nature}", entity, sym, hint,
-            f"Bulletin officiel de la cote, avis de {entity} — {nature} — {obj}",
+            f"Bulletin officiel de la cote, avis de {entity} — {obj}" if obj else
+            f"Bulletin officiel de la cote, avis de {entity} — {nature}",
             f"avis|{norm_label(entity)}|{norm_label(no)}", {"avis_no": no, "nature": nature})
     for cols in sections.get("COMMUNIQUES", []):
         issuer, no, nature, obj = (cols + ["", "", "", ""])[:4]
@@ -1726,7 +2062,8 @@ def parse_boc_events(text: str, boc_date: Any = None, source_url: str | None = N
             continue
         sym = resolver.resolve(issuer, obj)
         add("boc_communiques", obj or nature, issuer, sym, None,
-            f"Bulletin officiel de la cote, communiqué de {issuer or 'l’émetteur'} — {nature} — {obj}",
+            f"Bulletin officiel de la cote, communiqué de {issuer or 'l’émetteur'} — {obj}" if obj else
+            f"Bulletin officiel de la cote, communiqué de {issuer or 'l’émetteur'} — {nature}",
             f"comm|{norm_label(issuer)}|{norm_label(no)}|{norm_label(obj)}", {"numero": no, "nature": nature})
     for ag in _boc_ag_rows(lines):
         ag_date = parse_date_fr(ag["date"])
@@ -1979,8 +2316,54 @@ def fetch_document(session: PoliteSession, url: str, cache_dir: str | Path | Non
 # ---------------------------------------------------------------------------
 
 
+_PAGE_ISO_RE = re.compile(r"^\s*\d{4}-\d{2}-\d{2}(?:[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?)?\s*$", re.I)
+_PAGE_SLASH_RE = re.compile(r"\d{1,2}\s*[/.]\s*\d{1,2}\s*[/.]\s*\d{2,4}")
+
+
+def parse_page_date(value: Any) -> tuple[dt.datetime | None, str | None]:
+    """Date d'une métadonnée HTML -> ``(horodatage UTC, "datetime" | "date")`` ou ``(None, None)``.
+
+    Règle française **jour/mois** (comme ``model.to_utc``) : « 05/11/2026 » est le 5 novembre ;
+    ISO 8601 accepté ; date longue « 5 novembre 2026 » acceptée (date seule). Refusés (la
+    date de collecte servira) : valeur vide ou illisible, ``NaT``, date sans jour (« 2026 »,
+    « 2026-11 », « novembre 2026 »), format à barres obliques ambigu (heure « 6:30 PM »…).
+    """
+    if value is None:
+        return None, None
+    raw = clean_text(str(value))
+    if not raw:
+        return None, None
+    try:
+        from brvm_alpha.notes.model import is_date_only, to_utc as model_to_utc
+    except Exception:  # pragma: no cover
+        return None, None
+    try:
+        if _PAGE_ISO_RE.match(raw) or re.match(r"^\s*\d{1,2}[/.-]\d{1,2}[/.-]\d{4}(?:[ T]+\d{1,2}[:h]\d{2}(?::\d{2})?)?\s*(?:utc|z|gmt)?\s*$", raw, re.I):
+            ts = model_to_utc(raw)
+            if ts is None or pd.isna(ts):
+                return None, None
+            return ts.to_pydatetime(), ("date" if is_date_only(raw) else "datetime")
+    except (ValueError, TypeError, OverflowError):
+        return None, None
+    if _PAGE_SLASH_RE.search(raw):
+        return None, None  # format à barres obliques non reconnu : ordre jour/mois incertain
+    m = _LONG_FR_RE.search(strip_accents(raw).lower())
+    if m and m.group(2) in _MONTHS_FR:
+        try:
+            d = dt.date(int(m.group(3)), _MONTHS_FR[m.group(2)], int(m.group(1)))
+        except ValueError:
+            return None, None
+        return dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc), "date"
+    return None, None
+
+
 def extract_html_content(html: str | bytes, url: str = "") -> dict[str, Any]:
-    """Titre, date de publication et texte principal d'une page HTML publique."""
+    """Titre, date de publication et texte principal d'une page HTML publique.
+
+    Les dates des métadonnées sont lues par :func:`parse_page_date` (règle jour/mois
+    française, aucune date sans jour) ; ``published_precision`` vaut ``"date"`` pour une
+    date sans heure. Sans date fiable, ``published_at`` vaut ``None``.
+    """
     soup = _soup(html)
     title = ""
     for sel in (("meta", {"property": "og:title"}), ("meta", {"name": "twitter:title"})):
@@ -1994,26 +2377,23 @@ def extract_html_content(html: str | bytes, url: str = "") -> dict[str, Any]:
     if not title and soup.title:
         title = clean_text(soup.title.get_text(" ", strip=True))
     published: dt.datetime | None = None
+    precision: str | None = None
     date_source = None
     for attrs in ({"property": "article:published_time"}, {"name": "date"}, {"name": "DC.date.issued"},
                   {"name": "dc.date"}, {"itemprop": "datePublished"}, {"name": "pubdate"}):
         tag = soup.find("meta", attrs=attrs)
         if tag and tag.get("content"):
-            try:
-                published = to_utc(pd.Timestamp(tag["content"]))
+            published, precision = parse_page_date(tag["content"])
+            if published is not None:
                 date_source = "meta"
                 break
-            except (ValueError, TypeError):
-                continue
     if published is None:
-        tag = soup.find("time", attrs={"datetime": True}) or soup.find(class_="date-display-single",
-                                                                      attrs={"content": True})
-        if tag is not None:
-            try:
-                published = to_utc(pd.Timestamp(tag.get("datetime") or tag.get("content")))
+        for tag in list(soup.find_all("time", attrs={"datetime": True}))[:5] + list(
+                soup.find_all(class_="date-display-single", attrs={"content": True}))[:5]:
+            published, precision = parse_page_date(tag.get("datetime") or tag.get("content"))
+            if published is not None:
                 date_source = "time"
-            except (ValueError, TypeError):
-                published = None
+                break
     for t in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "aside", "iframe", "svg"]):
         t.decompose()
     main = (soup.find("article") or soup.find("main") or soup.find(id="content")
@@ -2022,11 +2402,13 @@ def extract_html_content(html: str | bytes, url: str = "") -> dict[str, Any]:
     lines = [clean_text(x) for x in raw.split("\n")]
     text = "\n".join(x for x in lines if x)
     return {"title": title, "text": text[:MAX_TEXT_CHARS], "published_at": published, "date_source": date_source,
-            "n_chars": len(text)}
+            "published_precision": precision, "n_chars": len(text)}
 
 
 def _disabled_domain(url: str) -> str | None:
-    host = urlparse(url).netloc.lower()
+    """Motif de désactivation de la source de ``url`` (hôte normalisé : port, casse et point
+    final ignorés — « WWW.SIKAFINANCE.COM:443 » et « www.sikafinance.com. » sont reconnus)."""
+    host = url_host(url)
     for dom, why in DISABLED_DOMAINS.items():
         if host == dom or host.endswith("." + dom):
             return why
@@ -2234,8 +2616,25 @@ def _next_session_day(d: dt.date, calendar: Any = None) -> dt.date:
         return nxt
 
 
+def item_seen_at(item: Mapping[str, Any], now: dt.datetime) -> dt.datetime:
+    """Instant où le collecteur a vu l'élément : ``max(now, seen_at de la page)``.
+
+    ``seen_at`` est posé par :func:`collect_list` / :func:`collect_issuer_reports` à la
+    lecture de la page : dans une collecte longue, une page lue à 09h05 n'était pas connue
+    à 08h50, heure de lancement.
+    """
+    seen = to_utc(now)
+    raw = item.get("seen_at")
+    if raw:
+        try:
+            seen = max(seen, to_utc(raw))
+        except (TypeError, ValueError):
+            pass
+    return seen
+
+
 def item_published_at(item: Mapping[str, Any], seen_at: dt.datetime,
-                      calendar: Any = None) -> tuple[dt.datetime, str, bool]:
+                      calendar: Any = None, strict_seen: bool = False) -> tuple[dt.datetime, str, bool]:
     """Publication prudente d'un élément brut : ``(horodatage, précision, estimé)``.
 
     - horodatage précis (avis : date + heure ; BOC : 19h00 UTC) : retenu, borné par ``seen_at`` ;
@@ -2247,26 +2646,42 @@ def item_published_at(item: Mapping[str, Any], seen_at: dt.datetime,
     - si la fin du jour retenu est postérieure à ``seen_at``, on retient ``seen_at``
       (l'élément était déjà en ligne quand le collecteur l'a vu) ;
     - aucune date : ``seen_at`` (première fois que notre collecteur l'a vu).
+
+    ``strict_seen=True`` (reconstitution d'historique, ``now`` antidaté) : ``seen_at`` n'est
+    pas un instant où le collecteur a réellement vu l'élément ; tout cas qui reviendrait à le
+    dater de ``seen_at`` (document postérieur, date du jour, absence de date) lève
+    :class:`PostdatedItem` au lieu de le ramener à ``seen_at`` (aucune anticipation).
     """
     seen = to_utc(seen_at)
+
+    def clamp(why: str) -> tuple[dt.datetime, str, bool]:
+        if strict_seen:
+            raise PostdatedItem(f"{why} : postérieur à l'instant de collecte {seen:%d/%m/%Y %Hh%M} UTC")
+        return seen, "datetime", True
+
     extra = item.get("extra") or {}
     override = extra.get("published_override")
     if override:
         ts = to_utc(override["ts"])
         prec = override.get("precision", "datetime")
         eff = dt.datetime.combine(ts.date(), dt.time(23, 59, 59), tzinfo=dt.timezone.utc) if prec == "date" else ts
-        return (ts, prec, True) if eff <= seen else (seen, "datetime", True)
+        return (ts, prec, True) if eff <= seen else clamp("publication la plus tôt connue")
     floor = _as_date(extra.get("published_floor"))
     if item.get("published_at"):
-        ts = min(to_utc(item["published_at"]), seen)
+        pub = to_utc(item["published_at"])
+        if pub > seen:
+            if strict_seen:
+                clamp("horodatage de publication")
+            pub = seen
+        ts = pub
         if floor is not None:
             eod = dt.datetime.combine(floor, dt.time(23, 59, 59), tzinfo=dt.timezone.utc)
             if eod > ts:
-                return (to_utc(floor), "date", True) if eod <= seen else (seen, "datetime", True)
+                return (to_utc(floor), "date", True) if eod <= seen else clamp("plancher de publication")
         return ts, "datetime", False
     d = _as_date(item.get("doc_date"))
     if d is None:
-        return seen, "datetime", True
+        return clamp("aucune date")
     if item.get("date_source") == "fichier":
         d = _next_session_day(d, calendar)
     if floor is not None and floor > d:
@@ -2274,16 +2689,17 @@ def item_published_at(item: Mapping[str, Any], seen_at: dt.datetime,
     eod = dt.datetime.combine(d, dt.time(23, 59, 59), tzinfo=dt.timezone.utc)
     if eod <= seen:
         return to_utc(d), "date", True
-    return seen, "datetime", True
+    return clamp(f"date du {d:%d/%m/%Y}")
 
 
-def _effective_published(item: Mapping[str, Any], seen_at: dt.datetime, calendar: Any = None) -> dt.datetime:
-    ts, prec, _ = item_published_at(item, seen_at, calendar)
+def _effective_published(item: Mapping[str, Any], seen_at: dt.datetime, calendar: Any = None,
+                         strict_seen: bool = False) -> dt.datetime:
+    ts, prec, _ = item_published_at(item, seen_at, calendar, strict_seen=strict_seen)
     return dt.datetime.combine(ts.date(), dt.time(23, 59, 59), tzinfo=dt.timezone.utc) if prec == "date" else ts
 
 
 def _merge_publication(kept: dict[str, Any], dup: Mapping[str, Any], seen_at: dt.datetime,
-                       calendar: Any = None) -> None:
+                       calendar: Any = None, strict_seen: bool = False) -> None:
     """Deux sources pour le même document : on garde la publication la plus tôt.
 
     Chaque source donne une borne supérieure prudente de l'instant de publication (fin
@@ -2292,10 +2708,14 @@ def _merge_publication(kept: dict[str, Any], dup: Mapping[str, Any], seen_at: dt
     dividendes » (date du nom de fichier + 1 séance) et le même PDF dans la liste des
     avis (date et heure exactes).
     """
-    a = _effective_published(kept, seen_at, calendar)
-    b = _effective_published(dup, seen_at, calendar)
+    a_seen, b_seen = item_seen_at(kept, seen_at), item_seen_at(dup, seen_at)
+    try:
+        a = _effective_published(kept, a_seen, calendar, strict_seen)
+        b = _effective_published(dup, b_seen, calendar, strict_seen)
+    except PostdatedItem:
+        return  # reconstitution : une source postérieure à l'instant de collecte ne compte pas
     if b < a:
-        ts, prec, _ = item_published_at(dup, seen_at, calendar)
+        ts, prec, _ = item_published_at(dup, b_seen, calendar, strict_seen=strict_seen)
         kept.setdefault("extra", {})["published_override"] = {"ts": ts.isoformat(), "precision": prec,
                                                                "from": dup.get("list_type")}
 
@@ -2326,7 +2746,9 @@ def note_id_for(item: Mapping[str, Any]) -> str:
 
 
 _SIG_STOP = {"LE", "LA", "LES", "DE", "DU", "DES", "D", "L", "ET", "A", "AU", "AUX", "EN", "SUR", "POUR", "PAR",
-             "UN", "UNE", "ME", "EME", "ER", "S", "SA", "CI", "SN", "BF", "BN", "ML", "NG", "TG", "COMMUNIQUE"}
+             "UN", "UNE", "ME", "EME", "ER", "S", "SA", "CI", "SN", "BF", "BN", "ML", "NG", "TG", "COMMUNIQUE",
+             # pays restés dans le libellé (« FILTISAC CÔTE D'IVOIRE : … » contre « … - FILTISAC CI »)
+             "COTE", "IVOIRE", "SENEGAL", "BENIN", "BURKINA", "FASO", "MALI", "NIGER", "TOGO"}
 
 
 def content_signature(title: str | None, symbol: str | None = None) -> str:
@@ -2340,7 +2762,13 @@ def content_signature(title: str | None, symbol: str | None = None) -> str:
             a = norm_label(alias)
             n = re.sub(rf"\b{re.escape(a)}\b", " ", n)
     n = n.replace("TROISIEME", "3E").replace("3EME", "3E").replace("PREMIER", "1ER")
-    toks = sorted({t for t in n.split() if t not in _SIG_STOP and (len(t) >= 3 or t.isdigit() or t[:-1].isdigit())})
+    # Version corrigée d'un document (« … (Annule et remplace le précédent) », « ERRATUM - … ») :
+    # même contenu que l'original.
+    n = re.sub(r"\bANNULE\s+(?:ET\s+)+REMPLACE(?:\s+(?:LE|LA|LES))?(?:\s+PRECEDENTE?S?)?\b|\bERRATUM\b", " ", n)
+    # « Avis 20260930 (AMF-UMOA) : Communiqué … » (BOC) contre « Communiqué AMF-UMOA … » (liste) :
+    # le mot « avis » et un numéro d'avis en forme de date (AAAAMMJJ) ne distinguent pas deux documents.
+    toks = sorted({t for t in n.split() if t not in _SIG_STOP and t != "AVIS" and not re.fullmatch(r"20\d{6}", t)
+                   and (len(t) >= 3 or t.isdigit() or t[:-1].isdigit())})
     return " ".join(toks)
 
 
@@ -2375,7 +2803,7 @@ def _analyze(note: Any, panels: Mapping[str, Any] | None = None, structured: Map
 
 
 #: Champs structurés des listes transmis à l'analyse (confiance d'extraction 1,0).
-STRUCTURED_KEYS = ("div_net", "ex_date", "pay_date", "record_date", "ag_date", "ag_type", "split_ratio",
+STRUCTURED_KEYS = ("div_net", "div_gross", "irvm_rate", "div_basis", "div_listed", "ex_date", "pay_date", "record_date", "ag_date", "ag_type", "split_ratio",
                    "split_date", "parity_ratio", "delisting_date", "suspended_since")
 
 
@@ -2439,9 +2867,22 @@ def _tradable(published_at: Any, calendar: Any = None, precision: str = "datetim
     return first_tradable_session(ts, cal)
 
 
+def _index_targets(title: str) -> list[str]:
+    """Indices nommés dans un titre (``notes.entities``), sinon liste vide."""
+    try:
+        from brvm_alpha.notes.entities import link_entities
+    except Exception:  # pragma: no cover - module de liaison absent
+        return []
+    try:
+        return list(link_entities("", title, kinds=("index",)).targets)
+    except Exception:  # pragma: no cover
+        return []
+
+
 def item_to_note(item: Mapping[str, Any], *, now: dt.datetime | None = None,
                  calendar: Any = None, analyze: bool = True,
-                 panels: Mapping[str, Any] | None = None, history: pd.DataFrame | None = None) -> Any:
+                 panels: Mapping[str, Any] | None = None, history: pd.DataFrame | None = None,
+                 reconstructed: bool = False) -> Any:
     """Convertit un élément brut en ``Note`` analysée (couche b).
 
     ``targets`` = symbole de l'élément (ou ``PAYS:XX`` pour un événement souverain,
@@ -2450,10 +2891,15 @@ def item_to_note(item: Mapping[str, Any], *, now: dt.datetime | None = None,
     ``analysis["extracted"]`` est complété par les champs structurés de la liste
     (montant, dates ex et de paiement, date d'AG...), plus sûrs qu'une expression
     régulière sur un PDF.
+
+    ``created_at`` = instant où le collecteur a vu l'élément (:func:`item_seen_at`) : c'est
+    la **borne de connaissance** utilisée par les vues strictes (``signals.notes_asof``),
+    distincte de ``published_at`` (publication sur le marché, document 07 §6.3).
+    ``reconstructed=True`` : ``now`` antidaté, voir :func:`item_published_at` (``strict_seen``).
     """
     model_mod = _model_module()
-    now = to_utc(now or utcnow())
-    published, precision, estimated = item_published_at(item, now, calendar)
+    now = item_seen_at(item, to_utc(now or utcnow()))
+    published, precision, estimated = item_published_at(item, now, calendar, strict_seen=reconstructed)
     fts = _tradable(published, calendar, precision)
     extra = dict(item.get("extra") or {})
     targets: list[str] = []
@@ -2462,7 +2908,9 @@ def item_to_note(item: Mapping[str, Any], *, now: dt.datetime | None = None,
     elif item.get("country"):
         targets.append(f"PAYS:{item['country']}")
     elif item.get("market_level"):
-        targets.append("MARCHE")
+        # Avis de marché qui nomme un indice (« Composition de l'indice BRVM 30 ») : la
+        # cible est l'indice, pas le marché entier (essai réel du 22/11/2026).
+        targets.extend(_index_targets(item.get("title") or "") or ["MARCHE"])
     tags = ["auto", f"liste:{item.get('list_type')}"]
     if estimated:
         tags.append("date_estimee")
@@ -2472,6 +2920,8 @@ def item_to_note(item: Mapping[str, Any], *, now: dt.datetime | None = None,
         tags.append("emetteur_a_verifier")
     if extra.get("ocr_needed"):
         tags.append("ocr_requis")
+    if extra.get("div_basis") == "brut présumé":
+        tags.append("dividende_brut_presume")
     if item.get("instrument"):
         tags.append(f"instrument:{item['instrument']}")
     hint = item.get("event_hint")
@@ -2569,11 +3019,47 @@ def _signature_index(frame: pd.DataFrame) -> _DateIndex:
     for _, r in frame.iterrows():
         tg = r.get("targets")
         syms = [t for t in (list(tg) if isinstance(tg, (list, tuple, set)) or hasattr(tg, "__iter__")
-                            and not isinstance(tg, str) else str(tg or "").split(",")) if t and ":" not in str(t)]
+                            and not isinstance(tg, str) else str(tg or "").split(",")) if t and ":" not in str(t)
+                and str(t).strip() != "MARCHE"]  # avis de marché : élément sans symbole
         sym = str(syms[0]).strip() if syms else ""
         d = _as_date(r.get("published_at"))
         out.add((sym, content_signature(r.get("title"), sym or None)), d)
     return out
+
+
+#: Publications de résultats (rapport trimestriel, semestriel, annuel) : la même
+#: publication paraît dans la page « rapports » de l'émetteur et dans les communiqués du
+#: BOC sous deux titres différents (« FILTISAC CÔTE D'IVOIRE : Rapport d'activités du 1er
+#: trimestre 2025 » / « Rapport d'activités - 1er trimestre 2025 - FILTISAC CI ») : 45 paires
+#: lors de l'essai réel du 22/11/2026. Clé : le type seul (la fenêtre de 30 jours sépare
+#: déjà deux exercices ; un titre sans exercice — « CIE SODE CÔTE D'IVOIRE : Etats
+#: financiers - Norme SYSCOHADA » — doit aussi se rapprocher de son double).
+_RESULT_DEDUP: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("ACT_Q1", re.compile(r"\b1\s?ER\s+TRIMESTRE|PREMIER\s+TRIMESTRE|\bT1\b")),
+    ("ACT_Q3", re.compile(r"\b3\s?(?:E|EME|IEME)\s+TRIMESTRE|TROISIEME\s+TRIMESTRE|\b9\s+MOIS\b|NEUF\s+MOIS|\bT3\b")),
+    ("RES_S1", re.compile(r"\b1\s?ER\s+SEMESTRE|PREMIER\s+SEMESTRE|SEMESTRIEL|EXAMEN\s+LIMITE|\bS1\b|"
+                          r"\b2\s?(?:E|EME|IEME)\s+TRIMESTRE|DEUXIEME\s+TRIMESTRE")),
+    ("RES_ANNUAL", re.compile(r"ETATS\s+FINANCIERS|RAPPORT\s+ANNUEL|RAPPORT\s+D\s+ACTIVITES?\s+ANNUEL|"
+                              r"COMPTES\s+ANNUELS|\b4\s?(?:E|EME|IEME)\s+TRIMESTRE|RAPPORT\s+DU\s+CONSEIL\s+D\s+ADMINISTRATION|"
+                              r"\b(?:2\s?(?:E|EME|IEME)|DEUXIEME|SECOND)\s+SEMESTRE")),
+)
+_NOT_RESULT_RE = re.compile(r"CONTRAT\s+DE\s+LIQUIDITE|\bRSE\b|ATTESTATION|CONVOCATION|RESOLUTION|DIVIDENDE|"
+                            r"CONVENTIONS?\s+REGLEMENTEES?")
+_RESULT_DEDUP_DAYS = 30
+
+
+_RESULT_TYPES = frozenset(t for t, _ in _RESULT_DEDUP)
+
+
+def _result_dedup_type(title: str) -> str | None:
+    """« RES:ACT_Q1 » pour une publication de résultats (rapport trimestriel…), sinon ``None``."""
+    n = norm_label(title)
+    if not n or _NOT_RESULT_RE.search(n):
+        return None
+    for t, pat in _RESULT_DEDUP:
+        if pat.search(n):
+            return f"RES:{t}"
+    return None
 
 
 def dedup_event_type(item: Mapping[str, Any]) -> str | None:
@@ -2585,10 +3071,22 @@ def dedup_event_type(item: Mapping[str, Any]) -> str | None:
     for t, pat, _ in _DEDUP_TYPES:
         if pat.search(title):
             return t
-    return hint if hint in {t for t, _, _ in _DEDUP_TYPES} else None
+    if hint in {t for t, _, _ in _DEDUP_TYPES}:
+        return hint
+    res = _result_dedup_type(title)
+    if res is None and hint in _RESULT_TYPES and not _NOT_RESULT_RE.search(norm_label(title)):
+        # Note déjà analysée (« SONATEL SN - Communiqué de Presse » classée RES_S1 par son texte).
+        res = f"RES:{hint}"
+    return res
 
 
 _DEDUP_WINDOW = {t: w for t, _, w in _DEDUP_TYPES}
+
+
+def _dedup_window(event_type: str) -> int:
+    if event_type.startswith("RES:"):  # publication de résultats
+        return _RESULT_DEDUP_DAYS
+    return _DEDUP_WINDOW.get(event_type, 15)
 
 
 def _event_date(item: Mapping[str, Any]) -> dt.date | None:
@@ -2608,7 +3106,7 @@ def _is_event_duplicate(item: Mapping[str, Any], events: _DateIndex) -> bool:
     et = dedup_event_type(item)
     if not sym or not et:
         return False
-    return events.near((sym, et), _event_date(item), _DEDUP_WINDOW.get(et, 15))
+    return events.near((sym, et), _event_date(item), _dedup_window(et))
 
 
 def _event_index(frame: pd.DataFrame) -> _DateIndex:
@@ -2631,6 +3129,33 @@ def _event_index(frame: pd.DataFrame) -> _DateIndex:
     return out
 
 
+def _reconcile_dividend_basis(dup: Mapping[str, Any], selected: list[dict[str, Any]]) -> None:
+    """Lève la présomption « brut » d'un dividende de la liste brvm.org avec le BOC.
+
+    ``dup`` : doublon (ligne « opérations en cours » du BOC) d'un avis de dividende déjà
+    retenu dans la même collecte. Si le BOC donne le même montant **net** (« 92 F CFA net
+    par action »), le net retenu est ce montant ; s'il le dit brut (« IRVM applicable »),
+    la présomption devient un constat.
+    """
+    ex_d = dup.get("extra") or {}
+    if dup.get("list_type") != "boc_operations" or ex_d.get("div_net") is None:
+        return
+    amount = ex_d.get("div_gross") if ex_d.get("div_gross") is not None else ex_d.get("div_net")
+    for kept in selected:
+        ex_k = kept.get("extra") or {}
+        if kept.get("symbol") != dup.get("symbol") or ex_k.get("div_basis") != "brut présumé":
+            continue
+        if abs(float(ex_k.get("div_listed") or 0) - float(amount)) > 0.01:
+            continue
+        if ex_d.get("div_gross") is not None:
+            ex_k["div_basis"] = "brut (BOC)"
+        else:
+            ex_k.update({"div_net": ex_d["div_net"], "div_basis": "net (BOC)"})
+            ex_k.pop("div_gross", None)
+            ex_k.pop("irvm_rate", None)
+        return
+
+
 def _is_duplicate(item: Mapping[str, Any], sigs: _DateIndex, days: int = 5) -> bool:
     """Même titre (signature de contenu) pour le même émetteur à ±``days`` jours ?"""
     sym = item.get("symbol") or ""
@@ -2651,6 +3176,8 @@ class ResearchReport:
     stopped: str | None = None
     lists: dict[str, int] = field(default_factory=dict)
     unresolved: list[str] = field(default_factory=list)
+    #: ``now`` antidaté : reconstitution d'historique (notes exclues des vues strictes).
+    reconstructed: bool = False
 
     def summary(self) -> str:
         """Bilan en français, en phrases courtes (pour l'analyste)."""
@@ -2663,7 +3190,11 @@ class ResearchReport:
         if self.errors:
             lines.append(f"{len(self.errors)} incident(s) de collecte, dont : {self.errors[0]}")
         if self.unresolved:
-            lines.append(f"{len(self.unresolved)} élément(s) sans émetteur coté reconnu ou sans date (voir unresolved).")
+            lines.append(f"{len(self.unresolved)} élément(s) sans émetteur coté reconnu, sans date ou postérieur(s) "
+                         "à l'instant de collecte (voir unresolved).")
+        if self.reconstructed:
+            lines.append("Reconstitution d'historique (now antidaté) : notes marquées « reconstitue », exclues des "
+                         "vues strictes.")
         return "\n".join(lines)
 
 
@@ -2673,12 +3204,24 @@ class ResearchResult(list):
     report: ResearchReport
 
 
-def _store_add(store: Any, note: Any, now: dt.datetime) -> None:
-    """Ajout au journal, avec l'instant d'écriture si le journal l'accepte."""
+def _store_add(store: Any, note: Any, now: dt.datetime | None) -> None:
+    """Ajout au journal, avec l'instant d'écriture si le journal l'accepte (``None`` : heure réelle)."""
+    if now is None:
+        store.add(note)
+        return
     try:
         store.add(note, now=now)
     except TypeError:
         store.add(note)
+
+
+def _is_backdated(now: dt.datetime) -> bool:
+    """``now`` est-il antérieur à l'heure réelle (reprise d'historique) ? (``model.is_backdated``)."""
+    try:
+        from brvm_alpha.notes.model import is_backdated
+    except Exception:  # pragma: no cover
+        return False
+    return bool(is_backdated(now))
 
 
 def _store_root(store: Any) -> Path:
@@ -2714,15 +3257,23 @@ def run_research(store: Any, targets: Iterable[str] | None = None, since: Any = 
        journal (sauf ``dry_run``).
 
     ``calendar`` : calendrier des séances (``store.load_sessions``) ; par défaut celui
-    du panel. ``now`` : instant de collecte (UTC), qui borne toute publication.
+    du panel. ``now`` : instant de collecte (UTC), qui borne toute publication. Un ``now``
+    **antérieur à l'heure réelle** (reconstitution d'historique) n'est pas un instant où le
+    collecteur a vu les pages : les éléments qui reviendraient à être datés de ``now``
+    (document postérieur à ``now``, daté du jour ou sans date) sont écartés et signalés dans
+    ``report.unresolved``, et les notes écrites sont marquées « reconstituées » par le journal
+    (exclues des vues strictes). Sans ``now``, l'instant d'écriture est l'heure réelle.
 
     Une erreur de collecte (403/429, quota, robots.txt) arrête la collecte réseau
     mais pas le traitement des éléments déjà lus ni des BOC locaux. Le bilan est
     dans ``result.report``.
     """
     root = _store_root(store)
+    explicit_now = now is not None
     now = to_utc(now or utcnow())
+    reconstructed = explicit_now and _is_backdated(now)
     report = ResearchReport()
+    report.reconstructed = reconstructed
     sess = session or PoliteSession(delay_s=delay_s, max_requests=max_requests, offline=offline,
                                     cache_dir=root / "cache", log_path=root / "fetch_log.jsonl")
     scope = expand_targets(targets, panels, panel_dir)
@@ -2784,8 +3335,15 @@ def run_research(store: Any, targets: Iterable[str] | None = None, since: Any = 
     selected: list[dict[str, Any]] = []
     for it in raw:
         nid = note_id_for(it)
+        if reconstructed:
+            try:
+                item_published_at(it, item_seen_at(it, now), calendar, strict_seen=True)
+            except PostdatedItem as exc:
+                report.n_filtered += 1
+                report.unresolved.append(f"reconstitution : {exc} | {it.get('symbol') or '-'} | {it.get('title')}")
+                continue
         if nid in kept_by_id:  # même document vu par deux listes : publication la plus tôt
-            _merge_publication(kept_by_id[nid], it, now, calendar)
+            _merge_publication(kept_by_id[nid], it, now, calendar, strict_seen=reconstructed)
             report.n_duplicates += 1
             continue
         if not include_bonds and it.get("instrument") in ("obligation", "fctc") and not (
@@ -2815,10 +3373,11 @@ def run_research(store: Any, targets: Iterable[str] | None = None, since: Any = 
         twin = next((k for s2, g2, d2, k in kept_sigs if sig and s2 == sym and g2 == sig
                      and (d is None or d2 is None or abs((d - d2).days) <= 5)), None)
         if twin is not None:  # même document sous deux titres proches (liste et BOC)
-            _merge_publication(twin, it, now, calendar)
+            _merge_publication(twin, it, now, calendar, strict_seen=reconstructed)
             report.n_duplicates += 1
             continue
         if _store_has(store, nid, known_ids) or _is_duplicate(it, sigs) or _is_event_duplicate(it, events):
+            _reconcile_dividend_basis(it, selected)
             report.n_duplicates += 1
             continue
         kept_by_id[nid] = it
@@ -2828,11 +3387,15 @@ def run_research(store: Any, targets: Iterable[str] | None = None, since: Any = 
             events.add((sym, et), _event_date(it))
         selected.append(it)
 
-    if download_pdfs and not offline:
+    if download_pdfs:
+        # Hors ligne, seuls les PDF déjà en cache sont relus : une relecture hors ligne
+        # reproduit ainsi la collecte en ligne (essai réel du 22/11/2026).
         n_pdf = 0
         for it in selected:
             url = it.get("doc_url")
             if not url or not url.lower().endswith(".pdf") or n_pdf >= max_pdfs or sess.stopped:
+                continue
+            if sess.offline and not (sess.cache_dir / "docs" / f"{url_hash(url)}.json").exists():
                 continue
             try:
                 doc = fetch_document(sess, url)  # cache : <cache de la session>/docs/<sha256>.pdf
@@ -2849,9 +3412,10 @@ def run_research(store: Any, targets: Iterable[str] | None = None, since: Any = 
     result = ResearchResult()
     history = frame if len(frame) else None
     for it in selected:
-        note = item_to_note(it, now=now, calendar=calendar, analyze=analyze, panels=panels, history=history)
+        note = item_to_note(it, now=now, calendar=calendar, analyze=analyze, panels=panels, history=history,
+                            reconstructed=reconstructed)
         if not dry_run:
-            _store_add(store, note, now)
+            _store_add(store, note, now if explicit_now else None)
         result.append(note)
     report.n_new = len(result)
     report.n_requests = sess.n_requests
@@ -2879,21 +3443,23 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
       changé, une nouvelle version est enregistrée (``store.update``).
     """
     p = urlparse(url)
-    if p.scheme not in ("http", "https") or not p.netloc:
+    if p.scheme not in ("http", "https") or not url_host(url):
         raise ValueError(f"URL invalide : {url!r} (http ou https attendu).")
     why = _disabled_domain(url)
     if why and not allow_disabled:
         raise SourceDisabled(
-            f"La source {p.netloc} est désactivée par défaut ({why}). Elle ne sera lue qu'avec l'accord du site "
+            f"La source {url_host(url)} est désactivée par défaut ({why}). Elle ne sera lue qu'avec l'accord du site "
             "(allow_disabled=True) ; aucune protection anti-robot n'est contournée."
         )
     root = _store_root(store)
+    explicit_now = now is not None
     now = to_utc(now or utcnow())
+    reconstructed = explicit_now and _is_backdated(now)
     sess = session or PoliteSession(delay_s=delay_s, max_requests=5, offline=offline, cache_dir=root / "cache",
-                                    log_path=root / "fetch_log.jsonl", backoff_s=5.0)
-    res = sess.get(url)
+                                    log_path=root / "fetch_log.jsonl", backoff_s=5.0, allow_disabled=allow_disabled)
+    res = sess.get(url, allow_disabled=allow_disabled)
     if res.status in STOP_STATUSES:  # pragma: no cover - déjà levé par la session
-        raise AccessBlocked(f"{p.netloc} refuse l'accès (HTTP {res.status}).")
+        raise AccessBlocked(f"{url_host(url)} refuse l'accès (HTTP {res.status}).")
     if res.status != 200:
         raise ResearchError(f"La page {url} a répondu HTTP {res.status} : aucune note créée.")
     tags = ["url"]
@@ -2912,15 +3478,25 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
         if info.get("ocr_needed"):
             tags.append("ocr_requis")
     else:
-        content = extract_html_content(res.content, url)
+        try:
+            content = extract_html_content(res.content, url)
+        except Exception as exc:  # page malformée : erreur explicite, jamais une exception brute
+            raise ResearchError(f"La page {url} est illisible ({type(exc).__name__}: {exc}) : aucune note créée.") from exc
         text = content["text"]
         page_title = title or content["title"] or url
         published_at = content["published_at"]
-        precision = "datetime"
-        if published_at is not None and published_at.time() == dt.time(0, 0):
+        precision = content.get("published_precision") or "datetime"
+        if published_at is not None and precision != "date" and published_at.time() == dt.time(0, 0):
             precision = "date"  # date sans heure : connue en fin de journée
     effective = (dt.datetime.combine(published_at.date(), dt.time(23, 59, 59), tzinfo=dt.timezone.utc)
                  if published_at is not None and precision == "date" else published_at)
+    if reconstructed and (published_at is None or effective > now):
+        # Reconstitution (``now`` antidaté) : une page sans date, ou datée après ``now``,
+        # n'était pas connue à ``now`` — la dater de ``now`` serait une anticipation.
+        raise ResearchError(
+            f"La page {url} n'a pas de date de publication antérieure à now={now:%d/%m/%Y %Hh%M} UTC : "
+            "impossible de la placer dans l'historique sans biais d'anticipation ; aucune note créée."
+        )
     if published_at is None or effective > now:
         # Sans date fiable (ou date future), l'information est datée de sa collecte.
         published_at, precision = now, "datetime"
@@ -2964,14 +3540,14 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
         changes = {k: _note_get(note, k) for k in ("title", "text", "analysis", "event_type", "published_at",
                                                     "first_tradable_session", "tags")}
         try:
-            store.update(note_id, now=now, **changes)
+            store.update(note_id, now=now if explicit_now else None, **changes)
         except TypeError:
             store.update(note_id, **changes)
         try:
             return store.get(note_id)
         except Exception:  # pragma: no cover
             return note
-    _store_add(store, note, now)
+    _store_add(store, note, now if explicit_now else None)
     return note
 
 
@@ -2985,6 +3561,7 @@ __all__ = [
     "TargetScope", "expand_targets", "load_calendar", "first_tradable_session", "item_published_at",
     "note_id_for", "content_signature", "item_to_note", "run_research", "fetch_url_note",
     "ResearchReport", "ResearchResult", "date_from_filename", "parse_date_fr", "parse_parity",
+    "PostdatedItem", "item_seen_at", "parse_page_date", "url_host", "clear_block", "blocked_hosts",
     "default_resolver", "norm_label", "dedup_event_type", "normalize_url", "item_key", "sovereign_country",
     "DISABLED_DOMAINS", "STOP_STATUSES", "BOC_GARBLED_LABELS",
 ]

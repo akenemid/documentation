@@ -9,11 +9,14 @@ Chaîne de traitement (« les chiffres d'abord », §3.2) :
    « +16,8 % », « en hausse de 18,2 % ») ; dates (ex-dividende, paiement, registres, AG) ;
 4. **sentiment numérique** : ``s = clip(Δ%/25, −2, 2)`` pour RN, PNB, CA (25 % = seuil
    réglementaire d'alerte sur résultats) et ``clip(Δdiv%/20, −2, 2)`` pour le dividende ;
-   −2 si le dividende disparaît alors qu'il était versé. ``s_num`` = moyenne pondérée
-   (RN 1, dividende 0,8, PNB 0,6, CA 0,5), ramenée à [−1, 1] (division par 2) ;
+   −2 si le dividende disparaît alors qu'il était versé. ``s_num_doc`` = moyenne pondérée
+   (RN 1, dividende 0,8, PNB 0,6, CA 0,5), à l'échelle du document 07 ([−2, 2]) ; le champ
+   ``s_num`` du contrat ([−1, 1]) en est la moitié (affichage seulement) ;
 5. **ton lexical** : ``(P − N) / (P + N + 1)`` ; les termes d'un indicateur chiffré sont
    remplacés par le chiffre (§3.4, règle 4) ;
-6. **score** : ``0,7·s_num + 0,3·tone`` si un chiffre a été extrait, sinon ``tone`` ; si un
+6. **score** : ``clip(0,7·s_num_doc + 0,3·tone, −1, 1)`` si un chiffre a été extrait,
+   sinon ``tone`` — formule exacte du document 07 §3.4 (règle 5, « les nombres
+   d'abord »), bornée à [−1, 1] sans changer ni le signe ni le rapport des poids ; si un
    indicateur pondéré n'est décrit qu'en mots alors qu'un autre est chiffré, le poids 0,7
    est partagé en proportion des poids des indicateurs (pondération par couverture) ;
    pour une note de l'analyste avec ``stance`` / ``conviction``, combinaison bornée du
@@ -49,10 +52,12 @@ from .model import (
     fold_with_map,
     normalize_event_type,
     normalize_targets,
+    first_tradable_session,
     stance_sign,
     target_kind,
     target_label,
     to_day,
+    to_utc,
 )
 
 ANALYZE_VERSION = "notes-analyze/1 (BRVM-FR v0)"
@@ -66,6 +71,9 @@ ANALYST_CAP = 0.8
 #: Date d'entrée en vigueur de l'instruction BRVM 01-2025 (alertes sur résultats, R10).
 R10_EFFECTIVE = pd.Timestamp("2025-10-01", tz="UTC")
 EUR_FCFA = 655.957
+#: Longueur maximale du texte analysé (comme ``research.MAX_TEXT_CHARS``) : l'analyse d'un
+#: texte saisi très long reste bornée en temps ; le texte complet reste dans le journal.
+MAX_ANALYZE_CHARS = 20_000
 
 #: Matérialité de base par type d'événement (choix de conception, à valider).
 BASE_MATERIALITY: dict[str, float] = {
@@ -138,6 +146,9 @@ _IND_PATTERNS = {
 }
 _IND_RX = re.compile("|".join(f"(?P<{k}>{v})" for k, v in _IND_PATTERNS.items()))
 _SENT_END = re.compile(r"(?<!\d)[.!?](?!\d)|[;\n]|(?<=\d)\.(?=\s)")
+#: « une baisse de 8 % du chiffre d'affaires » : le pourcentage appartient à l'indicateur
+#: qui le SUIT (tournure française courante), pas à celui dont la fenêtre le contient.
+_PCT_OF_RX = re.compile(r"\s+(?:du|de\s+la|de\s+l'|des|d'|de)\s*(?:" + _IND_RX.pattern + r")")
 
 
 def parse_fr_number(s: str) -> float | None:
@@ -173,7 +184,26 @@ class _Amount:
     surface: str
 
 
+_COMPOSITE_GAP = re.compile(r"\s*(?:et\s*)?$")  # NUM peut commencer par une espace
+
+
 def _amounts(norm: str, a: int, b: int) -> list[_Amount]:
+    """Montants de ``norm[a:b]`` ; « 12 milliards 500 millions de FCFA » vaut 12,5 Md."""
+    out = _raw_amounts(norm, a, b)
+    merged: list[_Amount] = []
+    for x in out:
+        prev = merged[-1] if merged else None
+        if (prev is not None and prev.has_unit and x.has_unit and x.multiplier < prev.multiplier
+                and abs(x.value) < prev.multiplier and _COMPOSITE_GAP.match(norm[prev.end : x.start])
+                and prev.value >= 0 and x.value >= 0):
+            merged[-1] = _Amount(prev.value + x.value, prev.start, x.end, True, prev.multiplier,
+                                 (prev.surface + " " + x.surface).strip())
+            continue
+        merged.append(x)
+    return merged
+
+
+def _raw_amounts(norm: str, a: int, b: int) -> list[_Amount]:
     out = []
     for m in AMOUNT_RX.finditer(norm, a, b):
         unit = (m.group("unit") or "").strip()
@@ -202,6 +232,19 @@ def _pcts(norm: str, a: int, b: int) -> list[tuple[float, int, int, bool, str]]:
         explicit = raw.strip()[:1] in "+-"
         out.append((v, m.start(), m.end(), explicit, m.group(0).strip()))
     return out
+
+
+def _pct_owners(norm: str, mentions: list[tuple[str, int, int]]) -> dict[int, tuple[str, int]]:
+    """Pourcentages suivis de « du/de la/des <indicateur> » : ``{début du % : (indicateur, début de la mention)}``."""
+    owners: dict[int, tuple[str, int]] = {}
+    for m in PCT_RX.finditer(norm):
+        om = _PCT_OF_RX.match(norm, m.end())
+        if om is None or not om.lastgroup:
+            continue
+        # Début de la mention de l'indicateur (après « du », « de la »…) : c'est celui que
+        # ``_IND_RX.finditer`` donne pour cette mention.
+        owners[m.start()] = (om.lastgroup, om.start(om.lastgroup))
+    return owners
 
 
 def _direction(text: str) -> int:
@@ -243,11 +286,16 @@ def extract_figures(text: str, title: str = "") -> dict[str, Any]:
         k for k, (_, ms, _) in enumerate(mentions)
         if re.search(r"(?:contre|vs\.?|versus|par\s+rapport\s+a)\s+(?:un|une|le|la|les|des|l')?\s*$", norm[max(0, ms - 25) : ms])
     }
+    owners = _pct_owners(norm, mentions)
     for i, (ind, s, e) in enumerate(mentions):
         if i in comparative:
             continue
         if ind in res and res[ind].get("growth") is not None and (ind != "div" or res[ind].get("net") is not None):
             continue  # première mention exploitable retenue
+        # Pourcentages placés AVANT la mention et qui lui appartiennent (« hausse de 30 % du
+        # résultat net ») ; ceux qui appartiennent à un autre indicateur sont exclus.
+        own = sorted(ps for ps, (oi, oms) in owners.items() if oms == s and oi == ind)
+        foreign = {ps for ps, (oi, oms) in owners.items() if not (oms == s and oi == ind)}
         stop = _sentence_end(norm, e)
         nxt = next((ms for k, (_, ms, _) in enumerate(mentions) if k > i and ms >= e and k not in comparative), None)
         if nxt is not None:
@@ -256,24 +304,52 @@ def extract_figures(text: str, title: str = "") -> dict[str, Any]:
         mention_txt = norm[s:e]
         lookback = norm[max(_sentence_start(norm, s), s - 40) : s]
         surface = full[idx[s] : idx[min(stop, len(idx)) - 1] + 1] if stop > s else full[idx[s] : idx[e - 1] + 1]
+        sent_lo = _sentence_start(norm, s)
         if ind == "div":
-            info = _extract_div(norm, e, stop, mention_txt)
+            info = _extract_div(norm, e, stop, mention_txt, own=own, foreign=foreign, lo=sent_lo)
         else:
-            info = _extract_level(norm, e, stop, mention_txt, lookback, negative=("perte" in mention_txt))
+            info = _extract_level(norm, e, stop, mention_txt, lookback, negative=("perte" in mention_txt),
+                                  own=own, foreign=foreign, lo=sent_lo)
         if not info:
             continue
         info["surface"] = surface.strip()
         prev = res.get(ind)
-        if prev is None or (prev.get("growth") is None and info.get("growth") is not None) or (
-            ind == "div" and prev.get("net") is None and info.get("net") is not None
-        ):
+        if ind == "div" and prev is not None:
+            # Avis en deux mentions (« dividende brut : 2 612 FCFA ; dividende net : 2 298,75 FCFA ») :
+            # les champs se complètent, aucun n'est écrasé.
+            for k, v in info.items():
+                if k == "surface":
+                    continue
+                if prev.get(k) is None and v is not None:
+                    prev[k] = v
+            continue
+        if prev is None or (prev.get("growth") is None and info.get("growth") is not None):
             res[ind] = info
     return res
 
 
-def _extract_level(norm: str, a: int, b: int, mention: str, lookback: str, negative: bool) -> dict[str, Any]:
+def _owned_pcts(norm: str, own: list[int] | None, lo: int) -> list[tuple[float, int, int, bool, str, int]]:
+    """Pourcentages appartenant à la mention mais placés avant elle, avec le début de leur contexte."""
+    out = []
+    for ps in own or []:
+        m = PCT_RX.match(norm, ps)
+        if m is None:
+            continue
+        v = parse_fr_number(m.group("num"))
+        if v is None:
+            continue
+        explicit = m.group("num").strip()[:1] in "+-"
+        out.append((v, m.start(), m.end(), explicit, m.group(0).strip(), max(lo, ps - 40)))
+    return out
+
+
+def _extract_level(norm: str, a: int, b: int, mention: str, lookback: str, negative: bool,
+                   own: list[int] | None = None, foreign: set[int] | None = None, lo: int = 0) -> dict[str, Any]:
     amounts = _amounts(norm, a, b)
-    pcts = _pcts(norm, a, b)
+    foreign = foreign or set()
+    pcts = [(v, ps, pe, ex, sf, max(a, ps - 40)) for v, ps, pe, ex, sf in _pcts(norm, a, b) if ps not in foreign]
+    owned = _owned_pcts(norm, own, lo)
+    pcts = owned + pcts
     cur = prev = None
     m = _FROM_TO.search(norm, a, b)
     if m:
@@ -307,14 +383,17 @@ def _extract_level(norm: str, a: int, b: int, mention: str, lookback: str, negat
     if cur is not None and prev not in (None, 0):
         growth_lv = (cur - prev) / abs(prev)
     growth_pct = None
-    for v, ps, pe, explicit, surf in pcts:
-        before = norm[max(a, ps - 40) : ps]
+    owned_pos = {x[1] for x in owned}
+    for v, ps, pe, explicit, surf, ctx in pcts:
+        before = norm[ctx:ps]
         if explicit:
             growth_pct = v / 100.0
             break
         d = _direction(before)
-        if d == 0 and _RATIO_W.search(norm[max(a, ps - 25) : ps]):
+        if d == 0 and _RATIO_W.search(norm[max(ctx, ps - 25) : ps]):
             continue
+        if d == 0 and ps in owned_pos:
+            continue  # « représente 35 % du PNB » : un ratio, pas une variation
         if d == 0:
             d = _direction(lookback)
         if d == 0 and growth_lv is not None and abs(abs(v) / 100.0 - abs(growth_lv)) < 0.02:
@@ -340,8 +419,10 @@ def _extract_level(norm: str, a: int, b: int, mention: str, lookback: str, negat
     return info
 
 
-def _extract_div(norm: str, a: int, b: int, mention: str) -> dict[str, Any]:
+def _extract_div(norm: str, a: int, b: int, mention: str, own: list[int] | None = None,
+                 foreign: set[int] | None = None, lo: int = 0) -> dict[str, Any]:
     amounts = [x for x in _amounts(norm, a, b)]
+    foreign = foreign or set()
     info: dict[str, Any] = {"net": None, "gross": None, "prev": None, "growth": None, "total": None}
     per_share = [x for x in amounts if abs(x.value) < 1e6]
     totals = [x for x in amounts if abs(x.value) >= 1e6]
@@ -368,9 +449,11 @@ def _extract_div(norm: str, a: int, b: int, mention: str) -> dict[str, Any]:
                 info["assumed_net"] = True
         if q and info[q] is None:
             info[q] = x.value
-    pcts = _pcts(norm, a, b)
-    for v, ps, pe, explicit, surf in pcts:
-        before = norm[max(a, ps - 40) : ps]
+    pcts = _owned_pcts(norm, own, lo) + [
+        (v, ps, pe, ex, sf, max(a, ps - 40)) for v, ps, pe, ex, sf in _pcts(norm, a, b) if ps not in foreign
+    ]
+    for v, ps, pe, explicit, surf, ctx in pcts:
+        before = norm[ctx:ps]
         d = (1 if v >= 0 else -1) if explicit else _direction(before)
         if d == 0:
             continue
@@ -654,6 +737,7 @@ def analyze_note(
         sessions=sessions,
         structured=structured,
         note_id=note.note_id,
+        unknown_targets=list(getattr(note, "targets_unknown", None) or []),
     )
 
 
@@ -677,20 +761,53 @@ def _analyze(
     sessions: Any = None,
     structured: dict[str, Any] | None = None,
     note_id: str | None = None,
+    unknown_targets: list[str] | None = None,
 ) -> NoteAnalysis:
     tags = [fold(t) for t in (tags or [])]
     warnings: list[str] = []
+    text = text or ""
+    if len(text) > MAX_ANALYZE_CHARS:
+        warnings.append(f"texte de {len(text)} caractères : seuls les {MAX_ANALYZE_CHARS} premiers sont analysés")
+        text = text[:MAX_ANALYZE_CHARS]
     manual = normalize_targets(manual_targets or [])
+    if unknown_targets:
+        warnings.append(
+            "cible(s) saisie(s) non reconnue(s) : " + ", ".join(f"« {t} »" for t in unknown_targets)
+            + (" ; l'avis n'est reporté sur aucune cible détectée dans le texte" if not manual else "")
+            + " (corriger la saisie : symbole, indice, pays, secteur ou thème)"
+        )
 
     # 1) Entités et cibles.
     links = link_entities(text, title)
     # La BRVM comme émettrice de l'avis (« La Bourse Régionale des Valeurs Mobilières
-    # informe… ») n'est pas une cible quand une société est nommée.
-    if any(target_kind(t) == "symbol" for t in links.targets):
+    # informe… ») n'est pas une cible quand une société est nommée — ni quand l'avis porte
+    # sur un indice ou un État (« Avis 166-2025 (BRVM) : … titres de l'ETAT DU NIGER »).
+    named = set(links.targets) | set(manual)
+    if any(target_kind(t) in ("symbol", "index", "country") for t in named):
         publisher = [m for m in links.matches if m.code == "MARCHE" and alias_key(m.alias) in _PUBLISHER_KEYS]
         if publisher and all(alias_key(m.alias) in _PUBLISHER_KEYS for m in links.matches if m.code == "MARCHE"):
             links.matches = [m for m in links.matches if m.code != "MARCHE"]
             links.targets = [t for t in links.targets if t != "MARCHE"]
+    # Document d'un émetteur collecté automatiquement (communiqué, rapport, avis) : les
+    # pays, secteurs, thèmes et le marché cités dans le corps du texte (« six banques du
+    # Groupe (Bénin, Burkina Faso…) », « filières cacao, café ») sont du contexte, pas des
+    # cibles (essai réel du 22/11/2026). Ils restent dans components["context_entities"].
+    issuer_doc = author == "auto" and (
+        any(target_kind(t) == "symbol" for t in manual)
+        or any(m.kind == "symbol" and m.field == "title" for m in links.matches)
+    )
+    context_entities: list[str] = []
+    if issuer_doc:
+        keep = []
+        for m in links.matches:
+            if m.field == "text" and m.kind in ("country", "sector", "theme", "market"):
+                if m.code not in context_entities:
+                    context_entities.append(m.code)
+                continue
+            keep.append(m)
+        links.matches = keep
+        links.targets = [t for t in links.targets if any(m.code == t for m in keep)]
+        context_entities = [c for c in context_entities if c not in links.targets]
     detected = sorted(
         [t for t in links.targets if t not in manual],
         key=lambda c: (TARGET_SPECIFICITY.get(target_kind(c), 9), links.targets.index(c)),
@@ -707,7 +824,7 @@ def _analyze(
     if event_hint:
         event_type, ev_origin = normalize_event_type(event_hint) or "OTHER", "manual"
     else:
-        event_type, ev_origin = detect_event_type(title, text)
+        event_type, ev_origin = detect_event_type(title, text, macro_text=not issuer_doc)
         if ev_origin == "weak" and author == "analyste":
             event_type, ev_origin = "OTHER", "none"  # « résultat » dans une note libre : pas une publication
         if event_type == "OTHER":
@@ -854,6 +971,8 @@ def _analyze(
         extracted["div_growth"] = -1.0
     for ind, v in s_parts.items():
         extracted[f"s_{ind}"] = round(v, 4)
+    # s_num_doc : échelle du document 07 (clip(Δ%/25, −2, 2)) ; s_num (contrat, [−1, 1]) :
+    # sa moitié, pour l'affichage seulement — le score utilise s_num_doc (« nombres d'abord »).
     s_num_raw = 0.0
     if s_parts:
         wsum = sum(NUM_WEIGHTS[k] for k in s_parts)
@@ -877,7 +996,9 @@ def _analyze(
         cov_num = sum(NUM_WEIGHTS[k] for k in s_parts)
         cov_lex = sum(NUM_WEIGHTS[k] for k in lex_only)
         w_num_eff = W_NUM * cov_num / (cov_num + cov_lex)
-    text_score = _clip(w_num_eff * s_num + (1.0 - w_num_eff) * tone, -1.0, 1.0) if s_parts else tone
+    # Document 07 §3.4 règle 5 : s = 0,7·s_num_doc + 0,3·tone, borné à [−1, 1] (le bornage ne
+    # change ni le signe, ni le rapport 0,7:0,3 des poids dans le domaine usuel).
+    text_score = _clip(w_num_eff * s_num_raw + (1.0 - w_num_eff) * tone, -1.0, 1.0) if s_parts else tone
 
     # 6) Jugement de l'analyste (borné) et contradiction.
     contradiction = False
@@ -910,6 +1031,8 @@ def _analyze(
         if h.kind == "neg" and h.weight < 0:
             if h.risk == "R4" and event_type == "NOTATION_SOUVERAINE":
                 continue
+            if h.risk == "R1" and event_type == "RESUMPTION":
+                continue  # une levée de suspension cite la suspension qu'elle lève
             flag(h.risk)
         elif h.kind == "pos" and h.weight > 0 and h.risk in ("R6", "R8"):
             if author == "analyste" and event_type == "MANUAL":
@@ -1018,6 +1141,8 @@ def _analyze(
             "N": round(tone_d["N"], 4),
             "uncertainty_terms": int(tone_d["uncertainty"]),
             "s_num_raw": round(s_num_raw, 4),
+            "s_num_doc": round(s_num_raw, 4),
+            "score_formula": "clip(w_num·s_num_doc + (1 − w_num)·tone, −1, 1) (document 07 §3.4)" if s_parts else "tone",
             "s_parts": {k: round(v, 4) for k, v in s_parts.items()},
             "text_score": round(text_score, 4),
             "analyst": None if analyst_component is None else round(analyst_component, 4),
@@ -1028,6 +1153,7 @@ def _analyze(
                         "analyst_cap": ANALYST_CAP},
             "lexical_only_indicators": sorted(lex_only),
             "event_candidate": event_candidate,
+            "context_entities": context_entities,
             "theme_exposure": {t: theme_exposure(t) for t in targets if target_kind(t) == "theme" and theme_exposure(t)},
         },
         contradiction=contradiction,
@@ -1036,7 +1162,8 @@ def _analyze(
     )
     analysis.reading = build_reading(
         analysis, hits, stance=stance, conviction=conviction, published_at=published_at,
-        published_precision=published_precision, first_session=first_session,
+        published_precision=published_precision, first_session=first_session, known_at=known_at,
+        sessions=sessions,
     )
     return analysis
 
@@ -1098,8 +1225,15 @@ def build_reading(
     published_at: pd.Timestamp | None = None,
     published_precision: str | None = None,
     first_session: pd.Timestamp | None = None,
+    known_at: pd.Timestamp | None = None,
+    sessions: Any = None,
 ) -> str:
-    """Deux à cinq phrases factuelles qui expliquent le score."""
+    """Deux à cinq phrases factuelles qui expliquent le score.
+
+    ``known_at`` (saisie ou collecte) : si la note n'est connue qu'après la coupure de sa
+    séance négociable, la lecture donne aussi la séance où les signaux stricts la prennent en
+    compte (coupure de 09h00 appliquée à l'instant de connaissance, ``signals.notes_asof``).
+    """
     ex = a.extracted
     sentences: list[str] = []
     # 1) Type et cible.
@@ -1146,6 +1280,12 @@ def build_reading(
         dv = ex.get("div_net") if ex.get("div_net") is not None else ex.get("div_gross")
         lab = "dividende net" if ex.get("div_net") is not None else "dividende brut"
         txt = f"{lab} {fr_amount(dv)}" if dv else "dividende supprimé"
+        if ex.get("div_gross") is not None and ex.get("div_net") is not None and dv:
+            basis = ex.get("div_basis") or "brut"
+            if basis == "brut présumé":
+                txt += f" (estimé : montant affiché {fr_amount(ex['div_gross'])} présumé brut, IRVM déduit)"
+            else:
+                txt += f" (brut {fr_amount(ex['div_gross'])})"
         if ex.get("div_prev"):
             src = " (dernier versé, BOC)" if ex.get("div_prev_source") == "panel" else ""
             txt += f" contre {fr_amount(ex['div_prev'])}{src}"
@@ -1155,8 +1295,10 @@ def build_reading(
     if parts:
         s2 = "Chiffres extraits : " + " ; ".join(parts)
         if a.components.get("s_parts"):
-            s2 += (f", soit un sentiment numérique de {fr_signed(a.s_num)} "
-                   "(échelle : ±25 % sur le RN, le PNB ou le CA, ±20 % sur le dividende = ±0,5)")
+            s_doc = a.components.get("s_num_doc", 2.0 * a.s_num)
+            s2 += (f", soit un sentiment numérique de {fr_signed(s_doc)} "
+                   "(échelle du document 07 : ±25 % sur le RN, le PNB ou le CA, ±20 % sur le dividende = ±1, "
+                   "borné à ±2)")
         sentences.append(s2 + ".")
     # 2b) Dividende : rendement et fenêtre (orientation rendement, signal S1 du doc 07).
     if a.event_type == "DIV_NOTICE" or ex.get("ex_date") is not None:
@@ -1224,6 +1366,12 @@ def build_reading(
             s5 += f" ; négociable à partir de la séance du {fr_date(first_session)} ({pub})"
         else:
             s5 += f" ; négociable à partir de la séance du {fr_date(first_session)}"
+        k = to_utc(known_at) if known_at is not None else None
+        if k is not None:
+            k_session = first_tradable_session(k, sessions, date_only=False)
+            if k_session is not None and k_session > pd.Timestamp(first_session):
+                s5 += (f" ; connue le {k:%d/%m/%Y} à {k:%Hh%M} UTC : prise en compte par les signaux à partir "
+                       f"de la séance du {fr_date(k_session)}")
     sentences.append(s5 + ".")
     # Deux à cinq phrases : fusion des phrases intermédiaires si nécessaire.
     while len(sentences) > 5:
