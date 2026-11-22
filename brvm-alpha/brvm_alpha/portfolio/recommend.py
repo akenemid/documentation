@@ -48,6 +48,7 @@ import importlib
 import inspect
 import json
 import math
+import re
 import sys
 import time
 import types
@@ -85,6 +86,7 @@ __all__ = [
     "participation_schedule",
     "plan_execution",
     "recommend",
+    "fr_texte",
     "return_distribution",
     "round_fcfa",
     "s1_executed",
@@ -916,7 +918,7 @@ def stationary_bootstrap_indices(n_obs: int, horizon: int, n_boot: int, mean_blo
 
 def return_distribution(weekly: pd.DataFrame, weights: Mapping[str, float], *, horizon_weeks: int = WEEKS_PER_YEAR,
                         n_boot: int = 5000, mean_block: float = BLOCK_WEEKS, seed: int = DEFAULT_SEED,
-                        cost_drag: float = 0.0) -> dict[str, Any]:
+                        cost_drag: float = 0.0, with_draws: bool = False) -> dict[str, Any]:
     """Distribution historique à ``horizon_weeks`` semaines du portefeuille aux poids fixes et du
     Composite TR, tirés **ensemble** (mêmes semaines) par bootstrap stationnaire.
 
@@ -928,6 +930,8 @@ def return_distribution(weekly: pd.DataFrame, weights: Mapping[str, float], *, h
     ``R = Π(1 + r) − 1`` sur l'horizon ; net : ``(1 + R)(1 − c) − 1`` avec ``c = cost_drag`` (coûts
     d'entrée et frais fixes de l'horizon, en fraction de la valeur). Sorties : médiane, P10, P90,
     P(perte), P(battre le TR) (net contre TR), quantiles du TR, β, lignes sans historique complet.
+    ``with_draws=True`` ajoute les tirages (``tirages_net``, ``tirages_tr`` : tableaux numpy) pour
+    l'histogramme du rapport, qui reprend ainsi exactement la distribution de l'ordre de bataille.
     **Distribution historique, pas une prévision.**
     """
     if _BENCH not in weekly.columns:
@@ -970,7 +974,8 @@ def return_distribution(weekly: pd.DataFrame, weights: Mapping[str, float], *, h
     var_b = float(np.var(rb_a, ddof=1))
     beta = float(np.cov(rp_a, rb_a, ddof=1)[0, 1] / var_b) if var_b > 0 else float("nan")
     q = lambda x, p: float(np.quantile(x, p))  # noqa: E731
-    return {"disponible": True, "n_semaines": n, "debut": rp.index.min(), "fin": rp.index.max(),
+    extra = {"tirages_net": net, "tirages_tr": bench} if with_draws else {}
+    return {**extra, "disponible": True, "n_semaines": n, "debut": rp.index.min(), "fin": rp.index.max(),
             "horizon_semaines": int(horizon_weeks), "n_boot": int(n_boot), "bloc_moyen_semaines": float(mean_block),
             "graine": int(seed), "frais_deduits": float(cost_drag),
             "mediane": q(net, 0.5), "p10": q(net, 0.10), "p90": q(net, 0.90),
@@ -1110,7 +1115,7 @@ def _num(x: Any, decimals: int = 2, signed: bool = False) -> str:
     if not math.isfinite(v):
         return "n.d."
     s = f"{v:+,.{decimals}f}" if signed else f"{v:,.{decimals}f}"
-    return s.replace(",", "\u202f").replace(".", ",")
+    return s.replace(",", "\u202f").replace(".", ",").replace("-", "−")
 
 
 def _fcfa(x: Any, signed: bool = False) -> str:
@@ -1121,14 +1126,27 @@ def _fcfa(x: Any, signed: bool = False) -> str:
     if not math.isfinite(v):
         return "n.d."
     s = f"{v:+,.0f}" if signed else f"{v:,.0f}"
-    return s.replace(",", "\u202f") + " FCFA"
+    return s.replace(",", "\u202f").replace("-", "−") + " FCFA"
 
 
 def _int(x: Any) -> str:
     try:
-        return f"{int(x):,}".replace(",", "\u202f")
+        return f"{int(x):,}".replace(",", "\u202f").replace("-", "−")
     except (TypeError, ValueError):
         return "n.d."
+
+
+_TECH_FR = {"notes désactivées (notes=None)": "notes désactivées (aucun journal de notes transmis)"}
+
+
+def fr_texte(texte: Any) -> str:
+    """Typographie française d'un message technique du modèle (affichage seulement) : décimales à
+    virgule (« 98.00% » → « 98,00 % », « 1.31 » → « 1,31 »), signe moins typographique, espace avant
+    « % ». Les numéros de section (« §4.2 »), de version (« v1.1 ») et les dates ne sont pas touchés."""
+    s = _TECH_FR.get(str(texte), str(texte))
+    s = re.sub(r"(?<![§\w.,/])(\d+)\.(\d+)(?![\w.])", r"\1,\2", s)
+    s = re.sub(r"(?<![\w\-−])-(?=\d)", "−", s)
+    return re.sub(r"(\d)%", "\\1 %", s)
 
 
 def _pct(x: Any, decimals: int = 2, signed: bool = False) -> str:
@@ -1139,7 +1157,7 @@ def _pct(x: Any, decimals: int = 2, signed: bool = False) -> str:
     if not math.isfinite(v):
         return "n.d."
     s = f"{100 * v:+.{decimals}f}" if signed else f"{100 * v:.{decimals}f}"
-    return s.replace(".", ",") + " %"
+    return s.replace(".", ",").replace("-", "−") + " %"
 
 
 def _d(x: Any) -> str:
@@ -2038,7 +2056,7 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
     tilt = tilt[tilt != 0] if len(tilt) else tilt
     flags = dict(nd.get("flags") or {})
     if not nd.get("available"):
-        n_txt = f"Notes de l'analyste : {nd.get('message') or 'non disponibles'}"
+        n_txt = f"Notes de l'analyste : {fr_texte(nd.get('message') or 'non disponibles')}"
     else:
         parts = [f"{len(veto)} veto(s)" + (f" ({', '.join(sorted(veto))})" if veto else ""),
                  f"{len(tilt)} inclinaison(s)" + (" (" + ", ".join(f"{k} {_num(v, 2, True)} σ" for k, v in tilt.items())
@@ -2211,9 +2229,9 @@ def _explanations(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], n_rej
             elif kind == "reference":
                 extra = f"capitalisation n° {rank_of.get(s)} parmi les éligibles"
             out.append({"symbole": s, "statut": status, "rang": rank_of.get(s), "poids": float(w.get(s, 0.0)),
-                        "texte_court": _short_explanation(e, kind, extra if not e.get("construction_reason") or
-                                                          status == "écarté" else ""),
-                        "texte": e.get("text", ""), "plafonds": e.get("caps", {}),
+                        "texte_court": fr_texte(_short_explanation(e, kind, extra if not e.get("construction_reason")
+                                                                   or status == "écarté" else "")),
+                        "texte": fr_texte(e.get("text", "")), "plafonds": e.get("caps", {}),
                         "filtres": (e.get("risk_flags") or {}).get("active", []),
                         "score": (e.get("score") or {}).get("final")})
     return out
@@ -2454,8 +2472,8 @@ def recommend(
             "court": f"test S1 : {choice['variante']} {_pct(act, 1, True)}/an contre le TR ({st1})",
             "texte": (f"Résultat du test unique S1 (metrics.json, fait de simulation) : la variante appliquée "
                       f"{choice['variante']} fait {_pct(act, 1, True)} par an contre le Composite TR (statut {st1}). "
-                      "P(battre le TR) ci-dessous est une fréquence historique aux poids actuels, pas une probabilité "
-                      "de surperformance future.")}
+                      "La P(battre le TR) de la distribution à 12 mois est une fréquence historique aux poids actuels, "
+                      "pas une probabilité de surperformance future.")}
     # Stress : module dédié s'il existe, sinon chocs du §9.3.
     values = {r.symbole: float(r.valeur_apres) for r in L.itertuples(index=False) if r.cibles > 0}
     weights_after = {s: v / nav for s, v in values.items()}
@@ -2584,7 +2602,8 @@ def recommend(
         variante=choice["variante"], choix=choice, lignes=L, tranches=tr_tab, execution=exec_info, couts=csum,
         dividendes=div, revenus=rev, distribution=dist, stress=stress, declencheurs=trig, explications=expl,
         comparaison=comp, faits=faits, estimations=estimations, hypotheses=hypotheses,
-        avertissements=_dedup(warn), messages_modele=list(plan.decision.messages) + plan.messages, meta=meta)
+        avertissements=_dedup(warn), messages_modele=[fr_texte(m) for m in list(plan.decision.messages) + plan.messages if m],
+        meta=meta)
 
 
 def replace_costs(costs: CostModel, **changes: Any) -> CostModel:

@@ -1,5 +1,14 @@
+# Données locales (BOC, panel parquet, journal des notes) : volumineuses, reconstruites par
+# « python -m brvm_alpha update » puis « panel ».
 /data/
+# Caches Python et outils.
 __pycache__/
 *.pyc
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# Rapports HTML régénérables (python -m brvm_alpha report) ; les petits fichiers de
+# reports/validation_S1/, reports/diagnostic_S0*/, reports/trials.parquet et les
+# ordres de bataille Markdown sont suivis.
 /reports/*.html
+/reports/**/*.html

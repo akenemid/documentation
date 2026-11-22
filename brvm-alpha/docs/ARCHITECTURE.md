@@ -6,25 +6,38 @@ listée ici doit exister avec cette signature (des arguments optionnels peuvent
 
 ## Arborescence
 
+Arborescence réelle au 22/11/2026 (`data/`, les caches et `reports/*.html` ne sont pas suivis par git).
+
 ```
 brvm-alpha/
+  README.md                # présentation, installation, commandes, méthode, résultat de S1, limites
+  .gitignore               # data/, caches, reports/*.html
+  configs/
+    strategy_v1.yaml       # paramètres FIGÉS de la stratégie v1 (version 1.1 du YAML, additif v1.1)
   brvm_alpha/
+    __init__.py            # version du paquet
+    __main__.py            # python -m brvm_alpha
+    cli.py                 # update, panel, live, notes, indices, universe, explain, backtest,
+                           # validate, recommend, report, serve (S1 refusé pour tout signal)
     config.py              # paramètres (frais, taxes, contraintes) — dataclasses
-    reference.py           # métadonnées des titres : pays, secteur, fiscalité
+    settings.py            # lecture et contrôle de configs/strategy_v1.yaml, empreinte de configuration
+    reference.py           # métadonnées des titres : pays, secteur, fiscalité, événements pays (D10)
     data/
       boc_download.py      # téléchargement poli des BOC (PDF -> texte .txt.gz) : robots.txt, ≥ 10 s, arrêt 403/429
       boc_parser.py        # extraction d'un BOC -> BocDay
-      store.py             # panel parquet + ajustements (splits, total return)
+      store.py             # panel parquet + ajustements (splits, total return, calendrier des séances)
       live.py              # cours du jour depuis www.brvm.org (page publique)
-      news.py              # (remplacé par notes/research.py : `notes research`)
+    notes/                 # notes de l'analyste (voir la section dédiée plus bas)
+      model.py  store.py  entities.py  lexicon.py  analyze.py  research.py  signals.py  index_eval.py
     quant/
-      features.py          # caractéristiques par titre et par date
+      features.py          # caractéristiques par titre et par date (fenêtres en séances, D1)
       scoring.py           # normalisation transversale, composites, IC
       stats.py             # métriques, PSR/DSR, PBO, bootstrap, bêta de Dimson
       regime.py            # régime de marché (tendance / volatilité)
+      macro.py             # grandeurs macro et de marché : taux de référence, bandes de prix, règlement J+2
     portfolio/
       risk.py              # covariance (Ledoit-Wolf), HRP
-      construct.py         # optimisation sous contraintes, Kelly fractionnel, lots
+      construct.py         # optimisation sous contraintes, plafonds, indice discipliné (D8), cœur-satellite (D9)
       recommend.py         # ordre de bataille : titres, prix limites, coûts au franc, exécution, revenus
       stress.py            # scénarios de stress ST1-ST10 du §9.3 (stress_tests)
     backtest/
@@ -38,17 +51,30 @@ brvm-alpha/
       controls.py          # contrôles comptables et d'exécution de chaque run (cash, identités, bornes, coûts)
       report_md.py         # rapport resultats.md en français
     strategy/
-      alpha.py             # le modèle BRVM Alpha (signaux de la spécification)
+      alpha.py             # le modèle BRVM Alpha (signaux de la spécification, variantes A-I et REF)
     report/                # rapport final (build_report)
       html.py              # rapport HTML autonome : 11 sections, SVG inline, thème clair/sombre
     ui/                    # interface web locale (python -m brvm_alpha serve), 127.0.0.1 uniquement
       server.py            # ThreadingHTTPServer, sécurité (CSRF, Host, corps), services, fil de travail
       pages.py             # pages HTML en français (styles et script en ligne, thème clair/sombre)
-    cli.py                 # update, panel, live, notes, indices, universe, explain, backtest,
-                           # validate, recommend, report, serve (S1 refusé pour tout signal)
-    __main__.py            # python -m brvm_alpha
-  tests/
+  tests/                   # pytest, hors ligne : données synthétiques ou S0, fixtures BOC et pages brvm.org
+    conftest.py
+    fixtures/              # extraits de BOC (.txt.gz), pages HTML de brvm.org (.html.gz) pour les tests hors ligne
+    test_*.py              # 35 modules (parseur, panel, signaux, construction, moteur, validation, notes,
+                           # ordre de bataille, stress, rapport, CLI, interface, non-régressions des revues)
   docs/
+    SPECIFICATION_STRATEGIE.md  # spécification v1 ; §8.4 additif v1.1 (D1-D12, fait foi) ; §8.5 errata (E1-E9)
+    ARCHITECTURE.md        # ce document
+    annexes-spec/          # calculs reproductibles de la spécification (univ_breadth.py, tr_reconstruction.py)
+    research/              # revues vérifiées 01 à 08 et annexes du document 07 (données, scripts)
+  reports/
+    validation_S1/         # test unique S1 : lock.json, metrics.json, resultats.md, tentatives.md, run.log,
+                           # nav/trades/weekly_returns.parquet ; precedent_<horodatage>/ = premier run (D12)
+    diagnostic_S0/         # diagnostic S0 (contaminé, information seulement) ; *_mensuel/ : mode mensuel
+    trials.parquet         # registre des essais (N du DSR « registre »)
+    ordre_de_bataille_AAAA-MM-JJ*.md   # ordres de bataille publiés (10 M, 1 M, 50 M FCFA)
+    rapport_AAAA-MM-JJ.html            # rapport final (non suivi : régénérable)
+  data/                    # NON suivi : boc_text/ (BOC .txt.gz), panel/ (*.parquet, _cache/), notes/ (journal)
 ```
 
 ## Schéma des données (sortie de `data/store.py`)
@@ -225,10 +251,14 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
   de 15 mois).
 - Distribution : `estimation_window(asof, s1_done)` (S0 seulement tant que le registre n'a pas exécuté S1),
   `weekly_tr_returns` (données coupées à la fenêtre avant tout calcul), `stationary_bootstrap_indices`,
-  `return_distribution(weekly, weights, horizon_weeks=52, n_boot=5000, mean_block=8, seed, cost_drag)`
-  (portefeuille et Composite TR tirés ensemble ; médiane, P10, P90, P(perte), P(battre le TR) :
-  « distribution historique, pas une prévision ») ; stress : `brvm_alpha.portfolio.stress` s'il existe,
-  sinon `stress_scenarios` (§9.3).
+  `return_distribution(weekly, weights, horizon_weeks=52, n_boot=5000, mean_block=8, seed, cost_drag,
+  with_draws=False)` (portefeuille et Composite TR tirés ensemble ; lignes pas encore cotées renormalisées ;
+  médiane, P10, P90, P(perte), P(battre le TR) : « distribution historique, pas une prévision » ;
+  `with_draws=True` ajoute les tirages `tirages_net` et `tirages_tr` pour l'histogramme du rapport) ; stress :
+  `brvm_alpha.portfolio.stress` s'il existe, sinon `stress_scenarios` (§9.3).
+- Affichage : `fr_texte(texte)` met en typographie française les messages techniques du modèle, les
+  explications et les détails des filtres R (« 98.00% » → « 98,00 % », signe moins « − ») sans toucher aux
+  numéros de section, aux versions ni aux dates ; les formateurs du Markdown écrivent le signe moins « − ».
 
 ### `backtest/engine.py`
 - `Backtester(panels, costs: CostModel, constraints, capital, ...)`
@@ -487,8 +517,8 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   `to_dict()` pour les ordres, prix limites, coûts, séances, contraintes actives, comparaison A/REF, faits /
   estimations / hypothèses ; `to_html_fragment()` replié ; « module indisponible » si l'import échoue),
   `revenus` (calendrier mensuel et détail des dividendes, net après IRVM), `distribution` (histogramme des
-  tirages **recalculés à l'identique** avec `weekly_tr_returns` et `stationary_bootstrap_indices` : même fenêtre,
-  mêmes poids, même graine ; médiane/P10/P90, P(battre le TR), P(perte) ; stress du §9.3 **en tête** si la prime
+  tirages **recalculés à l'identique** par `recommend.return_distribution(..., with_draws=True)` : même fenêtre,
+  mêmes poids, même graine, même renormalisation des lignes pas encore cotées ; médiane/P10/P90, P(battre le TR), P(perte) ; stress du §9.3 **en tête** si la prime
   du BOC classe le marché « cher », §4.5), `indices` (`notes.index_eval.evaluate_indices` : position, confiance,
   raisons ; « aide à la décision, pas un signal validé »), `notes` (12 dernières notes actives de
   `NoteStore(notes_root)` avec score, matérialité, confiance, lecture ; adresses en texte ; vetos et inclinaisons
@@ -500,7 +530,9 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   chaque section dans un `try/except` : `Unavailable` → encadré « indisponible », autre exception → encadré
   d'erreur lisible (type, message, trace repliée) ; le rapport est toujours écrit. Tout texte issu des données,
   des notes ou des fichiers de résultats est échappé ; le bloc JSON des graphiques n'a aucun `<`, `>` ou `&` brut.
-- Mise en page : gouttière de 16 px, aucun défilement horizontal de la page (tableaux larges dans `.tablewrap`),
+- Mise en page : largeur utile 1 200 px, gouttière de 16 px, aucun défilement horizontal de la page (tableaux
+  larges dans `.tablewrap` ; à 1 280 px, tous les tableaux tiennent sans défilement : textes longs repliés,
+  nature des stress sous le code ; à 390 px, résumés compacts des ordres et des stress),
   couleurs en variables CSS sur `:root` redéfinies sous `@media (prefers-color-scheme: dark)` (et
   `:root[data-theme]`, bouton de thème), `body` à fond explicite ; info-bulles et réticule en JavaScript sans
   dépendance. **Aucune performance n'est calculée sur S1** : le résultat du test unique est lu, jamais recalculé.

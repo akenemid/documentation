@@ -269,6 +269,16 @@ def _get(d: Any, *keys: Any, default: Any = None) -> Any:
     return cur
 
 
+def _fr_txt(texte: Any) -> str:
+    """Typographie française d'un texte technique du modèle (``recommend.fr_texte``) ; texte inchangé si le
+    module est illisible (le rapport reste autonome, chaque section isolée)."""
+    try:
+        from brvm_alpha.portfolio.recommend import fr_texte
+    except Exception:  # noqa: BLE001 - affichage seulement
+        return str(texte)
+    return fr_texte(texte)
+
+
 def _rel(path: Any) -> str:
     """Chemin affiché relativement à la racine du dépôt quand il s'y trouve."""
     if path is None:
@@ -952,16 +962,15 @@ class _Ctx:
                        if (r.get("cibles") or 0) > 0 and _ok(r.get("poids_realise"))}
             weekly = mod.weekly_tr_returns(P["tr_index"], P.get("market_tr"), list(weights), win.get("debut"),
                                            win.get("fin"))
-            bench = getattr(mod, "_BENCH", "__TR__")
-            data = weekly.loc[weekly[bench].notna()]
-            sub = data.reindex(columns=list(weights)).astype(float)
-            rp = (sub.fillna(0.0) * pd.Series(weights).reindex(sub.columns).to_numpy()).sum(axis=1).to_numpy()
-            rb = data[bench].astype(float).to_numpy()
-            idx = mod.stationary_bootstrap_indices(len(rp), int(dist["horizon_semaines"]), int(dist["n_boot"]),
-                                                   float(dist["bloc_moyen_semaines"]), int(dist["graine"]))
-            gross = np.prod(1.0 + rp[idx], axis=1) - 1.0
-            net = (1.0 + gross) * (1.0 - float(dist.get("frais_deduits") or 0.0)) - 1.0
-            tr = np.prod(1.0 + rb[idx], axis=1) - 1.0
+            # Même fonction que l'ordre de bataille (lignes pas encore cotées renormalisées, et non
+            # comptées à 0 %) : l'histogramme reprend exactement la distribution publiée.
+            again = mod.return_distribution(weekly, weights, horizon_weeks=int(dist["horizon_semaines"]),
+                                            n_boot=int(dist["n_boot"]), mean_block=float(dist["bloc_moyen_semaines"]),
+                                            seed=int(dist["graine"]), cost_drag=float(dist.get("frais_deduits") or 0.0),
+                                            with_draws=True)
+            if not again.get("disponible"):
+                raise Unavailable(f"tirages non recalculables ({again.get('motif', 'motif non précisé')})")
+            net, tr = np.asarray(again["tirages_net"], float), np.asarray(again["tirages_tr"], float)
             med = float(np.median(net))
             same = _ok(dist.get("mediane")) and abs(med - float(dist["mediane"])) < 1e-9
             return {"net": net, "tr": tr, "conforme": same, "mediane_recalculee": med}
@@ -1258,6 +1267,17 @@ def _nav_curves(vdir: Path, m: Mapping[str, Any]) -> tuple[list[pd.Timestamp], l
     return dates, series, source
 
 
+def _window_note(m: Mapping[str, Any]) -> str:
+    """Rappel sous le graphique des VL : les niveaux tracés comprennent la variation pendant la fenêtre du §8.1,
+    exclue de toutes les mesures du tableau (le niveau final ne se lit pas comme le rendement annualisé)."""
+    wins = [w for w in m.get("fenetres_exclues") or [] if isinstance(w, (list, tuple)) and len(w) == 2]
+    if not wins:
+        return ""
+    txt = " ; ".join(f"{fmt_date(a)} → {fmt_date(b)}" for a, b in wins)
+    return (f" Les niveaux tracés comprennent la variation pendant la fenêtre du §8.1 ({txt}), exclue de toutes les "
+            "mesures du tableau : le niveau final ne se lit donc pas comme le rendement annualisé publié.")
+
+
 def _criteria_text(vd: Mapping[str, Any], codes: Sequence[str]) -> list[str]:
     """Libellé, valeur et seuil des critères du §8.3 déclenchés (lus dans ``metrics.json``)."""
     crit = {str(c.get("code")): c for c in vd.get("criteres") or [] if isinstance(c, Mapping)}
@@ -1275,7 +1295,7 @@ def _criteria_text(vd: Mapping[str, Any], codes: Sequence[str]) -> list[str]:
 
         v = c.get("valeur")
         vtxt = " / ".join(one(x) for x in v) if isinstance(v, (list, tuple)) else one(v)
-        out.append(f"{code} : {lab} = {vtxt} (seuil {c.get('seuil', 'n.d.')})")
+        out.append(f"{code} : {lab} = {vtxt} (seuil {_fr_txt(c.get('seuil', 'n.d.'))})")
     return out
 
 
@@ -1498,8 +1518,8 @@ def _sec_s1(ctx: _Ctx) -> H:
         parts.append(_card(H("<h3>Valeur liquidative contre le Composite TR, base 100 à t0</h3>"),
                            line_chart("c-s1-nav", dates, series, label="VL des variantes A, I, REF et étalons TR, EW",
                                       caption=f"Source : {src}. Hebdomadaire (vendredi) ; les interruptions sont des semaines sans BOC "
-                                              "disponible (surtout en 2021). Nets de coûts ; étalons sans coûts. Passez "
-                                              "le doigt ou la souris sur le graphique.")))
+                                              "disponible (surtout en 2021). Nets de coûts ; étalons sans coûts."
+                                              + _window_note(m) + " Passez le doigt ou la souris sur le graphique.")))
     else:
         parts.append(_box("info", "Courbes indisponibles", "nav.parquet et weekly_returns.parquet absents ou illisibles."))
     parts.append(_card(H("<h3>Sous-périodes</h3>"), t2))
@@ -1523,7 +1543,8 @@ def _sec_s1(ctx: _Ctx) -> H:
     if m.get("precedent"):
         prev = m["precedent"]
         parts.append(_box("warn", "Relance motivée (D12) : les résultats de l'exécution précédente sont conservés.",
-                          f"Dossier {prev.get('dossier', 'n.d.')} ; t0 précédent {fmt_date(prev.get('t0'))}."))
+                          H(f"Dossier <code>{esc(_rel(prev.get('dossier')))}</code> ; "
+                            f"t0 précédent {esc(fmt_date(prev.get('t0')))}.")))
     parts.append(_diag_block(ctx))
     return _join(parts)
 
@@ -1794,8 +1815,8 @@ def _sec_revenus(ctx: _Ctx) -> H:
                      fmt_date(d.get("date_ex_prevue")), fmt_date(d.get("date_paiement_prevue")),
                      fmt_num(d.get("dividende_net_prevu_par_titre"), 2), fmt_fcfa(d.get("montant_brut")),
                      H(f"{esc(fmt_fcfa(d.get('irvm')))} <span class='muted small'>"
-                       f"{esc(fmt_pct(d.get('taux_irvm_prevu'), 1))}{(' · ' + esc(d.get('irvm_note'))) if d.get('irvm_note') else ''}"
-                       "</span>"),
+                       f"{esc(fmt_pct(d.get('taux_irvm_prevu'), 1))}</span>"
+                       + (f"<div class='muted small desc'>{esc(d.get('irvm_note'))}</div>" if d.get('irvm_note') else "")),
                      H(f"<b>{esc(fmt_fcfa(d.get('montant_net')))}</b>"),
                      H(f"<span class='muted small wrap'>{esc(d.get('statut', ''))}</span>")])
     if rows:
@@ -1818,25 +1839,28 @@ def _sec_revenus(ctx: _Ctx) -> H:
 def _stress_table(od: Mapping[str, Any]) -> H:
     rows = []
     for s in od.get("stress") or []:
-        rows.append([H(f"<b>{esc(s.get('code'))}</b>"), esc(s.get("variante") or ""),
+        rows.append([H(f"<b>{esc(s.get('code'))}</b>"), H(f"<span class='cn'>{esc(s.get('variante') or '')}</span>"),
                      H(f"<span class='wrap w2'>{esc(s.get('scenario', ''))}</span>"),
                      H(f"<span class='{_cls(s.get('perte_fcfa'))}'>{esc(fmt_fcfa(s.get('perte_fcfa'), True))}</span>"),
                      _num_cell(s.get("perte_pct"), signed=True),
                      H(f"<span class='muted small wrap'>{esc(s.get('hypothese', ''))}</span>"),
-                     esc(s.get("base", "")), _tag("estimation" if s.get("nature") != "contrôle" else "fait")])
+                     H(f"<span class='cn small'>{esc(s.get('base', ''))}</span>"),
+                     _tag("estimation" if s.get("nature") != "contrôle" else "fait")])
     if not rows:
         return _box("empty", "Aucun scénario de stress.")
     # Petit écran : résumé compact (code, variante, pertes) d'abord ; le détail suit (défilement horizontal),
     # pertes en 2e et 3e colonnes pour rester visibles (revue produit du 22/11/2026).
     compact = [[H(f"<b>{esc(s.get('code'))}</b>"
-                  + (f" <span class='muted small'>{esc(s.get('variante'))}</span>" if s.get("variante") else "")),
-                H(f"<span class='{_cls(s.get('perte_fcfa'))}'>{esc(fmt_fcfa(s.get('perte_fcfa'), True))}</span>"),
+                  + (f"<div class='muted small cv'>{esc(s.get('variante'))}</div>" if s.get("variante") else "")),
+                H(f"<span class='{_cls(s.get('perte_fcfa'))}'>"
+                  f"{esc(fmt_num(round(float(s['perte_fcfa'])), 0, True) if _ok(s.get('perte_fcfa')) else 'n.d.')}</span>"),
                 _num_cell(s.get("perte_pct"), signed=True)] for s in od.get("stress") or []]
-    full = [[r[0], r[3], r[4], r[1], r[2], r[5], r[6], r[7]] for r in rows]
+    # Nature (estimation / contrôle) sous le code : le tableau complet tient dans la largeur d'un écran de bureau.
+    full = [[H(f"{r[0]}<div>{r[7]}</div>"), r[3], r[4], r[1], r[2], r[5], r[6]] for r in rows]
     return _join([H('<div class="narrow-only">'), _table(["Code", "Variation (FCFA)", "Variation (%)"], compact),
                   H('<p class="muted small">Résumé pour petit écran ; scénario, hypothèse et base suivent.</p></div>'),
-                  _table(["Code", "Variation (FCFA)", "Variation (%)", "Variante", "Scénario", "Hypothèse", "Base",
-                          "Nature"], full, left=(0, 3, 4, 5, 6))])
+                  _table(["Code · nature", "Variation (FCFA)", "Variation (%)", "Variante", "Scénario", "Hypothèse",
+                          "Base"], full, left=(0, 3, 4, 5, 6))])
 
 
 def _sec_distribution(ctx: _Ctx) -> H:
@@ -1871,7 +1895,8 @@ def _sec_distribution(ctx: _Ctx) -> H:
         if d.get("biais_fenetre"):
             parts.append(_box("warn", "Fenêtre d'estimation optimiste", d["biais_fenetre"]))
         if d.get("biais_retrospectif"):
-            parts.append(_box("warn", "Biais rétrospectif (fenêtre 2017-2026, poids actuels)", d["biais_retrospectif"]))
+            parts.append(_box("warn", "Biais rétrospectif (fenêtre 2017-2026, poids actuels).",
+                              re.sub(r"^Biais rétrospectif\s*:\s*", "", str(d["biais_retrospectif"]))))
         if (d.get("resultat_s1") or {}).get("texte"):
             parts.append(_box("warn", "Résultat du test S1 à lire avec P(battre le TR)", d["resultat_s1"]["texte"]))
         draws = ctx.try_get("draws", "tirages du bootstrap", ctx.draws)
@@ -2041,7 +2066,7 @@ def _sec_risques(ctx: _Ctx) -> H:
             det = _as_list(r.get("detail_panel")) + _as_list(r.get("detail_notes"))
             rows.append([H(f"<b>{esc(s)}</b>" + (" " + _chip("en portefeuille", "warn") if s in target else "")),
                          esc(codes), esc(labs), "oui" if bool(r.get("block_buys", False)) else "non",
-                         H(f"<span class='small wrap'>{esc(' ; '.join(det))}</span>")])
+                         H(f"<span class='small wrap'>{esc(_fr_txt(' ; '.join(det)))}</span>")])
         parts.append(_card(H("<h3>Filtres de risque R actifs (§5.6)</h3>"),
                            _table(["Titre", "Codes", "Nature", "Achats bloqués", "Détail"], rows, left=(0, 1, 2, 4))
                            if rows else _box("empty", "Aucun filtre R actif."),
@@ -2069,7 +2094,8 @@ def _sec_risques(ctx: _Ctx) -> H:
             c2 = ce[(pd.to_datetime(ce["date"]) <= t) & (pd.to_datetime(ce["date"]) > t - pd.Timedelta(days=400))]
             for r in c2.sort_values("date", ascending=False).itertuples(index=False):
                 pays_rows.append([fmt_date(r.date), PAYS.get(str(r.country), str(r.country)), str(r.rule),
-                                  str(getattr(r, "label", "")), str(getattr(r, "confidence", "")),
+                                  H(f"<span class='wrap w2'>{esc(getattr(r, 'label', ''))}</span>"),
+                                  str(getattr(r, "confidence", "")),
                                   H(f"<span class='muted small wrap'>{esc(getattr(r, 'source', ''))}</span>")])
     except Exception as exc:  # noqa: BLE001 - tableau facultatif, motif affiché
         ptxt = (ptxt or "") + f" (chronologie des événements pays illisible : {exc.__class__.__name__})"
@@ -2255,7 +2281,8 @@ def _sec_methode(ctx: _Ctx) -> H:
         "Étalon : Composite Total Return (dividendes nets réinvestis), officiel depuis le 02/01/2025, reconstruit avant ; "
         "battre l'indice prix ne prouve rien.",
         "Distribution à 12 mois : bootstrap stationnaire des rendements hebdomadaires ; S0 seulement tant que S1 n'est "
-        "pas exécuté (phase haussière : distribution probablement optimiste).",
+        "pas exécuté (phase haussière : distribution probablement optimiste), toute l'histoire 2017-2026 ensuite, avec "
+        "les poids actuels (biais rétrospectif signalé dans la section).",
         "Notes de l'analyste : poids bornés, aucun rôle sur S1 (D11) ; évaluation des indices : aide à la décision.",
     ]
     parts.append(_card(H("<h3>Protocole</h3>"), _ul(proto)))
@@ -2312,7 +2339,7 @@ html, body { margin: 0; }
 body { background: var(--surface-0); color: var(--text-primary);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased;
   overflow-wrap: break-word; }
-.wrap { max-width: 1120px; margin: 0 auto; padding: 24px 16px 64px; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
 .wrap > section, .card, .tile, .box, .banner, .grid3 > * { min-width: 0; }
 header.top .hrow { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; }
 header.top h1 { font-size: 24px; line-height: 1.25; margin: 0 0 4px; letter-spacing: -0.01em; }
@@ -2355,6 +2382,7 @@ span.wrap.w2 { min-width: 260px; }
 .box.b-warn { border-color: var(--warn-border); background: var(--warn-bg); }
 .box.b-err { border-color: var(--err-border); background: var(--err-bg); }
 .box.b-empty { border-style: dashed; border-color: var(--border); background: var(--surface-1); color: var(--text-secondary); }
+.box > div { min-width: 0; }
 .box code { font-size: 12.5px; overflow-wrap: anywhere; }
 .box pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 260px; overflow: auto; }
 .tablewrap { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 4px; }
@@ -2365,7 +2393,12 @@ th { font-weight: 600; color: var(--text-secondary); font-size: 12.5px; backgrou
 th.l, td.l { text-align: left; }
 tfoot th { border-top: 1px solid var(--axis); }
 td .name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
-td .motif { min-width: 220px; max-width: 360px; }
+td .motif { min-width: 220px; max-width: 320px; white-space: normal; }
+td .cn { display: inline-block; white-space: normal; min-width: 110px; max-width: 200px; }
+td .cv { white-space: normal; max-width: 120px; }
+table.univ th, table.univ td { padding-left: 5px; padding-right: 5px; }
+table.univ td .motif { min-width: 180px; }
+table.univ td .name { max-width: 170px; }
 td .desc { white-space: normal; min-width: 170px; max-width: 260px; }
 tbody tr:hover td { background: var(--chip); }
 .neg { color: var(--neg); } .pos { color: var(--pos); }
