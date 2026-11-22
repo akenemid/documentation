@@ -107,10 +107,20 @@ Mesures produites (:class:`BacktestResult`)
 -------------------------------------------
 * ``equity`` (NAV), ``returns`` ``r_t = NAV_t / NAV_{t-1} − 1`` ;
 * ``weights`` quotidiens ``w_{i,t} = q_i(t) P̃_i(t) / NAV_t`` ;
-* ``trades`` (``date, symbol, qty, price, value, cost, reason``) ;
-* ``costs`` cumulés (FCFA), ``turnover`` annualisé (aller simple)
-  ``TO = 252 · moyenne_t[ Σ_i |V_{i,t}| / (2 · NAV_{t-1}) ]`` ;
-* ``fill_rate`` = part (en valeur au cours de décision) des ordres exécutés.
+* ``trades`` (``date, symbol, qty, price, value, cost, reason`` ; détail
+  ``commission, half_spread, spread_cost, impact``) ;
+* ``costs`` cumulés (FCFA) et ``cost_breakdown`` quotidien (commission,
+  demi-spread, impact, garde, tenue de compte), ``turnover`` annualisé
+  (aller simple) ``TO = 252 · moyenne_t[ Σ_i |V_{i,t}| / (2 · NAV_{t-1}) ]`` ;
+* ``fill_rate`` = part (en valeur au cours de décision) des ordres exécutés ;
+* ``cash`` réglé, ``receivables`` (ventes non réglées, dividendes à
+  recevoir), ``payables`` (frais dus), ``dividends`` (reconnus au jour ex)
+  et ``dividends_paid`` (versés), ``orders`` / ``events`` (annulations et
+  ressaisies), ``suspended_value``.
+
+Toutes ces grandeurs sont des **simulations** sous hypothèses (coûts,
+exécution au VWAP, file d'attente aux bornes) : elles ne garantissent aucun
+résultat réel.
 
 Limites connues (choix de prudence documentés)
 ----------------------------------------------
@@ -169,6 +179,7 @@ from brvm_alpha.config import Constraints, CostModel, ExecutionModel, PlatformCo
 
 __all__ = [
     "BAND_RULES",
+    "ENGINE_DEFAULTS",
     "BacktestResult",
     "Backtester",
     "PanelView",
@@ -1021,6 +1032,9 @@ class BacktestResult:
         Valeur des positions suspendues (cours au dernier cours connu) ; la
         spécification (§7.1.7) prévoit une décote de risque de 10 %
         (``meta["suspended_risk_haircut"]``).
+    payables
+        Frais fixes dus et non encore payés faute de cash réglé (déduits de
+        la NAV) : ``equity = cash − payables + receivables + Σ q·P``.
     """
 
     equity: pd.Series
@@ -1048,6 +1062,7 @@ class BacktestResult:
         default_factory=lambda: pd.DataFrame(columns=["date", "symbol", "event", "oid", "new_oid", "qty"])
     )
     suspended_value: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="suspended_value"))
+    payables: pd.Series = field(default_factory=lambda: pd.Series(dtype=float, name="payables"))
 
     @property
     def total_costs(self) -> float:
@@ -1368,9 +1383,13 @@ class Backtester:
           référence ajustée ; ``prev_close − dividende`` ; ``ref_price`` de la
           séance précédente, qui s'applique à la séance suivante ; à défaut
           la clôture précédente) ;
-        * ``dividend_net`` : dividende net par action crédité à la date de
-          détachement (0 sinon) ; une date absente du calendrier (BOC
+        * ``dividend_net`` : dividende net par action, placé à la date de
+          détachement (0 sinon) : droit reconnu ce jour-là (créance), cash
+          versé à la date de paiement ; une date absente du calendrier (BOC
           manquant) est reportée à la séance suivante (:func:`_snap_to_calendar`) ;
+        * ``change_pct``, ``prev_close``, ``ref_price`` : voir aussi les bornes
+          exactes (:meth:`_reference_raw` : ``ref_price`` de la veille en
+          priorité, puis variation publiée, puis ``prev_close − dividende``) ;
         * ``open`` : pour ``ExecutionModel.price == "open"`` ;
         * ``adj_factor`` : facteur ``f = cours ajusté / cours brut``,
           **indispensable** si ``close`` est ajusté mais ``volume``,
@@ -2147,6 +2166,7 @@ class Backtester:
         equity = np.empty(n_sim)
         cash_hist = np.empty(n_sim)
         recv_hist = np.zeros(n_sim)
+        pay_hist = np.zeros(n_sim)
         susp_hist = np.zeros(n_sim)
         pos_hist = np.zeros((n_sim, N), dtype=np.int64)
         costs_daily = np.zeros(n_sim)
@@ -2213,9 +2233,9 @@ class Backtester:
                 d = float(q @ d_row)
                 if d > 0:
                     div_daily[k] = d
-                    for j in np.flatnonzero((q != 0) & (d_row > 0)):
-                        amt = float(q[j] * d_row[j])
-                        p = int(self._div_pay_pos[t, j])
+                    for jd in np.flatnonzero((q != 0) & (d_row > 0)):
+                        amt = float(q[jd] * d_row[jd])
+                        p = int(self._div_pay_pos[t, jd])
                         if p <= t:
                             cash += amt
                             paid_daily[k] += amt
@@ -2423,6 +2443,7 @@ class Backtester:
             equity[k] = nav
             cash_hist[k] = cash
             recv_hist[k] = recv
+            pay_hist[k] = payable
             pos_hist[k] = q
             costs_daily[k] = cost_today
             tax_daily[k] = tax_today
@@ -2458,6 +2479,7 @@ class Backtester:
             breakdown=breakdown,
             events=events,
             suspended=susp_hist,
+            payables=pay_hist,
         )
 
     @staticmethod
@@ -2597,6 +2619,7 @@ class Backtester:
         breakdown: np.ndarray | None = None,
         events: list[tuple[Any, ...]] | None = None,
         suspended: np.ndarray | None = None,
+        payables: np.ndarray | None = None,
     ) -> BacktestResult:
         idx = pd.DatetimeIndex(sim_dates, name="date")
         n = len(idx)
@@ -2722,6 +2745,7 @@ class Backtester:
             suspended_value=pd.Series(
                 np.zeros(n) if suspended is None else suspended, index=idx, name="suspended_value"
             ),
+            payables=pd.Series(np.zeros(n) if payables is None else payables, index=idx, name="payables"),
         )
 
 
@@ -3075,7 +3099,9 @@ def panels_from_equities(
         ob = ob.drop_duplicates(["date", "symbol"], keep="last")
         for side in ("bid", "ask"):
             panels[side] = (
-                ob.pivot(index="date", columns="symbol", values=side).reindex(index=dates, columns=symbols).astype(float)
+                ob.pivot(index="date", columns="symbol", values=side)
+                .reindex(index=dates, columns=symbols)
+                .astype(float)
             )
     from brvm_alpha.reference import countries
 

@@ -60,8 +60,9 @@ from __future__ import annotations
 import copy
 import math
 import warnings
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -70,7 +71,7 @@ from scipy import optimize
 from brvm_alpha.config import Constraints, CostModel
 from brvm_alpha.portfolio.risk import hrp_weights, ledoit_wolf_cov
 
-__all__ = [
+__all__ = [  # noqa: RUF022 — regroupé par thème (historique, puis construction v1)
     "build_portfolio",
     "liquidity_caps",
     "average_daily_value",
@@ -1498,6 +1499,7 @@ PORTFOLIO_V1_DEFAULTS: dict[str, Any] = {
     "exit_pct": 0.50,  # sortie : rang hors des 50 % supérieurs
     "fill_beyond_exit": True,  # complément au-delà des 50 % si moins de 12 lignes (interprétation, voir select_with_band)
     "fill_for_capacity": True,  # complément depuis les 50 % si les plafonds empêchent d'investir 98 % (interprétation)
+    "capacity_beyond_exit": False,  # ce complément de capacité peut-il aller au-delà des 50 % ? (non par défaut)
     "weighting": "equal",  # A : "equal" ; G : "hrp_tilt" ; H : "mv_alpha"
     "max_weight": 0.10,
     "min_weight": 0.02,  # plancher : en dessous, la ligne est supprimée
@@ -1797,8 +1799,7 @@ class BandSelection:
     ``selected`` : titres retenus, dans l'ordre des rangs ; ``ranks`` : rang de chaque
     éligible ; ``reasons`` : motif (français) pour chaque titre considéré ;
     ``reserve`` : candidats non retenus des 50 % supérieurs (achetables), par rang ;
-    ``reserve_beyond`` : candidats au-delà des 50 % (complément sous ``min_names``
-    seulement, si ``fill_beyond_exit``) ; ``kept`` /
+    ``reserve_beyond`` : candidats achetables au-delà des 50 % (par rang) ; ``kept`` /
     ``added`` / ``completed`` / ``dropped`` / ``sold`` : détail des mouvements.
     """
 
@@ -1858,9 +1859,12 @@ def select_with_band(
     held_set = set(held_s.index)
     ranks = score_ranks(scores, elig)
     n = len(ranks)
-    k_in = int(math.floor(float(entry_pct) * n + 1e-9))
-    k_out = int(math.floor(float(exit_pct) * n + 1e-9))
-    can_hold = (lambda s: True) if holdable is None else (lambda s, _h=set(_symbols(holdable)): s in _h)
+    k_in = math.floor(float(entry_pct) * n + 1e-9)
+    k_out = math.floor(float(exit_pct) * n + 1e-9)
+    holdable_set = None if holdable is None else set(_symbols(holdable))
+
+    def can_hold(sym: str) -> bool:
+        return holdable_set is None or sym in holdable_set
     blocked = set(_symbols(no_buy)) if no_buy is not None else set()
     ordered = list(ranks.index)
     reasons: dict[str, str] = {}
@@ -1914,8 +1918,8 @@ def select_with_band(
         return [s for s in pool if s not in selected and can_hold(s) and s not in blocked]
 
     pool_in = candidates([s for s in ordered[:k_out] if s not in held_set])
-    pool_out = candidates(ordered[k_out:]) if fill_beyond_exit else []
-    for s in pool_in + pool_out:
+    pool_out = candidates(ordered[k_out:])
+    for s in pool_in + (pool_out if fill_beyond_exit else []):
         if len(selected) >= min_names:
             break
         selected.append(s)
@@ -2726,6 +2730,7 @@ def weekly_returns(
     freq: str = "W-FRI",
     exclude_windows: Iterable[tuple[Any, Any]] | None = (("2021-05-06", "2021-06-25"),),
     drop_incomplete: bool = True,
+    usable: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Rendements hebdomadaires (semaines civiles closes le vendredi) composés.
 
@@ -2733,8 +2738,9 @@ def weekly_returns(
     semaine sans aucune observation : NaN. Seules les séances ``≤ asof`` sont lues (pas
     de biais d'anticipation) ; la dernière semaine, incomplète si ``asof`` n'est pas un
     vendredi, est écartée (``drop_incomplete``). ``exclude_windows`` : séances mises à
-    NaN avant agrégation (trou de BOC de 2021, spéc. §3.1.3). Les rendements
-    ``multi_session`` doivent être passés à NaN par l'appelant.
+    NaN avant agrégation (trou de BOC de 2021, spéc. §3.1.3). ``usable`` : masque
+    booléen date × symbole (``data.store.stats_mask``) ; les rendements non utilisables
+    (``multi_session``, suspendus, fenêtre exclue) sont passés à NaN avant agrégation.
     """
     if not isinstance(returns, pd.DataFrame):
         raise TypeError("returns doit être un DataFrame (date × symbole)")
@@ -2743,6 +2749,13 @@ def weekly_returns(
     if asof is not None:
         r = r.loc[: pd.Timestamp(asof)]
     r = r.where(np.isfinite(r))
+    if usable is not None:
+        m = usable.copy()
+        m.index = pd.DatetimeIndex(m.index)
+        m.columns = m.columns.astype(str)
+        r.columns = r.columns.astype(str)
+        m = m.reindex(index=r.index, columns=r.columns)
+        r = r.where(m.fillna(False).astype(bool))
     for lo, hi in exclude_windows or ():
         r.loc[pd.Timestamp(lo) : pd.Timestamp(hi)] = np.nan
     if r.empty:
@@ -2764,6 +2777,7 @@ def weekly_covariance(
     exclude_windows: Iterable[tuple[Any, Any]] | None = (("2021-05-06", "2021-06-25"),),
     annualize: bool = False,
     periods_per_year: int = 52,
+    usable: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Covariance de Ledoit-Wolf (cible corrélation constante) des rendements hebdomadaires.
 
@@ -2772,10 +2786,10 @@ def weekly_covariance(
     l'intensité estimée δ* est plus faible, on impose δ = 0,5. Jamais une volatilité
     quotidienne × √252. Échelle hebdomadaire, ou annuelle (× 52) avec ``annualize``.
     ``attrs`` : ``shrinkage`` (appliquée), ``shrinkage_estimated``, ``n_weeks``,
-    ``dropped``, ``freq``.
+    ``dropped``, ``freq``. ``usable`` : voir :func:`weekly_returns`.
     """
-    wk = weekly_returns(returns, asof, freq=freq, exclude_windows=exclude_windows)
-    wk = wk.iloc[-int(weeks):]
+    wk = weekly_returns(returns, asof, freq=freq, exclude_windows=exclude_windows, usable=usable)
+    wk = wk.iloc[-weeks:]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         cov = ledoit_wolf_cov(wk, target="constant_correlation", min_periods=int(min_weeks))
@@ -2792,7 +2806,7 @@ def weekly_covariance(
         {
             "shrinkage_estimated": est,
             "shrinkage": float(attrs.get("shrinkage", np.nan)),
-            "n_weeks": int(len(wk)),
+            "n_weeks": len(wk),
             "freq": freq,
             "annualized": bool(annualize),
         }
@@ -3124,6 +3138,7 @@ def _cov_from_context(ctx: Mapping[str, Any], p: Mapping[str, Any]) -> pd.DataFr
         shrinkage_floor=float(p["cov_shrinkage_floor"]),
         freq=str(p["cov_freq"]),
         exclude_windows=p["exclude_stats_windows"],
+        usable=ctx.get("stats_mask"),
     )
 
 
@@ -3170,7 +3185,11 @@ def target_portfolio(
         * ``country_cap_mult`` (pays → multiplicateur, p. ex. 0,75) et
           ``country_cap_overrides`` (pays → plafond absolu) : règles d'événements pays ;
         * G et H : ``weekly_cov`` (covariance hebdomadaire) ou ``returns`` (rendements
-          quotidiens, tronqués à t par :func:`weekly_returns`) ou ``tr_index``.
+          quotidiens, tronqués à t par :func:`weekly_returns`) ou ``tr_index`` ;
+          ``stats_mask`` (``data.store.stats_mask`` : rendements multi-séances exclus).
+
+        ``mdv63`` s'obtient par ``average_daily_value(value, window=63, asof=t,
+        stat="median")`` (séances sans échange comptées à 0).
     params
         Surcharges de :data:`PORTFOLIO_V1_DEFAULTS` ou dict du YAML de stratégie.
 
@@ -3280,6 +3299,10 @@ def target_portfolio(
             c_caps[str(c)] = c_caps[str(c)] * float(m)
         else:  # pays sans plafond propre (CI) : le multiplicateur s'applique à l'exposition visée
             c_caps[str(c)] = budget * float(m)
+            messages.append(
+                f"pays {c} sans plafond propre : multiplicateur {float(m):g} appliqué à l'exposition visée "
+                f"({budget:.0%}) — interprétation"
+            )
     for c, cap in dict(ctx.get("country_cap_overrides") or {}).items():
         c_caps[str(c)] = min(float(c_caps.get(str(c), np.inf)), float(cap))
     aes = aes_caps(
@@ -3342,8 +3365,10 @@ def target_portfolio(
             fill_beyond_exit=bool(p["fill_beyond_exit"]),
         )
         selected, reasons = list(band.selected), dict(band.reasons)
-        reserve = list(band.reserve) + list(band.reserve_beyond)
-        cap_reserve = list(band.reserve) if bool(p["fill_for_capacity"]) else []
+        reserve = list(band.reserve) + (list(band.reserve_beyond) if bool(p["fill_beyond_exit"]) else [])
+        cap_reserve = []
+        if bool(p["fill_for_capacity"]):
+            cap_reserve = list(band.reserve) + (list(band.reserve_beyond) if bool(p["capacity_beyond_exit"]) else [])
     for s in held.index:
         if s not in reasons and s not in elig:
             reasons[s] = "vendu : titre non éligible à la date de décision"
@@ -3356,7 +3381,7 @@ def target_portfolio(
     # 5. Pondération ----------------------------------------------------------
     weighting = str(p["weighting"])
     extra: dict[str, Any] = {}
-    fill_kw = {
+    fill_kw: dict[str, Any] = {
         "min_weight": floor,
         "reserve": reserve,
         "min_names": min_names_eff,
@@ -3436,15 +3461,24 @@ def target_portfolio(
     weights = pd.Series(0.0, index=pd.Index(universe, dtype=object), dtype=float, name="weight")
     pos = w_sel[w_sel > 0]
     weights.loc[pos.index] = pos.to_numpy()
-    for s, why in w_sel.attrs.get("removed", {}).items():
-        reasons[s] = (reasons.get(s, "") + " ; " if reasons.get(s) else "") + why
-    for s in w_sel.attrs.get("added", []):
-        reasons[s] = f"complément après l'élagage (moins de {int(p['min_names'])} lignes), rang {int(ranks[s])}/{n_elig}"
-    for s in w_sel.attrs.get("capacity_added", []):
-        reasons[s] = (
-            f"ajouté pour la capacité : plafonds saturés sous {budget:.0%} d'exposition, rang {int(ranks[s])}/{n_elig} "
-            "dans les 50 % supérieurs"
-        )
+    # A : un seul jeu d'attributs ; H : attributs de A déjà fusionnés ; G : ceux de A puis ceux de G
+    sources = [w_sel.attrs] if (w_sel is w_eq or weighting == "mv_alpha") else [w_eq.attrs, w_sel.attrs]
+    for src in sources:
+        for s in src.get("added", []):
+            reasons[s] = f"complément après l'élagage (moins de {int(p['min_names'])} lignes), rang {int(ranks[s])}/{n_elig}"
+        for s in src.get("capacity_added", []):
+            reasons[s] = (
+                f"ajouté pour la capacité : plafonds saturés sous {budget:.0%} d'exposition, "
+                f"rang {int(ranks[s])}/{n_elig}" + (" dans les 50 % supérieurs" if band and ranks[s] <= band.exit_rank
+                                                   else " hors des 50 % supérieurs (capacity_beyond_exit)")
+            )
+        for s, why in src.get("removed", {}).items():
+            if why not in reasons.get(s, ""):
+                reasons[s] = (reasons.get(s, "") + " ; " if reasons.get(s) else "") + why
+    touched = set(selected) | set(w_sel.index)
+    for s in sorted(touched):
+        if weights.get(s, 0.0) <= 0 and "supprimée" not in reasons.get(s, "") and "plancher" not in reasons.get(s, ""):
+            reasons[s] = (reasons.get(s, "") + " ; " if reasons.get(s) else "") + f"poids final nul (pondération {weighting})"
     for s in selected:
         if s in weights.index and weights[s] > 0 and s in upper.index and weights[s] >= upper[s] - 1e-9:
             reasons[s] = reasons.get(s, "") + f" ; au plafond de ligne {upper[s]:.2%}"

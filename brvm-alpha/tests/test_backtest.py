@@ -566,7 +566,11 @@ def test_cash_never_negative_under_stress(seed: int) -> None:
     panels = random_market(n=200, n_sym=8, seed=seed, zero_frac=0.4)
     rng = np.random.default_rng(seed + 100)
     costs = CostModel(
-        impact_coef=0.8, min_ticket_fcfa=2500.0, annual_custody=0.05, half_spread_mult=0.0, account_fee_per_line_fcfa=0.0
+        impact_coef=0.8,
+        min_ticket_fcfa=2500.0,
+        annual_custody=0.05,
+        half_spread_mult=0.0,
+        account_fee_per_line_fcfa=0.0,
     )
 
     def chaos(asof: pd.Timestamp, view: PanelView) -> pd.Series:

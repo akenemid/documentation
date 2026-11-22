@@ -25,6 +25,23 @@ overfitting ») :
   2017) et du Sharpe déflaté (Bailey & López de Prado, 2014) qui corrige du
   nombre ``N`` d'essais.
 
+Validation de la stratégie v1 (spécification §8)
+------------------------------------------------
+
+* :func:`purged_kfold` et :func:`cpcv` — validation croisée purgée avec
+  embargo et validation croisée combinatoire purgée (10 groupes, ``k = 2``,
+  45 découpages, 9 chemins ; purge et embargo de 21 séances) ;
+* :class:`TrialRegistry` — registre persistant des essais
+  (``reports/trials.parquet``) : 55 essais S0 « déclarés » et 8 variantes
+  S1 « pré-enregistrées » au départ (``N = 63``), puis chaque essai exécuté
+  avec ses rendements hebdomadaires nets ;
+* :func:`evaluate_status` — statut REJETÉ / CANDIDAT / PROMU selon les
+  critères exacts du §8.3 et les filtres G1-G9, avec le détail critère par
+  critère.
+
+L'échantillon S1 (2017-01-02 → 2022-11-16) est réservé à **un seul** test
+pré-enregistré : aucun de ces outils ne l'exécute de lui-même.
+
 Références
 ----------
 * Bailey, D. H. & López de Prado, M. (2014). The Deflated Sharpe Ratio.
@@ -43,19 +60,44 @@ Références
 from __future__ import annotations
 
 import itertools
+import json
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 __all__ = [
+    "CPCVResult",
+    "DEFAULT_REGISTRY_PATH",
+    "N_TRIALS_START",
+    "PurgedSplit",
+    "REGISTRY_COLUMNS",
+    "STATUS_THRESHOLDS",
+    "STATUT_CANDIDAT",
+    "STATUT_DECLARE",
+    "STATUT_EXECUTE",
+    "STATUT_INDETERMINE",
+    "STATUT_PREENREGISTRE",
+    "STATUT_PROMU",
+    "STATUT_REJETE",
+    "S1_VARIANTS",
+    "StatusReport",
+    "TrialRegistry",
     "WalkForwardFold",
     "WalkForwardResult",
     "WalkForwardWindow",
+    "cpcv",
+    "declared_s0_trials",
+    "evaluate_status",
     "param_grid",
+    "preregistered_s1_variants",
+    "purged_kfold",
     "run_param_grid",
+    "status_thresholds",
     "walk_forward",
     "walk_forward_windows",
 ]
@@ -440,3 +482,1112 @@ def run_param_grid(
     if np.isinf(frame.to_numpy(dtype=float)).any():
         raise ValueError("rendements infinis dans la grille")
     return frame
+
+
+# ---------------------------------------------------------------------------
+# Validation croisée purgée et CPCV (revue 04 §6 ; López de Prado, 2018)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PurgedSplit:
+    """Un découpage apprentissage / test purgé et sous embargo.
+
+    ``purged`` : séances d'apprentissage retirées **avant** chaque bloc de
+    test (leur étiquette à ``h = purge`` séances chevauche le test) ;
+    ``embargoed`` : séances retirées **après** chaque bloc de test (mémoire
+    sérielle, ``embargo`` séances).
+    """
+
+    split: int
+    test_groups: tuple[int, ...]
+    train: pd.DatetimeIndex
+    test: pd.DatetimeIndex
+    purged: pd.DatetimeIndex
+    embargoed: pd.DatetimeIndex
+
+
+def _contiguous_runs(pos: np.ndarray) -> list[tuple[int, int]]:
+    """Blocs contigus ``[début, fin]`` (inclus) d'un tableau de positions triées."""
+    if pos.size == 0:
+        return []
+    breaks = np.flatnonzero(np.diff(pos) > 1)
+    starts = np.r_[pos[0], pos[breaks + 1]]
+    ends = np.r_[pos[breaks], pos[-1]]
+    return [(int(a), int(b)) for a, b in zip(starts, ends, strict=True)]
+
+
+def _purged_positions(n: int, test_pos: np.ndarray, purge: int, embargo: int) -> tuple[np.ndarray, ...]:
+    """Positions (apprentissage, purgées, sous embargo) pour un ensemble de test."""
+    is_test = np.zeros(n, dtype=bool)
+    is_test[test_pos] = True
+    purged = np.zeros(n, dtype=bool)
+    embargoed = np.zeros(n, dtype=bool)
+    for a, b in _contiguous_runs(np.sort(test_pos)):
+        purged[max(0, a - purge) : a] = True
+        embargoed[b + 1 : min(n, b + 1 + embargo)] = True
+    purged &= ~is_test
+    embargoed &= ~is_test & ~purged
+    train = ~is_test & ~purged & ~embargoed
+    return np.flatnonzero(train), np.flatnonzero(purged), np.flatnonzero(embargoed)
+
+
+def _check_cv_args(n: int, n_groups: int, purge: int, embargo: int) -> None:
+    if n_groups < 2:
+        raise ValueError("au moins deux groupes sont nécessaires")
+    if n < n_groups:
+        raise ValueError("moins de séances que de groupes")
+    if purge < 0 or embargo < 0:
+        raise ValueError("purge et embargo doivent être >= 0")
+
+
+def _split_groups(cal: pd.DatetimeIndex, n_groups: int) -> list[np.ndarray]:
+    """``n_groups`` blocs chronologiques contigus de tailles quasi égales (``np.array_split``)."""
+    return [np.asarray(g, dtype=np.int64) for g in np.array_split(np.arange(len(cal)), n_groups)]
+
+
+def purged_kfold(dates: Any, n_splits: int = 10, purge: int = 21, embargo: int = 21) -> list[PurgedSplit]:
+    """K-fold chronologique **purgé** avec **embargo** (López de Prado, 2018, ch. 7).
+
+    Le calendrier est découpé en ``n_splits`` blocs contigus ; chaque bloc
+    sert une fois de test. Sont retirées de l'apprentissage les ``purge``
+    séances qui précèdent le test (étiquette à ``h = purge`` séances : 21
+    pour un signal mensuel) et les ``embargo`` séances qui le suivent (21,
+    mémoire mesurée de la BRVM, revue 04 §6.3).
+    """
+    cal = _as_calendar(dates)
+    _check_cv_args(len(cal), n_splits, purge, embargo)
+    out: list[PurgedSplit] = []
+    for i, g in enumerate(_split_groups(cal, n_splits)):
+        tr, pu, em = _purged_positions(len(cal), g, int(purge), int(embargo))
+        out.append(
+            PurgedSplit(split=i, test_groups=(i,), train=cal[tr], test=cal[g], purged=cal[pu], embargoed=cal[em])
+        )
+    return out
+
+
+@dataclass
+class CPCVResult:
+    """Validation croisée combinatoire purgée : découpages et chemins de backtest.
+
+    ``paths[p]`` associe à chaque groupe ``g`` le découpage dont le test
+    fournit ce groupe dans le chemin ``p`` ; il y a
+    ``φ = C(N − 1, k − 1) = k/N · C(N, k)`` chemins (9 pour N = 10, k = 2).
+    """
+
+    splits: list[PurgedSplit]
+    groups: list[pd.DatetimeIndex]
+    n_groups: int
+    k_test: int
+    purge: int
+    embargo: int
+    paths: list[dict[int, int]]
+
+    @property
+    def n_splits(self) -> int:
+        return len(self.splits)
+
+    @property
+    def n_paths(self) -> int:
+        return len(self.paths)
+
+    def path_returns(self, outputs: Mapping[int, pd.Series]) -> pd.DataFrame:
+        """Assemble les chemins hors échantillon à partir des sorties de chaque découpage.
+
+        ``outputs[s]`` : ``Series`` (dates × rendements) produite par le
+        modèle entraîné sur ``splits[s].train`` et appliqué à
+        ``splits[s].test``. Renvoie un ``DataFrame`` dates × chemins.
+        """
+        cols: dict[str, pd.Series] = {}
+        for p, mapping in enumerate(self.paths):
+            parts = []
+            for g, s in sorted(mapping.items()):
+                out = outputs[s]
+                parts.append(out.loc[out.index.isin(self.groups[g])])
+            cols[f"chemin_{p + 1}"] = pd.concat(parts).sort_index()
+        return pd.concat(cols, axis=1)
+
+
+def cpcv(dates: Any, n_groups: int = 10, k_test: int = 2, purge: int = 21, embargo: int = 21) -> CPCVResult:
+    """CPCV (López de Prado, 2018, ch. 12) : ``C(N, k)`` découpages, ``C(N − 1, k − 1)`` chemins.
+
+    Paramètres de la spécification §8.2 : 10 groupes, ``k = 2`` (45
+    découpages, 9 chemins), purge 21 séances, embargo 21 séances. Deux
+    groupes de test adjacents forment un seul bloc (purge avant, embargo
+    après).
+    """
+    cal = _as_calendar(dates)
+    _check_cv_args(len(cal), n_groups, purge, embargo)
+    if not 1 <= k_test < n_groups:
+        raise ValueError("k_test doit être dans [1, n_groups[")
+    groups = _split_groups(cal, n_groups)
+    splits: list[PurgedSplit] = []
+    for i, combo in enumerate(itertools.combinations(range(n_groups), k_test)):
+        test_pos = np.concatenate([groups[g] for g in combo])
+        tr, pu, em = _purged_positions(len(cal), test_pos, int(purge), int(embargo))
+        splits.append(
+            PurgedSplit(
+                split=i,
+                test_groups=tuple(combo),
+                train=cal[tr],
+                test=cal[np.sort(test_pos)],
+                purged=cal[pu],
+                embargoed=cal[em],
+            )
+        )
+    n_paths = math.comb(n_groups - 1, k_test - 1)
+    by_group = {g: [s.split for s in splits if g in s.test_groups] for g in range(n_groups)}
+    paths = [{g: by_group[g][p] for g in range(n_groups)} for p in range(n_paths)]
+    return CPCVResult(
+        splits=splits,
+        groups=[cal[g] for g in groups],
+        n_groups=int(n_groups),
+        k_test=int(k_test),
+        purge=int(purge),
+        embargo=int(embargo),
+        paths=paths,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Registre des essais (reports/trials.parquet)
+# ---------------------------------------------------------------------------
+
+#: Emplacement du registre dans le dépôt (``reports/`` est le seul dossier
+#: d'écriture autorisé hors ``data/``, ARCHITECTURE.md).
+DEFAULT_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "reports" / "trials.parquet"
+
+#: Colonnes du registre (une ligne par essai).
+REGISTRY_COLUMNS = (
+    "id",
+    "variante",
+    "famille",
+    "parametres",
+    "echantillon",
+    "statut",
+    "date_execution",
+    "rendements_hebdo",
+    "metriques",
+    "empreinte_config",
+    "source",
+    "note",
+)
+
+STATUT_DECLARE = "déclaré"  # essai déjà fait par les revues (S0), sans rendements journalisés
+STATUT_PREENREGISTRE = "pré-enregistré"  # variante déclarée AVANT toute exécution (S1)
+STATUT_EXECUTE = "exécuté"  # rendements hebdomadaires nets journalisés
+
+#: Nombre d'essais de départ (spéc. §8.2 et §11 : 55 essais S0 + 8 variantes S1).
+N_TRIALS_START = 63
+S1_VARIANTS = ("A", "B", "C", "D", "E", "F", "G", "H")
+
+_A_WEIGHTS = {"ep": 0.15, "dy": 0.20, "mom6_1": 0.35, "lowvol": 0.20, "quality_proxy": 0.10}
+
+
+def declared_s0_trials() -> list[dict[str, Any]]:
+    """Les 55 essais déjà faits sur S0 (2022-11-17 → 2026-11-20), déclarés par la spécification §8.1-8.2.
+
+    * 13 configurations acheteuses comparées formellement par [R03] §7.2-7.3
+      (7 facteurs seuls et 6 composites ; **reconstitution** d'après les
+      tableaux de la revue : la liste exacte des 13 n'y est pas énumérée,
+      correspondance [NON VÉRIFIÉ]) ;
+    * 6 fenêtres de momentum de [R03] §7.2 (3-1, 6-0, 6-1, 9-1, 12-1, 12-7) ;
+    * la grille de 36 stratégies momentum de [R04] §3.4 (L × saut × top-k).
+
+    Ces essais n'ont pas de rendements journalisés (statut « déclaré ») :
+    ils comptent dans ``N`` (DSR, haircut BHY) mais pas dans la PBO.
+    """
+    out: list[dict[str, Any]] = []
+    singles = ["mom12_1", "mom6_1", "str1", "ep", "dy", "lowvol", "illiq"]
+    composites = [
+        {"ep": 0.5, "dy": 0.5},
+        {"ep": 0.25, "dy": 0.25, "mom6_1": 0.5},
+        {"ep": 1 / 6, "dy": 1 / 6, "mom6_1": 1 / 3, "lowvol": 1 / 3},
+        {"ep": 0.4 / 3, "dy": 0.4 / 3, "mom6_1": 0.8 / 3, "lowvol": 0.8 / 3, "str1_continuation": 0.20},
+        {"ep": 0.25, "dy": 0.25, "mom12_1": 0.5},
+        {"ep": 0.15, "dy": 0.20, "mom6_1": 0.20, "mom12_1": 0.15, "lowvol": 0.20},
+    ]
+    configs: list[dict[str, Any]] = [{"facteur": f} for f in singles] + [{"composite": c} for c in composites]
+    for i, p in enumerate(configs, start=1):
+        p.update({"portefeuille": "tertile supérieur équipondéré", "rebalancement": "mensuel", "execution": "t+1"})
+        out.append(
+            {
+                "id": f"S0-R03-C{i:02d}",
+                "variante": f"R03-C{i:02d}",
+                "famille": "R03 configurations acheteuses",
+                "parametres": p,
+                "source": "[R03] §7.2-7.3",
+                "note": "reconstitution de la liste des 13 configurations [NON VÉRIFIÉ]",
+            }
+        )
+    for i, (look, skip) in enumerate([(3, 1), (6, 0), (6, 1), (9, 1), (12, 1), (12, 7)], start=1):
+        out.append(
+            {
+                "id": f"S0-R03-M{i:02d}",
+                "variante": f"MOM{look}-{skip}",
+                "famille": "R03 fenêtres de momentum",
+                "parametres": {"formation_mois": look, "saut_mois": skip, "mesure": "L/S tertiles"},
+                "source": "[R03] §7.2",
+                "note": "",
+            }
+        )
+    k = 0
+    for look in (21, 63, 126, 252):
+        for skip in (0, 5, 21):
+            for top in (5, 10, 15):
+                k += 1
+                out.append(
+                    {
+                        "id": f"S0-R04-G{k:02d}",
+                        "variante": f"MOM-L{look}-S{skip}-K{top}",
+                        "famille": "R04 grille momentum 36",
+                        "parametres": {
+                            "lookback": look,
+                            "skip": skip,
+                            "top_k": top,
+                            "rebalance_sessions": 21,
+                            "execution": "t+1",
+                            "rendements": "bruts actifs contre le panier EW",
+                            "periode": ["2023-03-17", "2026-11-20"],
+                        },
+                        "source": "[R04] §3.4",
+                        "note": "",
+                    }
+                )
+    for row in out:
+        row.update({"echantillon": "S0", "statut": STATUT_DECLARE})
+    assert len(out) == 55
+    return out
+
+
+def preregistered_s1_variants() -> list[dict[str, Any]]:
+    """Les 8 variantes A-H pré-enregistrées pour S1 (spéc. §3.4), paramètres FIGÉS."""
+    a = dict(_A_WEIGHTS)
+    base = {"poids": a, "ponderation": "equal", "frequence": "mensuel", "bande": [30, 50]}
+    specs: dict[str, tuple[dict[str, Any], str]] = {
+        "A": (dict(base), "principal (pré-enregistré par [R03])"),
+        "B": ({**base, "poids": {"ep": 0.25, "dy": 0.25, "mom6_1": 0.50}}, "challenger choisi après coup (DSR 0,65)"),
+        "C": (
+            {**base, "poids": {"ep": 0.15, "dy": 0.20, "mom6_1": 0.20, "mom12_1": 0.15, "lowvol": 0.20,
+                               "quality_proxy": 0.10}},
+            "horizon long « standard »",
+        ),
+        "D": ({**base, "neutralisation": "value dans les secteurs >= 4 titres (FIN, CB, CD, IND, ENE)"},
+              "neutralisation sectorielle de la value"),
+        "E": ({**base, "poche_S1": {"max_total": 0.20, "max_par_titre": 0.05}}, "surcouche S1 (dividende)"),
+        "F": ({**base, "regime": {"p_agite": 0.8, "drawdown_tr": -0.08, "exposition": 0.75}}, "dosage par le régime"),
+        "G": ({**base, "ponderation": "hrp_tilt", "gamma": 0.5}, "pondération par le risque (HRP)"),
+        "H": ({**base, "ponderation": "mv_alpha", "ic_post": 0.02, "lambda": 5.0, "kappa": "coût aller central"},
+              "moyenne-variance rétrécie"),
+    }
+    out = []
+    for code in S1_VARIANTS:
+        params, role = specs[code]
+        out.append(
+            {
+                "id": f"S1-{code}",
+                "variante": code,
+                "famille": "S1 variantes pré-enregistrées",
+                "parametres": params,
+                "echantillon": "S1",
+                "statut": STATUT_PREENREGISTRE,
+                "source": "SPECIFICATION_STRATEGIE.md §3.4",
+                "note": role,
+            }
+        )
+    return out
+
+
+def _json_default(x: Any) -> Any:
+    if isinstance(x, (np.integer,)):
+        return int(x)
+    if isinstance(x, (np.floating,)):
+        v = float(x)
+        return v if math.isfinite(v) else None
+    if isinstance(x, np.ndarray):
+        return [_json_default(v) for v in x.tolist()]
+    if isinstance(x, (pd.Timestamp,)):
+        return x.isoformat()
+    return str(x)
+
+
+def _clean_json(obj: Any) -> Any:
+    """Remplace NaN / inf par ``None`` (JSON strict)."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, Mapping):
+        return {str(k): _clean_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_json(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return [_clean_json(v) for v in obj.tolist()]
+    if isinstance(obj, (np.floating, np.integer)):
+        return _clean_json(obj.item())
+    return obj
+
+
+def _dumps(obj: Any) -> str:
+    return json.dumps(_clean_json(obj), sort_keys=True, ensure_ascii=False, default=_json_default)
+
+
+def _series_to_json(s: pd.Series | None) -> str | None:
+    if s is None:
+        return None
+    s = pd.Series(s, dtype=float).dropna()
+    idx = pd.DatetimeIndex(pd.to_datetime(s.index))
+    return _dumps({d.strftime("%Y-%m-%d"): float(v) for d, v in zip(idx, s.to_numpy(), strict=True)})
+
+
+class TrialRegistry:
+    """Registre persistant des essais (``reports/trials.parquet``, spéc. §8.2, revue 04 §17.1 G1).
+
+    Chaque essai (variante × échantillon) est journalisé avec ses paramètres
+    (JSON), son échantillon, sa date d'exécution, ses **rendements
+    hebdomadaires nets** (JSON ``{date: rendement}``) et ses métriques. Le
+    registre alimente ``N`` du Sharpe dégonflé et ``M`` du haircut BHY
+    (:meth:`n_trials`, N **brut**), la matrice de la PBO
+    (:meth:`returns_matrix`) et la variance des Sharpe entre essais
+    (:meth:`sharpe_variance`).
+
+    Garde-fous :
+
+    * S1 est un **test unique** : une variante déjà « exécutée » sur S1 ne
+      peut pas être enregistrée une seconde fois ;
+    * les paramètres d'une variante pré-enregistrée sont **figés** : une
+      exécution avec d'autres paramètres est refusée (créer un nouvel essai
+      sous un autre nom, compté dans ``N``).
+    """
+
+    def __init__(self, path: str | Path | None = DEFAULT_REGISTRY_PATH, frame: pd.DataFrame | None = None) -> None:
+        self.path = None if path is None else Path(path)
+        if frame is None:
+            frame = pd.DataFrame({c: pd.Series(dtype=object) for c in REGISTRY_COLUMNS})
+            frame["date_execution"] = pd.Series(dtype="datetime64[ns, UTC]")
+        missing = [c for c in REGISTRY_COLUMNS if c not in frame.columns]
+        if missing:
+            raise ValueError(f"registre : colonnes manquantes {missing}")
+        self._frame = frame.loc[:, list(REGISTRY_COLUMNS)].reset_index(drop=True)
+
+    # -- persistance ------------------------------------------------------
+
+    @classmethod
+    def load(cls, path: str | Path = DEFAULT_REGISTRY_PATH) -> TrialRegistry:
+        """Lit le registre (registre vide si le fichier n'existe pas)."""
+        p = Path(path)
+        if not p.exists():
+            return cls(p)
+        return cls(p, pd.read_parquet(p))
+
+    @classmethod
+    def initialize(
+        cls,
+        path: str | Path | None = DEFAULT_REGISTRY_PATH,
+        *,
+        save: bool = True,
+        overwrite: bool = False,
+    ) -> TrialRegistry:
+        """Registre amorcé avec les 55 essais S0 « déclarés » et les 8 variantes S1 « pré-enregistrées ».
+
+        Idempotent : un registre existant est relu et seuls les essais
+        d'amorçage absents (par ``id``) sont ajoutés ; ``overwrite=True``
+        repart d'un registre vide (à éviter : l'historique des essais fait
+        partie de la preuve).
+        """
+        reg = cls(path) if (overwrite or path is None or not Path(path).exists()) else cls.load(path)
+        have = set(reg._frame["id"])
+        fingerprint = None
+        try:
+            from brvm_alpha import settings
+
+            fingerprint = settings.config_fingerprint(settings.load_strategy_config())
+        except Exception:  # pragma: no cover - fichier de paramètres absent ou invalide
+            fingerprint = None
+        rows = []
+        for row in declared_s0_trials() + preregistered_s1_variants():
+            if row["id"] in have:
+                continue
+            rows.append(
+                {
+                    "id": row["id"],
+                    "variante": row["variante"],
+                    "famille": row["famille"],
+                    "parametres": _dumps(row["parametres"]),
+                    "echantillon": row["echantillon"],
+                    "statut": row["statut"],
+                    "date_execution": pd.NaT,
+                    "rendements_hebdo": None,
+                    "metriques": None,
+                    "empreinte_config": fingerprint if row["echantillon"] == "S1" else None,
+                    "source": row["source"],
+                    "note": row["note"],
+                }
+            )
+        if rows:
+            reg._append(rows)
+        if save and reg.path is not None:
+            reg.save()
+        return reg
+
+    def save(self, path: str | Path | None = None) -> Path:
+        """Écrit le registre en parquet (dossier créé si besoin)."""
+        p = Path(path) if path is not None else self.path
+        if p is None:
+            raise ValueError("aucun chemin de registre")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        out = self._frame.copy()
+        out["date_execution"] = pd.to_datetime(out["date_execution"], utc=True)
+        for c in REGISTRY_COLUMNS:
+            if c != "date_execution":
+                out[c] = out[c].astype(object).where(out[c].notna(), None)
+        out.to_parquet(p, index=False)
+        return p
+
+    # -- accès ----------------------------------------------------------------
+
+    @property
+    def frame(self) -> pd.DataFrame:
+        """Copie du registre (une ligne par essai)."""
+        return self._frame.copy()
+
+    def __len__(self) -> int:
+        return len(self._frame)
+
+    def n_trials(self, sample: str | None = None, *, include_declared: bool = True) -> int:
+        """Nombre **brut** d'essais (``N`` du DSR, ``M`` du haircut BHY ; revue 04 §4.4).
+
+        ``sample`` restreint à un échantillon ; ``include_declared=False``
+        ne compte que les essais exécutés.
+        """
+        f = self._frame
+        if sample is not None:
+            f = f[f["echantillon"] == sample]
+        if not include_declared:
+            f = f[f["statut"] == STATUT_EXECUTE]
+        return int(len(f))
+
+    def _append(self, rows: list[dict[str, Any]]) -> None:
+        new = pd.DataFrame(rows, columns=list(REGISTRY_COLUMNS))
+        base = self._frame
+        if len(base) == 0:
+            self._frame = new.reset_index(drop=True)
+        else:
+            self._frame = pd.concat([base.astype(object), new.astype(object)], ignore_index=True)
+
+    def record(
+        self,
+        variant: str,
+        params: Mapping[str, Any],
+        sample: str,
+        weekly_returns: pd.Series,
+        metrics: Mapping[str, Any] | None = None,
+        *,
+        family: str = "",
+        trial_id: str | None = None,
+        run_date: Any = None,
+        config_fingerprint: str | None = None,
+        source: str = "",
+        note: str = "",
+        save: bool = False,
+    ) -> str:
+        """Journalise un essai exécuté (rendements hebdomadaires **nets**) et renvoie son ``id``.
+
+        Une variante pré-enregistrée sur ``sample`` est complétée sur place
+        (paramètres identiques exigés) ; sinon une nouvelle ligne est créée
+        (``N`` augmente d'une unité).
+        """
+        if weekly_returns is None or len(pd.Series(weekly_returns).dropna()) == 0:
+            raise ValueError("rendements hebdomadaires nets obligatoires pour un essai exécuté")
+        f = self._frame
+        same = (f["variante"] == variant) & (f["echantillon"] == sample)
+        if sample == "S1" and bool((same & (f["statut"] == STATUT_EXECUTE)).any()):
+            raise RuntimeError(
+                f"la variante {variant} a déjà été exécutée sur S1 : l'échantillon vierge ne sert qu'à UN test"
+            )
+        stamp = pd.Timestamp.now(tz="UTC") if run_date is None else pd.Timestamp(run_date)
+        if stamp.tzinfo is None:
+            stamp = stamp.tz_localize("UTC")
+        payload = {
+            "parametres": _dumps(dict(params)),
+            "statut": STATUT_EXECUTE,
+            "date_execution": stamp,
+            "rendements_hebdo": _series_to_json(pd.Series(weekly_returns)),
+            "metriques": _dumps(dict(metrics or {})),
+            "empreinte_config": config_fingerprint,
+        }
+        pre = same & (f["statut"] == STATUT_PREENREGISTRE)
+        if bool(pre.any()):
+            i = int(np.flatnonzero(pre.to_numpy())[0])
+            frozen = json.loads(str(f.at[i, "parametres"]))
+            if json.loads(payload["parametres"]) != frozen:
+                raise ValueError(
+                    f"paramètres de la variante pré-enregistrée {variant} modifiés : ils sont FIGÉS avant le test ; "
+                    "enregistrer un nouvel essai sous un autre nom"
+                )
+            self._frame = f.astype(object)
+            for k, v in payload.items():
+                if k == "empreinte_config" and v is None:
+                    continue
+                self._frame.at[i, k] = v
+            tid = str(self._frame.at[i, "id"])
+        else:
+            tid = trial_id or f"{sample}-{variant}-{int(same.sum()) + 1:03d}"
+            if tid in set(f["id"]):
+                raise ValueError(f"identifiant d'essai déjà utilisé : {tid}")
+            self._append(
+                [
+                    {
+                        "id": tid,
+                        "variante": variant,
+                        "famille": family,
+                        "echantillon": sample,
+                        "source": source,
+                        "note": note,
+                        **payload,
+                    }
+                ]
+            )
+        if save:
+            self.save()
+        return tid
+
+    def weekly_returns(self, trial_id: str) -> pd.Series:
+        """Rendements hebdomadaires nets journalisés d'un essai (``Series`` vide si déclaré)."""
+        row = self._frame[self._frame["id"] == trial_id]
+        if row.empty:
+            raise KeyError(trial_id)
+        raw = row["rendements_hebdo"].iloc[0]
+        if raw is None or (isinstance(raw, float) and math.isnan(raw)):
+            return pd.Series(dtype=float, name=trial_id)
+        d = json.loads(str(raw))
+        s = pd.Series({pd.Timestamp(k): (np.nan if v is None else float(v)) for k, v in d.items()}, dtype=float)
+        return s.sort_index().rename(trial_id)
+
+    def returns_matrix(self, sample: str | None = None, variants: Sequence[str] | None = None) -> pd.DataFrame:
+        """Matrice semaines × essais exécutés (entrée de la PBO, :func:`metrics.family_pbo`)."""
+        f = self._frame[self._frame["statut"] == STATUT_EXECUTE]
+        if sample is not None:
+            f = f[f["echantillon"] == sample]
+        if variants is not None:
+            f = f[f["variante"].isin(list(variants))]
+        cols = {str(r["variante"]) if variants is not None else str(r["id"]): self.weekly_returns(str(r["id"]))
+                for _, r in f.iterrows()}
+        if not cols:
+            return pd.DataFrame()
+        return pd.concat(cols, axis=1).sort_index()
+
+    def sharpe_variance(self, sample: str | None = None) -> float:
+        """Variance (``ddof = 1``) des Sharpe **hebdomadaires par période** des essais exécutés.
+
+        NaN s'il y a moins de deux essais exécutés : le DSR n'est alors pas
+        évaluable sans hypothèse externe sur cette variance.
+        """
+        mat = self.returns_matrix(sample)
+        if mat.shape[1] < 2:
+            return math.nan
+        srs = []
+        for c in mat.columns:
+            x = mat[c].dropna()
+            sd = float(x.std(ddof=1)) if len(x) > 1 else math.nan
+            if sd and math.isfinite(sd) and sd > 0:
+                srs.append(float(x.mean()) / sd)
+        return float(np.var(srs, ddof=1)) if len(srs) >= 2 else math.nan
+
+    def is_complete(
+        self,
+        sample: str = "S1",
+        variants: Sequence[str] = S1_VARIANTS,
+        min_trials: int = N_TRIALS_START,
+    ) -> bool:
+        """G1 : registre complet (``N ≥ 63`` et chaque variante de la famille exécutée avec ses rendements)."""
+        if self.n_trials() < int(min_trials):
+            return False
+        f = self._frame
+        for v in variants:
+            row = f[(f["variante"] == v) & (f["echantillon"] == sample) & (f["statut"] == STATUT_EXECUTE)]
+            if row.empty or row["rendements_hebdo"].isna().all():
+                return False
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Statut de la stratégie (spéc. §8.3, revue 04 §17.1)
+# ---------------------------------------------------------------------------
+
+STATUT_REJETE = "REJETÉ"
+STATUT_CANDIDAT = "CANDIDAT"
+STATUT_PROMU = "PROMU"
+#: Cas non prévu par le §8.3 (ni rejeté, ni candidat) : aucun suivi réel autorisé.
+STATUT_INDETERMINE = "INDÉTERMINÉ"
+
+#: Seuils du §8.3 (et du §12.1 ``validation``), FIGÉS avant toute exécution sur S1.
+STATUS_THRESHOLDS: dict[str, float] = {
+    "reject_active_net_central_le": 0.0,
+    "reject_active_net_stress_lt": -0.01,
+    "reject_subperiod_ir_lt": -0.5,
+    "reject_rel_dd_lt": -0.20,
+    "reject_abs_dd_worse_than_tr_by": 0.10,
+    "candidate_active_net_central_gt": 0.0,
+    "candidate_active_net_stress_ge": -0.005,
+    "candidate_ir_ge": 0.20,
+    "candidate_rel_dd_ge": -0.20,
+    "candidate_turnover_month_le": 0.20,
+    "candidate_pbo_le": 0.5,
+    "candidate_cvar_ratio_le": 1.25,
+    "psr_min": 0.95,
+    "dsr_min": 0.95,
+    "pbo_max_promoted": 0.25,
+    "pbo_min_slope": -0.5,
+    "hsr_min": 0.3,
+    "ic_min_t_documented": 2.0,
+    "ic_min_t_new": 3.0,
+    "ic_min_months": 36,
+    "lo_naive_ratio_min": 0.6,
+    "s2_min_weeks": 52,
+    "n_trials_start": N_TRIALS_START,
+}
+
+_YAML_REJECT = {
+    "active_net_central_le": "reject_active_net_central_le",
+    "active_net_stress_lt": "reject_active_net_stress_lt",
+    "subperiod_ir_lt": "reject_subperiod_ir_lt",
+    "rel_dd_lt": "reject_rel_dd_lt",
+    "abs_dd_worse_than_tr_by": "reject_abs_dd_worse_than_tr_by",
+}
+_YAML_CANDIDATE = {
+    "active_net_central_gt": "candidate_active_net_central_gt",
+    "active_net_stress_ge": "candidate_active_net_stress_ge",
+    "ir_ge": "candidate_ir_ge",
+    "rel_dd_ge": "candidate_rel_dd_ge",
+    "turnover_month_le": "candidate_turnover_month_le",
+    "pbo_le": "candidate_pbo_le",
+    "cvar_ratio_le": "candidate_cvar_ratio_le",
+}
+
+
+def status_thresholds(params: Mapping[str, Any] | None = None) -> dict[str, float]:
+    """Seuils de décision : défauts de la spécification, surchargés par ``params``.
+
+    ``params`` : clés plates de :data:`STATUS_THRESHOLDS`, ou configuration
+    complète (``settings.load_strategy_config()``, section ``validation``).
+    """
+    out = dict(STATUS_THRESHOLDS)
+    if not params:
+        return out
+    val = params.get("validation") if isinstance(params.get("validation"), Mapping) else None
+    if val is None:
+        unknown = set(params) - set(out)
+        if unknown:
+            raise KeyError(f"seuils inconnus : {sorted(unknown)}")
+        out.update({k: float(v) for k, v in params.items()})
+        return out
+    for k, v in (val.get("reject_if") or {}).items():
+        if k in _YAML_REJECT:
+            out[_YAML_REJECT[k]] = float(v)
+    for k, v in (val.get("candidate_if") or {}).items():
+        if k in _YAML_CANDIDATE:
+            out[_YAML_CANDIDATE[k]] = float(v)
+    for k in ("psr_min", "dsr_min", "n_trials_start"):
+        if k in val:
+            out[k] = float(val[k])
+    pbo = val.get("pbo") or {}
+    if "max_promoted" in pbo:
+        out["pbo_max_promoted"] = float(pbo["max_promoted"])
+    if "min_slope" in pbo:
+        out["pbo_min_slope"] = float(pbo["min_slope"])
+    hc = val.get("haircut") or {}
+    if "min_hsr" in hc:
+        out["hsr_min"] = float(hc["min_hsr"])
+    mt = val.get("min_t") or {}
+    if "documented" in mt:
+        out["ic_min_t_documented"] = float(mt["documented"])
+    if "new" in mt:
+        out["ic_min_t_new"] = float(mt["new"])
+    return out
+
+
+@dataclass
+class StatusReport:
+    """Résultat de :func:`evaluate_status` : statut et détail critère par critère.
+
+    ``criteres`` : une ligne par critère (``groupe`` ∈ ``rejet``,
+    ``candidat``, ``promotion_S1``, ``promotion_S2`` ; ``code``,
+    ``libelle``, ``valeur``, ``seuil``, ``verifie`` (``True`` / ``False`` /
+    ``None`` = non évaluable, donnée manquante), ``note``).
+    """
+
+    statut: str
+    criteres: pd.DataFrame
+    mesures: dict[str, Any]
+    avertissements: list[str]
+
+    @property
+    def bandeau(self) -> str:
+        """Bandeau permanent de la spécification §10."""
+        return f"Performance passée ≠ garantie. Aucun gain n'est garanti. Statut : {self.statut}"
+
+    def groupe(self, name: str) -> pd.DataFrame:
+        """Critères d'un groupe (``rejet``, ``candidat``, ``promotion_S1``, ``promotion_S2``)."""
+        return self.criteres[self.criteres["groupe"] == name].reset_index(drop=True)
+
+    def critere(self, groupe: str, code: str) -> dict[str, Any]:
+        """Un critère (dictionnaire)."""
+        row = self.criteres[(self.criteres["groupe"] == groupe) & (self.criteres["code"] == code)]
+        if row.empty:
+            raise KeyError(f"{groupe}/{code}")
+        return row.iloc[0].to_dict()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "statut": self.statut,
+            "bandeau": self.bandeau,
+            "criteres": self.criteres.to_dict("records"),
+            "mesures": self.mesures,
+            "avertissements": list(self.avertissements),
+        }
+
+
+def _finite(x: Any) -> bool:
+    try:
+        return x is not None and math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return False
+
+
+def _check(value: Any, test: Callable[[float], bool]) -> bool | None:
+    """``True`` / ``False`` si la valeur est évaluable, ``None`` sinon."""
+    return bool(test(float(value))) if _finite(value) else None
+
+
+def _slice(s: pd.Series, a: Any, b: Any) -> pd.Series:
+    return s.loc[(s.index >= pd.Timestamp(a)) & (s.index <= pd.Timestamp(b))]
+
+
+def _g_filters(
+    group: str,
+    active: pd.Series,
+    subperiods: Sequence[tuple[Any, Any]],
+    th: Mapping[str, float],
+    *,
+    n_trials: int | None,
+    sr_variance: float | None,
+    g1: bool | None,
+    pbo: float,
+    pbo_slope: float | None,
+    ic_monthly: pd.Series | None,
+    new_signal: bool,
+    n_boot: int,
+    mean_block: float,
+    seed: int,
+    lo_q: int,
+    mesures: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Filtres G1-G9 de la revue 04 §17.1 sur une série de rendements actifs hebdomadaires."""
+    from brvm_alpha.backtest import metrics as mt
+    from brvm_alpha.quant import stats
+
+    rows: list[dict[str, Any]] = []
+    n_obs = int(active.dropna().size)
+    psr_v = mt.psr(active) if n_obs >= 3 else math.nan
+    dsr_v = math.nan
+    if n_trials is not None and n_obs >= 3:
+        dsr_v = mt.dsr(active, n_trials, sr_variance if sr_variance is not None else math.nan)
+    ir = mt.information_ratio(active) if n_obs >= 2 else math.nan
+    hsr = math.nan
+    if n_trials is not None and _finite(ir) and n_obs >= 2:
+        hsr = float(stats.haircut_sharpe(ir, n_obs=n_obs, n_tests=int(n_trials), method="bhy",
+                                         periods_per_year=mt.WEEKS_PER_YEAR))
+    boot = mt.bootstrap_ci(active, "ir", n_boot=n_boot, mean_block=mean_block, seed=seed)
+    naive = mt.naive_sharpe(active) if n_obs >= 2 else math.nan
+    lo = mt.lo_sharpe(active, q=lo_q) if n_obs > lo_q + 1 else math.nan
+    ic_t, ic_n = math.nan, 0
+    if ic_monthly is not None:
+        ic = pd.Series(ic_monthly, dtype=float).dropna()
+        ic_n = int(ic.size)
+        ic_t = float(stats.newey_west_tstat(ic)) if ic_n >= 2 else math.nan
+    min_t = th["ic_min_t_new"] if new_signal else th["ic_min_t_documented"]
+    signs = []
+    for a, b in subperiods:
+        sub = _slice(active, a, b).dropna()
+        signs.append(float(sub.mean()) if len(sub) else math.nan)
+    mesures.update(
+        {
+            f"{group}_psr": psr_v,
+            f"{group}_dsr": dsr_v,
+            f"{group}_n_trials": n_trials,
+            f"{group}_sr_variance": sr_variance,
+            f"{group}_hsr_bhy": hsr,
+            f"{group}_ir_bootstrap": boot,
+            f"{group}_sharpe_naif": naive,
+            f"{group}_sharpe_lo": lo,
+            f"{group}_ic_t_nw": ic_t,
+            f"{group}_ic_mois": ic_n,
+            f"{group}_moyennes_sous_periodes": signs,
+        }
+    )
+    g4 = None
+    if _finite(pbo) and pbo_slope is not None and _finite(pbo_slope):
+        g4 = bool(float(pbo) <= th["pbo_max_promoted"] and float(pbo_slope) > th["pbo_min_slope"])
+    elif _finite(pbo) and float(pbo) > th["pbo_max_promoted"]:
+        g4 = False
+    g7 = None
+    if ic_monthly is not None:
+        g7 = bool(ic_n >= th["ic_min_months"] and _finite(ic_t) and ic_t >= min_t)
+    g8 = None if (not signs or not all(_finite(x) for x in signs)) else bool(all(x > 0 for x in signs))
+    g9 = None if not (_finite(lo) and _finite(naive)) else bool(lo >= th["lo_naive_ratio_min"] * naive)
+    rows += [
+        {"code": "G1", "libelle": "registre d'essais complet (chaque variante journalisée avec ses rendements)",
+         "valeur": n_trials, "seuil": f"N ≥ {int(th['n_trials_start'])} et famille exécutée", "verifie": g1,
+         "note": ""},
+        {"code": "G2", "libelle": "PSR(SR* = 0) des rendements actifs hebdomadaires", "valeur": psr_v,
+         "seuil": f"≥ {th['psr_min']}", "verifie": _check(psr_v, lambda v: v >= th["psr_min"]), "note": ""},
+        {"code": "G3", "libelle": "DSR avec N = nombre d'essais du registre", "valeur": dsr_v,
+         "seuil": f"≥ {th['dsr_min']}", "verifie": _check(dsr_v, lambda v: v >= th["dsr_min"]),
+         "note": "" if _finite(dsr_v) else "variance des Sharpe entre essais inconnue ou N absent"},
+        {"code": "G4", "libelle": "PBO de la famille et pente de dégradation", "valeur": pbo,
+         "seuil": f"PBO ≤ {th['pbo_max_promoted']} et pente > {th['pbo_min_slope']}", "verifie": g4,
+         "note": "" if pbo_slope is not None else "pente de dégradation non fournie"},
+        {"code": "G5", "libelle": "haircut BHY (M = registre)", "valeur": hsr, "seuil": f"HSR > {th['hsr_min']}",
+         "verifie": _check(hsr, lambda v: v > th["hsr_min"]), "note": ""},
+        {"code": "G6", "libelle": "borne basse à 95 % du bootstrap stationnaire de l'IR",
+         "valeur": boot["lower"], "seuil": "> 0", "verifie": _check(boot["lower"], lambda v: v > 0),
+         "note": f"n_boot = {boot['n_boot']}, blocs de {boot['mean_block']:g} semaines"},
+        {"code": "G7", "libelle": "t de Newey-West de l'IC mensuel sur au moins 36 mois", "valeur": ic_t,
+         "seuil": f"t ≥ {min_t} et ≥ {int(th['ic_min_months'])} mois", "verifie": g7,
+         "note": "" if ic_monthly is not None else "série d'IC non fournie"},
+        {"code": "G8", "libelle": "stabilité du signe de l'alpha (chaque sous-période)", "valeur": signs,
+         "seuil": "moyenne active > 0 partout", "verifie": g8, "note": ""},
+        {"code": "G9", "libelle": "Sharpe de Lo (q = 4) ≥ 0,6 × Sharpe naïf", "valeur": lo,
+         "seuil": f"≥ {th['lo_naive_ratio_min']} × {naive:.3f}" if _finite(naive) else "—", "verifie": g9,
+         "note": "Sharpe naïf ≤ 0 : critère peu informatif" if _finite(naive) and naive <= 0 else ""},
+    ]
+    for r in rows:
+        r["groupe"] = group
+    return rows
+
+
+def evaluate_status(
+    active_weekly_returns_central: pd.Series,
+    active_weekly_returns_stress: pd.Series | None,
+    benchmark: pd.Series,
+    subperiods: Sequence[tuple[Any, Any]] | None = None,
+    turnover: float | None = None,
+    pbo: float | None = None,
+    cvar_ratio: float | None = None,
+    *,
+    pbo_slope: float | None = None,
+    registry: TrialRegistry | None = None,
+    n_trials: int | None = None,
+    sr_variance: float | None = None,
+    registry_complete: bool | None = None,
+    ic_monthly: pd.Series | None = None,
+    new_signal: bool = False,
+    s2_active_weekly_returns: pd.Series | None = None,
+    params: Mapping[str, Any] | None = None,
+    n_boot: int = 5000,
+    mean_block: float = 8,
+    seed: int = 0,
+    lo_q: int = 4,
+) -> StatusReport:
+    """Statut REJETÉ / CANDIDAT / PROMU selon les critères **exacts** du §8.3.
+
+    Entrées (hebdomadaires W-FRI, nettes de coûts) :
+
+    * ``active_weekly_returns_central`` / ``..._stress`` : rendements actifs
+      ``a_w = r_w − b_w`` contre le Composite TR, aux coûts central et stress ;
+    * ``benchmark`` : rendements hebdomadaires du TR (la stratégie vaut
+      ``r_w = a_w + b_w``) ;
+    * ``subperiods`` : les deux sous-périodes (défaut : celles de S1) ;
+    * ``turnover`` : rotation moyenne **mensuelle aller** (fraction) ;
+    * ``pbo`` : PBO de la famille des 8 variantes (:func:`metrics.family_pbo`),
+      ``pbo_slope`` sa pente de dégradation ;
+    * ``cvar_ratio`` : CVaR 95 % à 5 séances stratégie / TR
+      (:func:`metrics.cvar_ratio`).
+
+    Définitions : rendement actif net annualisé = ``CAGR(r) − CAGR(b)`` ; IR
+    = ``√52 · moyenne(a) / écart-type(a)`` ; drawdown relatif = drawdown de
+    ``Π(1 + r) / Π(1 + b)`` ; drawdown absolu = drawdown de ``Π(1 + r)``.
+
+    Règles (§8.3) :
+
+    * **REJETÉ** si l'une est vraie : (R1) actif central ≤ 0 ; (R2) actif
+      stress < −1 %/an ; (R3) IR < −0,5 sur une sous-période ; (R4) drawdown
+      relatif < −20 % ; (R5) drawdown absolu pire que celui du TR de plus de
+      10 points ;
+    * **CANDIDAT** si toutes sont vraies : (C1) actif central > 0 et stress
+      ≥ −0,5 %/an ; (C2) IR ≥ 0,20 ; (C3) actif > 0 dans les deux
+      sous-périodes ; (C4) drawdown relatif ≥ −20 % ; (C5) rotation ≤ 20 %
+      par mois ; (C6) PBO ≤ 0,5 ; (C7) CVaR ≤ 1,25 × celle du TR ;
+    * **PROMU** si, en plus, G1-G9 (revue 04 §17.1) sont tous verts sur S1
+      **et** sur au moins 12 mois (52 semaines) de suivi réel S2
+      (``s2_active_weekly_returns``).
+
+    Un critère non évaluable (donnée manquante) vaut ``None`` : il ne
+    déclenche pas de rejet mais empêche le statut candidat ou promu. Le cas
+    « ni rejeté, ni candidat », non prévu par le §8.3, renvoie
+    ``INDÉTERMINÉ`` (aucun suivi réel autorisé). Ces statuts reposent sur
+    des **estimations** : même un statut PROMU ne garantit aucun gain.
+    """
+    from brvm_alpha.backtest import metrics as mt
+
+    th = status_thresholds(params)
+    b = pd.Series(benchmark, dtype=float).dropna().sort_index()
+    a_c = pd.Series(active_weekly_returns_central, dtype=float).dropna().sort_index()
+    a_c = a_c.loc[a_c.index.isin(b.index)]
+    b_c = b.reindex(a_c.index)
+    r_c = a_c + b_c
+    periods: Sequence[tuple[Any, Any]] = list(mt.S1_SUBPERIODS) if subperiods is None else subperiods
+    subperiods = [(pd.Timestamp(x), pd.Timestamp(y)) for x, y in periods]
+    avert: list[str] = []
+    mesures: dict[str, Any] = {"n_semaines": int(a_c.size)}
+
+    act_central = mt.annualized_active_return(r_c, b_c) if a_c.size else math.nan
+    act_stress = math.nan
+    if active_weekly_returns_stress is not None:
+        a_s = pd.Series(active_weekly_returns_stress, dtype=float).dropna().sort_index()
+        a_s = a_s.loc[a_s.index.isin(b.index)]
+        if a_s.size:
+            act_stress = mt.annualized_active_return(a_s + b.reindex(a_s.index), b.reindex(a_s.index))
+    ir = mt.information_ratio(a_c) if a_c.size >= 2 else math.nan
+    sub_ir, sub_act = [], []
+    for x, y in subperiods:
+        sa = _slice(a_c, x, y)
+        sb = b_c.reindex(sa.index)
+        sub_ir.append(mt.information_ratio(sa) if sa.size >= 2 else math.nan)
+        sub_act.append(mt.annualized_active_return(sa + sb, sb) if sa.size else math.nan)
+    rel_dd = mt.relative_drawdown(r_c, b_c) if a_c.size else math.nan
+    abs_dd = mt.max_drawdown(r_c) if a_c.size else math.nan
+    tr_dd = mt.max_drawdown(b_c) if a_c.size else math.nan
+    gap_dd = abs_dd - tr_dd if _finite(abs_dd) and _finite(tr_dd) else math.nan
+    mesures.update(
+        {
+            "actif_net_central_an": act_central,
+            "actif_net_stress_an": act_stress,
+            "ir": ir,
+            "ir_sous_periodes": sub_ir,
+            "actif_sous_periodes_an": sub_act,
+            "drawdown_relatif": rel_dd,
+            "drawdown_absolu": abs_dd,
+            "drawdown_tr": tr_dd,
+            "rotation_mensuelle": turnover,
+            "pbo": pbo,
+            "pbo_pente": pbo_slope,
+            "cvar_ratio": cvar_ratio,
+            "sharpe_actif": mt.sharpe_triplet(a_c, lo_q=lo_q) if a_c.size > 2 * (lo_q + 2) else None,
+        }
+    )
+    sub_ir_ok = [v for v in sub_ir if _finite(v)]
+    r3 = None
+    if len(sub_ir_ok) == len(sub_ir) and sub_ir:
+        r3 = bool(any(v < th["reject_subperiod_ir_lt"] for v in sub_ir))
+    elif any(v < th["reject_subperiod_ir_lt"] for v in sub_ir_ok):
+        r3 = True
+    rows: list[dict[str, Any]] = [
+        {"groupe": "rejet", "code": "R1", "libelle": "rendement actif net annualisé contre le TR (coûts centraux)",
+         "valeur": act_central, "seuil": f"≤ {th['reject_active_net_central_le']} ⇒ rejet",
+         "verifie": _check(act_central, lambda v: v <= th["reject_active_net_central_le"]), "note": ""},
+        {"groupe": "rejet", "code": "R2", "libelle": "rendement actif net annualisé (coûts de stress)",
+         "valeur": act_stress, "seuil": f"< {th['reject_active_net_stress_lt']} ⇒ rejet",
+         "verifie": _check(act_stress, lambda v: v < th["reject_active_net_stress_lt"]),
+         "note": "" if _finite(act_stress) else "rendements au coût de stress non fournis"},
+        {"groupe": "rejet", "code": "R3", "libelle": "IR de chaque sous-période", "valeur": sub_ir,
+         "seuil": f"< {th['reject_subperiod_ir_lt']} sur l'une ⇒ rejet", "verifie": r3, "note": ""},
+        {"groupe": "rejet", "code": "R4", "libelle": "drawdown relatif contre le TR", "valeur": rel_dd,
+         "seuil": f"< {th['reject_rel_dd_lt']} ⇒ rejet",
+         "verifie": _check(rel_dd, lambda v: v < th["reject_rel_dd_lt"]), "note": ""},
+        {"groupe": "rejet", "code": "R5", "libelle": "drawdown absolu moins celui du TR", "valeur": gap_dd,
+         "seuil": f"< −{th['reject_abs_dd_worse_than_tr_by']} ⇒ rejet",
+         "verifie": _check(gap_dd, lambda v: v < -th["reject_abs_dd_worse_than_tr_by"]),
+         "note": f"stratégie {abs_dd:.1%}, TR {tr_dd:.1%}" if _finite(gap_dd) else ""},
+    ]
+    c1: bool | None
+    if not _finite(act_central):
+        c1 = None
+    elif act_central <= th["candidate_active_net_central_gt"]:
+        c1 = False
+    else:
+        c1 = _check(act_stress, lambda v: v >= th["candidate_active_net_stress_ge"])
+    c3 = None if not sub_act or not all(_finite(v) for v in sub_act) else bool(all(v > 0 for v in sub_act))
+    rows += [
+        {"groupe": "candidat", "code": "C1", "libelle": "actif net > 0 (central) et ≥ −0,5 %/an (stress)",
+         "valeur": [act_central, act_stress],
+         "seuil": f"> {th['candidate_active_net_central_gt']} et ≥ {th['candidate_active_net_stress_ge']}",
+         "verifie": c1, "note": ""},
+        {"groupe": "candidat", "code": "C2", "libelle": "IR net", "valeur": ir, "seuil": f"≥ {th['candidate_ir_ge']}",
+         "verifie": _check(ir, lambda v: v >= th["candidate_ir_ge"]), "note": ""},
+        {"groupe": "candidat", "code": "C3", "libelle": "rendement actif positif dans les deux sous-périodes",
+         "valeur": sub_act, "seuil": "> 0 dans chacune", "verifie": c3, "note": ""},
+        {"groupe": "candidat", "code": "C4", "libelle": "drawdown relatif contre le TR", "valeur": rel_dd,
+         "seuil": f"≥ {th['candidate_rel_dd_ge']}", "verifie": _check(rel_dd, lambda v: v >= th["candidate_rel_dd_ge"]),
+         "note": ""},
+        {"groupe": "candidat", "code": "C5", "libelle": "rotation moyenne mensuelle aller", "valeur": turnover,
+         "seuil": f"≤ {th['candidate_turnover_month_le']}",
+         "verifie": _check(turnover, lambda v: v <= th["candidate_turnover_month_le"]),
+         "note": "" if _finite(turnover) else "rotation non fournie"},
+        {"groupe": "candidat", "code": "C6", "libelle": "PBO de la famille des 8 variantes", "valeur": pbo,
+         "seuil": f"≤ {th['candidate_pbo_le']}", "verifie": _check(pbo, lambda v: v <= th["candidate_pbo_le"]),
+         "note": "" if _finite(pbo) else "PBO non fournie"},
+        {"groupe": "candidat", "code": "C7", "libelle": "CVaR 95 % à 5 séances / CVaR du TR", "valeur": cvar_ratio,
+         "seuil": f"≤ {th['candidate_cvar_ratio_le']}",
+         "verifie": _check(cvar_ratio, lambda v: v <= th["candidate_cvar_ratio_le"]),
+         "note": "" if _finite(cvar_ratio) else "rapport de CVaR non fourni"},
+    ]
+
+    # Filtres G1-G9 (S1 puis S2).
+    n_tr = n_trials if n_trials is not None else (registry.n_trials() if registry is not None else None)
+    sr_var = sr_variance
+    if sr_var is None and registry is not None:
+        sr_var = registry.sharpe_variance()
+        if not _finite(sr_var):
+            sr_var = None
+    g1 = registry_complete
+    if g1 is None and registry is not None:
+        g1 = registry.is_complete(min_trials=int(th["n_trials_start"]))
+    common: dict[str, Any] = {
+        "n_trials": n_tr,
+        "sr_variance": sr_var,
+        "g1": g1,
+        "pbo": pbo if pbo is not None else math.nan,
+        "pbo_slope": pbo_slope,
+        "ic_monthly": ic_monthly,
+        "new_signal": new_signal,
+        "n_boot": n_boot,
+        "mean_block": mean_block,
+        "seed": seed,
+        "lo_q": lo_q,
+        "mesures": mesures,
+    }
+    rows += _g_filters("promotion_S1", a_c, subperiods, th, **common)
+    s2_ok = False
+    if s2_active_weekly_returns is not None:
+        a2 = pd.Series(s2_active_weekly_returns, dtype=float).dropna().sort_index()
+        mesures["s2_semaines"] = int(a2.size)
+        if a2.size >= th["s2_min_weeks"]:
+            s2_ok = True
+            rows += _g_filters("promotion_S2", a2, [(a2.index[0], a2.index[-1])], th, **common)
+        else:
+            avert.append(f"suivi réel S2 de {a2.size} semaines < {int(th['s2_min_weeks'])} : promotion impossible")
+    else:
+        avert.append("aucun suivi réel S2 : le statut PROMU est impossible (au moins 12 mois exigés)")
+
+    crit = pd.DataFrame(rows, columns=["groupe", "code", "libelle", "valeur", "seuil", "verifie", "note"])
+    rejected = bool((crit.loc[crit["groupe"] == "rejet", "verifie"] == True).any())  # noqa: E712
+    candidate = bool((crit.loc[crit["groupe"] == "candidat", "verifie"] == True).all())  # noqa: E712
+    g_s1 = crit.loc[crit["groupe"] == "promotion_S1", "verifie"]
+    g_s2 = crit.loc[crit["groupe"] == "promotion_S2", "verifie"]
+    promoted = candidate and s2_ok and bool((g_s1 == True).all()) and len(g_s2) > 0 and bool((g_s2 == True).all())  # noqa: E712
+    if rejected:
+        statut = STATUT_REJETE
+        avert.append("REJETÉ : passage en mode « indice discipliné » (aucune promesse d'alpha), la recherche continue")
+    elif promoted:
+        statut = STATUT_PROMU
+    elif candidate:
+        statut = STATUT_CANDIDAT
+    else:
+        statut = STATUT_INDETERMINE
+        avert.append("ni rejeté ni candidat (cas non prévu par le §8.3) : aucun suivi réel autorisé")
+    if _finite(ir) and ir > 1.0:
+        avert.append("IR > 1 : à traiter d'abord comme une ERREUR (anticipation, prix périmés, coûts oubliés), §8.3")
+    if mesures.get("sharpe_actif") and mesures["sharpe_actif"].get("divergence"):
+        avert.append("écart entre Sharpe de Lo et Sharpe GLM > 25 % : prix périmés à examiner (§8.2)")
+    avert.append("Performance passée ≠ garantie. Aucun gain n'est garanti.")
+    return StatusReport(statut=statut, criteres=crit, mesures=mesures, avertissements=avert)

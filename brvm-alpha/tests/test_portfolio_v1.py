@@ -523,7 +523,7 @@ def test_target_portfolio_aes_lambda_cap_with_pit_references():
     w, d = target_portfolio(scores, elig, None, {"close": close, "shares": shares})
     _assert_invariants(w, d)
     assert not any("λ non appliqué" in m for m in d["messages"])
-    lam = [g for g in d["caps"]["groups"] if g.kind == "aes_lambda"][0]
+    lam = next(g for g in d["caps"]["groups"] if g.kind == "aes_lambda")
     assert lam.coefficients["SNTS"] == pytest.approx(0.238)
     assert lam.load(w) <= lam.cap + TOL
 
@@ -662,7 +662,7 @@ def test_hrp_tilt_rates_gamma_zero_is_hrp():
     rets = _daily_returns(3, syms=_names(10))
     cov = weekly_covariance(rets, "2025-12-31")
     names = _names(10)
-    rates, info = hrp_tilt_rates(names, pd.Series(np.linspace(1, -1, 10), index=names), cov, gamma=0.0)
+    rates, _ = hrp_tilt_rates(names, pd.Series(np.linspace(1, -1, 10), index=names), cov, gamma=0.0)
     hrp = hrp_weights(cov.loc[names, names], linkage_method="single", distance_of_distances=True)
     assert np.allclose(rates.to_numpy(), hrp.to_numpy())
     rates2, _ = hrp_tilt_rates(names, pd.Series(np.linspace(1, -1, 10), index=names), cov, gamma=0.5)
@@ -750,3 +750,51 @@ def test_build_group_caps_labels():
     g = build_group_caps(syms, sec, cty, sector_caps(sec), country_caps(cty))
     labels = {x.label: x.cap for x in g}
     assert labels == pytest.approx({"secteur FIN": 0.45, "secteur TEL": 0.45, "pays NE": 0.30, "pays SN": 0.30})
+
+
+def test_weekly_returns_usable_mask():
+    idx = pd.bdate_range("2025-01-06", periods=10)
+    r = pd.DataFrame({"A": 0.01, "B": 0.02}, index=idx)
+    usable = pd.DataFrame(True, index=idx, columns=["A", "B"])
+    usable.loc[idx[0], "A"] = False  # rendement multi-séances : exclu des statistiques
+    wk = weekly_returns(r, asof=idx[-1], usable=usable)
+    assert wk.loc["2025-01-10", "A"] == pytest.approx(1.01**4 - 1)
+    assert wk.loc["2025-01-10", "B"] == pytest.approx(1.02**5 - 1)
+
+
+@pytest.mark.parametrize("weighting", ["equal", "hrp_tilt", "mv_alpha"])
+def test_every_zero_weight_selected_name_is_explained(weighting):
+    rets = _daily_returns(9)
+    scores, elig = _universe(40, 9)
+    sec = pd.Series({s: ("ENE" if i < 9 else ref.sector_of(s)) for i, s in enumerate(score_ranks(scores, elig).index)})
+    ctx = {"returns": rets, "asof": "2025-12-31", "sectors": sec}  # 9 titres ENE en tête : plafond 15 %
+    w, d = target_portfolio(scores, elig, None, ctx, {"weighting": weighting, "mv_risk_aversion": 0.05})
+    _assert_invariants(w, d)
+    for s in d["band"].selected:
+        if w[s] == 0:
+            assert any(k in d["reasons"][s] for k in ("supprimée", "plancher", "poids final nul")), d["reasons"][s]
+
+
+def test_capacity_completion_stays_in_top_half_unless_asked():
+    """U6 sur tous les titres (plafond 5 %) : 12 lignes ne suffisent pas pour 98 %."""
+    sc = _ranked(40)
+    names = list(sc.index)
+    ctx = {"countries": pd.Series("CI", index=names), "sectors": pd.Series([f"S{i % 8}" for i in range(40)], index=names),
+           "low_liquidity": pd.Series(True, index=names)}
+    w, d = target_portfolio(sc, names, None, ctx)
+    _assert_invariants(w, d)
+    assert d["n_holdings"] == 20  # 12 ajouts + 8 compléments de capacité (rangs 13 à 20)
+    assert set(w[w > 0].index) == set(_names(20))
+    assert w.sum() == pytest.approx(0.98)  # 20 × 5 % = 100 % ≥ 98 %
+    assert all("50 % supérieurs" in d["reasons"][s] for s in _names(20)[12:])
+    # rangs 13 à 20 : achat bloqué ; la réserve des 50 % supérieurs est vide → 12 × 5 % = 60 %
+    ctx2 = dict(ctx, no_buy=_names(20)[12:])
+    w2, d2 = target_portfolio(sc, names, None, ctx2)
+    _assert_invariants(w2, d2)
+    assert w2.sum() == pytest.approx(0.60) and not d2["feasible_full_budget"]
+    assert any("non atteignable" in m for m in d2["messages"])
+    w3, d3 = target_portfolio(sc, names, None, ctx2, {"capacity_beyond_exit": True})
+    _assert_invariants(w3, d3)
+    assert w3.sum() == pytest.approx(0.98) and d3["n_holdings"] == 20
+    assert set(w3[w3 > 0].index) == set(_names(12)) | {f"T{i:02d}" for i in range(20, 28)}
+    assert all("hors des 50 % supérieurs" in d3["reasons"][f"T{i:02d}"] for i in range(20, 28))
