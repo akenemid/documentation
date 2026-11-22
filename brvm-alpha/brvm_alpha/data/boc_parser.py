@@ -46,7 +46,10 @@ Règle du cours de clôture (colonne ``close``)
   publié (le dernier cours de référence connu à l'ouverture de la séance), à
   défaut le cours de référence. On n'utilise pas en priorité le cours de
   référence du jour car la BRVM y applique déjà les ajustements (détachement
-  de dividende, division du nominal) valables pour la séance *suivante*.
+  de dividende, division du nominal) valables pour la séance *suivante* ;
+* exception : titre non coté dont la bourse a déplacé la référence avec une
+  variation publiée non nulle et cohérente (``réf / préc. - 1 = variation``) :
+  ``close`` = cours de référence (la valorisation du jour a réellement changé).
 
 Statut (colonne ``status``) : ``"suspended"`` si ``SP``, ``"not_traded"`` si
 ``NC`` (ou cours sans volume), ``"traded"`` sinon.
@@ -464,6 +467,11 @@ def _score_candidates(row: _RawRow, slots: list[tuple[str, str, bool]]) -> None:
         row.confident = margin >= 1.0 and cands[0][2] == 0
 
 
+def _anchor_end(tokens: list[Token], assign: list[int]) -> int | None:
+    """Fin du jeton « variation du jour » (ancre des positions relatives)."""
+    return next((t.end for t, si in zip(tokens, assign) if _SLOT_NAMES[si] == "change_pct"), None)
+
+
 def _position_cost(tokens: list[Token], assign: list[int], medians: dict[str, float]) -> float | None:
     """Somme des écarts (en caractères) entre la fin des jetons et la colonne médiane apprise."""
     diffs = [abs(t.end - medians[_SLOT_NAMES[si]]) for t, si in zip(tokens, assign) if _SLOT_NAMES[si] in medians]
@@ -716,7 +724,10 @@ def _validate_row(row: _RawRow, rec: dict[str, Any]) -> None:
                 row.warnings.append(
                     f"change_mismatch: {sym}: {prev:g}->{close:g} = {implied:.2f}% vs {chg:.2f}% publié")
     if not traded and chg not in (None, 0.0):
-        row.warnings.append(f"change_on_untraded: {sym}: variation {chg}% sans cotation")
+        if close == rec["ref_price"] and close != prev:
+            row.warnings.append(f"untraded_ref_change: {sym}: référence déplacée sans cotation ({chg}%)")
+        else:
+            row.warnings.append(f"change_on_untraded: {sym}: variation {chg}% sans cotation")
     vol, value = rec["volume"], rec["value"]
     if traded and vol and value:
         prices = [p for p in (rec["open"], close, prev) if p]
@@ -732,7 +743,9 @@ def _validate_row(row: _RawRow, rec: dict[str, Any]) -> None:
     prices = [p for p in (close, rec["ref_price"], prev) if p]
     if div is not None and yld is not None and prices:
         implied = min((div / p * 100.0 for p in prices), key=lambda x: abs(x - yld))
-        if abs(implied - yld) > max(0.10, 0.04 * abs(yld)):
+        # Dividende parfois imprimé arrondi à l'unité (ETIT 2018 : « 1 » pour 1,21).
+        rounding = 0.5 / min(prices) * 100.0 if float(div).is_integer() else 0.0
+        if abs(implied - yld) > max(0.10, 0.04 * abs(yld)) + rounding:
             row.warnings.append(f"yield_mismatch: {sym}: {div:g}/{prices[0]:g} = {implied:.2f}% vs {yld:.2f}% publié")
     if prev is None and chg is None and vol:
         row.warnings.append(f"first_listing: {sym}: pas de cours précédent (première cotation ?)")
@@ -755,8 +768,15 @@ def _build_record(r: _RawRow, vals: dict[str, Any], day: dt.date | None, yield_f
         status = "not_traded"
     else:
         status = "traded"
-    prev, ref = vals.get("prev_close"), vals.get("ref_price")
-    close = printed_close if printed_close is not None else (prev if prev is not None else ref)
+    prev, ref, chg = vals.get("prev_close"), vals.get("ref_price"), vals.get("change_pct")
+    if printed_close is not None:
+        close = printed_close
+    elif prev is not None and ref is not None and chg and abs((ref / prev - 1.0) * 100.0 - chg) <= 0.05:
+        # Non coté mais référence déplacée par la bourse, variation publiée cohérente
+        # (ex. SAFC 09/01/2019 : 215 -> 210, -2,33 %) : la valorisation du jour est la référence.
+        close = ref
+    else:
+        close = prev if prev is not None else ref
     div, yld = vals.get("last_div_net"), vals.get("net_yield_pct")
     if yield_from_fraction and div is not None and close:
         # Rendement imprimé en fraction arrondie (0.08) : on le recalcule (DNPA / cours).
@@ -875,6 +895,16 @@ def _parse_equities(
             for tok, si in zip(r.tokens, r.choice):
                 per_page[r.page][_SLOT_NAMES[si]].append(tok.end)
     page_medians = {p: {k: statistics.median(v) for k, v in d.items() if v} for p, d in per_page.items()}
+    # Repli (ligne seule sur sa page) : positions relatives à la colonne « variation du
+    # jour », apprises sur tout le document (insensibles au décalage d'une page).
+    rel: dict[str, list[int]] = defaultdict(list)
+    for r in rows:
+        if r.confident and r.choice is not None:
+            anchor = _anchor_end(r.tokens, r.choice)
+            if anchor is not None:
+                for tok, si in zip(r.tokens, r.choice):
+                    rel[_SLOT_NAMES[si]].append(tok.end - anchor)
+    rel_medians = {k: statistics.median(v) for k, v in rel.items() if v}
 
     records: list[dict[str, Any]] = []
     rec_by_row: dict[int, dict[str, Any]] = {}
@@ -886,8 +916,15 @@ def _parse_equities(
             # Départage des affectations proches par la position des colonnes.
             meds = page_medians.get(r.page) or {}
             best0 = r.candidates[0][0]
+            close_cands = [c for c in r.candidates if c[0] <= best0 + 1.0]
+            # Les colonnes à départager doivent être connues sur la page, sinon repli relatif.
+            needed = {_SLOT_NAMES[si] for _, a, _ in close_cands for si in a}
+            if not needed <= set(meds):
+                anchor = _anchor_end(r.tokens, close_cands[0][1])
+                if anchor is not None and needed <= set(rel_medians):
+                    meds = {k: v + anchor for k, v in rel_medians.items()}
             scored = []
-            for cost, assign, _ in (c for c in r.candidates if c[0] <= best0 + 1.0):
+            for cost, assign, _ in close_cands:
                 pc = _position_cost(r.tokens, assign, meds)
                 scored.append((cost + (pc / 3.0 if pc is not None else 0.0), assign, pc))
             scored.sort(key=lambda x: x[0])
@@ -1347,6 +1384,8 @@ def parse_boc_text(text: str, date: dt.date | str | None = None) -> BocDay:
         for r in order_book.itertuples(index=False):
             if r.symbol not in eqi.index or pd.isna(r.ref_price):
                 continue
+            if eqi.at[r.symbol, "status"] != "traded":
+                continue  # non coté / suspendu : la référence du carnet peut différer
             eq_ref, eq_close = eqi.at[r.symbol, "ref_price"], eqi.at[r.symbol, "close"]
             if pd.notna(eq_ref) and abs(eq_ref - r.ref_price) > 0.5 and not abs(eq_close - r.ref_price) <= 0.5:
                 warnings.append(f"order_book_ref_mismatch: {r.symbol}: carnet {r.ref_price:g} vs cote {eq_ref:g}")

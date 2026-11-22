@@ -167,7 +167,8 @@ def test_generic_invariants(days: dict[str, BocDay], stamp: str) -> None:
     assert set(eq["status"]) <= {"traded", "not_traded", "suspended"}
     assert (eq["close"] > 0).all()
     untraded = eq[eq["status"] != "traded"]
-    assert (untraded["close"] == untraded["prev_close"]).all()
+    moved = (untraded["change_pct"] != 0) & (untraded["close"] == untraded["ref_price"])
+    assert ((untraded["close"] == untraded["prev_close"]) | moved).all()
     assert untraded["volume"].isna().all() and untraded["open"].isna().all()
     traded = eq[eq["status"] == "traded"]
     implied = (traded["close"] / traded["prev_close"] - 1) * 100
@@ -542,3 +543,11 @@ def test_ex_dividend_day_and_unflagged_ex_date() -> None:
     assert_row(r, prev_close=3960.0, close=3790.0, change_pct=7.21)
     assert "change_vs_adjusted_ref" in r["warnings"]
     assert not [w for w in d1.warnings if warning_code(w) == "change_mismatch"]
+
+
+def test_untraded_reference_moved_by_exchange() -> None:
+    # SAFC 09/01/2019 : NC, mais référence 215 -> 210 et variation -2,33 % publiée.
+    d = edge("20190109")
+    r = row(d, "SAFC")
+    assert_row(r, status="not_traded", prev_close=215.0, close=210.0, ref_price=210.0, change_pct=-2.33)
+    assert "untraded_ref_change" in r["warnings"]

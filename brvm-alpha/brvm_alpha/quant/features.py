@@ -839,15 +839,19 @@ def _dividend_state(
     """
     d = _raw(panels, "last_div_date")
     a = _numeric(panels, "last_div_net", like=d)
-    if split_factor is not None:
-        _check_index(split_factor, "split_factor")
-        a = a * split_factor.reindex(index=d.index, columns=d.columns).astype(float)
     d_arr = _datetime_array(d)
     d_days = pd.DataFrame(_day_numbers(d_arr), index=d.index, columns=d.columns)
     valid = d_days.notna() & a.notna()
     dv = d_days.where(valid)
     prev = dv.ffill().shift(1)
     new = valid & (dv != prev)
+    if split_factor is not None:
+        # Le BOC continue d'afficher le montant brut (par action d'avant split)
+        # tant qu'aucun nouveau dividende n'est publié : on applique donc le
+        # facteur en vigueur à la ligne de l'événement, reporté ensuite.
+        _check_index(split_factor, "split_factor")
+        f = split_factor.reindex(index=d.index, columns=d.columns).astype(float)
+        a = a * f.where(new).ffill()
     return a.where(valid), valid, new, d_arr
 
 
@@ -869,7 +873,8 @@ def dividend_growth(panels: Panels, split_factor: pd.DataFrame | None = None) ->
     split_factor
         Facultatif : facteurs d'ajustement cumulés des splits (``ajusté =
         brut × facteur``) pour comparer des dividendes de part et d'autre d'un
-        split. Le ratio de deux dividendes ajustés « vers l'arrière » ne
+        split ; chaque montant est ajusté par le facteur de la ligne où il est
+        apparu. Le ratio de deux dividendes ajustés « vers l'arrière » ne
         dépend que des splits survenus entre eux : aucune anticipation.
     """
     a, _, new, _ = _dividend_state(panels, split_factor)
@@ -895,7 +900,7 @@ def dividend_stability(
     début de l'échantillon. Une omission de dividende est suivie d'une dérive
     négative (Michaely, Thaler & Womack, 1995).
     """
-    a, valid, new, d_arr = _dividend_state(panels, split_factor)
+    a, _valid, new, d_arr = _dividend_state(panels, split_factor)
     idx_days = _index_days(a.index)
     years = d_arr.astype("datetime64[Y]").astype(np.int64) + 1970
     pay_days = _day_numbers(d_arr)
@@ -906,7 +911,7 @@ def dividend_stability(
     last_pay = np.full((T, N), np.nan)
     has_event = np.zeros((T, N), dtype=bool)
     for j in range(N):
-        rows = np.flatnonzero(new_arr[:, j])
+        rows = np.flatnonzero(new_arr[:, j]).tolist()
         seen: set[int] = set()
         cur_streak = 0.0
         cur_pay = np.nan

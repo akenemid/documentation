@@ -16,12 +16,15 @@ Règles de l'état discret (dans cet ordre de priorité)
 -----------------------------------------------------
 Avec ``trend = niveau / MM - 1`` (MM : moyenne mobile ``ma_window`` séances),
 ``slope = MM_t / MM_{t-slope_window} - 1``, ``vol_pct`` le percentile
-glissant de la volatilité réalisée et ``dd`` le drawdown courant :
+glissant de la volatilité réalisée et ``dd_recent`` le drawdown depuis le plus
+haut des ``crash_window`` dernières séances :
 
-1. ``"stress"`` si ``trend < 0`` **et** (volatilité élevée **ou**
-   ``dd <= -stress_drawdown``), où « volatilité élevée » signifie
-   ``vol_pct >= stress_vol_pct`` ou, si le HMM est activé,
-   ``p_turbulent >= hmm_stress_prob`` ;
+1. ``"stress"`` si ``trend < 0`` **et** (volatilité élevée **ou** krach
+   ``dd_recent <= -stress_drawdown``), où « volatilité élevée » signifie
+   ``vol_pct >= stress_vol_pct`` ou, si le HMM est activé et discriminant,
+   ``p_turbulent >= hmm_stress_prob``. Le stress est une **turbulence** (ou
+   une chute rapide), pas un marché baissier lent : une baisse prolongée et
+   calme, même profonde, relève de ``"baissier"`` ;
 2. ``"haussier"`` si ``trend > band`` et ``slope > 0`` ;
 3. ``"baissier"`` si ``trend < -band`` et ``slope < 0`` ;
 4. ``"neutre"`` sinon.
@@ -55,6 +58,8 @@ Références
 * Rabiner, L. (1989). A Tutorial on Hidden Markov Models and Selected
   Applications in Speech Recognition. *Proceedings of the IEEE*, 77(2),
   257-286.
+* Schwarz, G. (1978). Estimating the Dimension of a Model. *Annals of
+  Statistics*, 6(2), 461-464.
 * Särkkä, S. & García-Fernández, Á. (2021). Temporal Parallelization of
   Bayesian Smoothers. *IEEE Transactions on Automatic Control*, 66(1), 299-306.
 """
@@ -93,31 +98,36 @@ def _scan(M: FloatArray, reverse: bool = False) -> tuple[FloatArray, FloatArray]
     ``reverse=False`` : ``P[t] ∝ M[0] @ M[1] @ … @ M[t]`` ;
     ``reverse=True``  : ``P[t] ∝ M[t] @ M[t+1] @ … @ M[T-1]``.
 
-    Chaque produit est renormalisé par son plus grand coefficient et
-    ``log_scale[t]`` accumule les logarithmes des facteurs : produit exact
-    ``= P[t] · exp(log_scale[t])``. Coût ``O(T log T)`` entièrement vectorisé
+    Chaque produit (à coefficients positifs) est renormalisé par la somme de
+    ses coefficients et ``log_scale[t]`` accumule les logarithmes des
+    facteurs : produit exact ``= P[t] · exp(log_scale[t])``. Coût ``O(T log T)`` entièrement vectorisé
     (le même principe que la parallélisation temporelle des lisseurs
     bayésiens de Särkkä & García-Fernández, 2021).
     """
     P = M.astype(float, copy=True)
-    T = P.shape[0]
-    s = P.max(axis=(1, 2))
-    s = np.where(s > 0, s, 1.0)
-    P /= s[:, None, None]
-    logc = np.log(s)
+    T, K = P.shape[0], P.shape[1]
+    ones = np.ones(K * K)
+
+    def _norm(Q: FloatArray) -> FloatArray:
+        # Somme des coefficients par produit matrice-vecteur (BLAS) : bien plus
+        # rapide qu'une réduction sur de petits axes.
+        tot = Q.reshape(Q.shape[0], K * K) @ ones
+        tot[~(tot > 0)] = 1.0
+        Q /= tot[:, None, None]
+        return np.log(tot)
+
+    logc = _norm(P)
     d = 1
     while d < T:
         prod = P[:-d] @ P[d:]
         lc = logc[:-d] + logc[d:]
-        s = prod.max(axis=(1, 2))
-        s = np.where(s > 0, s, 1.0)
-        prod /= s[:, None, None]
+        log_s = _norm(prod)
         if reverse:
             P[:-d] = prod
-            logc[:-d] = lc + np.log(s)
+            logc[:-d] = lc + log_s
         else:
             P[d:] = prod
-            logc[d:] = lc + np.log(s)
+            logc[d:] = lc + log_s
         d *= 2
     return P, logc
 
@@ -140,6 +150,8 @@ class GaussianHMM:
     Étape M : ``π = γ_0`` ; ``A_ij = Σ_t ξ_t(i,j) / Σ_t γ_{t-1}(i)`` ;
     ``μ_j = Σ γ_t(j) x_t / Σ γ_t(j)`` ; ``σ²_j = Σ γ_t(j)(x_t - μ_j)² / Σ γ_t(j)``
     avec un plancher ``min_variance_ratio · Var(x)`` contre la dégénérescence.
+    Arrêt quand le gain de log-vraisemblance d'une itération est inférieur à
+    ``tol × n`` (``tol`` par observation) ou après ``max_iter`` itérations.
 
     Après estimation, les états sont **triés par variance croissante** :
     l'état 0 est le plus calme, l'état ``K-1`` le plus turbulent.
@@ -200,15 +212,32 @@ class GaussianHMM:
         return beta
 
     def _init_params(self, x: FloatArray) -> None:
+        """Initialisation déterministe par quantiles des écarts au carré.
+
+        Les observations sont réparties en ``K`` groupes de taille égale selon
+        ``(x - médiane)²`` ; ``σ²_k`` est la moyenne de ce carré dans le groupe
+        ``k`` et ``μ_k`` la moyenne de ``x`` dans le groupe : états distincts
+        dès le départ (pas de point selle symétrique pour l'EM).
+        """
         K = self.n_states
-        sd = float(x.std()) or 1e-4
         self.startprob_ = np.full(K, 1.0 / K)
         stay = 0.95 if K > 1 else 1.0
         A = np.full((K, K), (1.0 - stay) / max(K - 1, 1))
         np.fill_diagonal(A, stay)
         self.transmat_ = A
-        self.means_ = np.full(K, float(x.mean()))
-        self.variances_ = (sd * np.geomspace(0.6, 2.0, K)) ** 2 if K > 1 else np.array([sd**2])
+        d2 = (x - np.median(x)) ** 2
+        groups = np.array_split(np.argsort(d2, kind="stable"), K)
+        floor = max(float(x.var()) * self.min_variance_ratio, 1e-14)
+        self.means_ = np.array([float(x[g].mean()) for g in groups])
+        self.variances_ = np.maximum(np.array([float(d2[g].mean()) for g in groups]), floor)
+
+    def _get_params(self) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
+        assert self.startprob_ is not None and self.transmat_ is not None
+        assert self.means_ is not None and self.variances_ is not None
+        return self.startprob_.copy(), self.transmat_.copy(), self.means_.copy(), self.variances_.copy()
+
+    def _set_params(self, params: tuple[FloatArray, FloatArray, FloatArray, FloatArray]) -> None:
+        self.startprob_, self.transmat_, self.means_, self.variances_ = (a.copy() for a in params)
 
     def _sort_states(self) -> None:
         assert self.variances_ is not None and self.transmat_ is not None
@@ -224,21 +253,39 @@ class GaussianHMM:
     def fit(self, x: npt.ArrayLike, warm_start: bool = False) -> GaussianHMM:
         """Estime les paramètres par Baum-Welch.
 
-        ``warm_start=True`` part des paramètres courants (ré-estimation
-        périodique : convergence en quelques itérations) ; sinon
-        initialisation déterministe : ``π`` uniforme, ``A_ii = 0,95``,
-        ``μ_j = moyenne``, ``σ_j`` étagés de 0,6 à 2 fois l'écart-type.
+        Départ « à froid » déterministe (:meth:`_init_params` : ``π``
+        uniforme, ``A_ii = 0,95``, variances par quantiles). Avec
+        ``warm_start=True`` et un modèle déjà estimé, l'EM est aussi lancé
+        depuis les paramètres courants et l'on garde la solution de plus
+        grande vraisemblance (l'EM ne garantit qu'un optimum local).
         """
         xs = self._clean(x)
         if self.n_states < 1:
             raise ValueError("n_states doit être >= 1")
         if xs.size < 2 * self.n_states + 2:
             raise ValueError("série trop courte pour estimer le modèle")
-        if not warm_start or self.transmat_ is None:
-            self._init_params(xs)
-        else:
-            assert self.startprob_ is not None
-            self.startprob_ = np.full(self.n_states, 1.0 / self.n_states)
+        starts = []
+        if warm_start and self.transmat_ is not None:
+            _, A, mu, var = self._get_params()
+            starts.append((np.full(self.n_states, 1.0 / self.n_states), A, mu, var))
+        self._init_params(xs)
+        starts.append(self._get_params())
+        best: tuple[float, tuple[FloatArray, FloatArray, FloatArray, FloatArray], int] | None = None
+        for start in starts:
+            self._set_params(start)
+            n_iter = self._em(xs)
+            ll = self.score(xs)
+            if best is None or ll > best[0]:
+                best = (ll, self._get_params(), n_iter)
+        assert best is not None
+        self._set_params(best[1])
+        self.n_iter_ = best[2]
+        self._sort_states()
+        self.loglik_ = best[0]
+        return self
+
+    def _em(self, xs: FloatArray) -> int:
+        """Itérations EM depuis les paramètres courants ; renvoie le nombre d'itérations."""
         var_floor = max(float(xs.var()) * self.min_variance_ratio, 1e-14)
         prev = -np.inf
         it = 0
@@ -262,13 +309,28 @@ class GaussianHMM:
             assert self.means_ is not None and self.variances_ is not None
             self.means_ = np.where(used, mu, self.means_)
             self.variances_ = np.maximum(np.where(used, var, self.variances_), var_floor)
-            if abs(ll - prev) <= self.tol * max(1.0, abs(ll)):
+            if abs(ll - prev) <= self.tol * xs.size:
                 break
             prev = ll
-        self.n_iter_ = it
-        self._sort_states()
-        self.loglik_ = self.score(xs)
-        return self
+        return it
+
+    def n_parameters(self) -> int:
+        """Nombre de paramètres libres : ``(K-1) + K(K-1) + 2K``."""
+        K = self.n_states
+        return (K - 1) + K * (K - 1) + 2 * K
+
+    def bic_gain(self, x: npt.ArrayLike) -> float:
+        """Écart de BIC (Schwarz, 1978) entre une loi normale unique et ce modèle.
+
+        ``ΔBIC = [-2 ln L_1 + 2 ln n] - [-2 ln L_K + p_K ln n]`` ; ``> 0`` : le
+        modèle à ``K`` états est préféré (les régimes sont réellement
+        distincts sur cet échantillon).
+        """
+        xs = self._clean(x)
+        n = xs.size
+        ll1 = -0.5 * n * (math.log(2.0 * math.pi * max(float(xs.var()), 1e-300)) + 1.0)
+        llk = self.score(xs)
+        return (-2.0 * ll1 + 2.0 * math.log(n)) - (-2.0 * llk + self.n_parameters() * math.log(n))
 
     def score(self, x: npt.ArrayLike) -> float:
         """Log-vraisemblance ``ln p(x_0..x_{T-1})``."""
@@ -294,9 +356,11 @@ def hmm_filtered_probabilities(
     refit_every: int = 63,
     train_window: int | None = 1000,
     min_train: int = 252,
-    max_iter: int = 200,
-    tol: float = 1e-8,
+    max_iter: int = 50,
+    tol: float = 1e-6,
     warm_start: bool = True,
+    min_sigma_ratio: float | None = None,
+    bic_check: bool = False,
 ) -> pd.DataFrame:
     """Probabilités d'état d'un HMM gaussien ré-estimé périodiquement sur le passé.
 
@@ -306,6 +370,21 @@ def hmm_filtered_probabilities(
     modèle est estimé sur ``x[τ_k - W + 1 .. τ_k]`` (``W = train_window`` ou
     tout l'historique) ; pour ``t ∈ [τ_k, τ_{k+1})`` on publie la probabilité
     **filtrée** ``P(s_t | x_{τ_k-W+1..t}; θ_k)``. Avant ``τ_0`` : NaN.
+
+    Identifiabilité : les états sont définis **relativement** à la fenêtre
+    d'estimation ; une fenêtre entièrement calme est découpée en deux
+    sous-états calmes et ``p_{K-1}`` n'y signifie pas « turbulent ». Avec
+    ``min_sigma_ratio`` (par ex. 1,5), un bloc dont le modèle a
+    ``σ_{K-1} / σ_0 < min_sigma_ratio`` reçoit des probabilités NaN
+    (régimes non discriminés) ; avec ``bic_check=True``, de même si le
+    critère BIC (Schwarz, 1978) préfère une loi normale unique sur la fenêtre
+    d'estimation (:meth:`GaussianHMM.bic_gain` ``<= 0``).
+
+    À chaque ré-estimation, l'EM part à la fois des paramètres précédents
+    (``warm_start``) et d'une initialisation à froid ; la meilleure
+    vraisemblance est retenue. ``max_iter = 50`` suffit : sur des données à
+    régimes l'EM converge en une dizaine d'itérations, et sans régime il
+    rampe sans changer le verdict du BIC.
 
     Returns
     -------
@@ -332,10 +411,15 @@ def hmm_filtered_probabilities(
         model.fit(x[start : tau + 1], warm_start=warm_start and fitted)
         fitted = True
         end = min(T, tau + refit_every)
-        filt = model.filter(x[start:end])
-        probs[tau:end] = filt[tau - start :]
         assert model.variances_ is not None
         sigmas[tau:end] = np.sqrt(model.variances_ * TRADING_DAYS)[None, :]
+        ratio = math.sqrt(model.variances_[-1] / model.variances_[0])
+        if min_sigma_ratio is not None and ratio < min_sigma_ratio:
+            continue
+        if bic_check and model.bic_gain(x[start : tau + 1]) <= 0:
+            continue
+        filt = model.filter(x[start:end])
+        probs[tau:end] = filt[tau - start :]
     cols = {f"p_{k}": probs[:, k] for k in range(K)}
     out = pd.DataFrame(cols, index=x_s.index)
     valid = np.isfinite(probs).all(axis=1)
@@ -344,7 +428,17 @@ def hmm_filtered_probabilities(
     out["state"] = state
     for k in range(K):
         out[f"sigma_{k}"] = sigmas[:, k]
-    return out.reindex(s.index).ffill()
+    return _reindex_carry(out, s.index)
+
+
+def _reindex_carry(df: pd.DataFrame, index: pd.Index) -> pd.DataFrame:
+    """Réindexe ``df`` sur ``index`` ; seules les dates **absentes** de ``df``
+    reprennent la dernière valeur connue (aucune information nouvelle ce jour-là)."""
+    full = df.reindex(index)
+    missing = ~index.isin(df.index)
+    if missing.any():
+        full.loc[missing] = full.ffill().loc[missing]
+    return full
 
 
 # ---------------------------------------------------------------------------
@@ -389,13 +483,17 @@ def market_regime(
     vol_rank_min_periods: int = 126,
     band: float = 0.0,
     stress_vol_pct: float = 0.90,
-    stress_drawdown: float = 0.20,
+    stress_drawdown: float = 0.15,
+    crash_window: int = 63,
     confirm_days: int = 1,
     hmm: bool = False,
     hmm_refit_every: int = 63,
     hmm_train_window: int | None = 1000,
     hmm_min_train: int = 252,
     hmm_stress_prob: float = 0.80,
+    hmm_min_sigma_ratio: float | None = 1.5,
+    hmm_bic_check: bool = True,
+    hmm_max_iter: int = 50,
 ) -> pd.DataFrame:
     """Régime de l'indice de marché, séance par séance, sans anticipation.
 
@@ -410,14 +508,19 @@ def market_regime(
                         ``vol_window`` séances × ``sqrt(252)`` ;
     ``vol_percentile``  rang centile de ``realized_vol`` parmi ses
                         ``vol_rank_window`` dernières valeurs (incluse) ;
-    ``drawdown``        ``level / max_{s<=t} level_s - 1`` ;
+    ``drawdown``        ``level / max_{s<=t} level_s - 1`` (depuis l'origine) ;
+    ``recent_drawdown`` ``level / max_{t-crash_window<s<=t} level_s - 1`` ;
     ``state``           ``"haussier" | "neutre" | "baissier" | "stress"`` (règles
                         du docstring du module) ;
     ``p_turbulent``, ``hmm_state``, ``hmm_sigma_calm``, ``hmm_sigma_turbulent``
                         si ``hmm=True`` (HMM gaussien à 2 états ré-estimé tous
                         les ``hmm_refit_every`` jours sur le passé, voir
                         :func:`hmm_filtered_probabilities` ; Kritzman, Page &
-                        Turkington, 2012).
+                        Turkington, 2012). ``p_turbulent`` est NaN quand le
+                        modèle en vigueur ne discrimine pas deux régimes
+                        (``σ_turb / σ_calme < hmm_min_sigma_ratio`` ou BIC
+                        défavorable si ``hmm_bic_check``) : la règle de
+                        stress se rabat alors sur ``vol_percentile``.
 
     Les séances où l'indice est manquant reprennent l'état de la veille (pas
     d'information nouvelle) ; ``level`` y reste NaN.
@@ -428,8 +531,9 @@ def market_regime(
         Niveau de l'indice (``pd.Series`` indexée par date, croissante).
     band
         Zone neutre autour de la moyenne mobile (``0,01`` = ±1 %).
-    stress_vol_pct, stress_drawdown
-        Seuils de l'état ``"stress"`` (percentile de volatilité, drawdown).
+    stress_vol_pct, stress_drawdown, crash_window
+        Seuils de l'état ``"stress"`` : percentile de volatilité, chute depuis
+        le plus haut des ``crash_window`` dernières séances.
     confirm_days
         Séances consécutives nécessaires pour changer d'état (1 : aucun filtre).
     """
@@ -439,7 +543,7 @@ def market_regime(
         raise TypeError("index_level doit être indexée par un DatetimeIndex")
     if not index_level.index.is_monotonic_increasing:
         raise ValueError("index_level doit être triée par date croissante")
-    if min(ma_window, slope_window, vol_window, vol_rank_window) < 1:
+    if min(ma_window, slope_window, vol_window, vol_rank_window, crash_window) < 1:
         raise ValueError("les fenêtres doivent être >= 1")
     raw = pd.to_numeric(index_level, errors="coerce").astype(float)
     lvl = raw[np.isfinite(raw) & (raw > 0)]
@@ -453,6 +557,7 @@ def market_regime(
         pct=True
     )
     dd = lvl / lvl.cummax() - 1.0
+    dd_recent = lvl / lvl.rolling(crash_window, min_periods=1).max() - 1.0
 
     out = pd.DataFrame(
         {
@@ -463,6 +568,7 @@ def market_regime(
             "realized_vol": rv,
             "vol_percentile": vol_pct,
             "drawdown": dd,
+            "recent_drawdown": dd_recent,
         }
     )
     high_vol = vol_pct.ge(stress_vol_pct).fillna(False)
@@ -473,6 +579,9 @@ def market_regime(
             refit_every=hmm_refit_every,
             train_window=hmm_train_window,
             min_train=hmm_min_train,
+            min_sigma_ratio=hmm_min_sigma_ratio,
+            bic_check=hmm_bic_check,
+            max_iter=hmm_max_iter,
         )
         out["p_turbulent"] = hm["p_1"]
         out["hmm_state"] = hm["state"]
@@ -481,7 +590,7 @@ def market_regime(
         high_vol = high_vol | hm["p_1"].ge(hmm_stress_prob).fillna(False)
 
     defined = trend.notna() & slope.notna()
-    stress = (trend < 0) & (high_vol | (dd <= -stress_drawdown))
+    stress = (trend < 0) & (high_vol | (dd_recent <= -stress_drawdown))
     bull = (trend > band) & (slope > 0)
     bear = (trend < -band) & (slope < 0)
     state = pd.Series(
@@ -491,10 +600,6 @@ def market_regime(
     ).where(defined, None)
     out["state"] = _apply_confirmation(state, confirm_days)
 
-    full = out.reindex(raw.index)
-    missing = ~raw.index.isin(lvl.index)
-    if missing.any():
-        filled = full.ffill()
-        full.loc[missing] = filled.loc[missing]
+    full = _reindex_carry(out, raw.index)
     full["level"] = raw.where(raw > 0)
     return full

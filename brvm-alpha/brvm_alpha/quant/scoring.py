@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping
-from typing import Literal, TypeAlias, overload
+from typing import Literal, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -59,6 +59,8 @@ ZMethod: TypeAlias = Literal["rank_gauss", "zscore", "robust"]
 _POOL = "__autres__"
 _NA_GROUP = "__sans_groupe__"
 _EPS = 1e-14
+_WINSOR_MAX_ITER = 500
+_WINSOR_RTOL = 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -99,16 +101,6 @@ def _row_mean_sd(x: np.ndarray, ddof: int = 1) -> tuple[np.ndarray, np.ndarray, 
 # ---------------------------------------------------------------------------
 
 
-@overload
-def cross_sectional_zscore(
-    df: pd.DataFrame, winsor: float | None = ..., method: ZMethod = ..., min_obs: int = ...
-) -> pd.DataFrame: ...
-@overload
-def cross_sectional_zscore(
-    df: pd.Series, winsor: float | None = ..., method: ZMethod = ..., min_obs: int = ...
-) -> pd.Series: ...
-
-
 def cross_sectional_zscore(
     df: pd.DataFrame | pd.Series,
     winsor: float | None = 3.0,
@@ -124,9 +116,10 @@ def cross_sectional_zscore(
       (illiquidité, PER…).
     * ``"zscore"`` : z-score classique après **winsorisation itérative** :
       tant qu'une valeur dépasse ``μ ± w·σ``, elle est ramenée à cette borne
-      et ``μ, σ`` sont recalculés (au plus 50 passes) ; puis
-      ``z = (x_w - mean(x_w)) / sd(x_w)`` (ddof = 1), d'où une moyenne nulle et
-      un écart-type unitaire exacts.
+      et ``μ, σ`` sont recalculés (point fixe, au plus 500 passes, tolérance
+      relative 10⁻⁹·σ) ; puis ``z = (x_w - mean(x_w)) / sd(x_w)`` (ddof = 1),
+      d'où une moyenne nulle, un écart-type unitaire et ``|z| <= w`` à la
+      convergence.
     * ``"robust"`` : ``z = (x - médiane) / (1,4826 · MAD)``, puis borné à ``±w``.
 
     ``winsor`` borne aussi le résultat final de ``"rank_gauss"`` et
@@ -137,7 +130,8 @@ def cross_sectional_zscore(
     Parameters
     ----------
     df
-        Panel large date × symbole, ou ``Series`` (une seule coupe).
+        Panel large date × symbole, ou ``Series`` (une seule coupe) : le type
+        de sortie suit celui de l'entrée.
     """
     if winsor is not None and winsor <= 0:
         raise ValueError("winsor doit être > 0 ou None")
@@ -155,15 +149,20 @@ def cross_sectional_zscore(
             z = np.clip(z, -winsor, winsor)
     elif method == "zscore":
         if winsor is not None:
-            for _ in range(50):
-                mu, sd, _n = _row_mean_sd(x)
+            active = np.arange(x.shape[0])
+            for _ in range(_WINSOR_MAX_ITER):
+                xa = x[active]
+                mu, sd, _n = _row_mean_sd(xa)
                 lo = (mu - winsor * sd)[:, None]
                 hi = (mu + winsor * sd)[:, None]
+                tol = (_WINSOR_RTOL * sd)[:, None]
                 with np.errstate(invalid="ignore"):
-                    out_of = ok & np.isfinite(lo) & ((x < lo - _EPS) | (x > hi + _EPS))
-                if not out_of.any():
+                    out_of = ok[active] & np.isfinite(lo) & ((xa < lo - tol) | (xa > hi + tol))
+                rows = out_of.any(axis=1)
+                if not rows.any():
                     break
-                x = np.where(out_of, np.clip(x, lo, hi), x)
+                x[active] = np.where(out_of, np.clip(xa, lo, hi), xa)
+                active = active[rows]
         mu, sd, _n = _row_mean_sd(x)
         with np.errstate(invalid="ignore", divide="ignore"):
             z = (x - mu[:, None]) / sd[:, None]
@@ -227,7 +226,8 @@ def neutralize(
       continues à neutraliser : les résidus sont orthogonaux aux indicatrices
       et aux expositions.
 
-    Les symboles sans groupe forment le groupe ``"__sans_groupe__"``. Avec
+    Fournir ``exposures`` implique la méthode par régression. Les symboles
+    sans groupe forment le groupe ``"__sans_groupe__"``. Avec
     ``min_group_size > 1``, les groupes ayant moins de ``min_group_size``
     titres observés à la date ``t`` sont regroupés dans ``"__autres__"``
     (évite d'annuler le signal d'un secteur à un seul titre).

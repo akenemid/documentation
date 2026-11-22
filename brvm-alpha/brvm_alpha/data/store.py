@@ -62,7 +62,8 @@ __all__ = [
 ]
 
 #: Codes d'avertissement purement informatifs (réparation réussie, cas normal rare).
-INFO_WARNING_CODES = frozenset({"wrapped_digits_joined", "first_listing", "lang_en", "change_vs_adjusted_ref"})
+INFO_WARNING_CODES = frozenset({"wrapped_digits_joined", "first_listing", "lang_en", "change_vs_adjusted_ref",
+                                "untraded_ref_change"})
 
 #: Bande de fluctuation quotidienne de la BRVM (±7,5 %) et marge de détection.
 PRICE_BAND = 0.075
