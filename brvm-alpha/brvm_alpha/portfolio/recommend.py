@@ -2434,7 +2434,12 @@ def _explanations(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], n_rej
                             "texte_court": f"explication indisponible ({exc.__class__.__name__})", "texte": ""})
                 continue
             extra = ""
-            if kind == "reference" and status == "écarté":
+            if kind == "reference" and status == "écarté" and (e.get("risk_flags") or {}).get("block_buys"):
+                # Titre que sa capitalisation ferait retenir, écarté parce que ses achats sont bloqués (D8 : un
+                # titre à achat bloqué et non détenu est écarté) : le dire, au lieu de « hors des 20 plus grosses ».
+                extra = (f"capitalisation n° {rank_of.get(s)} parmi les éligibles : achat bloqué par un filtre de "
+                         "risque, titre non détenu écarté de la sélection (D8)")
+            elif kind == "reference" and status == "écarté":
                 extra = f"capitalisation n° {rank_of.get(s)} parmi les éligibles : hors des 20 plus grosses (D8)"
             elif kind == "reference":
                 extra = f"capitalisation n° {rank_of.get(s)} parmi les éligibles"

@@ -224,7 +224,9 @@ Construction v1 (SPECIFICATION_STRATEGIE.md §4.2, §6, §9.1 ; défauts =
   `score`, `lecture`, `position_sans_notes`, `score_sans_notes`, `position_changee_par_les_notes`) ; quand la
   position ne change que par la composante « notes », le tableau écrit « NEUTRE (sans les notes :
   SOUS-PONDÉRER) », la lecture reprend la raison « Effet des notes » et un paragraphe « Position fragile »
-  suit (affichage seul : aucune pondération n'est modifiée) ;
+  suit (affichage seul : aucune pondération n'est modifiée) ; `explications` : en indice discipliné, un titre
+  que sa capitalisation ferait retenir mais dont l'achat est bloqué est expliqué « achat bloqué par un filtre
+  de risque, titre non détenu écarté de la sélection (D8) », et non « hors des 20 plus grosses » ;
   `holdings` : symbole → nombre de titres ; un titre connu du panel mais absent du BOC à t est gardé
   « bloqué, hors BOC », valorisé au dernier cours − 10 % (§7.1.7), seuls les symboles jamais vus sont refusés ;
   `cash=None` : `capital − titres détenus` ; `notes_store=None` : journal du dépôt, `False` : aucune note ;
@@ -537,11 +539,14 @@ jours). Avant le 22/11/2026, le délai par défaut était de 0,4 s : corrigé.
   THEME:… / MARCHE ; section « Notes en vigueur à la séance d'application » : ligne datée, filtres actifs avec
   la note qui les porte et la façon de les lever, notes manuelles et notes automatiques séparées (date, cible,
   type, score, confiance, décroissance, source avec lien, filtre), 10 plus positives et 10 plus négatives,
-  composante « notes » de chaque indice avec les notes qui la portent ; puis le journal filtrable),
+  composante « notes » de chaque indice avec les notes qui la portent ; puis le journal filtrable ; les blocs
+  d'une page sont assemblés par `pages.join` — `Safe + Safe` rend une chaîne ordinaire, qui serait échappée),
   `/notes/fiche?id=` (analyse, lecture, versions, archivage), `/recherche` (confirmation, hors ligne / en
   ligne, quota ≤ 150, case « lire le contenu des documents récents » et nombre maximal ≤ 60, journal et
   progression, bilan de la lecture, règles de politesse), `/indices` (ligne datée, colonne « Notes (z) » :
-  valeur, « score nul » ou « aucune note », jamais « n.d. » seul) et `/indices/dossier?code=`
+  valeur, « score nul » ou « aucune note », jamais « n.d. » seul ; encadré « Position fragile » et mention
+  « sans notes : … » quand la position ne change que par le poids de la composante « notes »,
+  `pages.stance_flip`) et `/indices/dossier?code=`
   (notes qui influencent l'indice), `/portefeuille` (capital, portefeuille « symbole,titres », liquidités,
   variante → ordre de bataille complet avec la ligne datée et les achats bloqués, exports Markdown / JSON),
   `/expliquer?symbole=`, `/validation`

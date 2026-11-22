@@ -2172,6 +2172,8 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
         _box("empty", "Aucune note automatique en vigueur.")))
     pos, neg = top_notes(tab, 10)
     if len(pos) or len(neg):
+        parts.append(_p("Classement des deux tableaux suivants : effet actuel de la note, soit score × décroissance "
+                        "(à score égal, une note récente passe avant une note ancienne).", "muted small"))
         parts.append(H('<div class="grid2">'
                        + _card(H(f"<h3>Les {len(pos)} notes les plus positives</h3>"),
                                _table(_NOTES_HEAD, _notes_rows(pos), left=_NOTES_LEFT) if len(pos) else

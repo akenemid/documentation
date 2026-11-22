@@ -587,7 +587,9 @@ def notes_in_force_section(status: Mapping[str, Any] | None, indices: Any = None
                            Safe("</details>")]))
     else:
         parts.append(Safe('<p class="muted">Aucune note automatique en vigueur.</p>'))
-    parts += [Safe("<h3>Les 10 notes les plus positives</h3>"),
+    parts += [Safe('<p class="muted">Classement des deux tableaux suivants : effet actuel de la note, soit score × '
+                   "décroissance (à score égal, une note récente passe avant une note ancienne).</p>"),
+              Safe("<h3>Les 10 notes les plus positives</h3>"),
               table(NOTES_HEAD, _in_force_rows(pos), empty="Aucune note de score positif en vigueur."),
               Safe("<h3>Les 10 notes les plus négatives</h3>"),
               table(NOTES_HEAD, _in_force_rows(neg), empty="Aucune note de score négatif en vigueur.")]
@@ -617,6 +619,14 @@ def notes_in_force_section(status: Mapping[str, Any] | None, indices: Any = None
                          "Notes qui portent la composante"], rows)]
     parts.append(Safe("</section>"))
     return join(parts)
+
+
+def stance_flip(r: Any) -> str | None:
+    """Position **sans** la composante « notes » quand elle diffère de la position affichée (sinon ``None``)."""
+    ex = _val(r.get("stance_ex_notes"))
+    if not isinstance(ex, str) or not ex or _val(r.get("z_notes")) is None or _val(r.get("composite_ex_notes")) is None:
+        return None
+    return ex if ex != str(r.get("stance") or "") else None
 
 
 def notes_z_text(r: Any) -> str:
@@ -964,13 +974,29 @@ def page_indices(ctx: PageContext, *, evaluation: pd.DataFrame | None, asof: Any
         parts.append(box("hypothesis", "Aide à la décision, pas un signal validé : poids et seuils sont des choix de "
                                        "conception non validés hors échantillon (score composite de z-scores bornés)."))
         rows = []
+        fragile = []
         for code, r in evaluation.iterrows():
+            flip = stance_flip(r)
+            if flip:
+                fragile.append(f"{r.get('label')} : {r.get('stance')} avec les notes (score "
+                               f"{fr_num(r.get('composite'), 2, True)}), {flip} sans (score "
+                               f"{fr_num(r.get('composite_ex_notes'), 2, True)}) ; z notes "
+                               f"{fr_num(r.get('z_notes'), 2, True)}")
+            position = stance_badge(r.get("stance")) if not flip else join(
+                [stance_badge(r.get("stance")), Safe("<br>"), Safe(f'<span class="muted">sans notes : {nw(flip)}</span>')])
             rows.append([link(f"/indices/dossier?code={q(code)}" + (f"&date={q(pd.Timestamp(asof).strftime('%Y-%m-%d'))}"
                                                                      if asof is not None else ""), r.get("label")),
                          fr_num(r.get("level"), 2), fr_pct(r.get("ret_1m")), fr_pct(r.get("ret_3m")),
                          fr_pct(r.get("ret_12m")), fr_pct(r.get("ytd")), fr_num(r.get("per"), 1),
-                         fr_num(r.get("yield_pct"), 2), stance_badge(r.get("stance")), fr_num(r.get("confidence"), 2),
+                         fr_num(r.get("yield_pct"), 2), position, fr_num(r.get("confidence"), 2),
                          fr_num(r.get("composite"), 2, True), notes_z_text(r)])
+        if fragile:
+            parts.append(box("warn", join([
+                Safe("<strong>Position fragile : elle ne change que par le poids de la composante « notes ».</strong>"
+                     "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in fragile) + "</ul>"),
+                "La composante « notes » entre dans le score avec son poids entier dès qu'une note en vigueur porte un "
+                "score, même faible : elle rapproche alors le score de zéro sans apporter de signal fort. Lire ces "
+                "indices avec leur position « sans notes » ; aucune pondération n'a été modifiée."])))
         parts.append(table(["Indice", "Niveau", "1 mois", "3 mois", "12 mois", "Depuis 31/12", "PER", "Rdt %",
                             "Position", "Confiance", "Score", "Notes (z)"], rows))
         parts.append(Safe("</section>"))

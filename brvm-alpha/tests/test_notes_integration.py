@@ -192,6 +192,27 @@ def test_ref_weight_change_of_a_watched_line_is_redistribution_not_its_filter(sy
     assert sum(x["ecart"] for x in rows.values()) == pytest.approx(0.0, abs=1e-9)
 
 
+def test_ref_explanation_of_a_blocked_title_names_the_block_not_its_size(synth, tmp_path):  # noqa: F811
+    base = _order(synth, tmp_path, notes_store=False)
+    ranked = [str(s) for s in base.lignes.sort_values("poids_cible", ascending=False)["symbole"]]
+    blocked = ranked[2]
+    st = NoteStore(tmp_path / "notes")
+    st.add(Note(title=f"{blocked} : annulation de l'Assemblée Générale Ordinaire",
+                text="L'assemblée générale ordinaire convoquée est annulée sur instruction du régulateur.",
+                targets=[blocked], author="analyste", created_at=SAT, event_type="AG_CANCEL",
+                analysis={"targets": [blocked], "event_type": "AG_CANCEL", "score": -0.5, "confidence": 0.7,
+                          "risk_flags": ["R2"]}), now=SAT)
+    o = _order(synth, tmp_path, notes_store=st, notes_known_at=SAT_KNOWN, explanations=True)
+    by_sym = {e["symbole"]: e for e in o.explications}
+    e = by_sym[blocked]
+    assert e["statut"] == "écarté" and e["rang"] <= 20 and "R2" in e["filtres"]
+    # Un titre parmi les plus grosses capitalisations n'est pas « hors des 20 plus grosses » : il est bloqué.
+    assert "achat bloqué par un filtre de risque, titre non détenu écarté de la sélection (D8)" in e["texte_court"]
+    assert "hors des 20 plus grosses" not in e["texte_court"]
+    others = [x for x in o.explications if x["statut"] == "écarté" and x["symbole"] != blocked]
+    assert others and all("hors des 20 plus grosses (D8)" in x["texte_court"] for x in others)
+
+
 # ---------------------------------------------------------------------------
 # Indices : position qui ne change que par la composante « notes »
 # ---------------------------------------------------------------------------

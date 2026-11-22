@@ -111,7 +111,8 @@ python -m brvm_alpha notes lire --max 10 --hors-ligne    # documents déjà en c
 python -m brvm_alpha validate --sample S0
 ```
 
-Ordres de bataille publiés pour le 20/11/2026 (aucun titre détenu) :
+Ordres de bataille publiés pour le 20/11/2026 (aucun titre détenu), régénérés le 22/11/2026 à 16h02 UTC
+avec les notes connues à cet instant (mode direct, séance d'application du 23/11/2026) :
 [10 M FCFA](reports/ordre_de_bataille_2026-11-20.md),
 [1 M FCFA](reports/ordre_de_bataille_2026-11-20_1M.md),
 [50 M FCFA](reports/ordre_de_bataille_2026-11-20_50M.md). Le rapport HTML
@@ -169,9 +170,24 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
   résultats, rapports d'activité, notations, communiqués), un par émetteur d'abord, et écrit une
   **nouvelle version** de chaque note avec l'analyse du texte. `notes lire [--max N] [--hors-ligne]
   [--cibles CODES]` fait la même lecture sans nouvelle collecte. Le bilan affiche les documents lus, les
-  notes enrichies, les documents scannés (images sans texte, **à lire à la main**) et les erreurs. Les
-  règles de politesse sont les mêmes (une requête par document, 10 s au moins, arrêt au premier 403 ou
-  429).
+  notes enrichies, les documents scannés (images sans texte, **à lire à la main**), les erreurs, les
+  documents lus sans chiffre retenu, les documents absents du cache (hors ligne) et le nombre de nouvelles
+  versions écrites. Un document déjà lu n'est jamais relu : un deuxième appel n'écrit rien. `--simulation`
+  lit sans rien écrire au journal. Les règles de politesse sont les mêmes (une requête par document, 10 s
+  au moins, arrêt au premier 403 ou 429).
+  - **Garde-fous de la lecture** : un chiffre n'est retenu que s'il est sûr. Une variation doit être écrite
+    dans le document ou recalculée sur deux montants de même unité et de même périmètre ; une variation
+    écrite est recoupée avec les montants à 1 point près ; une base négative ou nulle, ou une variation
+    au-delà de ±300 %, ne donne aucun score numérique (« base non comparable ») ; la période du document
+    doit être celle de la note ; en cas d'en-tête, d'unité ou d'appariement ambigus, **aucun chiffre** n'est
+    retenu (le score repose alors sur le ton seul). Chaque chiffre retenu porte la ligne exacte du document
+    dont il vient (`notes show ID`).
+  - **État du journal réel au 22/11/2026** (fait) : 70 documents lus sur www.brvm.org (70 requêtes, 10 s
+    au moins entre deux, aucun refus) ; 39 notes enrichies de chiffres, 1 sans chiffre, 30 documents
+    scannés à lire à la main ; 38 publications de résultats portent désormais un score non nul. La lecture
+    a fait naître le filtre R10 (résultat net en baisse de 25 % ou plus sans alerte préalable : surveillance,
+    sans blocage des achats) sur PALM CI, SOGB et NSIA Banque CI. 23 documents restent à lire, dont 6 déjà
+    en cache (`notes lire --hors-ligne`).
 - **Analyse** : chaque note reçoit un type d'événement (dividende, résultats, alerte sur résultats,
   macro…), un ton, les chiffres extraits (variation du résultat net, du dividende…), une matérialité,
   une confiance, des filtres de risque R1-R10 et une lecture en phrases courtes. Le score suit le
@@ -200,7 +216,10 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
     10 M FCFA, son poids cible de 6,16 % passe à 0 % ; les règles de construction existantes (D8) le
     **redistribuent** : TotalEnergies Marketing CI (TTLC) entre comme vingtième ligne et les autres
     poids montent en proportion ; le total investi cible reste de 98 %. Les ordres publiés dans
-    `reports/` avant ce changement achètent encore ETIT : ils sont à régénérer avec `recommend`.
+    `reports/` ont été régénérés le 22/11/2026 avec ce blocage. Le tableau « Poids cibles sans et avec les
+    notes » donne le motif de chaque écart : « filtre R2 » pour ETIT, « redistribution (construction) » pour
+    les autres lignes — en indice discipliné, un filtre de simple surveillance (R10 sur NSIA Banque CI)
+    ne change aucun poids et n'est pas cité comme motif.
 - **Effet sur les indices** : les scores des notes, datés et point-in-time (une note agit à la première
   séance négociable après sa publication, coupure de 09h00, décroissance τ = 10 séances), forment la
   composante « notes » de l'évaluation des indices (poids 0,15, à côté de la tendance 0,30, de la
@@ -210,6 +229,15 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
   notes »), et les notes qui portent la composante. Quand elle est absente, la raison est écrite
   (« aucune note en vigueur » ou « score nul »). La position (SURPONDÉRER, NEUTRE, SOUS-PONDÉRER) est
   une **aide à la décision, pas un signal validé** : elle n'entre pas dans l'ordre de bataille.
+  - **Position fragile** (fait, journal du 22/11/2026) : le BRVM Composite et le Composite Total Return
+    sont SOUS-PONDÉRER sans les notes (score −0,53 et −0,54) et NEUTRE avec elles (−0,44), alors que le z
+    des notes n'est que de +0,09. La bascule ne vient d'aucune note en particulier (retirer une note,
+    n'importe laquelle, ne change aucune position) : elle vient du poids de 15 % donné à la composante dès
+    qu'une note porte un score. Vérifié : avec **une seule** des 42 notes chiffrées au journal, même une
+    note négative de confiance 0,56, ces deux indices passent à NEUTRE. Le rapport, l'ordre de bataille et
+    la page Indices signalent donc ces positions (« Position fragile », « sans les notes :
+    SOUS-PONDÉRER »). Aucune pondération n'a été modifiée : c'est une décision à prendre (seuil minimal de
+    |z|, ou poids proportionnel à la force du signal).
 - **Effet sur la position** : les notes ne pilotent jamais seules le portefeuille. Un **veto** manuel
   exclut un titre. Une **inclinaison** est bornée à ±0,5 écart-type et s'ajoute au score des variantes
   factorielles. Les **filtres R** issus des notes bloquent les achats ou réduisent les plafonds. En
@@ -265,10 +293,14 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
 ## Ordre de bataille au 20/11/2026 (10 M FCFA, estimation)
 
 Variante retenue : **REF** (A REJETÉ sur S1). Ce sont 20 ordres d'achat, exécutables en une séance
-le 23/11/2026, pour un brut de 9 631 643 FCFA (96,32 % investis), 163 365 FCFA de coûts d'entrée
-(1,63 %) et 124 079 FCFA de frais fixes par an. Revenu de dividendes net attendu sur 12 mois :
-416 535 FCFA (4,17 %), sous l'hypothèse du dernier dividende reconduit. La distribution historique à
-12 mois n'est pas une prévision : médiane +11,9 %, P10 −9,3 %, P90 +38,0 %, P(perte) 25 %. Elle est
+le 23/11/2026, pour un brut de 9 650 560 FCFA (96,51 % investis), 160 588 FCFA de coûts d'entrée
+(1,61 %) et 124 126 FCFA de frais fixes par an. **Achat bloqué par une note** : ETIT (filtre R2,
+annulation de l'assemblée générale, note du 23/10/2026, jusqu'au 19/01/2027) ; son poids cible de 6,16 %
+est redistribué par les règles de construction et TTLC entre comme vingtième ligne. Notes prises en
+compte : celles connues le 22/11/2026 à 16h02 UTC, appliquées à la séance du 23/11/2026 (114 en vigueur,
+aucune manuelle, 6 filtres de risque actifs). Revenu de dividendes net attendu sur 12 mois :
+435 988 FCFA (4,36 %), sous l'hypothèse du dernier dividende reconduit. La distribution historique à
+12 mois n'est pas une prévision : médiane +11,8 %, P10 −9,9 %, P90 +37,6 %, P(perte) 25,6 %. Elle est
 tirée de toute l'histoire 2017-2026 avec les poids actuels, donc avec un biais rétrospectif. Le détail
 est dans [reports/ordre_de_bataille_2026-11-20.md](reports/ordre_de_bataille_2026-11-20.md).
 
@@ -282,8 +314,8 @@ est dans [reports/ordre_de_bataille_2026-11-20.md](reports/ordre_de_bataille_202
 - **Liquidité et capacité** : la valeur échangée a été multipliée par environ 30 depuis 2019-2020.
   Les chiffres de capacité à 100 M et 1 Md FCFA sont mécaniques : beaucoup de liquidités face à un
   TR baissier.
-- **Petit capital** : à 1 M FCFA, 80 % seulement est investi, sur 18 lignes, et la tenue de compte
-  coûte environ 9 % par an. L'ordre de bataille l'avertit.
+- **Petit capital** : à 1 M FCFA, 86,6 % seulement est investi, sur 20 lignes, et la tenue de compte
+  coûte 10 % de la valeur par an. L'ordre de bataille l'avertit.
 - **Points ouverts** (documentés au §8.5 et dans `tentatives.md`) :
   - Les signaux de momentum et de faible volatilité lisent un indice TR qui intègre le dividende
     corrigé dès le jour ex, avant la publication de la correction. Aucun effet n'a été trouvé sur S1 ;
@@ -333,7 +365,10 @@ python -m pytest -q -p no:cacheprovider tests/test_report_html.py
 Les tests n'envoient **aucune requête réseau**. Ils utilisent des données synthétiques, des extraits de
 BOC et des pages de brvm.org enregistrées (`tests/fixtures/`), ou la période S0. **Aucun backtest,
 aucune performance et aucun IC n'est évalué sur S1** dans les tests. Le 22/11/2026, la suite complète
-compte 1 380 tests, tous verts (dont 36 pour le mode direct des notes, `tests/test_notes_direct.py`).
+compte 1 391 tests, tous verts : dont 36 pour le mode direct des notes (`tests/test_notes_direct.py`), 44
+pour la lecture du contenu des publications (`tests/test_notes_lecture.py`) et 11 pour leur assemblage
+avec la ligne de commande, l'interface et l'ordre de bataille (`tests/test_notes_integration.py`,
+`tests/test_ui_notes_integration.py`).
 
 ## Sources
 
