@@ -53,6 +53,11 @@ fonction le décide : `brvm_alpha.paths.est_embarque()`. Alors :
   recouvre ni `notes/` ni `boc_text/`, car le panel est remplacé d'un bloc à chaque construction. **Odoo ne
   passe jamais ces trois options** : les dossiers par défaut (`<données>/notes`, `panel`, `boc_text`) suffisent.
   Hors mode embarqué, rien ne change ;
+- une option de chemin (`--racine`, `--panel-dir`, `--boc-dir`, `--fichier`, `--portefeuille`, `--sortie`) **vide ou
+  faite seulement d'espaces** est refusée en code 2, avant toute écriture (avant : `--racine ' '` désignait le dossier
+  courant, et `notes add` y créait un journal). `--sortie -` ne veut dire « sortie standard » que pour `notes export` :
+  pour `recommend` et `report`, `-` est un nom de fichier, écrit dans le dossier des rapports (avant : dans le dossier
+  courant). Hors mode embarqué, rien ne change ;
 - `pdftotext` (paquet système **poppler-utils**) est **obligatoire** : sans lui, `update`, `notes
   research --pdf N` (N > 0) et `notes lire` sortent en code 8 avec le message « pdftotext absent :
   installer poppler-utils » ; `etat` le signale (clé `extracteur_pdf.manquant`) ;
@@ -79,7 +84,7 @@ au § A.15.
 | `BRVM_ALPHA_PROXY` | mandataire HTTPS explicite pour www.brvm.org | facultatif |
 | `BRVM_ALPHA_ATTENTE_VERROU` | attente maximale d'un verrou, en secondes (défaut 10) ; vaut pour **tous** les verrous, journal des notes compris | facultatif |
 | `BRVM_ALPHA_MEMOIRE_MIN` | limite de mémoire virtuelle minimale, en Mo (défaut 1024 ; `0` : aucun contrôle) ; en dessous, code 6 sans rien charger (§ A.10) | facultatif |
-| `BRVM_ALPHA_CPU_MIN` | marge minimale de temps de calcul, en secondes (défaut 900 ; `0` : aucun contrôle) : limite souple `RLIMIT_CPU` moins le temps déjà consommé ; en dessous, code 8 sans rien charger (§ A.6) | facultatif, à laisser vide |
+| `BRVM_ALPHA_CPU_MIN` | marge minimale de temps de calcul, en secondes (défaut 900 ; `0` : aucun contrôle) : limite souple `RLIMIT_CPU` moins le temps déjà consommé ; en dessous, code 8 sans rien charger (§ A.6). Une valeur négative ou illisible (`-5`, `abc`, `nan`) prend le défaut de 900 s, et le message de refus le dit : seul `0` coupe le contrôle | facultatif, à laisser vide |
 | `TMPDIR` | dossier des fichiers temporaires (défaut `/tmp`) ; un dossier **dédié** au moteur est conseillé (§ A.6) | conseillé |
 
 Avec `python3 -I`, les variables `PYTHON…` (dont `PYTHONPATH` et `PYTHONDONTWRITEBYTECODE`) sont
@@ -195,7 +200,10 @@ Règles du lanceur :
   consommé) est sous 900 s (`BRVM_ALPHA_CPU_MIN`), le moteur sort aussitôt en **8** (« limite de temps de calcul
   trop basse … : le lanceur doit relever RLIMIT_CPU ») ; il ne relève jamais la limite lui-même. Limite atteinte en
   cours de commande (signal `SIGXCPU`) : sortie propre en 8 avec un objet JSON ; processus de travail du panel tué
-  par `SIGXCPU` : 8 « temps de calcul » (avant : −24 sans objet JSON, ou 6 « memoire ») ;
+  par `SIGXCPU` : 8 « temps de calcul » (avant : −24 sans objet JSON, ou 6 « memoire »). Le `preexec_fn` du lanceur
+  reste **court** (quelques appels système) : le temps de calcul consommé entre `fork` et `exec` compte pour le
+  moteur, et un `SIGXCPU` reçu dans ses toutes premières millisecondes, avant que sa garde ne soit posée, donne −24
+  sans objet JSON (§ A.7) ;
 - **dossier temporaire** : donner au moteur un `TMPDIR` **dédié** (par exemple
   `/var/lib/odoo/rz_brvm_alpha/tmp`, créé par le module, 70 caractères au plus). `--fichier`, `--portefeuille` et
   `--sortie` acceptent le dossier temporaire du système : avec `TMPDIR=/tmp`, partagé avec Odoo, un chemin relayé
@@ -208,7 +216,7 @@ Règles du lanceur :
   `KILL` au groupe après 15 s. Le `KILL` au groupe est **obligatoire** : un processus figé dans une
   bibliothèque compilée (OpenBLAS, Arrow) sous une mémoire trop basse ne traite plus `TERM`. Toujours tuer le
   **groupe**, jamais le seul PID : les processus de travail du panel et leur serveur de processus meurent avec
-  le processus principal (`PR_SET_PDEATHSIG`), mais seul un `KILL` au groupe nettoie tout à coup sûr (cas du
+  le processus principal (`PR_SET_PDEATHSIG`, § A.7), mais seul un `KILL` au groupe nettoie tout à coup sûr (cas du
   tueur de mémoire du noyau) ;
 - **sorties** : sortie standard et sortie d'erreur redirigées vers des **fichiers** (jamais un tube non
   lu, qui figerait le moteur) ; lire l'objet JSON dans le fichier de sortie standard ;
@@ -269,8 +277,8 @@ bibliothèque devient 7.
 | Code | `erreur` (JSON) | Sens | Exemples |
 |---|---|---|---|
 | 0 | — | succès | |
-| 1 | `donnees_absentes`, `historique_incomplet` | données absentes ou illisibles, historique non prêt, quota de requêtes atteint | panel introuvable ou abîmé (`.parquet` illisible : « panel illisible ») ; journal des notes présent mais illisible ; `recommend` sur un historique incomplet (mode embarqué) ; `update` arrêté au quota |
-| 2 | `saisie_invalide` | saisie invalide ou refusée, erreurs d'arguments comprises ; **seulement** les saisies | option inconnue, `--couts inconnu`, `--delai nan`, date dans S1, URL invalide, `--racine` inexistant, cible inconnue, `--sortie` vers un dossier |
+| 1 | `donnees_absentes`, `historique_incomplet` | données absentes ou illisibles, historique non prêt, quota de requêtes atteint | panel introuvable ou abîmé (`.parquet` illisible : « panel illisible ») ; `panel` sans aucun bulletin dans `boc_text/` (installation neuve : « aucun bulletin dans … : lancer d'abord update » ; avant : 7, « KeyError : file ») ; journal des notes présent mais illisible ; `recommend` sur un historique incomplet (mode embarqué) ; `update` arrêté au quota |
+| 2 | `saisie_invalide` | saisie invalide ou refusée, erreurs d'arguments comprises ; **seulement** les saisies | option inconnue, `--couts inconnu`, `--delai nan`, date dans S1, URL invalide, `--racine` inexistant, cible inconnue, `--sortie` vers un dossier ; en mode embarqué, chemin hors des dossiers permis ou option de chemin vide (§ A.2) |
 | 4 | `verrou_occupe` | verrou tenu par une autre opération au-delà du délai | deux `panel`, deux `update`, deux `notes research` à la fois |
 | 5 | `acces_refuse` | accès refusé ou réseau | HTTP 403 ou 429, site bloqué, liste blanche, délai dépassé |
 | 6 | `memoire` | mémoire insuffisante | `MemoryError` (jamais avalée : aucun résultat dégradé en code 0) ; bibliothèque compilée impossible à charger faute de mémoire (« failed to map segment ») ; processus de travail du panel tué par `SIGKILL` sous une limite de mémoire, ou mort sans cause connue sous cette limite (le message dit « cause inconnue ») ; limite `RLIMIT_AS` sous 1 Go (refus au démarrage) |
@@ -288,18 +296,41 @@ premières millisecondes, avant que la garde du démarrage ne soit posée). Sous
 calcul relevé), aucun de ces cas n'a été observé. Les traiter comme 7. Avec `--format json`, une sortie standard
 fermée par le lecteur donne 1 (l'objet n'a pas pu être lu).
 
-**Petits-enfants.** Les processus que lance le moteur meurent avec lui, même s'il est tué seul (`KILL` au seul
-PID, tueur de mémoire du noyau) : processus de travail du panel et leur serveur, et outils de poppler (`pdftotext`,
-`pdfinfo`, `pdffonts`, `pdfimages`), liés au moteur par `PR_SET_PDEATHSIG`. Vérifié : un `pdftotext` lent (faux
-outil qui dort puis sort en 3) meurt avec le moteur, sans jamais sortir en 3 (avant : récolté 4 s plus tard par
-le processus 1, avec le code 3). Le module Odoo doit de toute façon lancer le moteur dans un **nouveau groupe de
-processus**, tuer le **groupe**, et ne jamais se faire **récolteur des petits-enfants** (pas de
-`PR_SET_CHILD_SUBREAPER`, pas de `waitpid(-1)`) : il n'attend que son enfant direct.
+**Petits-enfants.** Les processus que lance le moteur sont liés à lui par `PR_SET_PDEATHSIG` : s'il est tué seul
+(`KILL` au seul PID, tueur de mémoire du noyau), ils meurent avec lui.
+
+- **Outils de poppler** (`pdftotext`, `pdfinfo`, `pdffonts`, `pdfimages`) : un outil **en cours** meurt avec le
+  moteur (code −9). Vérifié : un `pdftotext` lent (faux outil qui dort puis sort en 3) meurt avec le moteur (avant :
+  récolté 4 s plus tard par le processus 1, avec le code 3). Un outil **déjà sorti** est récolté par le moteur dès sa
+  fin (le noyau le réveille : `pidfd_open`) ; avant, il restait jusqu'à 50 ms en attente. Mesuré : de 0 à 0,4 ms
+  (avant : 0,4 à 49,5 ms). **Le risque reste** : si le moteur est tué seul dans ce court instant, l'outil sorti est
+  récolté par le processus 1 avec son propre code, et poppler documente un code 3 (PDF protégé contre la copie ;
+  poppler 24.02 sort pourtant en 0 sur un tel PDF).
+- **Panel** : le serveur de processus est lié au moteur, et chaque processus de travail à ce serveur. Un processus
+  de travail qui pose son lien alors que le serveur est déjà mort (moteur tué juste au démarrage du pool) s'arrête
+  aussitôt, en code 1 (avant : il restait vivant, orphelin, avec le `resource_tracker`, plus de 90 s). Le
+  `resource_tracker` sort de lui-même, en code 0, quand le dernier processus de travail est mort. Mesuré : KILL du
+  seul moteur de 0 à 100 ms après le premier processus de travail, 12 essais : aucun processus vivant 8 s plus tard,
+  aucun code 3 (avant : des orphelins dans 10 essais sur 13).
+
+Le module Odoo doit de toute façon lancer le moteur dans un **nouveau groupe de processus**, tuer le **groupe**, et
+ne jamais se faire **récolteur des petits-enfants** (pas de `PR_SET_CHILD_SUBREAPER`, pas de `waitpid(-1)`) : il
+n'attend que son enfant direct. Un petit-enfant orphelin est alors récolté par le processus 1 du conteneur : si c'est
+le maître Odoo, le risque d'un code 3 récolté ne disparaît qu'avec un vrai processus 1 (par exemple `tini` ou
+`dumb-init` en tête de l'image), qui récolte les orphelins sans s'arrêter. Non vérifié dans l'image odoo:17.0.
 
 ### A.8 Sortie JSON
 
 Avec `--format json`, la sortie standard porte **exactement un objet JSON**, erreur comprise ;
-avertissements et progression vont sur la sortie d'erreur. Succès : `{"ok": true, …, "bandeau": "…"}`.
+avertissements et progression vont sur la sortie d'erreur. Pendant l'écriture de l'objet, TERM et `SIGXCPU` sont
+reportés : l'objet n'est jamais coupé, ni suivi d'un second objet (avant : un signal reçu pendant l'écriture d'un gros
+objet vers un tube donnait un objet coupé puis un second objet). Une fois l'objet écrit, TERM et `SIGXCPU` ne changent
+plus le code de sortie : c'est celui de l'objet. Pour `notes add`, `notes archive`, `notes export`, `recommend
+--sortie` et `report`, dont l'écriture est la dernière étape, TERM et `SIGXCPU` sont aussi reportés du dernier instant
+de l'écriture (ligne ajoutée au journal, renommage du fichier) jusqu'à l'objet : une note enregistrée sort en 0 avec son
+objet, jamais en 8 « arrêtée » (avant : 3 fois en 40 essais). Avant cet instant, TERM arrête la commande comme avant (130),
+y compris pendant l'attente d'un verrou. Si la sortie standard est un tube que personne ne lit, le moteur reste bloqué
+sur l'écriture, et seul `KILL` l'arrête : d'où la règle du § A.6 (sorties dans des fichiers). Succès : `{"ok": true, …, "bandeau": "…"}`.
 Erreur : `{"ok": false, "code": N, "erreur": "<type>", "message": "<texte français>", "bandeau": "…"}`,
 parfois avec un bilan en plus (`update`, `notes research`, `report`). Une erreur d'arguments donne aussi
 cet objet (code 2), comme un échec au démarrage (mémoire trop basse : 6 ; paquet manquant : 8 ; TERM : 130).
@@ -635,11 +666,17 @@ distribution) sont inchangées.
   dossier courant dès le départ ;
 - le signal TERM arrête une commande proprement (code 130), dès le démarrage ;
 - **temps de calcul** : une limite `RLIMIT_CPU` qui laisse moins de 900 s de marge au démarrage donne 8, sans rien
-  charger (`BRVM_ALPHA_CPU_MIN=0` désactive le contrôle) ; `SIGXCPU` en cours de commande donne 8 avec un objet JSON
+  charger (`BRVM_ALPHA_CPU_MIN=0` désactive le contrôle ; une valeur négative ou illisible prend le défaut) ; `SIGXCPU` en cours de commande donne 8 avec un objet JSON
   (avant : −24, sans objet) ; un processus de travail du panel mort prend le code de sa cause : `SIGXCPU` 8,
   `SIGKILL` sous une limite de mémoire 6, `SIGSEGV` ou autre signal 7 (avant : 6 dès qu'une limite de mémoire était
   posée) ;
-- outils de poppler liés au moteur (`PR_SET_PDEATHSIG`) : ils meurent avec lui ;
+- outils de poppler liés au moteur (`PR_SET_PDEATHSIG`) : ils meurent avec lui ; un outil fini est récolté aussitôt
+  (`pidfd_open`), au lieu d'attendre jusqu'à 50 ms ;
+- `panel` sans aucun bulletin : code 1, « aucun bulletin dans … : lancer d'abord update » (avant : 7, « KeyError :
+  file ») ;
+- `--format json` : TERM et `SIGXCPU` reportés pendant l'écriture de l'objet, et sans effet sur le code une fois
+  l'objet écrit ; reportés aussi du dernier instant de l'écriture jusqu'à l'objet pour `notes add`, `notes archive`,
+  `notes export`, `recommend --sortie` et `report` (§ A.8) ;
 - `update --simulation --rouvrir` compte les jours rouverts dans `jours_a_chercher` (avant : 1 jour pour 35
   marqueurs rouverts) ;
 - `recommend` sur un tout petit panel (7 séances) : code 0, avec l'évaluation des indices « n.d. » (avant : 7,

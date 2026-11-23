@@ -36,6 +36,7 @@ from typing import Any, Iterator
 
 import pandas as pd
 
+from brvm_alpha import demarrage as _demarrage
 from brvm_alpha import fichiers as _fichiers
 from brvm_alpha import paths as _paths
 from brvm_alpha.erreurs import CleInconnue, JournalIllisible, SaisieInvalide, VerrouOccupe
@@ -297,6 +298,9 @@ class NoteStore:
 
     def _append(self, record: dict[str, Any]) -> None:
         line = json.dumps(record, ensure_ascii=False)
+        # Point de non-retour : pour « notes add » et « notes archive », TERM et SIGXCPU sont reportés d'ici à l'objet
+        # JSON (la note écrite n'est jamais annoncée perdue) ; ailleurs, sans effet.
+        _demarrage.point_de_non_retour()
         with self.path.open("ab") as fh:
             if fh.tell() > 0:
                 with self.path.open("rb") as rh:

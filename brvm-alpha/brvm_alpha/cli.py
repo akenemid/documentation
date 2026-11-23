@@ -163,11 +163,10 @@ class FrArgumentParser(argparse.ArgumentParser):
         if _FORMAT_DEMANDE.get() == "json":
             sys.stderr.write(f"{self.prog} : erreur : {text}\n")
             if not demarrage.json_emis():
-                sys.stdout.write(json.dumps({"ok": False, "code": erreurs.SAISIE_INVALIDE, "erreur": "saisie_invalide",
-                                             "message": f"erreur : {text}", "bandeau": BANNER}, ensure_ascii=False,
-                                            indent=1) + "\n")
-                sys.stdout.flush()
-                demarrage.marquer_json_emis()
+                demarrage.ecrire_objet(sys.stdout, json.dumps({"ok": False, "code": erreurs.SAISIE_INVALIDE,
+                                                               "erreur": "saisie_invalide", "message": f"erreur : {text}",
+                                                               "bandeau": BANNER}, ensure_ascii=False, indent=1) + "\n",
+                                       erreurs.SAISIE_INVALIDE)
             raise SystemExit(erreurs.SAISIE_INVALIDE)
         self.exit(erreurs.SAISIE_INVALIDE, f"{self.prog} : erreur : {text}\n")
 
@@ -180,10 +179,8 @@ class FrArgumentParser(argparse.ArgumentParser):
         text = self.format_help()
         sys.stderr.write(text)
         if not demarrage.json_emis():
-            sys.stdout.write(json.dumps({"ok": True, "aide": text, "bandeau": BANNER}, ensure_ascii=False, indent=1)
-                             + "\n")
-            sys.stdout.flush()
-            demarrage.marquer_json_emis()
+            demarrage.ecrire_objet(sys.stdout, json.dumps({"ok": True, "aide": text, "bandeau": BANNER},
+                                                          ensure_ascii=False, indent=1) + "\n", erreurs.OK)
 
 
 #: Format demandé sur la ligne de commande, relevé AVANT l'analyse des arguments (erreurs d'argparse en JSON).
@@ -588,10 +585,10 @@ def emit_json(obj: dict[str, Any], *, ok: bool | None = True) -> None:
     if st.emis:  # jamais deux objets sur la sortie standard
         print(text, file=sys.stderr)
         return
-    st.out.write(text + "\n")
-    st.out.flush()
+    # TERM et SIGXCPU reportés pendant l'écriture : l'objet n'est jamais coupé, ni suivi d'un second objet.
+    code = erreurs.OK if d.get("ok") is not False else _code_sur(d.get("code", erreurs.INTERNE))
+    demarrage.ecrire_objet(st.out, text + "\n", code)
     st.emis = True
-    demarrage.marquer_json_emis()
 
 
 def emit_echec(code: int, message: str, *, erreur: str | None = None, **extra: Any) -> int:
@@ -1234,12 +1231,16 @@ def _add_banner_epilog(p: argparse.ArgumentParser, top: bool = False) -> None:
 def _build_panel(boc_dir: Path, panel_dir: Path, force: bool = False, workers: int | None = None) -> Any:
     """Reconstruit le panel ; renvoie son résumé (``PanelSummary``).
 
-    Dossier des BOC absent : :class:`DonneesAbsentes` (code 1)."""
+    Dossier des BOC absent, ou sans aucun bulletin (installation neuve, marqueurs seulement) : :class:`DonneesAbsentes`
+    (code 1), et le panel en place n'est pas touché (avant, dossier vide : code 7, « KeyError : file »)."""
     from brvm_alpha.data import store
 
     if not boc_dir.exists():
         raise DonneesAbsentes(f"échec : dossier des BOC introuvable ({boc_dir}) : lancer d'abord python -m brvm_alpha "
                               "update (téléchargement des BOC depuis www.brvm.org), puis python -m brvm_alpha panel.")
+    if boc_dir.is_dir() and not any(store._FILE_RE.match(p.name) for p in boc_dir.iterdir()):
+        raise DonneesAbsentes(f"échec : aucun bulletin dans {boc_dir} : lancer d'abord python -m brvm_alpha update "
+                              "(téléchargement des BOC depuis www.brvm.org), puis python -m brvm_alpha panel.")
     print(f"Reconstruction du panel {panel_dir} depuis {boc_dir}…", flush=True)
     with short_tempdir_for_workers():
         summary = store.build_panel(boc_dir, panel_dir, workers=workers, force=force)
@@ -2608,24 +2609,34 @@ def _resolve_path_options(args: argparse.Namespace) -> None:
     ``report``). ``--sortie`` vers un dossier existant est refusé (code 2). Mode embarqué : ``--sortie`` reste dans
     les rapports ou le dossier temporaire, hors des fichiers du moteur ; ``--fichier`` et ``--portefeuille`` ne
     lisent que dans les dossiers de données, de rapports ou temporaire ; ``--racine``, ``--panel-dir`` et
-    ``--boc-dir`` désignent un sous-dossier des données (code 2 sinon)."""
+    ``--boc-dir`` désignent un sous-dossier des données (code 2 sinon) ; une valeur vide ou faite d'espaces est
+    refusée (code 2 : elle désignait le dossier courant). ``--sortie -`` ne vaut « sortie standard » que pour
+    ``notes export`` : ailleurs, c'est un nom de fichier comme un autre, résolu comme les autres."""
     if args.command in EMBEDDED_REFUSED:
         return  # validation : comportement inchangé
+    embarque = paths.est_embarque()
     for attr, base in _PATH_OPTIONS:
         value = getattr(args, attr, None)
-        if value is None or str(value).strip() == "" or (attr == "sortie" and str(value).strip() == "-"):
+        if value is None:
             continue
+        if attr == "sortie" and str(value) == "-" and getattr(args, "notes_cmd", None) == "export":
+            continue  # notes export --sortie - : sortie standard
+        if str(value).strip() == "":
+            if embarque:  # une valeur vide ou faite d'espaces désignerait le dossier courant, hors des dossiers permis
+                raise SaisieInvalide(f"refusé : --{attr.replace('_', '-')} vide ou fait seulement d'espaces ; en mode "
+                                     "embarqué, donner un chemin ou retirer l'option.")
+            continue  # hors mode embarqué : comportement inchangé
         resolved = Path(os.path.abspath(paths.resoudre_chemin_option(value, base=base)))
         if attr == "sortie":
             if resolved.is_dir():
                 raise SaisieInvalide(f"refusé : --sortie {resolved} est un dossier (donner un nom de fichier, par "
                                      "exemple rapport.html).")
             paths.verifier_ecriture(resolved)  # mode embarqué : jamais dans l'arbre du code (code 8)
-            if paths.est_embarque():
+            if embarque:
                 _check_embedded_output(resolved)
-        elif attr in _READ_OPTIONS and paths.est_embarque():
+        elif attr in _READ_OPTIONS and embarque:
             _check_embedded_input(resolved, attr)
-        elif attr in _DATA_DIR_OPTIONS and paths.est_embarque():
+        elif attr in _DATA_DIR_OPTIONS and embarque:
             _check_embedded_data_dir(resolved, attr)
         setattr(args, attr, str(resolved))
 
@@ -2747,7 +2758,16 @@ def _error_message(exc: BaseException) -> str:
 
 
 def _report_error(exc: BaseException, st: _SortieJson | None) -> int:
-    """Message sur la sortie d'erreur (trace pour une erreur interne seulement), objet JSON d'erreur ; rend le code."""
+    """Message sur la sortie d'erreur (trace pour une erreur interne seulement), objet JSON d'erreur ; rend le code.
+
+    TERM ou ``SIGXCPU`` reçu **après** l'objet JSON : le résultat est donné, le code de sortie reste celui de l'objet
+    (avant : 130 ou 8 avec un objet ``"ok": true``)."""
+    if isinstance(exc, KeyboardInterrupt) and st is not None and st.emis and demarrage.code_emis() is not None:
+        try:
+            _say(f"{_error_message(exc)} (reçu après l'écriture du résultat : sans effet)")
+        except (OSError, ValueError):
+            pass
+        return int(demarrage.code_emis())
     code = _code_sur(erreurs.code_retour(exc))
     if isinstance(exc, SystemExit) and code == erreurs.OK:
         return code
@@ -2802,6 +2822,17 @@ def _term_as_interruption() -> Iterator[None]:
         signal.signal(signal.SIGTERM, old)
 
 
+def _ecriture_finale(args: argparse.Namespace) -> bool:
+    """Commande dont l'écriture durable est la dernière étape : ``notes add``, ``notes archive``, ``notes export``,
+    ``recommend --sortie`` et ``report``. Dès le point de non-retour de l'écriture, TERM et ``SIGXCPU`` sont reportés
+    jusqu'à la fin de la commande (:func:`brvm_alpha.demarrage.reporter_apres_ecriture`)."""
+    if args.command == "notes":
+        return getattr(args, "notes_cmd", None) in ("add", "archive", "export")
+    if args.command == "recommend":
+        return bool(getattr(args, "sortie", None))
+    return args.command == "report"
+
+
 def run(args: argparse.Namespace) -> int:
     """Lance la commande déjà analysée et applique la table des codes de sortie (jamais 3).
 
@@ -2820,7 +2851,8 @@ def run(args: argparse.Namespace) -> int:
     try:
         try:
             startup_checks(args)
-            with _term_as_interruption():
+            finale = demarrage.reporter_apres_ecriture() if _ecriture_finale(args) else contextlib.nullcontext()
+            with _term_as_interruption(), finale:
                 code = _code_sur(handler(args))
             if st is not None and not st.emis:  # commande sortie sans objet JSON : on en donne un
                 if code == erreurs.OK:

@@ -31,7 +31,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, Any
 
-from brvm_alpha import paths
+from brvm_alpha import demarrage, paths
 from brvm_alpha.erreurs import VerrouOccupe
 
 #: Délai d'attente par défaut d'un verrou (s).
@@ -112,6 +112,7 @@ def fichier_atomique(path: str | Path, mode: str = "wb", *, encoding: str | None
         raise ValueError("fichier_atomique : mode d'écriture « w » ou « wb » attendu")
     p, direct = cible_ecriture(path)
     if direct:
+        demarrage.point_de_non_retour()
         with open(p, mode, encoding=encoding if "b" not in mode else None) as fh:
             yield fh
         return
@@ -123,6 +124,9 @@ def fichier_atomique(path: str | Path, mode: str = "wb", *, encoding: str | None
         fh.flush()
         os.fsync(fh.fileno())
         fh.close()
+        # Point de non-retour : pour une commande dont cette écriture est la dernière étape (report, recommend
+        # --sortie, notes export), TERM et SIGXCPU sont reportés d'ici à l'objet JSON ; ailleurs, sans effet.
+        demarrage.point_de_non_retour()
         os.replace(tmp, p)
         _fsync_dir(p.parent)
     except BaseException:
@@ -150,6 +154,7 @@ def ecrire_atomique_avec(path: str | Path, ecrire: Callable[[Path], Any]) -> Pat
     """
     p, direct = cible_ecriture(path)
     if direct:
+        demarrage.point_de_non_retour()
         ecrire(p)
         return Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -161,6 +166,7 @@ def ecrire_atomique_avec(path: str | Path, ecrire: Callable[[Path], Any]) -> Pat
             os.fsync(fd)
         finally:
             os.close(fd)
+        demarrage.point_de_non_retour()  # voir fichier_atomique
         os.replace(tmp, p)
         _fsync_dir(p.parent)
     except BaseException:

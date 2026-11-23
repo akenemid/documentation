@@ -234,10 +234,13 @@ def embarque(tmp_path, monkeypatch):
 
 
 def test_embedded_data_folder_options_outside_the_data_folder_are_refused_before_any_write(embarque, tmp_path,
-                                                                                           capsys):
+                                                                                           capsys, monkeypatch):
     data, _reports = embarque
     dehors = tmp_path / "ailleurs"
     dehors.mkdir()
+    courant = tmp_path / "cwd_odoo"  # dossier courant du lanceur : une valeur faite d'espaces y menait
+    courant.mkdir()
+    monkeypatch.chdir(courant)
     (data / "lien").symlink_to(dehors, target_is_directory=True)  # lien placé dans les données, qui mène dehors
     note = ["--cible", "SNTS", "--titre", "t", "--texte", "essai"]
     refus = [
@@ -251,12 +254,19 @@ def test_embedded_data_folder_options_outside_the_data_folder_are_refused_before
         ["panel", "--panel-dir", "."],  # relatif : le dossier des données lui-même
         ["panel", "--panel-dir", str(data / "notes")],  # le panel remplacerait le journal
         ["panel", "--panel-dir", str(data / "boc_text" / "panel")],
+        # valeur vide ou faite d'espaces (avant : code 0, journal ou panel créé dans le dossier courant)
+        ["notes", "add", "--racine", " ", *note],
+        ["notes", "add", "--racine", "\t", *note],
+        ["notes", "add", "--racine", "", *note],
+        ["panel", "--panel-dir", " "],
+        ["etat", "--panel-dir", " "],
+        ["update", "--simulation", "--boc-dir", " "],
     ]
     for argv in refus:
         code, out, _ = run_cli(capsys, *argv, "--format", "json")
         d = one_json(out)
         assert code == 2 and d["erreur"] == "saisie_invalide" and d["message"].startswith("refusé"), (argv, d)
-    assert list(dehors.iterdir()) == []  # rien n'a été créé dehors
+    assert list(dehors.iterdir()) == [] and list(courant.iterdir()) == []  # rien n'a été créé dehors
     assert sorted(p.name for p in data.iterdir()) == ["lien", "notes"] and list((data / "notes").iterdir()) == []
     # dans les données : accepté (absolu ou relatif)
     code, out, _ = run_cli(capsys, "notes", "add", "--racine", str(data / "notes"), *note, "--format", "json")

@@ -252,7 +252,16 @@ def preparer_lien_parent() -> Callable[[], None] | None:
 
 def initialiser_travailleur(parent: int | None = None) -> None:
     """Initialisation d'un processus de travail du panel : lié à son parent (:func:`lier_au_parent`), pyarrow à
-    un fil (les variables BLAS viennent du parent)."""
+    un fil (les variables BLAS viennent du parent).
+
+    ``parent`` absent : sous le serveur de processus (« forkserver »), le parent attendu est ce serveur
+    (:data:`brvm_alpha.lien_parent.SERVEUR`, hérité par ``fork``). Si le moteur a été tué juste au démarrage du pool,
+    le serveur est déjà mort quand le travailleur pose son lien : le travailleur s'arrête aussitôt (avant : il restait
+    vivant, orphelin, avec le ``resource_tracker``, rattaché au processus 1)."""
+    if parent is None:
+        serveur = getattr(sys.modules.get("brvm_alpha.lien_parent"), "SERVEUR", None)
+        if isinstance(serveur, int) and serveur != os.getpid():
+            parent = serveur
     lier_au_parent(parent)
     regler_arrow(1)
 

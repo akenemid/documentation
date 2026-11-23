@@ -2,7 +2,9 @@
 
 - ``pdftotext`` tourne en sous-processus **borné** (:func:`lancer_outil`) : délai (:data:`DELAI_PDFTOTEXT_S`),
   mémoire virtuelle (:data:`MEMOIRE_OUTIL`) et taille de la sortie (:data:`SORTIE_MAX`) ; il est **lié au
-  moteur** (``PR_SET_PDEATHSIG``) : si le moteur meurt seul, l'outil meurt avec lui, sans orphelin ;
+  moteur** (``PR_SET_PDEATHSIG``) : si le moteur meurt seul, l'outil meurt avec lui, sans orphelin ; et il est
+  **récolté dès sa fin** (:func:`_attendre`) : il ne reste presque jamais zombie (risque résiduel : un outil déjà
+  sorti, le moteur tué dans le même instant, est récolté par le processus 1 avec son propre code) ;
 - ``pdfplumber`` (repli pur Python, plus lent) tourne lui aussi dans un **sous-processus** borné en
   durée (:data:`DELAI_PDFPLUMBER_S`) : un PDF pathologique ne fige ni ne gonfle le processus du moteur ;
 - en **mode embarqué** (:func:`brvm_alpha.paths.est_embarque`), ``pdftotext`` est obligatoire :
@@ -71,6 +73,33 @@ def _limites_outil(memoire: int, sortie: int):
     return poser
 
 
+def _attendre(proc: subprocess.Popen, delai: float) -> int:
+    """Code de sortie de l'outil, récolté **dès sa fin** (au plus ``delai`` secondes, ``TimeoutExpired`` au-delà).
+
+    ``Popen.wait(timeout)`` interroge par sommeils qui montent jusqu'à 50 ms : pendant ce temps, l'outil fini reste un
+    processus zombie, et si le moteur est tué seul à cet instant, le processus 1 (le maître Odoo) le récolte avec son
+    propre code (poppler documente le code 3). Ici, le moteur est réveillé par le noyau à la fin de l'outil
+    (``pidfd_open`` et ``poll``, Linux 5.3 et plus) et le récolte aussitôt. Sans ``pidfd_open`` : ``Popen.wait``."""
+    import math
+    import select
+    import time
+
+    try:
+        fd = os.pidfd_open(proc.pid)
+    except (AttributeError, OSError):  # système sans pidfd (noyau ancien, hors Linux)
+        return proc.wait(timeout=delai)
+    try:
+        attente = select.poll()
+        attente.register(fd, select.POLLIN)
+        fin = time.monotonic() + float(delai)
+        while not attente.poll(max(0, math.ceil((fin - time.monotonic()) * 1000))):
+            if time.monotonic() >= fin:
+                raise subprocess.TimeoutExpired(proc.args, delai)
+    finally:
+        os.close(fd)
+    return proc.wait()  # l'outil est fini : récolté sans attendre
+
+
 def lancer_outil(cmd: list[str], *, delai: float, memoire: int = MEMOIRE_OUTIL,
                  sortie: int = SORTIE_MAX) -> tuple[int, bytes, bytes]:
     """``(code, sortie, erreurs)`` d'un outil de poppler, **borné** : durée (``delai``), mémoire virtuelle
@@ -88,7 +117,7 @@ def lancer_outil(cmd: list[str], *, delai: float, memoire: int = MEMOIRE_OUTIL,
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                 preexec_fn=_limites_outil(int(memoire), int(sortie)), close_fds=True)
         try:
-            code = proc.wait(timeout=delai)
+            code = _attendre(proc, delai)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
