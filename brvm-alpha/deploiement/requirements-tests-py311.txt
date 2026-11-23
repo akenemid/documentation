@@ -1,0 +1,42 @@
+# Paquets Python de la SUITE DE TESTS sous Python 3.11 (jeu complet, pytest compris), versions exactes
+# relevées le 22/11/2026 dans l'environnement de test 3.11 de la machine de développement. Une ligne par
+# paquet. Ce n'est pas le moteur embarqué : celui-ci n'installe que requirements-moteur-py311.txt.
+# Installation :  python3.11 -m pip install -r deploiement/requirements-tests-py311.txt
+beautifulsoup4==4.15.0
+certifi==2026.11.20
+cffi==2.1.1
+charset-normalizer==3.5.2
+cloudpickle==3.1.3
+cryptography==50.0.2
+formulaic==1.2.2
+idna==3.20
+iniconfig==2.3.1
+interface_meta==2.0.1
+joblib==1.6.0
+lxml==6.1.3
+narwhals==2.29.0
+numpy==2.4.6
+packaging==26.3
+pandas==3.1.1
+patsy==1.0.3
+pdfminer.six==20260107
+pdfplumber==0.11.11
+pillow==13.0.0
+pluggy==1.7.0
+pyarrow==26.0.1
+pycparser==3.12
+Pygments==2.21.0
+pypdfium2==5.15.2
+pytest==9.2.0
+python-dateutil==4.0.0
+PyYAML==6.0.4
+requests==2.34.2
+scikit-learn==1.9.1
+scipy==1.17.1
+soupsieve==4.1.3
+statsmodels==0.15.0
+threadpoolctl==3.8.0
+typing_extensions==4.16.0
+tzdata==2026.6
+urllib3==2.8.0
+wrapt==2.5.2

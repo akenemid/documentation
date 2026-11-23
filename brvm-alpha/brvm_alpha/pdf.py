@@ -94,11 +94,12 @@ def extracteur(embarque: bool | None = None) -> str:
     if pdftotext_disponible():
         return "pdftotext"
     if emb:
-        raise ConfigurationError("mode embarqué : pdftotext (paquet poppler-utils) est obligatoire pour convertir "
-                                 "les PDF ; aucun repli n'est permis.")
+        raise ConfigurationError("pdftotext absent : installer poppler-utils (mode embarqué : pdftotext est "
+                                 "obligatoire pour convertir les PDF, aucun repli n'est permis).")
     if _pdfplumber_present():
         return "pdfplumber"
-    raise ConfigurationError("aucun extracteur PDF : installer pdftotext (poppler-utils) ou pdfplumber.")
+    raise ConfigurationError("pdftotext absent : installer poppler-utils (aucun extracteur PDF : ni pdftotext ni "
+                             "pdfplumber).")
 
 
 def _verifier_taille(path: Path) -> None:
@@ -116,7 +117,7 @@ def par_pdftotext(path: str | Path, *, layout: bool = True, delai: float = DELAI
     _verifier_taille(p)
     exe = shutil.which("pdftotext")
     if not exe:
-        raise ConfigurationError("pdftotext introuvable (paquet poppler-utils).")
+        raise ConfigurationError("pdftotext absent : installer poppler-utils.")
     cmd = [exe, *(["-layout"] if layout else []), str(p), "-"]
     try:
         out = subprocess.run(cmd, capture_output=True, timeout=delai)

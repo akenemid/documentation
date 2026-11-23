@@ -18,7 +18,8 @@ brvm-alpha/
     __init__.py            # version du paquet
     __main__.py            # python -m brvm_alpha
     cli.py                 # update, panel, live, etat, notes, indices, universe, explain, backtest,
-                           # validate, recommend, report, serve (S1 refusé pour tout signal)
+                           # validate, recommend, report, serve (S1 refusé pour tout signal) ; point d'entrée
+                           # unique (codes de retour, un objet JSON avec --format json, mode embarqué)
     paths.py               # dossiers des données et des rapports écrits (BRVM_ALPHA_DONNEES, BRVM_ALPHA_RAPPORTS),
                            # mode embarqué (est_embarque), contrôle des écritures hors de l'arbre du code
     etat.py                # état de l'installation : commande etat et adresse /etat.json (lecture seule)
@@ -70,14 +71,21 @@ brvm-alpha/
     fixtures/              # extraits de BOC (.txt.gz), pages HTML de brvm.org (.html.gz) pour les tests hors ligne
     test_*.py              # 45 modules (parseur, panel, signaux, construction, moteur, validation, notes,
                            # ordre de bataille, stress, rapport, CLI, interface, non-régressions des revues,
-                           # déploiement : test_deploiement_ui.py, test_deploiement_cli.py, test_deploiement_scripts.py)
+                           # déploiement : test_deploiement_ui.py, test_deploiement_cli.py, test_deploiement_scripts.py,
+                           # test_deploiement_export.py ; contrat de la ligne de commande : test_contrat_cli.py ;
+                           # couches internes : test_embarque_donnees.py, test_embarque_reseau.py)
     ui_reference_pages.py  # pages de référence à données fixes (empreintes sans préfixe, liens sous préfixe)
-  deploiement/             # service.sh, collecte-initiale.sh, quotidien.sh, commun.sh (shell POSIX),
-                           # requirements-moteur.txt, Dockerfile.moteur (non construit ici)
+  deploiement/             # exporter-moteur.sh (export embarqué + VERSION), preparer-python-et-roues.sh,
+                           # installer-python-et-roues.sh (CPython 3.11 autonome, roues hors ligne),
+                           # requirements-moteur-py311.txt (16 paquets), requirements-tests-py311.txt,
+                           # roues-py311-x86_64.tsv, python-autonome.txt ; service.sh, collecte-initiale.sh,
+                           # quotidien.sh, commun.sh (shell POSIX, flock, jamais le code 3),
+                           # requirements-moteur.txt (Python 3.13), Dockerfile.moteur (non construit ici)
   docs/
     SPECIFICATION_STRATEGIE.md  # spécification v1 ; §8.4 additif v1.1 (D1-D12, fait foi) ; §8.5 errata (E1-E11)
     ARCHITECTURE.md        # ce document
-    DEPLOIEMENT.md         # installation à côté d'Odoo : service, collecte, relais (contrat), sécurité, charge
+    DEPLOIEMENT.md         # partie A : moteur embarqué dans Odoo (appels en ligne de commande, production) ;
+                           # partie B : service et relais (non utilisés en production)
     annexes-spec/          # calculs reproductibles de la spécification (univ_breadth.py, tr_reconstruction.py)
     research/              # revues vérifiées 01 à 08 et annexes du document 07 (données, scripts)
   reports/
@@ -462,17 +470,29 @@ Modèle v1 + additif v1.1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §8.4, §9
 ### `cli.py`
 `python -m brvm_alpha <commande>` ; aide et messages d'erreur en français (`FrArgumentParser`), bannière
 « Performance passée ≠ garantie. Aucun gain n'est garanti. » sur toute sortie destinée à l'utilisateur.
-Codes de sortie : 0 succès, 1 échec (données absentes, collecte arrêtée), 2 refus ou saisie invalide.
+- **Point d'entrée** : `main(argv)` analyse les arguments (`FrArgumentParser` ; une erreur d'arguments lève
+  `SystemExit(2)` après le message et, si `--format json` figure dans `argv` (`json_demande`), l'objet JSON
+  d'erreur), puis `run(args)` : `startup_checks` (mode embarqué : `paths.verifier_configuration()`, refus de
+  `validate` et `backtest` en code 8 ; chemins des options rendus absolus par `paths.resoudre_chemin_option`,
+  `--sortie` contrôlé avant tout calcul), commande, puis table des codes de `brvm_alpha.erreurs`
+  (`erreurs.code_retour` : 0, 1, 2, 4, 5, 6, 7, 8, 130 ; **jamais 3**, un code 3 devient 7 ;
+  `BrokenPipeError` : sortie silencieuse). Le signal TERM devient une interruption (code 130). Avec
+  `--format json`, la sortie standard est réservée à l'unique objet (`emit_json`, `emit_echec` : `ok` en
+  tête, `bandeau` toujours) ; tout autre texte écrit pendant la commande va sur la sortie d'erreur.
 - Données : `update [--from AAAA-MM-JJ] [--jusqu-au] [--delai 10] [--max-requetes 200] [--simulation]
-  [--sans-panel]` (BOC manquants depuis le lendemain du dernier BOC local ; client `brvm_fetcher` =
-  `notes.research.PoliteSession` sans cache disque : robots.txt, ≥ 10 s entre requêtes **d'une session à
-  l'autre**, arrêt définitif et blocage persistant au premier 403/429, refus si www.brvm.org est déjà bloqué ;
-  panel reconstruit si un BOC est ajouté) ; `panel [--force] [--workers]` (`store.build_panel`) ; `live
-  [--format texte|json] [--symbole] [--hors-ligne]` (page publique, une requête polie, cache 60 s).
+  [--sans-panel] [--workers N] [--format]` (`update_window` = `boc_download.update_window` : par défaut tout
+  jour manquant depuis le 02/01/2017, du plus récent au plus ancien ; client `brvm_fetcher` =
+  `boc_download.client_brvm` ; `boc_download.mettre_a_jour` puis panel seulement sans `--sans-panel` ; arrêt
+  au quota : code 1, refus ou réseau : code 5 ; bilan JSON avec marqueurs) ; `panel [--force] [--workers]
+  [--format]` (`store.build_panel`, workers par défaut `min(2, processeurs)`, dossier temporaire court pour
+  les processus de travail : `short_tempdir_for_workers`) ; `live [--format texte|json] [--symbole]
+  [--hors-ligne]` (page publique, une requête polie, cache 60 s).
 - Notes (`--racine` : journal, défaut `data/notes`) : `notes add --cible … --titre --texte|--fichier --avis
   haussier|baissier|neutre --conviction 1-5 --horizon --source --url --publie-le --type --etiquette`
   (`make_manual_note` : source libre en étiquette `source:…`, URL http(s) seulement, date future refusée ;
-  `NoteStore.add(analyze=True)`), `notes list [--cible] [--depuis] [--jusqu-au] [--statut]`, `notes show ID`
+  `NoteStore.add_unique(analyze=True, force=--forcer)` : doublon cherché et note écrite sous le même verrou ;
+  un doublon sort en code 0 avec `cree: false` et `doublon_id` ; JSON : `note_effect`), `notes list [--cible]
+  [--depuis] [--jusqu-au] [--statut]`, `notes show ID`
   et `notes archive ID [--motif]` (préfixe unique d'identifiant, `resolve_note_id`), `notes export [--sortie
   chemin|-]`, `notes research [--cibles] [--hors-ligne] [--max-requetes] [--depuis] [--simulation] [--pdf N]`
   (`run_research`, règles de politesse affichées ; puis lecture du contenu d'au plus `N` documents récents,
@@ -504,6 +524,13 @@ Codes de sortie : 0 succès, 1 échec (données absentes, collecte arrêtée), 2
   **mode historique**, règle stricte à la date demandée. `indices`, `explain`, `recommend` et `report`
   transmettent cet instant (`notes_known_at`) et affichent la ligne datée des notes (`notes_status`,
   `filter_lines`) ; `notes add` indique à quelle séance la note saisie comptera.
+- **Historique** : `history_state(panel_dir, boc_dir)` (même calcul que `etat.readiness`) ; `indices`, `explain`,
+  `recommend`, `report` affichent « HISTORIQUE INCOMPLET : … » et les clés `historique_complet` et
+  `avertissement_historique` ; en mode embarqué, `recommend` et `report` refusent (`HistoriqueIncomplet`, code 1,
+  `"erreur": "historique_incomplet"`) sauf `--accepter-historique-incomplet` (`check_history`).
+- **Rapport** : `report --format json` donne le chemin écrit et l'état de chaque section (`build_report(...,
+  rendu=liste)` reçoit le `RapportHTML` ; `SectionResult.code`) ; code non nul si la section « ordre » échoue.
+  Écritures atomiques : `RapportHTML.write`, `recommend --sortie`, exports des notes.
 - **S1** : `indices`, `explain`, `recommend`, `report` refusent (code 2) toute date de décision ≤ 2022-11-16
   avant tout calcul (`in_s1`, `s1_refusal`) ; `backtest` refuse une période qui recoupe S1 sans
   `--validation-s1` (qui exige `--window-basis`) ; `universe` (comptage) reste permis.
@@ -528,8 +555,9 @@ d'emploi complet et le **contrat du relais** sont dans [DEPLOIEMENT.md](DEPLOIEM
   `site`, `notes`, `rapport`, `donnees` ; `pret` exige un panel lisible et un historique complet depuis le
   02/01/2017), `format_text(etat)`, `code_version()` (commit court lu dans `.git` **sans lancer de commande**,
   sinon `BRVM_ALPHA_VERSION`, sinon « inconnue »), `dir_size`. Lecture seule, aucune requête, jamais d'exception.
-  Les jours restant à télécharger viennent de `cli.update_window(boc_dir, start=None, end=None, today=None)`,
-  la fonction dont se servent aussi `update` et `update --simulation`.
+  Les jours restant à télécharger viennent de `cli.update_window(boc_dir, start=None, end=None, today=None)`
+  (tout l'historique depuis le 02/01/2017), la fonction dont se servent aussi `update` et `update --simulation` ;
+  clé `extracteur_pdf` (`pdf_state` : pdftotext présent, obligatoire en mode embarqué) et `embarque`.
 - `cli` : commande `etat [--format texte|json] [--panel-dir] [--boc-dir] [--racine]` (code 0 toujours) ;
   `serve [--prefixe /chemin] [--origine-relais URL]… [--cadre-meme-origine]` (variables `BRVM_ALPHA_PREFIXE`
   et `BRVM_ALPHA_ORIGINES_RELAIS`, l'option l'emporte) ; saisies `parse_prefix`, `parse_origin`, `split_origins`.
@@ -542,8 +570,12 @@ d'emploi complet et le **contrat du relais** sont dans [DEPLOIEMENT.md](DEPLOIEM
 - `ui.pages` : `PageContext.prefix` ; `layout` ajoute le préfixe à tous les liens, actions, adresses de
   fichiers (`with_prefix`) et à l'appel JavaScript (`body_script`). **Sans préfixe, les pages sortent à l'octet
   près comme avant** (empreintes de `tests/test_deploiement_ui.py`).
-- `deploiement/` : `commun.sh` (variables, journal horodaté, verrou, priorité basse), `service.sh`,
-  `collecte-initiale.sh [--simulation]`, `quotidien.sh`.
+- `deploiement/` : `commun.sh` (variables aux chemins absolus, journal horodaté, verrou `flock` hérité par la
+  commande en cours, TERM transmis, priorité basse `nice -n 19` et `ionice -c 2 -n 7`, conclusion de `update`
+  d'après son code et `site.bloque`), `service.sh`, `collecte-initiale.sh [--simulation]`, `quotidien.sh` ;
+  codes 0, 1, 2, 4, 5, 8, 130/143, jamais 3. `exporter-moteur.sh DOSSIER` (export embarqué et `VERSION`),
+  `preparer-python-et-roues.sh DOSSIER` (téléchargement vérifié, rien d'installé),
+  `installer-python-et-roues.sh [PREFIXE] DOSSIER CODE` (hors ligne, `.pth`, contrôle final par `etat`).
 
 ### Couches internes du moteur embarqué (`erreurs`, `paths`, `fichiers`, `net`, `pdf`, `ressources`)
 - **Mode embarqué** : `paths.est_embarque()` (variable `BRVM_ALPHA_EMBARQUE=1` ou fichier `VERSION` à la racine

@@ -2,11 +2,13 @@
 
 Données
   ``update [--from AAAA-MM-JJ]`` : télécharge **poliment** les BOC manquants depuis www.brvm.org
-  (robots.txt respecté, au moins 10 s entre deux requêtes, arrêt définitif au premier HTTP 403/429)
-  puis reconstruit le panel ; ``panel`` : reconstruit ``data/panel`` depuis les BOC locaux ;
-  ``live`` : cours du jour (page publique, instantané sans historique) ; ``etat`` : état de
-  l'installation (panel, bulletins, jours restant à télécharger, notes, dernier rapport, taille des
-  données, version), sans aucune requête, code de sortie toujours 0.
+  (par défaut tout jour manquant depuis le 02/01/2017, du plus récent au plus ancien ; robots.txt
+  respecté, au moins 10 s entre deux requêtes, arrêt définitif au premier HTTP 403/429) puis
+  reconstruit le panel (sauf ``--sans-panel``) ; ``panel`` : reconstruit ``data/panel`` depuis les BOC
+  locaux ; ``live`` : cours du jour (page publique, instantané sans historique) ; ``etat`` : état de
+  l'installation (prêt seulement si le panel est lisible et l'historique complet, bulletins, jours
+  restant à télécharger, notes, dernier rapport, taille des données, pdftotext, version), sans aucune
+  requête, code de sortie 0.
   Les données et les rapports écrits peuvent être placés hors de l'arbre du code : variables
   d'environnement ``BRVM_ALPHA_DONNEES`` et ``BRVM_ALPHA_RAPPORTS`` (:mod:`brvm_alpha.paths`) ; les
   options ``--panel-dir``, ``--boc-dir``, ``--racine`` et ``--sortie`` l'emportent.
@@ -44,13 +46,27 @@ refusent une date de décision antérieure au 17/11/2022 (code 2). Toutes les so
 des estimations sous hypothèses (coûts, exécution) : **Performance passée ≠ garantie. Aucun gain
 n'est garanti.**
 
-Codes de sortie : 0 succès ; 1 échec (données absentes, arrêt de la collecte) ; 2 refus ou erreur de
-saisie.
+Codes de sortie (toutes les commandes, :mod:`brvm_alpha.erreurs` ; le code 3 n'est **jamais** rendu) :
+0 succès ; 1 données absentes, historique non prêt ou quota de requêtes atteint ; 2 saisie invalide ou refus
+(erreurs d'arguments comprises) ; 4 verrou occupé ; 5 accès refusé ou réseau (HTTP 403 ou 429, liste blanche,
+délai dépassé) ; 6 mémoire insuffisante ; 7 erreur interne ; 8 configuration manquante ou invalide (mode
+embarqué sans dossiers, pdftotext absent) ; 130 interruption (Ctrl+C).
+
+Sortie JSON (``--format json``) : la sortie standard porte **exactement un objet JSON**, erreur comprise :
+``{"ok": true, …, "bandeau": …}`` ou ``{"ok": false, "code": N, "erreur": "<type>", "message": "…",
+"bandeau": …}`` ; avertissements et progression vont sur la sortie d'erreur.
+
+Mode embarqué (:func:`brvm_alpha.paths.est_embarque`) : ``BRVM_ALPHA_DONNEES`` et ``BRVM_ALPHA_RAPPORTS``
+obligatoires et absolus (code 8 sinon, avant toute écriture) ; chemins relatifs des options résolus depuis
+ces dossiers ; ``validate`` et ``backtest`` refusés (code 8) ; ``recommend`` et ``report`` refusés sur un
+historique incomplet (code 1) sauf ``--accepter-historique-incomplet``.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import contextvars
 import datetime as dt
 import ipaddress
 import json
@@ -58,14 +74,16 @@ import math
 import os
 import re
 import sys
+import traceback
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from brvm_alpha import paths
+from brvm_alpha import erreurs, paths
+from brvm_alpha.erreurs import ConfigurationError, DonneesAbsentes, HistoriqueIncomplet, SaisieInvalide
 
 BANNER = "Performance passée ≠ garantie. Aucun gain n'est garanti."
 S1 = ("2017-01-02", "2022-11-16")
@@ -136,8 +154,47 @@ class FrArgumentParser(argparse.ArgumentParser):
                           help="affiche cette aide et quitte")
 
     def error(self, message: str):  # type: ignore[override]
+        """Saisie invalide : usage et message sur la sortie d'erreur, code 2 ; avec ``--format json``, l'objet
+        JSON d'erreur sur la sortie standard (rien d'autre)."""
         self.print_usage(sys.stderr)
-        self.exit(2, f"{self.prog} : erreur : {_fr_error(message)}\n")
+        text = _fr_error(message)
+        if _FORMAT_DEMANDE.get() == "json":
+            sys.stderr.write(f"{self.prog} : erreur : {text}\n")
+            sys.stdout.write(json.dumps({"ok": False, "code": erreurs.SAISIE_INVALIDE, "erreur": "saisie_invalide",
+                                         "message": f"erreur : {text}", "bandeau": BANNER}, ensure_ascii=False,
+                                        indent=1) + "\n")
+            sys.stdout.flush()
+            raise SystemExit(erreurs.SAISIE_INVALIDE)
+        self.exit(erreurs.SAISIE_INVALIDE, f"{self.prog} : erreur : {text}\n")
+
+
+#: Format demandé sur la ligne de commande, relevé AVANT l'analyse des arguments (erreurs d'argparse en JSON).
+_FORMAT_DEMANDE: contextvars.ContextVar[str | None] = contextvars.ContextVar("brvm_alpha_format", default=None)
+
+
+def json_demande(argv: Sequence[str]) -> bool:
+    """``--format json`` (ou ``--format=json``, abréviation comprise) figure-t-il dans ``argv`` ?"""
+    toks = [str(a) for a in argv]
+    for i, tok in enumerate(toks):
+        name, eq, val = tok.partition("=")
+        if not (len(name) >= 4 and "--format".startswith(name)):
+            continue
+        if (eq and val == "json") or (not eq and i + 1 < len(toks) and toks[i + 1] == "json"):
+            return True
+    return False
+
+
+class _SortieJson:
+    """Sortie standard réservée à l'unique objet JSON d'une commande lancée avec ``--format json``."""
+
+    def __init__(self, out: Any) -> None:
+        self.out = out
+        self.emis = False
+        self.dernier_message: str | None = None
+
+
+_SORTIE_JSON: contextvars.ContextVar[_SortieJson | None] = contextvars.ContextVar("brvm_alpha_sortie_json",
+                                                                                   default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -457,8 +514,55 @@ def to_jsonable(obj: Any) -> Any:
     return jsonable(obj)
 
 
+def emit_json(obj: dict[str, Any], *, ok: bool | None = True) -> None:
+    """Écrit l'objet JSON de la commande : ``ok`` en tête, ``bandeau`` ajouté s'il manque.
+
+    Sous :func:`main` avec ``--format json``, l'objet va sur la vraie sortie standard (la progression étant
+    renvoyée sur la sortie d'erreur), une seule fois : un second objet irait sur la sortie d'erreur.
+    """
+    d = {k: v for k, v in dict(obj).items() if k != "ok"}
+    if ok is not None:
+        d = {"ok": bool(ok), **d}
+    d.setdefault("bandeau", BANNER)
+    text = json.dumps(to_jsonable(d), ensure_ascii=False, indent=1)
+    st = _SORTIE_JSON.get()
+    if st is None:
+        print(text)
+        return
+    if st.emis:  # jamais deux objets sur la sortie standard
+        print(text, file=sys.stderr)
+        return
+    st.out.write(text + "\n")
+    st.out.flush()
+    st.emis = True
+
+
+def emit_echec(code: int, message: str, *, erreur: str | None = None, **extra: Any) -> int:
+    """Objet JSON d'erreur ``{"ok": false, "code", "erreur", "message", …, "bandeau"}`` ; renvoie ``code``.
+
+    Sert aux commandes qui rendent un bilan malgré l'échec (téléchargement arrêté, section en échec).
+    """
+    code = _code_sur(code)
+    emit_json({"code": code, "erreur": erreur or erreurs.TYPES.get(code, "interne"), "message": message, **extra},
+              ok=False)
+    return code
+
+
 def _print_json(obj: Any) -> None:
-    print(json.dumps(to_jsonable(obj), ensure_ascii=False, indent=1))
+    emit_json(obj)
+
+
+def _json(args: argparse.Namespace) -> bool:
+    return getattr(args, "format", None) == "json"
+
+
+def _code_sur(code: Any) -> int:
+    """Code de sortie admis : un entier, jamais 3 (il arrête le maître Odoo) ; sinon 7 (erreur interne)."""
+    try:
+        c = int(code)
+    except (TypeError, ValueError):
+        return erreurs.INTERNE
+    return erreurs.INTERNE if c == erreurs.CODE_INTERDIT else c
 
 
 def _table(rows: list[list[str]], headers: list[str]) -> str:
@@ -471,11 +575,16 @@ def _table(rows: list[list[str]], headers: list[str]) -> str:
 
 def _say(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+    st = _SORTIE_JSON.get()
+    if st is not None:
+        st.dernier_message = str(msg)
 
 
 #: Étape suivante quand le panel manque (mêmes mots dans toutes les commandes et dans l'interface).
-PANEL_HINT = ("lancer python -m brvm_alpha update (téléchargement des BOC, plusieurs lancements pour un historique "
-              "complet), puis python -m brvm_alpha panel")
+PANEL_HINT = ("lancer python -m brvm_alpha update (téléchargement des BOC depuis le 02/01/2017, à relancer tant que "
+              "« python -m brvm_alpha etat » compte des jours à télécharger : environ 4 000 requêtes, une vingtaine de "
+              "lancements, 11 heures en tout ; ou sh deploiement/collecte-initiale.sh), puis "
+              "python -m brvm_alpha panel")
 
 
 def panel_missing_message(panel_dir: str | Path | None = None) -> str:
@@ -511,6 +620,77 @@ def panel_warning(panel_dir: str | Path | None, date: Any = None, *, now: Any = 
         return rec.stale_panel_message(last, now_utc() if now is None else now, orders=orders)
     except Exception:  # un contrôle d'affichage ne fait jamais échouer une commande
         return None
+
+
+def _boc_dir_for(panel_dir: Any = None, boc_dir: Any = None) -> Path:
+    """Dossier des bulletins d'un panel : ``boc_dir`` donné, sinon ``boc_text`` voisin d'un ``--panel-dir``
+    explicite s'il existe, sinon le dossier par défaut (``<données>/boc_text``)."""
+    if boc_dir:
+        return Path(boc_dir)
+    if panel_dir:
+        sibling = Path(panel_dir).parent / "boc_text"
+        if sibling.is_dir():
+            return sibling
+    return DEFAULT_BOC_DIR
+
+
+def history_state(panel_dir: Any = None, boc_dir: Any = None, now: Any = None) -> dict[str, Any]:
+    """L'historique est-il complet ? Même calcul que ``etat`` (:func:`brvm_alpha.etat.readiness`), sans requête.
+
+    Renvoie ``{"complet": bool, "raison": str | None, "jours_manquants": int | None, "avertissement": str |
+    None}`` ; ``avertissement`` : phrase « HISTORIQUE INCOMPLET : … » à afficher en tête quand il manque des
+    bulletins depuis le 02/01/2017 ou que le panel ne les couvre pas. Ne lève jamais.
+    """
+    from brvm_alpha import etat
+
+    t = now_utc() if now is None else pd.Timestamp(now)
+    t = t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+    pdir = Path(panel_dir) if panel_dir else DEFAULT_PANEL_DIR
+    out: dict[str, Any] = {"complet": False, "raison": None, "jours_manquants": None, "avertissement": None}
+    try:
+        panel = etat.panel_state(pdir, t)
+        bulletins = etat.bulletins_state(_boc_dir_for(panel_dir, boc_dir), t.date())
+        complete, reason = etat.readiness(panel, bulletins)
+    except Exception as exc:  # relevé illisible : réputé incomplet
+        complete, reason, bulletins = False, f"état de l'historique illisible ({type(exc).__name__} : {exc})", {}
+    out["complet"] = bool(complete)
+    out["jours_manquants"] = bulletins.get("jours_manquants")
+    if complete:
+        return out
+    if not bulletins.get("historique_complet"):
+        n = bulletins.get("jours_manquants")
+        detail = (f"{fr_num(n, 0)} jour(s) ouvré(s) sans bulletin ni marqueur depuis le 02/01/2017" if n is not None
+                  else "bulletins depuis le 02/01/2017 illisibles ou absents")
+    else:
+        detail = reason or "le panel ne couvre pas les bulletins"
+    out["raison"] = detail
+    out["avertissement"] = (f"HISTORIQUE INCOMPLET : {detail}. Distribution, signaux et ordres sont calculés sur un "
+                            "historique partiel : leurs chiffres peuvent être faux. Compléter d'abord la collecte "
+                            "(python -m brvm_alpha update, à relancer tant que « etat » compte des jours à "
+                            "télécharger, puis python -m brvm_alpha panel).")
+    return out
+
+
+def check_history(args: argparse.Namespace, what: str, *, refuse: bool = False) -> dict[str, Any]:
+    """Relevé de l'historique pour ``indices``, ``explain``, ``recommend`` et ``report`` (:func:`history_state`).
+
+    ``refuse=True`` : en mode embarqué, un historique incomplet lève :class:`HistoriqueIncomplet` (code 1, JSON
+    ``"erreur": "historique_incomplet"``) sauf ``--accepter-historique-incomplet`` ; hors mode embarqué, seul
+    l'avertissement est donné (la commande l'affiche en tête).
+    """
+    h = history_state(getattr(args, "panel_dir", None), getattr(args, "boc_dir", None))
+    if h["complet"]:
+        return h
+    if refuse and paths.est_embarque() and not getattr(args, "accepter_historique_incomplet", False):
+        raise HistoriqueIncomplet(
+            f"refusé : {what} sur un historique incomplet ({h['raison']}). Mode embarqué : compléter d'abord la "
+            "collecte (update, puis panel), ou relancer avec --accepter-historique-incomplet.")
+    return h
+
+
+def _history_keys(h: dict[str, Any]) -> dict[str, Any]:
+    """Clés JSON de l'historique : ``historique_complet`` et ``avertissement_historique``."""
+    return {"historique_complet": bool(h.get("complet")), "avertissement_historique": h.get("avertissement")}
 
 
 # ---------------------------------------------------------------------------
@@ -577,40 +757,16 @@ def resolve_note_id(store: Any, prefix: str) -> str:
 
 
 def brvm_fetcher(max_requests: int = 200, delay_s: float = 10.0, cache_dir: Any = None) -> Callable[[str], tuple[int, bytes]]:
-    """Client poli de ``notes.research`` pour ``boc_download`` (délai et blocage partagés, sans cache disque).
+    """Client poli de ``update`` : :func:`brvm_alpha.data.boc_download.client_brvm` (délai et blocage partagés).
 
-    L'appelable renvoie ``(statut, contenu)`` et lève ``boc_download.DownloadStopped`` au premier
-    403/429, sur interdiction du robots.txt, quota atteint ou serveur indisponible.
+    L'appelable renvoie ``(statut, contenu)`` ; il lève ``boc_download.DownloadStopped`` au premier 403/429,
+    sur interdiction du robots.txt, quota atteint, serveur indisponible, refus de la liste blanche ou toute
+    autre erreur de collecte (jamais prise pour « pas de bulletin »), et ``ReponseInexploitable`` pour une
+    adresse sans bulletin exploitable (redirections en boucle, réponse trop grosse : marqueur non définitif).
     """
     from brvm_alpha.data import boc_download
-    from brvm_alpha.notes import research as rs
 
-    class _NoCacheSession(rs.PoliteSession):
-        """Les PDF (~1 Mo) ne sont pas conservés dans le cache HTTP."""
-
-        def cache_get(self, url: str):  # noqa: D401
-            return None
-
-        def cache_put(self, *args: Any, **kwargs: Any) -> None:
-            return None
-
-    cdir = Path(cache_dir) if cache_dir is not None else rs.DEFAULT_NOTES_DIR / "cache"
-    sess = _NoCacheSession(delay_s=max(float(delay_s), boc_download.MIN_DELAY_S), max_requests=max_requests,
-                           cache_dir=cdir, log_path=cdir.parent / "fetch_log.jsonl", max_retries=2,
-                           user_agent=boc_download.USER_AGENT)
-
-    def fetch(url: str) -> tuple[int, bytes]:
-        try:
-            res = sess.get(url)
-        except (rs.AccessBlocked, rs.RobotsDisallowed, rs.QuotaExceeded, rs.ServerUnavailable,
-                rs.SourceDisabled) as exc:
-            raise boc_download.DownloadStopped(str(exc)) from exc
-        except rs.ResearchError:  # trop de redirections : pas de bulletin à cette adresse
-            return 0, b""
-        return int(res.status), bytes(res.content or b"")
-
-    fetch.session = sess  # type: ignore[attr-defined]
-    return fetch
+    return boc_download.client_brvm(max_requests=max_requests, delay_s=delay_s, cache_dir=cache_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +795,22 @@ def _add_notes_au(p: argparse.ArgumentParser, default: Any = None) -> None:
                    metavar="AAAA-MM-JJ[THH:MM]", help=_NOTES_AU_HELP)
 
 
+def _add_history_option(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--accepter-historique-incomplet", dest="accepter_historique_incomplet", action="store_true",
+                   help="mode embarqué : calcule quand même sur un historique incomplet (refusé par défaut, code 1) ; "
+                        "hors mode embarqué, l'avertissement est toujours affiché")
+
+
+#: Scénarios de coûts admis par ``--couts`` (alias français acceptés : optimiste, centrale, sévère).
+COST_CHOICES = ("optimistic", "central", "stress", "severe")
+_COST_ALIASES = {"optimiste": "optimistic", "centrale": "central", "sévère": "severe", "severe_stress": "severe"}
+
+
+def _costs_arg(value: str) -> str:
+    v = str(value or "").strip().lower()
+    return _COST_ALIASES.get(v, v)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Analyseur des arguments (en français)."""
     parser = FrArgumentParser(prog="python -m brvm_alpha", description=_DESCRIPTION)
@@ -648,9 +820,14 @@ def build_parser() -> argparse.ArgumentParser:
     up = sub.add_parser("update", help="télécharge les BOC manquants (brvm.org, poliment) puis reconstruit le panel",
                         description="Télécharge les Bulletins Officiels de la Cote manquants depuis www.brvm.org : "
                                     "robots.txt respecté, au moins 10 s entre deux requêtes, arrêt définitif au "
-                                    "premier HTTP 403 ou 429, puis reconstruit data/panel.")
+                                    "premier HTTP 403 ou 429, puis reconstruit data/panel (sauf --sans-panel). Par "
+                                    "défaut, tout jour ouvré sans bulletin ni marqueur depuis le 02/01/2017 est "
+                                    "cherché, du plus récent au plus ancien : un lancement arrêté (quota, refus) est "
+                                    "repris au lancement suivant, sans --from. Codes de sortie : 0 terminé ; 1 quota "
+                                    "atteint (relancer) ; 4 autre téléchargement en cours ; 5 refus du site ou "
+                                    "réseau ; 8 pdftotext absent en mode embarqué.")
     up.add_argument("--from", dest="start", type=_date_arg, default=None, metavar="AAAA-MM-JJ",
-                    help="premier jour cherché (défaut : lendemain du dernier BOC local)")
+                    help="premier jour cherché (défaut : 02/01/2017, début de l'historique)")
     up.add_argument("--jusqu-au", dest="end", type=_date_arg, default=None, metavar="AAAA-MM-JJ",
                     help="dernier jour cherché (défaut : aujourd'hui)")
     up.add_argument("--delai", type=float, default=10.0, metavar="S",
@@ -658,9 +835,14 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--max-requetes", type=_positive_int, default=200, metavar="N",
                     help="quota de requêtes de la session (défaut : 200)")
     up.add_argument("--simulation", action="store_true", help="liste les jours à chercher, sans aucune requête")
-    up.add_argument("--sans-panel", action="store_true", help="ne reconstruit pas le panel")
+    up.add_argument("--sans-panel", action="store_true",
+                    help="ne reconstruit pas le panel, même si de nouveaux bulletins arrivent (« panel » à part)")
+    up.add_argument("--workers", type=_positive_int, default=None, metavar="N",
+                    help="processus d'analyse du panel (défaut : min(2, processeurs disponibles))")
     up.add_argument("--boc-dir", default=None, metavar="DOSSIER", help="BOC texte (défaut : data/boc_text)")
     up.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
+    up.add_argument("--format", choices=("texte", "json"), default="texte",
+                    help="format du bilan (défaut : texte)")
 
     pa = sub.add_parser("panel", help="reconstruit data/panel depuis les BOC locaux",
                         description="Reconstruit le panel parquet (actions, indices, marché, carnet, dividendes, "
@@ -668,7 +850,9 @@ def build_parser() -> argparse.ArgumentParser:
     pa.add_argument("--boc-dir", default=None, metavar="DOSSIER", help="BOC texte (défaut : data/boc_text)")
     pa.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="sortie (défaut : data/panel)")
     pa.add_argument("--force", action="store_true", help="ignore le cache et réanalyse tous les BOC")
-    pa.add_argument("--workers", type=_positive_int, default=None, metavar="N", help="processus d'analyse")
+    pa.add_argument("--workers", type=_positive_int, default=None, metavar="N",
+                    help="processus d'analyse (défaut : min(2, processeurs disponibles, quota du cgroup compris))")
+    pa.add_argument("--format", choices=("texte", "json"), default="texte", help="format du bilan (défaut : texte)")
 
     li = sub.add_parser("live", help="cours du jour (page publique brvm.org, instantané)",
                         description="Cours du jour depuis la page publique https://www.brvm.org/fr/cours-actions/0 "
@@ -683,8 +867,12 @@ def build_parser() -> argparse.ArgumentParser:
                                     "dernière séance du panel, séances présentes et manquantes, retard éventuel, "
                                     "bulletins en cache, jours restant à télécharger (même calcul que « update "
                                     "--simulation »), notes au journal et en vigueur, dernier rapport écrit, taille du "
-                                    "dossier de données, version du code. Le champ « pret » est vrai si le panel "
-                                    "existe et n'est pas vide. Code de sortie 0 même si rien n'est prêt.")
+                                    "dossier de données, version du code, présence de pdftotext. Le champ « pret » est "
+                                    "vrai seulement si le panel est lisible ET l'historique complet depuis le "
+                                    "02/01/2017 (« historique_complet ») ; sinon « raison » dit pourquoi. Tant que des jours "
+                                    "restent à télécharger : relancer python -m brvm_alpha update (il reprend seul "
+                                    "depuis le 02/01/2017), ou sh deploiement/collecte-initiale.sh. Code de sortie 0 "
+                                    "même si rien n'est prêt (8 en mode embarqué sans dossiers de données).")
     et.add_argument("--format", choices=("texte", "json"), default="texte", help="format de sortie (défaut : texte)")
     et.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
     et.add_argument("--boc-dir", default=None, metavar="DOSSIER", help="BOC texte (défaut : data/boc_text)")
@@ -751,6 +939,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_notes_root(nr)
     nr.add_argument("id", metavar="ID", help="identifiant (préfixe unique)")
     nr.add_argument("--motif", default=None, help="motif de l'archivage")
+    nr.add_argument("--format", choices=("texte", "json"), default="texte", help="format de sortie (défaut : texte)")
 
     ne = nsub.add_parser("export", help="exporte les notes en Markdown")
     _add_notes_root(ne)
@@ -776,6 +965,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="après la collecte, lit le contenu d'au plus N documents PDF récents de www.brvm.org "
                          "(alertes, résultats, rapports d'activité, notations…) et réanalyse les notes ; défaut : "
                          "20 ; 0 : ne lit aucun document")
+    nq.add_argument("--format", choices=("texte", "json"), default="texte", help="format du bilan (défaut : texte)")
 
     nd = nsub.add_parser("lire", help="lit le contenu des documents PDF des notes (sans nouvelle collecte)",
                          description="Lit le contenu des documents PDF de www.brvm.org attachés aux notes actives pas "
@@ -795,6 +985,7 @@ def build_parser() -> argparse.ArgumentParser:
     nd.add_argument("--relire", action="store_true",
                     help="relit aussi, depuis le cache seulement (aucune requête), les documents déjà lus, après une "
                          "correction de la lecture ; une nouvelle version n'est écrite que si le résultat change")
+    nd.add_argument("--format", choices=("texte", "json"), default="texte", help="format du bilan (défaut : texte)")
 
     nz = nsub.add_parser("analyze", help="analyse un texte sans l'enregistrer",
                          description="Analyse un texte (type d'événement, ton, chiffres, cibles, matérialité, "
@@ -900,12 +1091,14 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--format", choices=("md", "json", "html"), default="md", help="format (défaut : md)")
     r.add_argument("--date", type=_date_arg, default=None, metavar="AAAA-MM-JJ",
                    help="date de décision (défaut : dernière séance du panel)")
-    r.add_argument("--couts", default="central", help="scénario de coûts : optimistic, central, stress, severe")
+    r.add_argument("--couts", type=_costs_arg, choices=COST_CHOICES, default="central",
+                   help="scénario de coûts : optimistic, central, stress, severe (défaut : central)")
     r.add_argument("--tirages", type=_positive_int, default=5000, metavar="N", help="tirages du bootstrap (5000)")
     r.add_argument("--graine", type=int, default=0, metavar="N", help="graine du bootstrap (0)")
     r.add_argument("--sortie", default=None, metavar="CHEMIN", help="écrit la sortie dans ce fichier")
     r.add_argument("--sans-notes", action="store_true", help="ignore les notes de l'analyste")
     r.add_argument("--sans-indices", action="store_true", help="n'évalue pas les indices (plus rapide)")
+    _add_history_option(r)
     _add_notes_root(r)
     _add_notes_au(r)
     r.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
@@ -921,8 +1114,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="liquidités disponibles (défaut : capital − titres détenus)")
     rp.add_argument("--variante", default=None, help="variante imposée (défaut : choix d'après le test S1)")
     rp.add_argument("--tirages", type=_positive_int, default=5000, metavar="N", help="tirages du bootstrap (5000)")
-    rp.add_argument("--couts", default="central", help="scénario de coûts : optimistic, central, stress, severe")
+    rp.add_argument("--couts", type=_costs_arg, choices=COST_CHOICES, default="central",
+                    help="scénario de coûts : optimistic, central, stress, severe (défaut : central)")
     rp.add_argument("--graine", type=int, default=0, metavar="N", help="graine du bootstrap (0)")
+    rp.add_argument("--format", choices=("texte", "json"), default="texte",
+                    help="format du bilan : chemin écrit et état de chaque section (défaut : texte)")
+    _add_history_option(rp)
     _add_notes_root(rp)
     _add_notes_au(rp)
     rp.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
@@ -966,90 +1163,154 @@ def _add_banner_epilog(p: argparse.ArgumentParser, top: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_panel(boc_dir: Path, panel_dir: Path, force: bool = False, workers: int | None = None) -> int:
+def _build_panel(boc_dir: Path, panel_dir: Path, force: bool = False, workers: int | None = None) -> Any:
+    """Reconstruit le panel ; renvoie son résumé (``PanelSummary``).
+
+    Dossier des BOC absent : :class:`DonneesAbsentes` (code 1)."""
     from brvm_alpha.data import store
 
     if not boc_dir.exists():
-        _say(f"échec : dossier des BOC introuvable ({boc_dir}) : lancer d'abord python -m brvm_alpha update "
-             "(téléchargement des BOC depuis www.brvm.org), puis python -m brvm_alpha panel.")
-        return 1
+        raise DonneesAbsentes(f"échec : dossier des BOC introuvable ({boc_dir}) : lancer d'abord python -m brvm_alpha "
+                              "update (téléchargement des BOC depuis www.brvm.org), puis python -m brvm_alpha panel.")
     print(f"Reconstruction du panel {panel_dir} depuis {boc_dir}…", flush=True)
-    summary = store.build_panel(boc_dir, panel_dir, workers=workers, force=force)
-    print(str(summary))
-    return 0
+    with short_tempdir_for_workers():
+        summary = store.build_panel(boc_dir, panel_dir, workers=workers, force=force)
+    print(str(summary), flush=True)
+    return summary
+
+
+#: Longueur au-delà de laquelle le dossier temporaire est trop long pour le socket Unix des processus de travail
+#: (chemin d'un socket : 107 octets au plus ; s'y ajoutent « /pymp-…/listener-… », une trentaine d'octets).
+_TEMPDIR_MAX = 70
+
+
+@contextlib.contextmanager
+def short_tempdir_for_workers() -> Iterator[None]:
+    """Le temps de la construction du panel, un dossier temporaire au chemin court pour les processus de travail.
+
+    Les processus de travail (``forkserver``) se parlent par un socket Unix créé dans le dossier temporaire ; sous
+    Python 3.11, un ``TMPDIR`` trop long fait échouer le panel (« AF_UNIX path too long »). Dans ce cas seulement,
+    le dossier temporaire du système le plus court qui existe (``/tmp``, ``/var/tmp``, ``/dev/shm``) le remplace
+    pour ce bloc ; rien n'est écrit ailleurs que dans un dossier temporaire du système.
+    """
+    import tempfile
+
+    current = tempfile.gettempdir()
+    if len(os.fsencode(current)) <= _TEMPDIR_MAX:
+        yield
+        return
+    short = next((d for d in ("/tmp", "/var/tmp", "/dev/shm") if os.path.isdir(d) and os.access(d, os.W_OK | os.X_OK)),
+                 None)
+    if short is None:  # rien de mieux : on garde le dossier demandé
+        yield
+        return
+    saved = tempfile.tempdir
+    tempfile.tempdir = short
+    try:
+        yield
+    finally:
+        tempfile.tempdir = saved
 
 
 def update_window(boc_dir: str | Path, start: dt.date | None = None, end: dt.date | None = None,
                   today: dt.date | None = None) -> tuple[dt.date, dt.date, list[dt.date]]:
     """``(premier jour, dernier jour, jours ouvrés à chercher)`` de ``update`` ; lecture du disque seule.
 
-    Défauts de ``update`` : du lendemain du dernier BOC local (ou du 02/01/2017 s'il n'y en a aucun)
-    à aujourd'hui. Même calcul pour ``update``, ``update --simulation`` et ``etat`` : aucune requête.
+    :func:`brvm_alpha.data.boc_download.update_window` : par défaut **tout le calendrier depuis le
+    02/01/2017** jusqu'à aujourd'hui, si bien qu'une collecte interrompue (ou un trou laissé par un
+    lancement arrêté) est reprise sans ``--from`` ; jours du plus récent au plus ancien. Même calcul pour
+    ``update``, ``update --simulation`` et ``etat`` : aucune requête.
     """
     from brvm_alpha.data import boc_download
 
-    boc_dir = Path(boc_dir)
-    today = today or dt.date.today()
-    if start is None:
-        last = last_local_boc(boc_dir)
-        start = (last + dt.timedelta(days=1)) if last else HISTORY_START
-    end = today if end is None or end > today else end
-    days = boc_download.pending_days(start, end, boc_dir) if start <= end else []
-    return start, end, days
+    return boc_download.update_window(Path(boc_dir), start, end, today or dt.date.today())
+
+
+def _exiger_extracteur() -> None:
+    """Extracteur PDF présent ? :class:`ConfigurationError` (code 8) sinon : pdftotext absent en mode embarqué
+    (« pdftotext absent : installer poppler-utils »), ni pdftotext ni pdfplumber hors mode embarqué."""
+    from brvm_alpha import pdf
+
+    pdf.extracteur()
 
 
 def _cmd_update(args: argparse.Namespace) -> int:
     from brvm_alpha.data import boc_download
+    from brvm_alpha.notes import research as rs
 
     boc_dir = Path(args.boc_dir) if args.boc_dir else DEFAULT_BOC_DIR
     panel_dir = Path(args.panel_dir) if args.panel_dir else DEFAULT_PANEL_DIR
     today = dt.date.today()
-    start, end, days = update_window(boc_dir, args.start.date() if args.start is not None else None,
-                                     args.end.date() if args.end is not None else None, today)
+    first = args.start.date() if args.start is not None else None
+    last = args.end.date() if args.end is not None else None
+    start, end, days = update_window(boc_dir, first, last, today)
     delay = max(float(args.delai), boc_download.MIN_DELAY_S)
     print(f"BOC manquants du {start:%d/%m/%Y} au {end:%d/%m/%Y} : {len(days)} jour(s) ouvré(s) à chercher "
           f"(dossier {boc_dir}).")
     print(f"Politesse : robots.txt respecté, {delay:.0f} s au moins entre deux requêtes, arrêt au premier HTTP "
           "403/429, quota de " f"{args.max_requetes} requêtes.")
     if days:
-        worst = len(days) * len(boc_download.RECENT_SUFFIXES) * delay
-        print(f"Durée maximale estimée : {worst / 60:.0f} min (5 adresses possibles par jour).")
+        n_max = min(len(days) * len(boc_download.RECENT_SUFFIXES), int(args.max_requetes))
+        print(f"Durée maximale estimée de ce lancement : {n_max * delay / 60:.0f} min ({n_max} requêtes au plus : 5 "
+              "adresses possibles par jour, dans la limite du quota).")
     if args.simulation:
-        for d in sorted(days):
-            print(f"  {d:%Y-%m-%d}")
+        if not _json(args):
+            for d in sorted(days):
+                print(f"  {d:%Y-%m-%d}")
         print("Simulation : aucune requête envoyée.")
+        if _json(args):
+            emit_json({"simulation": True, "debut": start, "fin": end, "jours_a_chercher": len(days),
+                       "jours": sorted(days), "dossier": str(boc_dir), "quota": int(args.max_requetes)})
         return 0
-    from brvm_alpha.notes import research as rs
-
     cache_dir = rs.DEFAULT_NOTES_DIR / "cache"
     blocked = rs.blocked_hosts(cache_dir).get("www.brvm.org")
     if blocked:
-        _say(f"refusé : www.brvm.org a refusé l'accès le {blocked.get('ts')} (HTTP {blocked.get('status')}). "
-             "Aucune requête n'est envoyée ; le blocage ne se lève qu'explicitement, avec l'accord du site.")
-        return 2
-    n, stopped = 0, None
+        raise boc_download.DownloadStopped(
+            f"refusé : www.brvm.org a refusé l'accès le {blocked.get('ts')} (HTTP {blocked.get('status')}). Aucune "
+            "requête n'est envoyée ; le blocage ne se lève qu'explicitement, avec l'accord du site.", raison="bloque")
+    fetch = None
     if days:
+        _exiger_extracteur()
         fetch = brvm_fetcher(max_requests=args.max_requetes, delay_s=delay, cache_dir=cache_dir)
-        try:
-            n = boc_download.download_range(start, end, boc_dir, pause=delay, fetcher=fetch, today=today,
-                                            progress=lambda m: print("  " + m, flush=True))
-        except boc_download.DownloadStopped as exc:
-            stopped = str(exc)
-            _say(f"arrêt : {exc}")
-        print(f"{n} BOC téléchargé(s) ; {fetch.session.n_requests} requête(s) envoyée(s).")  # type: ignore[attr-defined]
-    code = 1 if stopped else 0
-    if n > 0 and not args.sans_panel:
-        code = max(code, _build_panel(boc_dir, panel_dir))
+    bilan = boc_download.mettre_a_jour(boc_dir, panel_dir, start=first, end=last, today=today,
+                                       max_requetes=int(args.max_requetes), delai=delay, workers=args.workers,
+                                       sans_panel=True, cache_dir=cache_dir, fetcher=fetch,
+                                       progress=lambda m: print("  " + m, flush=True))
+    if bilan.arret:
+        _say(f"arrêt : {bilan.arret}")
+    if days:
+        print(f"{bilan.bulletins} BOC téléchargé(s) ; {bilan.requetes} requête(s) envoyée(s) ; "
+              f"{bilan.jours_restants} jour(s) encore à chercher.")
+    code = 0
+    if bilan.arret:
+        code = erreurs.DONNEES_ABSENTES if bilan.raison_arret == "quota" else erreurs.ACCES_REFUSE
+    if bilan.bulletins > 0 and not args.sans_panel:
+        summary = _build_panel(boc_dir, panel_dir, workers=args.workers)
+        bilan.panel_reconstruit = True
+        bilan.panel = summary.to_dict() if hasattr(summary, "to_dict") else None
     elif not args.sans_panel:
         print("Aucun nouveau BOC : panel inchangé (python -m brvm_alpha panel pour le reconstruire).")
+    if _json(args):
+        out = {"simulation": False, **bilan.to_dict(), "dossier": str(boc_dir)}
+        try:  # marqueurs « sans bulletin » de la fenêtre, après le téléchargement (lecture du disque seule)
+            st = boc_download.etat_dossier(boc_dir, bilan.debut, bilan.fin, today)
+            out["marqueurs"] = {"definitifs": st.marques_definitifs, "a_reessayer": st.marques_non_definitifs,
+                                "bulletins_en_cache": st.en_cache}
+        except Exception:  # information seulement
+            out["marqueurs"] = None
+        if code:
+            return emit_echec(code, f"arrêt : {bilan.arret}", **out)
+        emit_json(out)
     return code
 
 
 def _cmd_panel(args: argparse.Namespace) -> int:
     boc_dir = Path(args.boc_dir) if args.boc_dir else DEFAULT_BOC_DIR
     panel_dir = Path(args.panel_dir) if args.panel_dir else DEFAULT_PANEL_DIR
-    return _build_panel(boc_dir, panel_dir, force=args.force, workers=args.workers)
-
+    summary = _build_panel(boc_dir, panel_dir, force=args.force, workers=args.workers)
+    if _json(args):
+        emit_json({"panel": summary.to_dict() if hasattr(summary, "to_dict") else str(summary)})
+    return 0
 
 def _cmd_live(args: argparse.Namespace) -> int:
     from brvm_alpha.data import live
@@ -1093,8 +1354,8 @@ def _cmd_etat(args: argparse.Namespace) -> int:
     from brvm_alpha import etat
 
     state = etat.collect_state(panel_dir=args.panel_dir, boc_dir=args.boc_dir, notes_root=args.racine)
-    if args.format == "json":
-        print(json.dumps(state, ensure_ascii=False, indent=1))
+    if _json(args):
+        emit_json(state)
     else:
         print(etat.format_text(state))
     return 0
@@ -1221,10 +1482,12 @@ def format_enrich_report(rep: Any, limit: int = 30) -> list[str]:
 
 
 def run_enrich(store: Any, *, max_docs: int, targets: Sequence[str] | None = None, offline: bool = False,
-               dry_run: bool = False, **extra: Any) -> tuple[dict[str, Any] | None, list[str]]:
+               dry_run: bool = False, strict: bool = False, **extra: Any) -> tuple[dict[str, Any] | None, list[str]]:
     """Appelle ``enrich_documents`` (si elle existe) et renvoie ``(bilan, lignes à afficher)``.
 
-    ``(None, [message])`` si la fonction est absente ou échoue ; aucune exception n'est propagée.
+    ``(None, [message])`` si la fonction est absente ou échoue ; aucune exception n'est propagée, sauf
+    avec ``strict=True`` (ligne de commande) : mémoire insuffisante et erreurs prévues du moteur
+    (pdftotext absent, verrou occupé, accès refusé) remontent alors avec leur code de sortie.
     """
     fn = load_enrich_documents()
     if fn is None:
@@ -1232,6 +1495,10 @@ def run_enrich(store: Any, *, max_docs: int, targets: Sequence[str] | None = Non
     try:
         rep = fn(store, max_docs=int(max_docs), targets=list(targets) if targets else None, offline=bool(offline),
                  dry_run=bool(dry_run), **extra)
+    except (MemoryError, erreurs.ErreurMoteur):
+        if strict:
+            raise
+        return None, ["lecture du contenu des documents interrompue (mémoire insuffisante ou configuration)"]
     except Exception as exc:  # la lecture des documents ne fait jamais échouer la collecte déjà faite
         return None, [f"lecture du contenu des documents interrompue ({exc.__class__.__name__} : {exc})"]
     if isinstance(rep, dict) and not rep.get("n_candidates"):
@@ -1400,27 +1667,61 @@ def _note_summary(n: Any) -> list[str]:
     return lines
 
 
-def _note_effect_line(note: Any, panel_dir: Any = None) -> str:
-    """Quand la note saisie comptera-t-elle dans la décision en direct ?"""
+def note_effect(note: Any, panel_dir: Any = None) -> dict[str, Any]:
+    """Quand la note saisie comptera-t-elle dans la décision en direct ? (jamais d'exception)
+
+    ``ligne`` : phrase « Prise en compte : … » ; ``seance_application`` : première séance où la note
+    compte en mode direct ; ``des_maintenant`` ; ``notes_connues`` : ligne « Notes connues au …, appliquées
+    à la séance du … » de la décision en direct (``None`` sans panel).
+    """
+    out: dict[str, Any] = {"ligne": None, "seance_application": None, "des_maintenant": None, "notes_connues": None}
     try:
         from brvm_alpha.notes import signals as sg
 
         last = last_session(panel_dir)
         if last is None:
-            return "Prise en compte : panel introuvable (python -m brvm_alpha panel)."
+            out["ligne"] = "Prise en compte : panel introuvable (python -m brvm_alpha panel)."
+            return out
         m = sg.notes_moment(last, now_utc())
+        out["notes_connues"] = m.describe()
         fts = pd.Timestamp(note.first_tradable_session)
         if fts <= m.session:
-            return (f"Prise en compte : dès maintenant, à la séance du {fr_date(m.session)} (cours du {fr_date(last)}), "
-                    "par « indices », « recommend », « report » et l'interface (mode direct).")
-        return (f"Prise en compte : à partir de la séance du {fr_date(fts)} (première séance négociable de la note) ; "
-                f"la décision en direct porte aujourd'hui sur la séance du {fr_date(m.session)}.")
+            out.update(seance_application=m.session, des_maintenant=True,
+                       ligne=(f"Prise en compte : dès maintenant, à la séance du {fr_date(m.session)} (cours du "
+                              f"{fr_date(last)}), par « indices », « recommend », « report » et l'interface "
+                              "(mode direct)."))
+        else:
+            out.update(seance_application=fts, des_maintenant=False,
+                       ligne=(f"Prise en compte : à partir de la séance du {fr_date(fts)} (première séance négociable "
+                              f"de la note) ; la décision en direct porte aujourd'hui sur la séance du "
+                              f"{fr_date(m.session)}."))
     except Exception as exc:  # information seulement
-        return f"Prise en compte : non calculée ({exc.__class__.__name__})."
+        out["ligne"] = f"Prise en compte : non calculée ({exc.__class__.__name__})."
+    return out
+
+
+def _note_effect_line(note: Any, panel_dir: Any = None) -> str:
+    """Quand la note saisie comptera-t-elle dans la décision en direct ? (phrase de :func:`note_effect`)"""
+    return str(note_effect(note, panel_dir)["ligne"])
 
 
 def _status_arg(s: str) -> str | None:
     return {"actives": "active", "archivees": "archived", "toutes": None}[s]
+
+
+def _research_lock(store: Any, simulation: bool) -> Any:
+    """Verrou « une recherche à la fois » sur ce journal (``<journal>/.recherche.lock``) ; aucun en simulation."""
+    import contextlib
+
+    from brvm_alpha import fichiers
+
+    if simulation:
+        return contextlib.nullcontext(True)
+    return fichiers.verrou(Path(store.root) / ".recherche.lock", quoi="recherche ou lecture des notes")
+
+
+def _note_brief(n: Any) -> dict[str, Any]:
+    return {"note_id": n.note_id, "publiee_le": n.published_at, "cibles": list(n.targets or []), "titre": n.title}
 
 
 def _cmd_notes(args: argparse.Namespace) -> int:
@@ -1430,8 +1731,8 @@ def _cmd_notes(args: argparse.Namespace) -> int:
 
         text = args.texte if args.texte is not None else _read_text_file(args.fichier)
         an = analyze_text(text, title=args.titre, manual_targets=_split_targets(args.cible)).to_dict()
-        if args.format == "json":
-            _print_json({"bandeau": BANNER, "analyse": an, "enregistree": False})
+        if _json(args):
+            emit_json({"bandeau": BANNER, "analyse": an, "enregistree": False})
             return 0
         print("Analyse sans enregistrement (lecture factuelle, pas une prévision) :")
         print("\n".join(_analysis_lines(an)))
@@ -1441,44 +1742,54 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         notes_root_arg(args.racine)
     store = _notes_store(args.racine)
     if cmd == "add":
-        from brvm_alpha.notes.store import NoteConflictError
-
         text = args.texte if args.texte is not None else (_read_text_file(args.fichier) if args.fichier else "")
         note = make_manual_note(targets=args.cible, title=args.titre, text=text, stance=args.avis,
                                 conviction=args.conviction, horizon=args.horizon, source=args.source, url=args.url,
                                 published=args.publie_le, event_type=args.event_type, tags=args.etiquette,
                                 veto=bool(getattr(args, "veto", False)))
-        existed = note.note_id in store
-        dup = None if existed else store.find_duplicate(note)
-        if dup and not getattr(args, "forcer", False):
+        # Doublon cherché et note écrite sous le même verrou (deux saisies simultanées : une seule ligne).
+        saved, created, dup = store.add_unique(note, analyze=True, force=bool(getattr(args, "forcer", False)))
+        same_id = (not created) and dup == note.note_id
+        effect = note_effect(saved)
+        if not created and not same_id:
             _say(duplicate_message(dup) + " Pour l'enregistrer quand même : --forcer.")
-            return 2
-        try:
-            nid = store.add(note, analyze=True)
-        except NoteConflictError as exc:
-            _say(f"refusé : {exc}")
-            return 2
-        saved = store.get(nid)
-        if args.format == "json":
-            _print_json({"bandeau": BANNER, "note": saved.to_dict(), "deja_enregistree": bool(existed)})
+        an = saved.analysis or {}
+        if _json(args):
+            emit_json({"bandeau": BANNER, "note_id": saved.note_id, "cree": bool(created),
+                       "doublon_id": None if created else dup, "deja_enregistree": not created,
+                       "meme_identifiant": bool(same_id), "score": an.get("score"),
+                       "filtres": list(an.get("risk_flags") or []), "veto": is_veto_note(saved),
+                       "premiere_seance_negociable": saved.first_tradable_session,
+                       "seance_application": effect["seance_application"], "des_maintenant": effect["des_maintenant"],
+                       "notes_connues": effect["notes_connues"], "prise_en_compte": effect["ligne"],
+                       "note": saved.to_dict()})
             return 0
-        print(f"Note déjà enregistrée : {nid} (même identifiant ; rien n'est ajouté au journal)" if existed
-              else f"Note enregistrée : {nid}")
+        if created:
+            print(f"Note enregistrée : {saved.note_id}")
+        elif same_id:
+            print(f"Note déjà enregistrée : {saved.note_id} (même identifiant ; rien n'est ajouté au journal)")
+        else:
+            print(f"Note déjà enregistrée : {saved.note_id} (doublon d'une note active récente : mêmes cibles, titre, "
+                  "texte, avis et conviction) ; rien n'est ajouté au journal. Pour l'enregistrer quand même : "
+                  "--forcer.")
         print("\n".join(_note_summary(saved) + _analysis_lines(saved.analysis)))
-        print(_note_effect_line(saved))
+        if effect["notes_connues"]:
+            print(effect["notes_connues"] + ".")
+        print(effect["ligne"])
         print(BANNER)
         return 0
     if cmd == "list":
         df = store.list(target=args.cible, since=args.depuis, until=args.jusqu_au, status=_status_arg(args.statut))
         if len(df):
             df = df.sort_values("published_at", ascending=False).head(args.limite)
-        if args.format == "json":
-            cols = ["note_id", "version", "published_at", "first_tradable_session", "author", "source", "title",
-                    "all_targets", "stance", "conviction", "status", "score", "materiality", "confidence", "risk_flags"]
-            _print_json({"bandeau": BANNER, "notes": df[cols] if len(df) else []})
-            return 0
         if store.errors:
             _say(f"{len(store.errors)} ligne(s) illisible(s) ignorée(s) dans le journal : {store.errors[0]}")
+        if _json(args):
+            cols = ["note_id", "version", "published_at", "first_tradable_session", "author", "source", "title",
+                    "all_targets", "stance", "conviction", "status", "score", "materiality", "confidence", "risk_flags"]
+            emit_json({"bandeau": BANNER, "n": int(len(df)), "lignes_illisibles": len(store.errors),
+                       "notes": df[[c for c in cols if c in df.columns]] if len(df) else []})
+            return 0
         if not len(df):
             print("Aucune note.")
             return 0
@@ -1491,8 +1802,8 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         nid = resolve_note_id(store, args.id)
         n = store.get(nid)
         versions = store.versions(nid)
-        if args.format == "json":
-            _print_json({"bandeau": BANNER, "note": n.to_dict(), "versions": [v.to_dict() for v in versions]})
+        if _json(args):
+            emit_json({"bandeau": BANNER, "note": n.to_dict(), "versions": [v.to_dict() for v in versions]})
             return 0
         print("\n".join(_note_summary(n)))
         if n.text:
@@ -1507,18 +1818,22 @@ def _cmd_notes(args: argparse.Namespace) -> int:
     if cmd == "archive":
         nid = resolve_note_id(store, args.id)
         n = store.archive(nid, reason=args.motif)
+        if _json(args):
+            emit_json({"bandeau": BANNER, "note_id": nid, "version": n.version, "statut": n.status,
+                       "archivee": n.status == "archived"})
+            return 0
         print(f"Note {nid[:12]} archivée (version {n.version} ; l'historique est conservé).")
         return 0
     if cmd == "export":
         if args.sortie == "-":
             import tempfile
 
-            with tempfile.TemporaryDirectory() as tmp:
+            with tempfile.TemporaryDirectory() as tmp:  # dossier temporaire du système, jamais le code
                 out = store.export_markdown(Path(tmp) / "notes.md", target=args.cible, status=_status_arg(args.statut))
                 print(out.read_text(encoding="utf-8"))
             return 0
         path = Path(args.sortie) if args.sortie else DEFAULT_REPORTS_DIR / f"notes_{dt.date.today():%Y%m%d}.md"
-        out = store.export_markdown(path, target=args.cible, status=_status_arg(args.statut))
+        out = store.export_markdown(path, target=args.cible, status=_status_arg(args.statut))  # écriture atomique
         print(f"Export Markdown : {out}")
         return 0
     if cmd == "research":
@@ -1529,26 +1844,40 @@ def _cmd_notes(args: argparse.Namespace) -> int:
             f"en ligne (au plus {args.max_requetes} requêtes vers www.brvm.org)"
         print(f"Recherche {mode}…", flush=True)
         targets = _split_targets(args.cibles) or None
-        res = rs.run_research(store, targets=targets, since=args.depuis, max_requests=args.max_requetes,
-                              offline=bool(args.hors_ligne), boc=not args.sans_boc, dry_run=bool(args.simulation))
-        print(res.report.summary())
-        for n in list(res)[:20]:
-            print(f"  {n.note_id[:12]}  {fr_date(n.published_at)}  {', '.join(n.targets)[:24]:24s}  {n.title[:60]}")
-        if len(res) > 20:
-            print(f"  … et {len(res) - 20} autre(s) (python -m brvm_alpha notes list).")
         n_pdf = int(getattr(args, "pdf", 0) or 0)
-        if n_pdf > 0 and res.report.stopped and not args.hors_ligne:
-            print("Lecture du contenu des documents : non lancée (la collecte a été arrêtée ; aucune autre requête).")
-        elif n_pdf > 0:
-            print(f"Lecture du contenu d'au plus {n_pdf} document(s) récent(s)"
-                  f"{' (hors ligne : cache seulement)' if args.hors_ligne else ''}…", flush=True)
-            _rep, lines = run_enrich(store, max_docs=n_pdf, targets=targets, offline=bool(args.hors_ligne),
-                                     dry_run=bool(args.simulation))
+        if n_pdf > 0:
+            _exiger_extracteur()
+        with _research_lock(store, bool(args.simulation)):
+            res = rs.run_research(store, targets=targets, since=args.depuis, max_requests=args.max_requetes,
+                                  offline=bool(args.hors_ligne), boc=not args.sans_boc, dry_run=bool(args.simulation))
+            print(res.report.summary())
+            for n in list(res)[:20]:
+                print(f"  {n.note_id[:12]}  {fr_date(n.published_at)}  {', '.join(n.targets)[:24]:24s}  {n.title[:60]}")
+            if len(res) > 20:
+                print(f"  … et {len(res) - 20} autre(s) (python -m brvm_alpha notes list).")
+            rep: dict[str, Any] | None = None
+            lines: list[str] = []
+            if n_pdf > 0 and res.report.stopped and not args.hors_ligne:
+                lines = ["Lecture du contenu des documents : non lancée (la collecte a été arrêtée ; aucune autre "
+                         "requête)."]
+            elif n_pdf > 0:
+                print(f"Lecture du contenu d'au plus {n_pdf} document(s) récent(s)"
+                      f"{' (hors ligne : cache seulement)' if args.hors_ligne else ''}…", flush=True)
+                rep, lines = run_enrich(store, max_docs=n_pdf, targets=targets, offline=bool(args.hors_ligne),
+                                        dry_run=bool(args.simulation), strict=True)
+            else:
+                lines = ["Lecture du contenu des documents : non demandée (--pdf 0)."]
             print("\n".join(lines))
-        else:
-            print("Lecture du contenu des documents : non demandée (--pdf 0).")
         print(BANNER)
-        return 1 if res.report.stopped else 0
+        code = erreurs.ACCES_REFUSE if res.report.stopped else 0
+        if _json(args):
+            out = {"bandeau": BANNER, "hors_ligne": bool(args.hors_ligne), "simulation": bool(args.simulation),
+                   "recherche": res.report.to_dict(), "notes": [_note_brief(n) for n in res],
+                   "lecture_documents": rep, "lignes_lecture": lines}
+            if code:
+                return emit_echec(code, f"arrêt : {res.report.stopped}", **out)
+            emit_json(out)
+        return code
     if cmd == "lire":
         print(RULES_POLITENESS)
         targets = _split_targets(args.cibles) or None
@@ -1559,14 +1888,26 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         if extra:
             print("Relecture des documents déjà lus (cache seulement) : une version n'est écrite que si le résultat "
                   "change.", flush=True)
-        rep, lines = run_enrich(store, max_docs=args.max_docs, targets=targets, offline=bool(args.hors_ligne),
-                                dry_run=bool(args.simulation), **extra)
+        _exiger_extracteur()
+        with _research_lock(store, bool(args.simulation)):
+            rep, lines = run_enrich(store, max_docs=args.max_docs, targets=targets, offline=bool(args.hors_ligne),
+                                    dry_run=bool(args.simulation), strict=True, **extra)
         print("\n".join(lines))
         print(BANNER)
         if rep is None:
-            return 1
-        return 1 if rep.get("stopped") else 0
-    return 2  # pragma: no cover - argparse impose une action
+            code = erreurs.DONNEES_ABSENTES
+        elif rep.get("stopped"):
+            code = erreurs.DONNEES_ABSENTES if "quota" in str(rep.get("stopped")).lower() else erreurs.ACCES_REFUSE
+        else:
+            code = 0
+        if _json(args):
+            out = {"bandeau": BANNER, "hors_ligne": bool(args.hors_ligne), "simulation": bool(args.simulation),
+                   "lecture_documents": rep, "lignes": lines}
+            if code:
+                return emit_echec(code, str((rep or {}).get("stopped") or (lines[0] if lines else "échec")), **out)
+            emit_json(out)
+        return code
+    return erreurs.SAISIE_INVALIDE  # pragma: no cover - argparse impose une action
 
 
 # ---------------------------------------------------------------------------
@@ -1581,8 +1922,8 @@ def _cmd_indices(args: argparse.Namespace) -> int:
     fmt = args.format
     t = _decision_date(args.date, args.panel_dir)
     if in_s1(t):
-        _say(s1_refusal(t, "l'évaluation des indices"))
-        return 2
+        raise SaisieInvalide(s1_refusal(t, "l'évaluation des indices"))
+    hist = check_history(args, "l'évaluation des indices")
     store = None if args.sans_notes else _notes_store(notes_root_arg(args.racine))
     if store is not None and not store.path.exists():
         store = None
@@ -1601,18 +1942,23 @@ def _cmd_indices(args: argparse.Namespace) -> int:
     status = notes_status(store, t, known, calendar=cal, equities=eq if eq is not None else "default")
     notes_line = status["line"] if status else ("Notes de l'analyste : aucune (journal absent ou --sans-notes) ; "
                                                 "composante « notes » exclue.")
+    if hist.get("avertissement") and fmt != "json":
+        print(f"⚠ {hist['avertissement']}")
+    elif hist.get("avertissement"):
+        _say(f"⚠ {hist['avertissement']}")
     if dossier:
         if fmt == "json":
-            _print_json({"bandeau": BANNER, "avertissement_panel": late, "notes": notes_status_json(status),
-                         **{k: v for k, v in d.items() if k not in ("overlays", "notes_moment")}})
+            emit_json({"bandeau": BANNER, "avertissement_panel": late, **_history_keys(hist),
+                       "notes": notes_status_json(status),
+                       **{k: v for k, v in d.items() if k not in ("overlays", "notes_moment")}})
             return 0
         if late:
             print(f"⚠ {late}")
         _print_dossier(d, notes_line=notes_line, status=status)
         return 0
     if fmt == "json":
-        _print_json({"bandeau": BANNER, "avertissement_panel": late, "asof": t, "notes": notes_status_json(status),
-                     "indices": ev})
+        emit_json({"bandeau": BANNER, "avertissement_panel": late, **_history_keys(hist), "asof": t,
+                   "notes": notes_status_json(status), "indices": ev})
         return 0
     if late:
         print(f"⚠ {late}")
@@ -1782,26 +2128,37 @@ def explain_symbol(symbol: str, asof: Any, *, variant: str | None = None, capita
 def _cmd_explain(args: argparse.Namespace) -> int:
     t = _decision_date(args.date, args.panel_dir)
     if in_s1(t):
-        _say(s1_refusal(t, "l'explication"))
-        return 2
+        raise SaisieInvalide(s1_refusal(t, "l'explication"))
+    hist = check_history(args, "l'explication")
     notes: Any = None if args.sans_notes else (
         _notes_store(notes_root_arg(args.racine)) if getattr(args, "racine", None) else "auto")
     known = None if args.sans_notes else notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
     late = panel_warning(args.panel_dir, args.date)
     e = explain_symbol(args.symbole, t, variant=args.variante, capital=args.capital,
                        notes=notes, panel_dir=args.panel_dir, notes_known_at=known)
+    status = None
+    if not args.sans_notes:
+        store = notes if not isinstance(notes, str) else _notes_store(None)
+        status = notes_status(store if store.path.exists() else None, t, known)
+    notes_line = (None if args.sans_notes else status["line"] if status else
+                  "Notes de l'analyste : aucun journal ; aucune note n'entre dans le calcul.")
     if args.format == "json":
-        _print_json({"avertissement_panel": late, **{k: v for k, v in e.items()}})
+        if hist.get("avertissement"):
+            _say(f"⚠ {hist['avertissement']}")
+        rest = {k: v for k, v in e.items() if k != "banner"}
+        emit_json({"bandeau": e.get("banner") or BANNER, "avertissement_panel": late, **_history_keys(hist),
+                   "notes": notes_status_json(status) if status else ({"ligne": notes_line} if notes_line else None),
+                   "decomposition": e.get("blocks") or {}, **rest})
         return 0
+    if hist.get("avertissement"):
+        print(f"⚠ {hist['avertissement']}")
     if late:
         print(f"⚠ {late}")
     ch = e.get("choix_variante")
     print(f"Explication {e['symbol']} au {fr_date(e['asof'])}, variante {e['variant']}"
           + (f" ({ch.get('motif')})" if ch and ch.get("motif") else ""))
-    if not args.sans_notes:
-        store = notes if not isinstance(notes, str) else _notes_store(None)
-        status = notes_status(store if store.path.exists() else None, t, known)
-        print(status["line"] if status else "Notes de l'analyste : aucun journal ; aucune note n'entre dans le calcul.")
+    if notes_line:
+        print(notes_line)
     print(e.get("text") or "")
     blocks = e.get("blocks") or {}
     if blocks:
@@ -1912,12 +2269,13 @@ def _holdings_arg(path: str | None) -> dict[str, int] | None:
 
 
 def _cmd_recommend(args: argparse.Namespace) -> int:
+    from brvm_alpha import fichiers
     from brvm_alpha.portfolio import recommend as rec
 
     t = _decision_date(args.date, args.panel_dir)
     if in_s1(t):
-        _say(s1_refusal(t, "l'ordre de bataille"))
-        return 2
+        raise SaisieInvalide(s1_refusal(t, "l'ordre de bataille"))
+    hist = check_history(args, "l'ordre de bataille", refuse=True)
     holdings = _holdings_arg(args.portefeuille)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -1935,33 +2293,54 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
                           costs=args.couts, n_boot=args.tirages, seed=args.graine, notes_store=store,
                           panel_dir=args.panel_dir, index_evaluation=not args.sans_indices,
                           notes_known_at=known, today=now_utc())
+    warn = hist.get("avertissement")
+    if warn:
+        _say(f"⚠ {warn}")
+        current = getattr(o, "avertissements", None)
+        if isinstance(current, list):  # en tête de l'ordre de bataille (Markdown, HTML et JSON)
+            o.avertissements = [warn] + [w for w in current if w != warn]
     if args.format == "json":
-        out = json.dumps(o.to_dict(), ensure_ascii=False, indent=1)
+        payload = {"ok": True, **o.to_dict(), **_history_keys(hist)}
+        out = json.dumps(to_jsonable(payload), ensure_ascii=False, indent=1)
     elif args.format == "html":
         out = html_document(f"Ordre de bataille au {fr_date(o.asof)}", o.to_html_fragment())
     else:
         out = o.to_markdown()
     if args.sortie:
-        p = Path(args.sortie)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(out, encoding="utf-8")
-        print(f"Ordre de bataille écrit : {p} ({len(out.encode('utf-8'))} octets). {BANNER}")
+        p = fichiers.ecrire_atomique(Path(args.sortie), out)  # fichier temporaire voisin, fsync, renommage
+        size = len(out.encode("utf-8"))
+        if args.format == "json":
+            emit_json({"bandeau": BANNER, "chemin": str(p), "octets": size, **_history_keys(hist)})
+        else:
+            print(f"Ordre de bataille écrit : {p} ({size} octets). {BANNER}")
+    elif args.format == "json":
+        emit_json(payload)
     else:
         print(out)
     return 0
 
 
+def _report_sections(rendu: list[Any]) -> list[dict[str, Any]]:
+    """État de chaque section du rapport rendu (``ok``, ``indisponible`` ou ``erreur``, avec le message)."""
+    if not rendu:
+        return []
+    out = []
+    for r in getattr(rendu[-1], "sections", []) or []:
+        out.append({"id": r.id, "titre": r.titre, "statut": r.statut, "ok": r.statut == "ok",
+                    "message": r.message or None, "code": getattr(r, "code", None), "duree_s": r.duree_s})
+    return out
+
+
 def _cmd_report(args: argparse.Namespace) -> int:
-    from brvm_alpha.report import build_report
+    import brvm_alpha.report as report
 
     t = _decision_date(args.date, args.panel_dir)
     if in_s1(t):
-        _say(s1_refusal(t, "le rapport"))
-        return 2
+        raise SaisieInvalide(s1_refusal(t, "le rapport"))
     if last_session(args.panel_dir) is None:
         # Sans panel, le rapport n'aurait que des sections « indisponible » : même refus que « recommend ».
-        _say("échec : " + panel_missing_message(args.panel_dir))
-        return 1
+        raise DonneesAbsentes("échec : " + panel_missing_message(args.panel_dir))
+    hist = check_history(args, "le rapport", refuse=True)
     out = Path(args.sortie) if args.sortie else DEFAULT_REPORTS_DIR / f"rapport_{t:%Y-%m-%d}.html"
     kw: dict[str, Any] = {"holdings": _holdings_arg(args.portefeuille), "variant": args.variante,
                           "cash": args.cash, "n_boot": args.tirages, "costs": args.couts, "seed": args.graine}
@@ -1970,7 +2349,12 @@ def _cmd_report(args: argparse.Namespace) -> int:
     if args.panel_dir:
         kw["panel_dir"] = args.panel_dir
     kw["notes_known_at"] = notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
+    rendu: list[Any] = []
+    kw["historique"] = hist
+    kw["rendu"] = rendu
     print(f"Rapport au {fr_date(t)} pour {fr_num(args.capital, 0)} FCFA…", flush=True)
+    if hist.get("avertissement"):
+        print(f"⚠ {hist['avertissement']}", flush=True)
     if kw["notes_known_at"] is not None:
         print(f"Notes connues au {kw['notes_known_at']:%d/%m/%Y %H:%M} UTC (mode direct : appliquées à la séance "
               "qui suit le dernier BOC).", flush=True)
@@ -1981,10 +2365,30 @@ def _cmd_report(args: argparse.Namespace) -> int:
         print(f"⚠ {late}", flush=True)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        path = build_report(t, args.capital, out, **kw)
+        path = report.build_report(t, args.capital, out, **kw)  # écriture atomique
+    sections = _report_sections(rendu)
+    failed = [x for x in sections if not x["ok"]]
     print(f"Rapport écrit : {path}")
+    for x in failed:
+        print(f"Section « {x['titre']} » : {x['statut']}" + (f" ({x['message']})" if x["message"] else ""))
     print(BANNER)
-    return 0
+    ordre = next((x for x in sections if x["id"] == "ordre"), None)
+    code = 0
+    if ordre is not None and not ordre["ok"]:
+        code = _code_sur(ordre.get("code") or (erreurs.DONNEES_ABSENTES if ordre["statut"] == "indisponible"
+                                               else erreurs.INTERNE))
+    message = (f"échec : section « {ordre['titre']} » {ordre['statut']} ({ordre['message'] or 'motif non précisé'}) ; "
+               f"rapport écrit quand même : {path}") if code else None
+    if _json(args):
+        payload = {"chemin": str(path), "date": t, "capital": float(args.capital), "sections": sections,
+                   "sections_en_echec": [x["id"] for x in failed], **_history_keys(hist),
+                   "notes_connues_au": kw["notes_known_at"], "avertissement_panel": late}
+        if code:
+            return emit_echec(code, str(message), **payload)
+        emit_json(payload)
+    elif code:
+        _say(str(message))
+    return code
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -2058,35 +2462,208 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
 }
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Point d'entrée : renvoie le code de sortie (0 : succès ; 1 : échec ; 2 : refus ou saisie invalide)."""
-    args = build_parser().parse_args(argv)
-    handler = COMMANDS.get(args.command)
-    if handler is None:  # pragma: no cover - argparse impose une commande
-        return 2
-    try:
-        code = handler(args)
-        sys.stdout.flush()
-        return code
-    except BrokenPipeError:
-        # Sortie fermée par le lecteur (« … | head -1 ») : fin silencieuse, sans trace Python. La sortie
-        # standard est redirigée vers le néant pour que la fermeture de l'interpréteur n'écrive plus rien.
-        try:
-            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        except (OSError, ValueError, AttributeError):
-            pass
-        return 0
-    except FileNotFoundError as exc:
+#: Options de chemin et dossier de référence de leurs chemins relatifs en mode embarqué
+#: (:func:`brvm_alpha.paths.resoudre_chemin_option`) ; ``sortie`` est une écriture, contrôlée dès le départ.
+_PATH_OPTIONS = (("panel_dir", "donnees"), ("boc_dir", "donnees"), ("racine", "donnees"), ("portefeuille", "donnees"),
+                 ("fichier", "donnees"), ("sortie", "rapports"))
+#: Commandes non livrées dans le module Odoo : refusées en mode embarqué (code 8).
+EMBEDDED_REFUSED = ("validate", "backtest")
+
+
+def _resolve_path_options(args: argparse.Namespace) -> None:
+    """Chemins des options rendus absolus : depuis le dossier courant hors mode embarqué, depuis
+    ``BRVM_ALPHA_DONNEES`` (ou ``BRVM_ALPHA_RAPPORTS`` pour ``--sortie``) en mode embarqué. Un même chemin
+    relatif désigne ainsi le même dossier dans toutes les fonctions appelées (avant : deux résolutions dans
+    ``report``)."""
+    if args.command in EMBEDDED_REFUSED:
+        return  # validation : comportement inchangé
+    for attr, base in _PATH_OPTIONS:
+        value = getattr(args, attr, None)
+        if value is None or str(value).strip() == "" or (attr == "sortie" and str(value).strip() == "-"):
+            continue
+        resolved = Path(os.path.abspath(paths.resoudre_chemin_option(value, base=base)))
+        if attr == "sortie":
+            paths.verifier_ecriture(resolved)  # mode embarqué : jamais dans l'arbre du code (code 8)
+            if paths.est_embarque():
+                _check_embedded_output(resolved)
+        setattr(args, attr, str(resolved))
+
+
+def _check_embedded_output(path: Path) -> None:
+    """Mode embarqué : ``--sortie`` seulement dans les dossiers de données, de rapports ou des fichiers temporaires
+    du système (un chemin relayé ne peut pas écraser un autre fichier du compte) ; :class:`SaisieInvalide` sinon."""
+    import tempfile
+
+    allowed = [paths.DATA_DIR, paths.REPORTS_DIR, Path(tempfile.gettempdir())]
+    real = Path(os.path.realpath(path.parent)) / path.name
+    for base in allowed:
+        for p in (path, real):
+            try:
+                p.relative_to(os.path.realpath(base))
+                return
+            except ValueError:
+                try:
+                    p.relative_to(os.path.abspath(base))
+                    return
+                except ValueError:
+                    continue
+    raise SaisieInvalide(f"refusé : --sortie {path} est hors des dossiers permis en mode embarqué (rapports "
+                         f"{paths.REPORTS_DIR}, données {paths.DATA_DIR}, fichiers temporaires {tempfile.gettempdir()}).")
+
+
+def startup_checks(args: argparse.Namespace) -> None:
+    """Contrôles de départ de toute commande, avant la moindre écriture.
+
+    Mode embarqué : ``BRVM_ALPHA_DONNEES`` et ``BRVM_ALPHA_RAPPORTS`` obligatoires, absolus et hors du code
+    (:func:`brvm_alpha.paths.verifier_configuration`, code 8) ; ``validate`` et ``backtest`` refusés (code 8).
+    Toujours : chemins des options résolus (:func:`_resolve_path_options`).
+    """
+    if paths.est_embarque():
+        paths.verifier_configuration()
+        if args.command in EMBEDDED_REFUSED:
+            raise ConfigurationError(
+                f"mode embarqué : la commande « {args.command} » n'est pas livrée dans Odoo (la validation est faite "
+                "une fois pour toutes, ses résultats sont livrés avec le code dans reports/validation_S1).")
+    _resolve_path_options(args)
+
+
+def _error_message(exc: BaseException) -> str:
+    """Message en français d'une commande arrêtée par ``exc`` (sans trace d'appel), préfixé par sa nature."""
+    if isinstance(exc, ArretDemande) and exc.args:
+        return f"interruption : {exc.args[0]}"
+    if isinstance(exc, FileNotFoundError) and not isinstance(exc, erreurs.ErreurMoteur):
         txt = re.sub(r"\s*:?\s*lancer build_panel\(\) d'abord", "", str(exc)).strip()
         if ".parquet" in txt or "panel" in txt.lower():
-            _say(f"échec : panel introuvable ({txt}) : {PANEL_HINT}.")
-        else:
-            _say(f"échec : fichier introuvable ({txt}).")
-        return 1
-    except (ValueError, KeyError) as exc:
-        msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
-        _say(f"erreur : {msg}")
-        return 2
+            return f"échec : panel introuvable ({txt}) : {PANEL_HINT}."
+        return f"échec : fichier introuvable ({txt})."
+    msg = erreurs.message_erreur(exc)
+    if isinstance(exc, KeyError) and exc.args:
+        msg = str(exc.args[0])
+    if isinstance(exc, MemoryError):
+        return "échec : " + msg
+    if msg.lower().startswith(("refusé", "échec", "erreur", "arrêt", "configuration", "mode embarqué", "pdftotext")):
+        return msg
+    code = erreurs.code_retour(exc)
+    if code == erreurs.INTERNE:
+        return f"erreur interne : {type(exc).__name__} : {msg}"
+    prefix = {erreurs.DONNEES_ABSENTES: "échec", erreurs.VERROU_OCCUPE: "refusé", erreurs.ACCES_REFUSE: "arrêt",
+              erreurs.CONFIGURATION: "configuration invalide", erreurs.INTERRUPTION: "interruption"}.get(code, "erreur")
+    return f"{prefix} : {msg}"
+
+
+def _report_error(exc: BaseException, st: _SortieJson | None) -> int:
+    """Message sur la sortie d'erreur (trace pour une erreur interne seulement), objet JSON d'erreur ; rend le code."""
+    code = _code_sur(erreurs.code_retour(exc))
+    if isinstance(exc, SystemExit) and code == erreurs.OK:
+        return code
+    msg = _error_message(exc)
+    try:
+        _say(msg)
+        if code == erreurs.INTERNE and not isinstance(exc, SystemExit):
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    except (OSError, ValueError):  # sortie d'erreur fermée : le code suffit
+        pass
+    if st is not None and not st.emis:
+        try:
+            emit_json({"code": code, "erreur": erreurs.type_erreur(exc), "message": msg}, ok=False)
+        except (OSError, ValueError):
+            pass
+    return code
+
+
+def _silence_stdout(stream: Any) -> None:
+    """Sortie fermée par le lecteur (« … | head -1 ») : elle est redirigée vers le néant pour que la fermeture de
+    l'interpréteur n'écrive plus rien (aucune trace Python)."""
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), stream.fileno())
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+class ArretDemande(KeyboardInterrupt):
+    """Signal TERM reçu (Odoo, superviseur, script) : la commande s'arrête comme sur Ctrl+C (code 130)."""
+
+
+def _on_term(signum: int, frame: Any) -> None:  # noqa: ARG001 - signature imposée par signal
+    raise ArretDemande("arrêt demandé (signal TERM) : la commande a été arrêtée proprement.")
+
+
+@contextlib.contextmanager
+def _term_as_interruption() -> Iterator[None]:
+    """Pendant la commande, TERM devient une interruption : verrous rendus, fichiers temporaires retirés, code 130.
+
+    Seulement dans le fil principal (règle de ``signal``) ; l'ancien gestionnaire est rétabli à la fin.
+    """
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    try:
+        old = signal.signal(signal.SIGTERM, _on_term)
+    except (ValueError, OSError):  # pragma: no cover - plate-forme sans SIGTERM
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, old)
+
+
+def run(args: argparse.Namespace) -> int:
+    """Lance la commande déjà analysée et applique la table des codes de sortie (jamais 3).
+
+    Avec ``--format json``, la sortie standard ne reçoit que l'objet JSON (succès ou erreur) : tout autre texte
+    écrit pendant la commande (progression, avertissements) est renvoyé sur la sortie d'erreur. Le signal TERM
+    arrête la commande comme Ctrl+C (code 130, objet JSON ``"erreur": "interruption"``).
+    """
+    handler = COMMANDS.get(args.command)
+    if handler is None:  # pragma: no cover - argparse impose une commande
+        return erreurs.SAISIE_INVALIDE
+    st = _SortieJson(sys.stdout) if _json(args) else None
+    token = _SORTIE_JSON.set(st)
+    saved = sys.stdout
+    if st is not None:
+        sys.stdout = sys.stderr
+    try:
+        try:
+            startup_checks(args)
+            with _term_as_interruption():
+                code = _code_sur(handler(args))
+            if st is not None and not st.emis:  # commande sortie sans objet JSON : on en donne un
+                if code == erreurs.OK:
+                    emit_json({})
+                else:
+                    emit_echec(code, st.dernier_message or "échec de la commande (voir la sortie d'erreur)")
+            (st.out if st is not None else sys.stdout).flush()
+            return code
+        except BrokenPipeError:
+            _silence_stdout(st.out if st is not None else saved)
+            return erreurs.DONNEES_ABSENTES if st is not None else erreurs.OK
+        except (KeyboardInterrupt, SystemExit, Exception) as exc:  # noqa: BLE001 - table des codes de sortie
+            return _report_error(exc, st)
+    finally:
+        sys.stdout = saved
+        _SORTIE_JSON.reset(token)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Point d'entrée : renvoie le code de sortie de la commande (table de :mod:`brvm_alpha.erreurs`, jamais 3).
+
+    Erreur dans les arguments : ``SystemExit(2)`` (``--help`` : ``SystemExit(0)``), comme avant, après le
+    message en français sur la sortie d'erreur et, avec ``--format json``, l'objet JSON d'erreur sur la sortie
+    standard. Toute autre issue est rendue comme un code : 0 succès, 1 données absentes, 2 saisie invalide,
+    4 verrou occupé, 5 accès refusé ou réseau, 6 mémoire insuffisante, 7 erreur interne, 8 configuration,
+    130 interruption.
+    """
+    raw = list(sys.argv[1:] if argv is None else argv)
+    token = _FORMAT_DEMANDE.set("json" if json_demande(raw) else None)
+    try:
+        args = build_parser().parse_args(raw)
+    finally:
+        _FORMAT_DEMANDE.reset(token)
+    return run(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

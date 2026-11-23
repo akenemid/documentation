@@ -1,0 +1,11 @@
+# Interpréteur du moteur embarqué : CPython 3.11 AUTONOME (python-build-standalone), le même en production
+# et en préproduction. L'image odoo:17.0 est une Ubuntu jammy en Python 3.10 (glibc 2.35, x86_64) et pandas 3
+# exige Python 3.11 ou plus : le moteur a donc son propre interpréteur, extrait dans PREFIXE/python
+# (/opt/rz-brvm-alpha/python en production) par installer-python-et-roues.sh. Empreinte vérifiée le 22/11/2026
+# sur le fichier téléchargé et conforme au fichier SHA256SUMS de la publication. Format : clé=valeur.
+version=3.11.15
+publication=20260718
+archive=cpython-3.11.15+20260718-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+url=https://github.com/astral-sh/python-build-standalone/releases/download/20260718/cpython-3.11.15%2B20260718-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+octets=30930344
+sha256=23ccae6f1ff73e8aa8378436f869da003b8eb7d6c95f2bc706f494115ba1447d

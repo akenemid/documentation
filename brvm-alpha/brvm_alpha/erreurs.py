@@ -65,6 +65,15 @@ class DonneesAbsentes(ErreurMoteur):
     code_sortie = DONNEES_ABSENTES
 
 
+class HistoriqueIncomplet(DonneesAbsentes):
+    """Historique des bulletins incomplet : ordre de bataille ou rapport refusé en mode embarqué (code 1).
+
+    Clé ``erreur`` du JSON : ``historique_incomplet`` (au lieu de ``donnees_absentes``).
+    """
+
+    type_erreur = "historique_incomplet"
+
+
 class SaisieInvalide(ErreurMoteur, ValueError):
     """Saisie invalide (code 2)."""
 
@@ -110,7 +119,14 @@ def code_retour(exc: BaseException) -> int:
 
 
 def type_erreur(exc: BaseException) -> str:
-    """Type stable de l'erreur (clé ``erreur`` du JSON) : ``acces_refuse``, ``verrou_occupe``…"""
+    """Type stable de l'erreur (clé ``erreur`` du JSON) : ``acces_refuse``, ``verrou_occupe``…
+
+    Une erreur du moteur peut préciser son type (attribut de classe ``type_erreur``, par exemple
+    ``historique_incomplet``) ; sinon le type suit le code de sortie.
+    """
+    own = getattr(type(exc), "type_erreur", None) if isinstance(exc, ErreurMoteur) else None
+    if isinstance(own, str) and own:
+        return own
     return TYPES.get(code_retour(exc), "interne")
 
 
@@ -134,5 +150,5 @@ def erreur_json(exc: BaseException, bandeau: str) -> dict[str, Any]:
 
 __all__ = ["OK", "DONNEES_ABSENTES", "SAISIE_INVALIDE", "VERROU_OCCUPE", "ACCES_REFUSE", "MEMOIRE", "INTERNE",
            "CONFIGURATION", "INTERRUPTION", "CODE_INTERDIT", "TYPES", "ErreurMoteur", "DonneesAbsentes",
-           "SaisieInvalide", "VerrouOccupe", "AccesRefuse", "ConfigurationError", "code_retour", "type_erreur",
-           "message_erreur", "erreur_json"]
+           "HistoriqueIncomplet", "SaisieInvalide", "VerrouOccupe", "AccesRefuse", "ConfigurationError", "code_retour",
+           "type_erreur", "message_erreur", "erreur_json"]

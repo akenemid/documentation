@@ -62,6 +62,7 @@ __all__ = [
     "SectionResult",
     "Unavailable",
     "build_report",
+    "ecrire_rapport",
     "esc",
     "fmt_date",
     "fmt_fcfa",
@@ -72,6 +73,8 @@ __all__ = [
 ]
 
 import brvm_alpha as _pkg
+from brvm_alpha import erreurs as _erreurs
+from brvm_alpha import fichiers as _fichiers
 from brvm_alpha import paths as _paths
 
 #: Racine du dépôt (dossier qui contient le paquet ``brvm_alpha``).
@@ -759,8 +762,11 @@ class _Ctx:
     def __init__(self, asof: Any, capital: float, *, panels: Mapping[str, Any] | None, panel_dir: Any,
                  notes_root: Any, validation_dir: Any, diagnostic_dir: Any, holdings: Mapping[str, int] | None,
                  variant: str | None, cash: float | None, costs: Any, registry_path: Any, n_boot: int, seed: int,
-                 recommend_kwargs: Mapping[str, Any] | None, now: pd.Timestamp, notes_known_at: Any = None):
+                 recommend_kwargs: Mapping[str, Any] | None, now: pd.Timestamp, notes_known_at: Any = None,
+                 historique: Mapping[str, Any] | None = None):
         self.asof_req = pd.Timestamp(asof).normalize()
+        #: état de l'historique (ligne de commande : ``cli.history_state``) ; None : non relevé
+        self.historique = dict(historique) if historique else None
         #: instant de connaissance des notes (mode direct) ; None : mode historique (règle stricte)
         self.notes_known_at = notes_known_at
         self.capital = float(capital)
@@ -791,6 +797,8 @@ class _Ctx:
                     self._cache[key] = ("ok", fn(), "")
             except (Unavailable, DependencyError) as exc:  # transmis tels quels (cause d'origine conservée)
                 self._cache[key] = ("na", exc, "")
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6), pas un encadré
+                raise
             except Exception as exc:  # noqa: BLE001 - restitué dans l'encadré d'erreur
                 self._cache[key] = ("err", exc, traceback.format_exc())
             self.timings[key] = round(time.perf_counter() - t, 2)
@@ -1055,6 +1063,8 @@ class SectionResult:
     statut: str
     message: str = ""
     duree_s: float = 0.0
+    #: code de sortie de l'erreur (:func:`brvm_alpha.erreurs.code_retour`) : 1 indisponible, 8 configuration…
+    code: int | None = None
 
 
 @dataclass
@@ -1065,14 +1075,17 @@ class RapportHTML:
     sections: list[SectionResult]
     asof: pd.Timestamp | None
     meta: dict[str, Any] = field(default_factory=dict)
+    #: fichier écrit par :meth:`write` (``None`` tant que le rapport n'est qu'en mémoire)
+    chemin: Path | None = None
 
     def statuts(self) -> dict[str, str]:
         return {s.id: s.statut for s in self.sections}
 
     def write(self, path: str | Path) -> Path:
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(self.html, encoding="utf-8")
+        """Écrit le rapport de façon **atomique** (fichier temporaire voisin, ``fsync``, renommage) : un lecteur voit
+        l'ancien rapport ou le nouveau, jamais un fichier à moitié écrit. Mode embarqué : jamais dans le code."""
+        p = _fichiers.ecrire_atomique(Path(path), self.html)
+        self.chemin = p
         return p
 
 
@@ -1092,18 +1105,23 @@ def _error_box(title: str, exc: BaseException) -> H:
 def _run_section(sid: str, title: str, lead: Any, fn: Callable[[], Any], results: list[SectionResult],
                  heading: bool = True) -> H:
     t = time.perf_counter()
-    status, msg = "ok", ""
+    status, msg, code = "ok", "", None
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             body = _h(fn())
     except Unavailable as exc:
-        status, msg = "indisponible", str(exc)
+        status, msg, code = "indisponible", str(exc), _erreurs.DONNEES_ABSENTES
         body = _box("info", f"{title} : données ou module indisponible", str(exc))
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6), pas un encadré
+        raise
     except Exception as exc:  # noqa: BLE001 - encadré lisible, le rapport continue
-        status, msg = "erreur", f"{exc.__class__.__name__} : {exc}"
+        orig = exc.original if isinstance(exc, DependencyError) else exc
+        if isinstance(orig, MemoryError):
+            raise orig
+        status, msg, code = "erreur", f"{exc.__class__.__name__} : {exc}", _erreurs.code_retour(orig)
         body = _error_box(title, exc)
-    results.append(SectionResult(sid, title, status, msg, round(time.perf_counter() - t, 2)))
+    results.append(SectionResult(sid, title, status, msg, round(time.perf_counter() - t, 2), code))
     head = f'<h2>{esc(title)}</h2>' + (f'<p class="lead">{_h(lead)}</p>' if lead else "") if heading else ""
     return H(f'<section id="{esc(sid)}" data-statut="{esc(status)}">{head}{body}</section>')
 
@@ -1153,6 +1171,12 @@ def _sec_bandeau(ctx: _Ctx) -> H:
         warns_late = [str(late).replace("`", "")]
     else:
         warns_late = []
+    hist = ctx.historique or {}
+    hist_box = ""
+    if hist and not hist.get("complet", True):
+        # Avertissement fort, en tête : sur un historique partiel, distribution et signaux peuvent être faux.
+        hist_box = _box("err", "Historique incomplet : chiffres à ne pas utiliser tels quels",
+                        str(hist.get("avertissement") or hist.get("raison") or "historique incomplet"))
     limits = H('<p class="sub limits" role="note"><strong>Limites à lire d\'abord.</strong> '
                + esc((f"Données : {gaps} ; " if gaps else "Données : pas de BOC avant 2017, trous en 2021 ; ")
                      + "le test S1 a été relancé une fois pour un défaut de mesure (D12) ; points ouverts : indice TR des "
@@ -1161,7 +1185,7 @@ def _sec_bandeau(ctx: _Ctx) -> H:
                + '<a href="#methode">Méthode et limites</a>.</p>')
     return H(f'<header class="top"><div class="hrow"><h1>{esc(title)}</h1>'
              f'<button type="button" class="toggle" id="theme-toggle" aria-label="Changer de thème">Thème : auto</button>'
-             f'</div><p class="sub">{esc(sub)}</p></header>{banner}'
+             f'</div><p class="sub">{esc(sub)}</p></header>{banner}{hist_box}'
              + "".join(_box("warn", "Données en retard", w) for w in warns_late) + f'{limits}{tiles}'
              + "".join(_box("warn", "Avertissement", w) for w in warns)
              + f'<nav class="toc" aria-label="Sommaire">{toc}</nav>')
@@ -2135,7 +2159,9 @@ def _sec_distribution(ctx: _Ctx) -> H:
         if d.get("biais_fenetre"):
             parts.append(_box("warn", "Fenêtre d'estimation optimiste", d["biais_fenetre"]))
         if d.get("biais_retrospectif"):
-            parts.append(_box("warn", "Biais rétrospectif (fenêtre 2017-2026, poids actuels).",
+            span = (f"fenêtre du {fmt_date(d.get('debut'))} au {fmt_date(d.get('fin'))}" if d.get("fenetre_incomplete")
+                    else "fenêtre 2017-2026")
+            parts.append(_box("warn", f"Biais rétrospectif ({span}, poids actuels).",
                               re.sub(r"^Biais rétrospectif\s*:\s*", "", str(d["biais_retrospectif"]))))
         if (d.get("resultat_s1") or {}).get("texte"):
             parts.append(_box("warn", "Résultat du test S1 à lire avec P(battre le TR)", d["resultat_s1"]["texte"]))
@@ -2783,6 +2809,11 @@ def _sec_methode(ctx: _Ctx) -> H:
         "les poids actuels (biais rétrospectif signalé dans la section).",
         "Notes de l'analyste : poids bornés, aucun rôle sur S1 (D11) ; évaluation des indices : aide à la décision.",
     ]
+    hist = ctx.historique or {}
+    if hist and not hist.get("complet", True):
+        proto.append("Ici, l'historique est incomplet (" + str(hist.get("raison") or "bulletins manquants") + ") : la "
+                     "fenêtre réellement utilisée est plus courte que celle décrite ci-dessus (dates exactes dans la "
+                     "section Distribution) ; les chiffres ne valent pas pour 2017-2026.")
     parts.append(_card(H("<h3>Protocole</h3>"), _ul(proto)))
     t = ctx.try_get("t", "date", ctx.t)
     src = [(lab, url) for lab, url in SOURCES]
@@ -3053,13 +3084,15 @@ def render_report(asof: Any, capital: float, *, panels: Mapping[str, Any] | None
                   variant: str | None = None, cash: float | None = None, costs: Any = "central",
                   registry_path: str | Path | None = None, n_boot: int = 5000, seed: int = 0,
                   recommend_kwargs: Mapping[str, Any] | None = None, now: Any = None,
-                  notes_known_at: Any = None) -> RapportHTML:
+                  notes_known_at: Any = None, historique: Mapping[str, Any] | None = None) -> RapportHTML:
     """Construit le rapport en mémoire (voir :func:`build_report`) et renvoie le HTML et le statut
     de chaque section (``ok``, ``indisponible``, ``erreur``).
 
     ``notes_known_at`` : ``None`` (défaut sûr : mode historique, notes en règle stricte à la date des
     données) ou instant de connaissance des notes (mode direct, passé par la ligne de commande et
-    l'interface quand la date est la dernière séance du panel)."""
+    l'interface quand la date est la dernière séance du panel). ``historique`` : état de l'historique
+    (``brvm_alpha.cli.history_state`` : ``complet``, ``raison``, ``avertissement``) ; incomplet, un
+    avertissement fort est placé en tête du rapport."""
     if capital is None or not _ok(capital) or float(capital) <= 0:
         raise ValueError("capital doit être un nombre > 0 (FCFA)")
     now_ts = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
@@ -3068,7 +3101,7 @@ def render_report(asof: Any, capital: float, *, panels: Mapping[str, Any] | None
     ctx = _Ctx(asof, capital, panels=panels, panel_dir=panel_dir, notes_root=notes_root,
                validation_dir=validation_dir, diagnostic_dir=diagnostic_dir, holdings=holdings, variant=variant,
                cash=cash, costs=costs, registry_path=registry_path, n_boot=n_boot, seed=seed,
-               recommend_kwargs=recommend_kwargs, now=now_ts, notes_known_at=notes_known_at)
+               recommend_kwargs=recommend_kwargs, now=now_ts, notes_known_at=notes_known_at, historique=historique)
     results: list[SectionResult] = []
     leads = {
         "marche": "Faits du bulletin officiel de la cote à la date des données ; le taux de référence est une estimation.",
@@ -3118,8 +3151,9 @@ def build_report(asof: Any, capital: float, out_path: str | Path, *, panels: Map
                  panel_dir: str | Path | None = "data/panel", notes_root: str | Path | None = "data/notes",
                  validation_dir: str | Path | None = "reports/validation_S1",
                  diagnostic_dir: str | Path | None = "reports/diagnostic_S0",
-                 holdings: Mapping[str, int] | None = None, variant: str | None = None, **kwargs: Any) -> Path:
-    """Écrit le rapport HTML autonome à ``out_path`` et renvoie son chemin.
+                 holdings: Mapping[str, int] | None = None, variant: str | None = None,
+                 rendu: list[RapportHTML] | None = None, **kwargs: Any) -> Path:
+    """Écrit le rapport HTML autonome à ``out_path`` (écriture atomique) et renvoie son chemin.
 
     Parameters
     ----------
@@ -3142,9 +3176,22 @@ def build_report(asof: Any, capital: float, out_path: str | Path, *, panels: Map
     **kwargs
         Options de :func:`render_report` : ``cash``, ``costs``, ``registry_path``, ``n_boot``, ``seed``,
         ``recommend_kwargs``, ``now``, ``notes_known_at`` (instant de connaissance des notes du mode
-        direct ; défaut ``None`` : mode historique).
+        direct ; défaut ``None`` : mode historique), ``historique`` (état de l'historique).
+    rendu
+        Liste qui reçoit le :class:`RapportHTML` rendu (statut de chaque section) : la ligne de commande
+        en tire l'état des sections et son code de sortie.
     """
-    rep = render_report(asof, capital, panels=panels, panel_dir=panel_dir, notes_root=notes_root,
-                        validation_dir=validation_dir, diagnostic_dir=diagnostic_dir, holdings=holdings,
-                        variant=variant, **kwargs)
-    return rep.write(out_path)
+    rep = ecrire_rapport(asof, capital, out_path, panels=panels, panel_dir=panel_dir, notes_root=notes_root,
+                         validation_dir=validation_dir, diagnostic_dir=diagnostic_dir, holdings=holdings,
+                         variant=variant, **kwargs)
+    if rendu is not None:
+        rendu.append(rep)
+    return rep.chemin if rep.chemin is not None else Path(out_path)
+
+
+def ecrire_rapport(asof: Any, capital: float, out_path: str | Path, **kwargs: Any) -> RapportHTML:
+    """Rend le rapport (:func:`render_report`) et l'écrit de façon atomique à ``out_path`` ; renvoie le rapport
+    rendu (``chemin`` : fichier écrit ; ``sections`` : statut de chaque section)."""
+    rep = render_report(asof, capital, **kwargs)
+    rep.write(out_path)
+    return rep

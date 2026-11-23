@@ -413,10 +413,17 @@ def test_duplicate_manual_note_is_refused_on_the_command_line(tmp_path, capsys):
     argv = ["notes", "add", "--racine", root, "--cible", "SNTS", "--titre", "Doublon non daté", "--texte",
             "Dividende relevé.", "--avis", "haussier", "--conviction", "2"]
     assert cli.main(argv) == 0
+    first = NoteStore(root).ids()[0]
     assert "Note enregistrée : " in capsys.readouterr().out
-    assert cli.main(argv) == 2
-    err = capsys.readouterr().err
-    assert "note déjà enregistrée" in err and "--forcer" in err and len(NoteStore(root)) == 1
+    # Contrat de la ligne de commande (moteur embarqué) : un doublon ne crée rien, code 0, doublon signalé.
+    assert cli.main(argv) == 0
+    cap = capsys.readouterr()
+    assert "note déjà enregistrée" in cap.err and "--forcer" in cap.err and len(NoteStore(root)) == 1
+    assert f"Note déjà enregistrée : {first}" in cap.out and "rien n'est ajouté" in cap.out
+    assert cli.main(argv + ["--format", "json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True and payload["cree"] is False and payload["doublon_id"] == first
+    assert payload["note_id"] == first and len(NoteStore(root)) == 1
     assert cli.main(argv + ["--forcer"]) == 0 and len(NoteStore(root)) == 2
     capsys.readouterr()
     # Même identifiant (date de publication donnée) : dit en clair, rien n'est ajouté.

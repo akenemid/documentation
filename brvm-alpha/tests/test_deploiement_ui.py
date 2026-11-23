@@ -513,14 +513,16 @@ def test_state_json_is_read_only_and_follows_the_prefix(serve, tmp_path, tiny_pa
     assert status == 200 and h["content-type"].startswith("application/json") and h["cache-control"] == "no-store"
     state = json.loads(body)
     assert list(state) == ["bandeau", "pret", "raison", "historique_complet", "version", "releve_le", "panel",
-                           "bulletins", "site", "notes", "rapport", "donnees"]
+                           "bulletins", "site", "notes", "rapport", "donnees", "extracteur_pdf", "embarque"]
     # sept BOC des fixtures : panel lisible, historique incomplet depuis 2017, donc pas « prêt »
     assert state["bandeau"] == pages.BANNER and state["pret"] is False and state["releve_le"] == "2026-10-30T12:00:00Z"
     assert state["raison"].startswith("historique incomplet") and state["historique_complet"] is False
     assert state["panel"]["derniere_seance"] == "2026-10-29" and state["panel"]["seances_presentes"] == 7
     assert state["panel"]["seances_en_retard"] == 0 and state["panel"]["retard"] is None
     assert state["bulletins"]["en_cache"] == 7 and state["bulletins"]["dernier"] == "2026-10-29"
-    assert state["bulletins"]["jours_a_telecharger"] == 1  # le 30/10/2026, pas encore paru
+    # « update » comble l'historique depuis le 02/01/2017 : le 30/10/2026 (pas encore paru) et tous les jours sans
+    # bulletin depuis 2017 (sept BOC seulement ici)
+    assert state["bulletins"]["jours_a_telecharger"] == state["bulletins"]["jours_a_telecharger_depuis_2017"] > 2000
     assert state["site"] == {"bloque": False, "depuis": None, "code_http": None}
     assert state["notes"]["au_journal"] == 0 and state["notes"]["journal_present"] is False
     assert state["rapport"]["nom"] == "rapport_2026-10-29.html" and state["rapport"]["date"].endswith("Z")

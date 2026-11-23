@@ -17,8 +17,10 @@ Contenu (mêmes clés en texte et en JSON) :
 - ``panel`` : dernière séance, séances présentes et manquantes, retard éventuel
   (``portfolio.recommend.panel_staleness`` et ``stale_panel_message``, comme sur les pages) ;
 - ``bulletins`` : bulletins en cache, jours marqués sans bulletin, jours restant à télécharger d'après
-  le calcul de ``update --simulation`` (:func:`brvm_alpha.cli.update_window`), et le même calcul
-  depuis le début de l'historique (``update --from 2017-01-02``, pour la première collecte) ;
+  le calcul de ``update --simulation`` (:func:`brvm_alpha.cli.update_window` : tout l'historique depuis
+  le 02/01/2017, ``jours_a_telecharger`` et ``jours_a_telecharger_depuis_2017`` sont donc égaux) ;
+- ``extracteur_pdf`` : présence de ``pdftotext`` (paquet poppler-utils), obligatoire en mode embarqué
+  (``manquant`` vrai : ``update``, ``notes research --pdf N`` et ``notes lire`` sortiront en code 8) ;
 - ``site`` : blocage éventuel de www.brvm.org (refus HTTP 403 ou 429 enregistré) ;
 - ``notes`` : notes au journal et notes en vigueur ;
 - ``rapport`` : dernier rapport écrit (nom, date) ;
@@ -268,7 +270,8 @@ def bulletins_state(boc_dir: Path, today: dt.date) -> dict[str, Any]:
         start, _end, days = cli.update_window(boc_dir, today=today)
         out["jours_a_telecharger"] = len(days)
         out["premier_jour_cherche"] = _iso_day(start)
-        out["jours_a_telecharger_depuis_2017"] = len(cli.update_window(boc_dir, start=cli.HISTORY_START, today=today)[2])
+        out["jours_a_telecharger_depuis_2017"] = (len(days) if start == cli.HISTORY_START else
+                                                  len(cli.update_window(boc_dir, start=cli.HISTORY_START, today=today)[2]))
     except Exception:  # pragma: no cover - dossier illisible
         pass
     try:
@@ -282,6 +285,20 @@ def bulletins_state(boc_dir: Path, today: dt.date) -> dict[str, Any]:
     except Exception:  # pragma: no cover - dossier illisible : historique réputé incomplet
         pass
     return out
+
+
+def pdf_state() -> dict[str, Any]:
+    """Extracteur PDF : ``pdftotext`` présent ? (``shutil.which`` seulement : aucune commande n'est lancée).
+
+    ``obligatoire`` : vrai en mode embarqué ; ``manquant`` : obligatoire et absent (les commandes qui convertissent
+    un PDF sortiront en code 8, « pdftotext absent : installer poppler-utils »).
+    """
+    import shutil
+
+    exe = shutil.which("pdftotext")
+    required = paths.est_embarque()
+    return {"pdftotext": exe is not None, "chemin": exe, "obligatoire": bool(required),
+            "manquant": bool(required and exe is None)}
 
 
 def site_state(notes_root: Path) -> dict[str, Any]:
@@ -380,6 +397,8 @@ def collect_state(*, panel_dir: str | Path | None = None, boc_dir: str | Path | 
         "notes": notes_state(store, pdir, panel["derniere_seance"], t, notes_status),
         "rapport": report_state(rdir),
         "donnees": {"dossier": str(ddir), "taille_octets": size, "taille": human_size(size)},
+        "extracteur_pdf": pdf_state(),
+        "embarque": paths.est_embarque(),
     }
 
 
@@ -458,7 +477,7 @@ def format_text(state: dict[str, Any]) -> str:
                      "redirection ou extraction ratée ; seul un 404 répété le rend définitif).")
     lines.append(f"Jours restant à télécharger : {cli.fr_num(b['jours_a_telecharger'], 0)} (calcul de « update », à "
                  f"partir du {_fr_day(b['premier_jour_cherche'])}) ; {cli.fr_num(b['jours_a_telecharger_depuis_2017'], 0)} "
-                 "depuis le 02/01/2017 (calcul de « update --from 2017-01-02 »). Aucune requête n'a été envoyée.")
+                 "depuis le 02/01/2017. Aucune requête n'a été envoyée.")
     lines.append(f"Site www.brvm.org : bloqué depuis le {s['depuis'] or 'date inconnue'} (HTTP {s['code_http']}) : aucune "
                  "requête ne lui est envoyée tant que le blocage n'est pas levé." if s["bloque"] else
                  "Site www.brvm.org : aucun refus enregistré.")
@@ -468,9 +487,16 @@ def format_text(state: dict[str, Any]) -> str:
     lines.append(f"Dernier rapport écrit : {r['nom']}, le {_fr_instant(r['date'])}. Dossier : {r['dossier']}." if r["nom"]
                  else f"Dernier rapport écrit : aucun. Dossier : {r['dossier']}.")
     lines.append(f"Données : {d['taille']}. Dossier : {d['dossier']}.")
+    x = state.get("extracteur_pdf") or {}
+    if x.get("manquant"):
+        lines.append("Extracteur PDF : pdftotext absent : installer poppler-utils (obligatoire en mode embarqué ; "
+                     "update, notes research et notes lire sortiront en code 8).")
+    elif x:
+        lines.append("Extracteur PDF : pdftotext présent." if x.get("pdftotext") else
+                     "Extracteur PDF : pdftotext absent (repli pdfplumber, plus lent ; installer poppler-utils).")
     lines.append(state.get("bandeau") or cli.BANNER)
     return "\n".join(lines)
 
 
 __all__ = ["ENV_VERSION", "UNKNOWN_VERSION", "HISTORY_HINT", "code_version", "dir_size", "human_size", "panel_state",
-           "bulletins_state", "readiness", "site_state", "notes_state", "report_state", "collect_state", "format_text"]
+           "bulletins_state", "readiness", "pdf_state", "site_state", "notes_state", "report_state", "collect_state", "format_text"]

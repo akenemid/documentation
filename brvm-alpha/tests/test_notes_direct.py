@@ -709,7 +709,7 @@ def test_cli_notes_lire_reports_a_stop_and_a_missing_function(tmp_path, capsys, 
 
     monkeypatch.setattr(rs, "enrich_documents", lambda store, **kw: {**FAKE_REPORT, "stopped": "HTTP 429 : arrêt"},
                         raising=False)
-    assert cli.main(["notes", "lire", "--racine", str(tmp_path)]) == 1
+    assert cli.main(["notes", "lire", "--racine", str(tmp_path)]) == 5  # refus du site : code 5 (accès refusé)
     assert "Arrêt de la lecture : HTTP 429" in capsys.readouterr().out
 
     def boom(store, **kw):
@@ -746,7 +746,7 @@ def test_cli_notes_research_pdf_option(tmp_path, capsys, monkeypatch, fake_enric
     assert len(fake_enrich) == 2 and "non demandée (--pdf 0)" in capsys.readouterr().out
     # Collecte en ligne arrêtée (403 / 429) : aucune lecture, aucune autre requête.
     stopped[0] = "HTTP 403"
-    assert cli.main(["notes", "research", "--racine", str(tmp_path), "--pdf", "5"]) == 1
+    assert cli.main(["notes", "research", "--racine", str(tmp_path), "--pdf", "5"]) == 5  # refus : code 5
     assert len(fake_enrich) == 2 and "non lancée" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(base + ["--pdf", "-1"])

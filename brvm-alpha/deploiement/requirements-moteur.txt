@@ -5,6 +5,9 @@
 # Non essayé ici sous Python 3.12 (aucune installation possible sans réseau) : si une version
 # n'existe pas pour Python 3.12, prendre la plus proche et le noter.
 # pytest n'est pas dans la liste : il ne sert qu'aux tests (pytest==9.1.1 ici).
+# wrapt (dépendance de formulaic, lui-même de statsmodels) n'est pas épinglé : la version relevée ici était
+# une version de développement (2.6.0.dev1) ; pip installe la dernière version publiée.
+# Moteur EMBARQUÉ dans Odoo (Python 3.11 autonome) : voir requirements-moteur-py311.txt (jeu minimal).
 #
 # Paquets utilisés directement par le code.
 pandas==3.0.5
@@ -41,5 +44,3 @@ soupsieve==2.9.2
 threadpoolctl==3.8.0
 typing_extensions==4.16.0
 urllib3==2.8.0
-# Version de développement relevée telle quelle ; si pip la refuse, prendre la dernière version stable.
-wrapt==2.6.0.dev1

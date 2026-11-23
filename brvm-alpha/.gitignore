@@ -12,3 +12,7 @@ __pycache__/
 # ordres de bataille Markdown sont suivis.
 /reports/*.html
 /reports/**/*.html
+# Roues Python et archives de l'interpréteur autonome (moteur embarqué) : elles vont dans le dépôt
+# privé de l'ERP (deploiement/preparer-python-et-roues.sh), jamais dans ce dépôt.
+*.whl
+cpython-*.tar.gz

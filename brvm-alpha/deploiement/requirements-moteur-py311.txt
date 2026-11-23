@@ -1,0 +1,25 @@
+# Paquets Python du moteur EMBARQUÉ dans Odoo (module rz_brvm_alpha), sur le CPython 3.11.15 autonome
+# (deploiement/python-autonome.txt). Jeu MINIMAL : 16 paquets, versions exactes, une ligne par paquet.
+# Roues correspondantes (nom exact, taille, sha256) : deploiement/roues-py311-x86_64.tsv.
+# Installation hors ligne : deploiement/installer-python-et-roues.sh (pip --no-index --find-links,
+# --require-hashes). Mesuré le 22/11/2026 : avec ce seul jeu, les commandes utiles à Odoo (etat, notes,
+# indices, explain, recommend, report, update, panel) sortent en 0 avec le même ordre de bataille qu'avec
+# le jeu complet. Absents exprès : statsmodels et scikit-learn (validate et backtest seulement, refusés en
+# mode embarqué), pdfplumber et ses dépendances (repli quand pdftotext manque ; pdftotext est obligatoire
+# en mode embarqué : paquet système poppler-utils). Suite de tests : requirements-tests-py311.txt.
+pandas==3.1.1
+numpy==2.4.6
+scipy==1.17.1
+pyarrow==26.0.1
+pyyaml==6.0.4
+requests==2.34.2
+beautifulsoup4==4.15.0
+lxml==6.1.3
+python-dateutil==4.0.0
+tzdata==2026.6
+soupsieve==4.1.3
+certifi==2026.11.20
+charset-normalizer==3.5.2
+idna==3.20
+urllib3==2.8.0
+typing-extensions==4.16.0

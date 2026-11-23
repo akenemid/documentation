@@ -2157,6 +2157,14 @@ def _distribution_for(plan: _Plan, panels: Mapping[str, Any], nav: float, costs_
                                seed=seed, cost_drag=drag)
     dist["fenetre"] = window["texte"]
     dist["s1_utilise"] = bool(window["s1_utilise"])
+    span = "toute l'histoire 2017-2026"
+    if dist.get("disponible") and dist.get("debut") is not None and \
+            pd.Timestamp(dist["debut"]) > pd.Timestamp(window["debut"]) + pd.Timedelta(days=35):
+        # Texte seulement (aucun calcul ne change) : la fenêtre prévue n'est pas couverte par les données.
+        dist["fenetre_incomplete"] = True
+        span = f"la fenêtre du {_d(dist['debut'])} au {_d(dist['fin'])}"
+        dist["fenetre"] = (f"historique disponible seulement du {_d(dist['debut'])} au {_d(dist['fin'])}, plus court "
+                           f"que la fenêtre prévue ({window['texte']}) : historique incomplet, chiffres peu fiables")
     if dist.get("disponible") and window["s1_utilise"]:
         # Fenêtre 2017-2026 : poids ACTUELS et sélection d'AUJOURD'HUI appliqués au passé (biais rétrospectif).
         part = sorted(dist.get("lignes_sans_historique_complet") or [], key=lambda x: -x["poids"])
@@ -2165,7 +2173,7 @@ def _distribution_for(plan: _Plan, panels: Mapping[str, Any], nav: float, costs_
                            else "aucun cours dans la fenêtre") + ")" for x in part)
         dist["biais_retrospectif"] = (
             "Biais rétrospectif : poids actuels et sélection d'aujourd'hui (plus grosses capitalisations au "
-            f"{_d(window['fin'])}) appliqués à toute l'histoire 2017-2026 ; les titres alors en difficulté ou "
+            f"{_d(window['fin'])}) appliqués à {span} ; les titres alors en difficulté ou "
             "radiés n'y figurent pas, ce qui flatte la distribution. "
             + (f"Lignes sans historique complet : {lst}, soit {_pct(dist.get('poids_sans_historique_complet'), 1)} "
                f"du portefeuille ; {_int(dist.get('valeurs_avant_cotation_renormalisees'))} valeur(s) "

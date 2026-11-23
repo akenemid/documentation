@@ -100,10 +100,12 @@ def test_etat_on_a_tiny_installation(tiny, tmp_path, capsys, no_network):
     assert state["panel"]["derniere_seance"] == "2026-10-29" and state["panel"]["seances_presentes"] == 7
     assert state["panel"]["seances_manquantes"] > 0  # numéros de BOC absents entre les sept extraits
     assert state["bulletins"]["jours_manquants"] > 2000
+    # « update » comble depuis le 02/01/2017 sans --from : les deux décomptes sont égaux (relecture du 22/11/2026).
+    assert state["bulletins"]["jours_a_telecharger"] == state["bulletins"]["jours_a_telecharger_depuis_2017"] > 2000
     assert state["bulletins"] | {"jours_a_telecharger": 0, "jours_a_telecharger_depuis_2017": 0,
                                  "jours_manquants": 0} == {
         "dossier": str(tiny / "boc_text"), "en_cache": 7, "sans_bulletin": 1, "dernier": "2026-10-29",
-        "jours_a_telecharger": 0, "premier_jour_cherche": "2026-10-31", "jours_a_telecharger_depuis_2017": 0,
+        "jours_a_telecharger": 0, "premier_jour_cherche": "2017-01-02", "jours_a_telecharger_depuis_2017": 0,
         "premier": "2025-12-31", "sans_bulletin_definitif": 1, "a_reessayer": 0, "jours_manquants": 0,
         "historique_complet": False}
     assert state["notes"]["au_journal"] == 1 and state["notes"]["en_vigueur"] == 1
@@ -125,10 +127,16 @@ def test_etat_counts_days_like_update_simulation_without_any_request(tiny, capsy
     n_history = int(re.search(r": (\d+) jour\(s\) ouvré\(s\) à chercher", capsys.readouterr().out).group(1))
     b = etat.bulletins_state(boc, dt.date.today())
     assert b["jours_a_telecharger"] == n_default and b["jours_a_telecharger_depuis_2017"] == n_history
-    assert n_history > 2000 > n_default >= 0
-    # même fonction que « update » : fenêtre par défaut du lendemain du dernier fichier local à aujourd'hui
+    # Défaut de « update » (relecture du 22/11/2026) : tout l'historique depuis le 02/01/2017, donc les trous
+    # laissés par un lancement arrêté sont repris sans --from ; même calcul avec --from 2017-01-02.
+    assert n_history == n_default > 2000
     start, end, days = cli.update_window(boc, today=dt.date(2026, 11, 6))
-    assert (start, end) == (dt.date(2026, 10, 31), dt.date(2026, 11, 6))
+    assert (start, end) == (cli.HISTORY_START, dt.date(2026, 11, 6))
+    assert [d.isoformat() for d in sorted(days)][-5:] == ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05",
+                                                          "2026-11-06"]
+    assert dt.date(2026, 10, 29) not in days and dt.date(2026, 10, 30) not in days  # bulletin et marqueur présents
+    assert days == sorted(days, reverse=True)  # du plus récent au plus ancien
+    start, end, days = cli.update_window(boc, start=dt.date(2026, 10, 31), today=dt.date(2026, 11, 6))
     assert [d.isoformat() for d in sorted(days)] == ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"]
     assert cli.update_window(boc, start=dt.date(2026, 10, 28), end=dt.date(2026, 12, 31),
                              today=dt.date(2026, 10, 30))[1:] == (dt.date(2026, 10, 30), [dt.date(2026, 10, 28)])
@@ -446,7 +454,7 @@ def test_commands_read_and_write_in_the_relocated_folders(tmp_path):
     assert [p.name for p in reports.iterdir()] == [f"notes_{dt.date.today():%Y%m%d}.md"]
     assert f"Reconstruction du panel {data / 'panel'} depuis {data / 'boc_text'}" in r.stdout
     assert f"dossier {data / 'boc_text'}" in r.stdout  # update --simulation
-    state = json.loads(r.stdout[r.stdout.rindex('{\n "bandeau"'):])
+    state = json.loads(r.stdout[r.stdout.rindex('{\n "ok": true'):])  # objet JSON : « ok » en tête
     assert state["pret"] is False and state["panel"]["dossier"] == str(data / "panel")  # sept BOC : incomplet
     assert state["panel"]["lisible"] is True and state["raison"].startswith("historique incomplet")
     assert state["bulletins"]["dossier"] == str(data / "boc_text") and state["bulletins"]["en_cache"] == 7

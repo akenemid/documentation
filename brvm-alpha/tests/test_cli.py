@@ -525,10 +525,15 @@ def test_update_simulation_sends_nothing(tmp_path, capsys, monkeypatch):
     with gzip.open(boc / "boc_20261117.txt.gz", "wt", encoding="utf-8") as fh:
         fh.write("x")
     monkeypatch.setattr(boc_download, "download_range", lambda *a, **k: (_ for _ in ()).throw(AssertionError("réseau")))
+    # Défaut : tout l'historique depuis le 02/01/2017 (comblement des trous sans --from, relecture du 22/11/2026).
     assert cli.main(["update", "--boc-dir", str(boc), "--jusqu-au", "2026-11-20", "--simulation"]) == 0
     out = capsys.readouterr().out
+    assert "du 02/01/2017 au 20/11/2026 : " in out and "  2026-11-19" in out and "  2017-01-02" in out
+    assert "  2026-11-17" not in out and "aucune requête" in out and "10 s au moins" in out
+    assert cli.main(["update", "--boc-dir", str(boc), "--from", "2026-11-18", "--jusqu-au", "2026-11-20",
+                     "--simulation"]) == 0
+    out = capsys.readouterr().out
     assert "du 18/11/2026 au 20/11/2026 : 3 jour(s)" in out and "2026-11-19" in out and "aucune requête" in out
-    assert "10 s au moins" in out
 
 
 def test_update_stops_at_first_403_and_keeps_panel(tmp_path, capsys, monkeypatch):
@@ -551,7 +556,7 @@ def test_update_stops_at_first_403_and_keeps_panel(tmp_path, capsys, monkeypatch
     monkeypatch.setattr(cli, "brvm_fetcher", fake_fetcher)
     monkeypatch.setattr(store, "build_panel", lambda *a, **k: (_ for _ in ()).throw(AssertionError("panel")))
     code = cli.main(["update", "--boc-dir", str(boc), "--from", "2026-11-19", "--jusqu-au", "2026-11-20"])
-    assert code == 1 and len(calls) == 1
+    assert code == 5 and len(calls) == 1  # refus du site : code 5 (accès refusé), jamais 3
     assert "arrêt" in capsys.readouterr().err
     assert not list(boc.glob("*.missing"))
 
@@ -564,7 +569,7 @@ def test_update_refuses_when_brvm_is_blocked(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(cli, "brvm_fetcher", lambda **k: (_ for _ in ()).throw(AssertionError("réseau")))
     boc = tmp_path / "boc"
     boc.mkdir()
-    assert cli.main(["update", "--boc-dir", str(boc), "--from", "2026-11-19", "--jusqu-au", "2026-11-20"]) == 2
+    assert cli.main(["update", "--boc-dir", str(boc), "--from", "2026-11-19", "--jusqu-au", "2026-11-20"]) == 5
     assert "refusé" in capsys.readouterr().err
 
 

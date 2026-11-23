@@ -58,34 +58,41 @@ d'installation : on lance les commandes depuis la racine `brvm-alpha/`.
   perte de **nos** données, pas une absence de cotation.
 - `data/` n'est **pas suivi** par git : environ 185 Mo utiles (BOC en texte 44 Mo, panel 12 Mo, journal
   des notes et cache des pages et des documents 128 Mo). On le reconstruit avec `update` puis `panel`.
-  **Depuis zéro, c'est long** : environ 2 580 jours ouvrés à chercher, 200 requêtes au plus par lancement
-  et 10 s au moins entre deux requêtes, soit **au moins 13 lancements de `update`** et plus de 7 heures
-  de téléchargement au total (`update --simulation` affiche le décompte sans rien envoyer). Sans panel,
-  les commandes s'arrêtent avec le message « panel introuvable : lancer python -m brvm_alpha update …
-  puis python -m brvm_alpha panel ». Trois dossiers d'essai des contrôles du 22/11/2026 restent dans
+  **Depuis zéro, c'est long** : environ 2 580 jours ouvrés à chercher, près de **4 000 requêtes** (jusqu'à
+  5 adresses par jour), 200 au plus par lancement et 10 s au moins entre deux : **une vingtaine de
+  lancements de `update`**, environ **11 heures** de téléchargement au total (comme dans
+  [docs/DEPLOIEMENT.md](docs/DEPLOIEMENT.md), § 7 et § A.13). `update` cherche de lui-même tout jour
+  manquant depuis le 02/01/2017 (du plus récent au plus ancien) : il suffit de le relancer tant que `etat`
+  compte des jours à télécharger, ou de lancer `sh deploiement/collecte-initiale.sh`. `update --simulation`
+  affiche le décompte sans rien envoyer. Sans panel, les commandes s'arrêtent avec le message « panel
+  introuvable : lancer python -m brvm_alpha update … puis python -m brvm_alpha panel ». Trois dossiers d'essai des contrôles du 22/11/2026 restent dans
   `data/` (`notes_essai_20261122`, `notes_essai_20261122_apres`, `panel_verify`, environ 30 Mo) : aucune
   commande ne s'en sert, ils peuvent être supprimés.
 
 ## Commandes (CLI)
 
 Toutes les commandes s'écrivent `python -m brvm_alpha COMMANDE` ; `-h` affiche l'aide en français.
-Code de sortie : 0 succès, 1 échec, 2 refus ou saisie invalide. **Toute date de décision dans S1
-(au plus tard le 16/11/2022) est refusée**, sauf par la commande `validate`, verrouillée.
+Codes de sortie (toutes les commandes ; **jamais 3**) : 0 succès ; 1 données absentes, historique non prêt
+ou quota atteint ; 2 saisie invalide ou refus ; 4 verrou occupé ; 5 accès refusé ou réseau (403, 429) ;
+6 mémoire insuffisante ; 7 erreur interne ; 8 configuration (mode embarqué sans dossiers, pdftotext
+absent) ; 130 interruption (Ctrl+C ou TERM). Avec `--format json`, la sortie standard porte exactement un
+objet JSON, erreur comprise (`{"ok": false, "code", "erreur", "message", "bandeau"}`). **Toute date de
+décision dans S1 (au plus tard le 16/11/2022) est refusée**, sauf par la commande `validate`, verrouillée.
 
 | Commande | Rôle |
 |---|---|
-| `update` | télécharge les BOC manquants sur www.brvm.org (robots.txt, 10 s au moins entre deux requêtes, arrêt au premier 403 ou 429), puis reconstruit le panel |
+| `update` | télécharge les BOC manquants sur www.brvm.org (tout jour manquant depuis le 02/01/2017 ; robots.txt, 10 s au moins entre deux requêtes, arrêt au premier 403 ou 429), puis reconstruit le panel (sauf `--sans-panel`) |
 | `panel` | reconstruit `data/panel` depuis les BOC locaux (cache incrémental) |
 | `live` | cours du jour (page publique de brvm.org, un instantané ; le BOC du soir fait foi) |
-| `etat` | état de l'installation, en texte ou en JSON : panel, bulletins, jours restant à télécharger, notes, dernier rapport, taille des données, version ; aucune requête, code de sortie toujours 0 |
+| `etat` | état de l'installation, en texte ou en JSON : « prêt » seulement si le panel est lisible **et** l'historique complet depuis le 02/01/2017, bulletins, jours restant à télécharger, notes, dernier rapport, taille des données, pdftotext, version ; aucune requête, code de sortie 0 |
 | `notes` | journal des notes : `add`, `list`, `show`, `archive`, `export`, `research` (collecte, puis lecture des documents : `--pdf N`), `lire` (lecture seule des documents), `analyze` |
 | `indices` | évaluation des indices (position, confiance, raisons) ; `indices dossier CODE` |
 | `universe` | univers éligible U1-U10 à une date (comptage, permis sur toute la période) |
 | `explain` | décomposition du score et des contraintes d'un titre |
 | `backtest` | backtest net de coûts (S0 ; S1 refusé sans `--validation-s1`) |
 | `validate` | test unique S1 (verrouillé) ou diagnostic S0 (contaminé) |
-| `recommend` | ordre de bataille complet pour un capital (Markdown, JSON ou HTML) |
-| `report` | rapport HTML autonome (marché, S1, ordre de bataille, revenus, distribution, indices, notes, risques, univers, méthode) |
+| `recommend` | ordre de bataille complet pour un capital (Markdown, JSON ou HTML) ; avertissement « HISTORIQUE INCOMPLET » tant que l'historique n'est pas complet |
+| `report` | rapport HTML autonome (marché, S1, ordre de bataille, revenus, distribution, indices, notes, risques, univers, méthode) ; `--format json` : chemin écrit et état de chaque section |
 | `serve` | interface web locale (`--prefixe`, `--origine-relais`, `--cadre-meme-origine` pour la placer derrière un relais authentifié) |
 
 Exemples :
@@ -166,11 +173,29 @@ un vrai navigateur le 22/11/2026).
 
 ## Déploiement à côté d'Odoo
 
-Le moteur peut tourner comme un service local, derrière un relais authentifié (un contrôleur Odoo
-réservé à un groupe), sans toucher à l'environnement Python d'Odoo. Tout est décrit dans
-[docs/DEPLOIEMENT.md](docs/DEPLOIEMENT.md) : installation avec un interpréteur isolé, variables,
-service, première collecte (environ 11 heures), tâche quotidienne, contrat du relais, sécurité, charge
-machine, mise à jour, désinstallation. En résumé :
+**En production, le moteur est embarqué** dans le module Odoo `rz_brvm_alpha` et appelé **en ligne de
+commande** (partie A de [docs/DEPLOIEMENT.md](docs/DEPLOIEMENT.md)) :
+
+- `sh deploiement/exporter-moteur.sh DOSSIER` copie seulement ce que le moteur lit (`brvm_alpha/`,
+  `configs/`, résultats de la validation, liste des paquets) et écrit `VERSION` (commit, date, sha256 de
+  chaque fichier) : ce fichier active le **mode embarqué** (comme `BRVM_ALPHA_EMBARQUE=1`) :
+  `BRVM_ALPHA_DONNEES` et `BRVM_ALPHA_RAPPORTS` obligatoires et absolus (code 8 sinon), aucune écriture
+  dans le code, pdftotext obligatoire, `validate` et `backtest` refusés, `recommend` et `report` refusés
+  sur un historique incomplet (sauf `--accepter-historique-incomplet`) ;
+- interpréteur à part : CPython 3.11.15 autonome et 16 paquets (`requirements-moteur-py311.txt`,
+  `roues-py311-x86_64.tsv`, `python-autonome.txt`), téléchargés et vérifiés par
+  `preparer-python-et-roues.sh`, installés **hors ligne** par `installer-python-et-roues.sh` ;
+- Odoo lance `/opt/rz-brvm-alpha/python/bin/python3.11 -I -B -m brvm_alpha COMMANDE … --format json`
+  (environnement explicite, limite de mémoire virtuelle de 3 Go : toutes les commandes tiennent sous
+  0,9 Go) et lit un objet JSON ; le code de sortie 3 n'est jamais rendu ;
+- **aucun serveur web du moteur en production** : `serve` et le relais (ci-dessous, partie B du
+  document) ne sont pas utilisés.
+
+Le moteur peut aussi tourner comme un service local, derrière un relais authentifié (un contrôleur Odoo
+réservé à un groupe), sans toucher à l'environnement Python d'Odoo (partie B de
+[docs/DEPLOIEMENT.md](docs/DEPLOIEMENT.md) : installation avec un interpréteur isolé, variables, service,
+première collecte, tâche quotidienne, contrat du relais, sécurité, charge machine, mise à jour,
+désinstallation). En résumé :
 
 - `serve --prefixe /rz_brvm_alpha/ui --origine-relais https://erp.exemple.com` : l'interface vit sous
   un préfixe d'adresse (404 ailleurs) et accepte les formulaires venus de l'origine du relais ;
@@ -182,9 +207,12 @@ machine, mise à jour, désinstallation. En résumé :
   journal des notes et son cache) et les rapports écrits hors de l'arbre du code. Les options
   (`--panel-dir`, `--boc-dir`, `--racine`, `--sortie`) l'emportent. Les fichiers de la validation S1
   restent lus dans le dépôt.
-- `deploiement/` : `service.sh`, `collecte-initiale.sh`, `quotidien.sh` (shell POSIX, sans secret),
-  `requirements-moteur.txt` (versions exactes) et `Dockerfile.moteur` (image `python:3.12-slim`, **non
-  construite ici**, faute de Docker).
+- `deploiement/` : `service.sh`, `collecte-initiale.sh`, `quotidien.sh`, `commun.sh` (shell POSIX, sans
+  secret ; verrou `flock`, codes 0, 1, 2, 4, 5, 8, jamais 3 ; TERM transmis à la commande en cours),
+  `exporter-moteur.sh`, `preparer-python-et-roues.sh`, `installer-python-et-roues.sh`,
+  `requirements-moteur.txt` (Python 3.13, versions exactes), `requirements-moteur-py311.txt` (jeu minimal
+  embarqué), `requirements-tests-py311.txt`, `roues-py311-x86_64.tsv`, `python-autonome.txt` et
+  `Dockerfile.moteur` (image `python:3.12-slim`, **non construite ici**, faute de Docker).
 
 Performance passée ≠ garantie. Aucun gain n'est garanti.
 
@@ -415,7 +443,10 @@ est dans [reports/ordre_de_bataille_2026-11-20.md](reports/ordre_de_bataille_202
 
 ```
 brvm_alpha/
-  cli.py, __main__.py        ligne de commande
+  cli.py, __main__.py        ligne de commande (codes de sortie, JSON, mode embarqué)
+  erreurs.py, fichiers.py    codes de retour ; écritures atomiques et verrous flock
+  net.py, pdf.py             réseau poli (liste blanche, plafonds) ; extraction PDF bornée
+  ressources.py              processeurs, fils de calcul, réservation de mémoire
   paths.py                   dossiers des données et des rapports (BRVM_ALPHA_DONNEES, BRVM_ALPHA_RAPPORTS)
   etat.py                    état de l'installation (commande etat, adresse /etat.json)
   config.py, settings.py     paramètres (frais, taxes) et lecture de configs/strategy_v1.yaml
@@ -430,7 +461,7 @@ brvm_alpha/
   report/html.py             rapport HTML autonome
   ui/                        interface web locale
 configs/strategy_v1.yaml     paramètres figés
-deploiement/                 scripts du service et des tâches, paquets du moteur, image Docker
+deploiement/                 export du moteur embarqué, interpréteur autonome et roues, scripts des tâches, image Docker
 docs/                        spécification, architecture, déploiement, annexes, revues de recherche 01 à 08
 reports/                     validation S1, diagnostic S0, registre des essais, ordres de bataille
 tests/                       tests pytest hors ligne
