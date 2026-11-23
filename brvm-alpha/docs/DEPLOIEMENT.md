@@ -82,7 +82,8 @@ sh deploiement/exporter-moteur.sh /chemin/hors/du/depot/moteur
 - Copie **seulement** `brvm_alpha/` (fichiers suivis par git et nouveaux fichiers non ignorés ; jamais
   `__pycache__`, `*.pyc` ni fichier caché), `configs/`, `reports/validation_S1/`, `reports/diagnostic_S0*/`,
   `reports/trials.parquet` et `deploiement/requirements-moteur-py311.txt`. Ni tests, ni documentation
-  (`docs/research` et ses scripts d'étude compris), ni données, ni scripts de déploiement.
+  (`docs/research` et ses scripts d'étude compris), ni données, ni scripts de déploiement. S'il existe,
+  `reports/suivi_S2/` (déclaration signée du suivi sur papier, § A.17) part aussi.
 - Écrit `VERSION` : première ligne = commit court (suivi de `+modifie` si le code exporté diffère du
   commit), puis la date UTC, le commit long, le nombre de fichiers et l'empreinte sha256 de chaque fichier.
   Vérification : `grep -E '^[0-9a-f]{64}  ' VERSION | sha256sum -c --quiet`.

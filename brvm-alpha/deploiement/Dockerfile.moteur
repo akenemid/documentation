@@ -55,6 +55,9 @@ COPY configs configs
 COPY reports/validation_S1 reports/validation_S1
 COPY reports/diagnostic_S0 reports/diagnostic_S0
 COPY reports/trials.parquet reports/trials.parquet
+# Déclaration signée du suivi sur papier, si elle existe : le motif « suivi_S[2] » ne demande pas que le dossier
+# existe (constructeur BuildKit, celui de Docker par défaut ; l'ancien constructeur refuse un motif sans fichier).
+COPY reports/suivi_S[2] reports/suivi_S2/
 COPY deploiement deploiement
 
 VOLUME ["/donnees"]
