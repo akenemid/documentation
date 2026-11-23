@@ -12,9 +12,24 @@
 
 > ⚠ Résultat du test unique S1 (metrics.json, fait de simulation) : la variante appliquée REF fait −5,6 % par an contre le Composite TR (statut REJETÉ). La P(battre le TR) de la distribution à 12 mois est une fréquence historique aux poids actuels, pas une probabilité de surperformance future.
 
-Décision à la clôture du BOC du 20/11/2026 ; exécution à partir du 23/11/2026. Capital 1 000 000 FCFA ; valeur du portefeuille avant ordres 1 000 000 FCFA, dont liquidités 1 000 000 FCFA.
+> ⚠ FUITE : Les frais annuels (102 166 FCFA) dépassent les dividendes nets attendus (38 458 FCFA). À cours inchangés, ce portefeuille perd 63 708 FCFA par an.
 
-Notes connues au 22/11/2026 18:44 UTC, appliquées à la séance du 23/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
+### L'essentiel
+
+- Prochaine séance : aucun achat. Aucune méthode n'est validée : avec les règles actuelles, la plate-forme ne recommandera pas d'argent réel. Changer ces règles serait votre décision, jamais avant le 01/06/2027 (6 mois de suivi sur papier à partir du 01/12/2026).
+- Frais de la 1re année si vous achetiez tout : 115 656 FCFA, dont 97,8 % supposés ou estimés (113 058 FCFA). Ces frais n'existent que si vous achetez. Montants calculés sur un tarif supposé tant que la grille de votre courtier n'est pas saisie.
+- Si vous ne faites qu'une chose cette semaine : envoyez les 8 questions à votre courtier.
+- 50 000 FCFA acceptés : À ce tarif, le plus petit montant en actions à 20 lignes risque plus que ce que vous acceptez.
+- 100 000 FCFA acceptés : À ce tarif, le plus petit montant en actions à 20 lignes risque plus que ce que vous acceptez.
+- 200 000 FCFA acceptés : À ce tarif, le plus petit montant en actions à 20 lignes risque plus que ce que vous acceptez.
+- Tout en actions : 1 000 000 FCFA en actions, 0 FCFA en réserve ; une année comme 2018 −325 583 FCFA à −369 643 FCFA ; pire moment de 2018 −391 655 FCFA ; si 2017-2020 revenait −506 237 FCFA ; année ordinaire (prudente) −38 171 FCFA [estimé]
+- Fréquences d'un seul passé (2017-2026 : quatre années de baisse, puis six de hausse). Ce ne sont pas des probabilités. Descriptif, pas un test.
+- Réserve 1 000 000 FCFA : un point d'intérêt vaut 10 000 FCFA par an [taux inconnu : compté à 0 %]. Les intérêts de la réserve ne sont jamais déduits de la perte estimée.
+- Trois feux : perte — ; fuites — ; données — (le suivi n'a pas commencé).
+
+Décision à la clôture du BOC du 20/11/2026 ; exécution à partir du 24/11/2026. Capital 1 000 000 FCFA ; valeur du portefeuille avant ordres 1 000 000 FCFA, dont liquidités 1 000 000 FCFA.
+
+Notes connues au 23/11/2026 14:30 UTC, appliquées à la séance du 24/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
 
 ## 1. Variante et statut de validation
 
@@ -24,6 +39,8 @@ Notes connues au 22/11/2026 18:44 UTC, appliquées à la séance du 23/11/2026 :
 - Variante en comparaison : aucune
 
 ## 2. Ordres (au titre et au franc près)
+
+**Étude : ne transmettez pas ces ordres à votre courtier.**
 
 | Titre | Sens | Quantité | Détenus | Cible | Poids cible | Poids réalisé | Cours réf. | Bornes | Limite | Brut | Coûts | Net | Séances |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -52,7 +69,7 @@ Notes connues au 22/11/2026 18:44 UTC, appliquées à la séance du 23/11/2026 :
 
 | Titre | Règle | Note | Blocage | Effet sur l'ordre | Pour lever le blocage |
 |---|---|---|---|---|---|
-| ETIT | R2 — annulation ou report d'AG : −1 en gouvernance, aucun achat (60 séances) | note 4a46238f820f du 23/10/2026 : « ETI TG : Communiqué - Annulation de l'Assemblée Générale Ordinaire » (source brvm_list, https://www.brvm.org/sites/default/files/20261023_-_communique_-_annulation_ago_-_eti_tg.pdf) | depuis le 26/10/2026, jusqu'au 19/01/2027 (encore 39 séance(s)) | aucun achat (poids cible 6,16 % sans les notes, 0 % avec) ; ce poids est redistribué aux autres lignes par les règles de construction (voir le tableau d'effet) | archiver la note (python -m brvm_alpha notes archive 4a46238f820f, ou bouton « Archiver » de sa fiche dans l'interface) : l'archivage écrit une nouvelle version, l'historique est conservé |
+| ETIT | R2 — annulation ou report d'AG : −1 en gouvernance, aucun achat (60 séances) | note 4a46238f820f du 23/10/2026 : « ETI TG : Communiqué - Annulation de l'Assemblée Générale Ordinaire » (source brvm_list, https://www.brvm.org/sites/default/files/20261023_-_communique_-_annulation_ago_-_eti_tg.pdf) | depuis le 26/10/2026, jusqu'au 19/01/2027 (encore 38 séance(s)) | aucun achat (poids cible 6,16 % sans les notes, 0 % avec) ; ce poids est redistribué aux autres lignes par les règles de construction (voir le tableau d'effet) | archiver la note (python -m brvm_alpha notes archive 4a46238f820f, ou bouton « Archiver » de sa fiche dans l'interface) : l'archivage écrit une nouvelle version, l'historique est conservé |
 | SEMC | R1 — suspension : aucun achat, alerte sur les positions (jusqu'à la reprise + 5 séances) | note e648d82ebd87 du 16/09/2026 : « SEMC : cotation suspendue (mention SP depuis le BOC du 16/09/2026) » (source boc, https://www.brvm.org/sites/default/files/boc_20260916_2.pdf) | depuis le 17/09/2026, jusqu'à la reprise de cotation + 5 séances | titre hors de la sélection : aucun effet sur cet ordre | archiver la note (python -m brvm_alpha notes archive e648d82ebd87, ou bouton « Archiver » de sa fiche dans l'interface) : l'archivage écrit une nouvelle version, l'historique est conservé |
 | SICC | R1 — suspension : aucun achat, alerte sur les positions (jusqu'à la reprise + 5 séances) | note 6771f0ac46eb du 16/09/2026 : « SICC : cotation suspendue (mention SP depuis le BOC du 16/09/2026) » (source boc, https://www.brvm.org/sites/default/files/boc_20260916_2.pdf) | depuis le 17/09/2026, jusqu'à la reprise de cotation + 5 séances | titre hors de la sélection : aucun effet sur cet ordre | archiver la note (python -m brvm_alpha notes archive 6771f0ac46eb, ou bouton « Archiver » de sa fiche dans l'interface) : l'archivage écrit une nouvelle version, l'historique est conservé |
 
@@ -118,39 +135,40 @@ Effet des notes sur les poids cibles (même décision recalculée sans aucune no
 
 - fenêtres comptées en séances (additif v1.1, D1) : 1 BOC manquants dans les 126 dernières séances ; seuils minimaux au prorata des BOC disponibles (planchers 40 / 20), bornes de rendement à 5 séances au plus
 - modulateur du momentum : séries de performance des modulateurs (spread du momentum, TR de marché) restreintes à S0 (≥ 17/11/2022) : échantillon vierge S1 protégé ; validation_s1=True est réservé au test pré-enregistré
-- notes de l'analyste prises en compte : 0 veto(s), 0 inclinaison(s), 8 titre(s) avec filtre R (mode direct : notes connues au 22/11/2026 18:44 UTC, appliquées à la séance du 23/11/2026)
+- notes de l'analyste prises en compte : 0 veto(s), 0 inclinaison(s), 8 titre(s) avec filtre R (mode direct : notes connues au 23/11/2026 14:30 UTC, appliquées à la séance du 24/11/2026)
 - indice discipliné (additif v1.1, D8) : 20 plus grosses capitalisations éligibles, poids proportionnels à la capitalisation sous plafonds, 98,00 % investis (aucune promesse d'alpha)
 
 ## 3. Exécution : échéancier par séance
 
-- 1 séance(s) du 23/11/2026 au 23/11/2026 ; participation ≤ 10 % de la MDV63 en valeur par séance
+- 1 séance(s) du 24/11/2026 au 24/11/2026 ; participation ≤ 10 % de la MDV63 en valeur par séance
 - Ventes d'abord ; règlement J+2 (depuis le 04/12/2025) : le produit d'une vente ne finance un achat qu'à partir de sa date de règlement ; liquidités initiales utilisées d'abord
 - Prix limites : achat = min(borne haute ; dernier cours × 1,01) au pas inférieur ; vente = max(borne basse ; dernier cours × 0,99) au pas supérieur. Aucun achat si le titre cote à la borne haute, aucune vente à la borne basse : ordre reporté (au plus 10 séances, puis réévaluation)
 - Jour ex et jour de division : la BRVM annule les ordres en attente ; les ressaisir le jour même
 - Calendrier futur : jours ouvrés hors fériés à date fixe observés 2017-2026 (01/01, 01/05, 07/08, 15/08, 01/11, 15/11, 25/12) ; fêtes mobiles inconnues (hypothèse)
+- Provision à avoir avant l'ordre : 885 665 FCFA. Part investie maximale à ce tarif : 97,81 % (la cible de 98 % n'est pas atteignable). Marge : +114 335 FCFA ; avec un courtage plus cher de 0,2 point : +112 267 FCFA [supposé] ; provision calculée sur un tarif supposé.
 
 | Séance | Date | Titre | Sens | Titres | Limite | Montant réf. | Pire cas | Règlement | Financement |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | 23/11/2026 | BICB | achat | 3 | 7 575 | 22 500 FCFA | 23 008 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | BICC | achat | 1 | 31 310 | 31 000 FCFA | 31 699 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | BOAB | achat | 2 | 9 185 | 18 190 FCFA | 18 598 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | BOABF | achat | 2 | 7 775 | 15 400 FCFA | 15 743 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | BOAC | achat | 2 | 11 100 | 21 990 FCFA | 22 476 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | BOAS | achat | 2 | 7 775 | 15 400 FCFA | 15 743 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | CBIBF | achat | 2 | 27 780 | 55 010 FCFA | 56 251 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | CIEC | achat | 3 | 4 440 | 13 200 FCFA | 13 486 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | ECOC | achat | 3 | 14 940 | 44 385 FCFA | 45 379 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | NSBC | achat | 1 | 15 150 | 15 000 FCFA | 15 338 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | NTLC | achat | 1 | 12 925 | 12 800 FCFA | 13 086 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | ONTBF | achat | 4 | 2 830 | 11 220 FCFA | 11 461 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | ORAC | achat | 9 | 19 440 | 173 250 FCFA | 177 137 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | SGBC | achat | 1 | 39 180 | 38 795 FCFA | 39 666 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | SIBC | achat | 6 | 8 280 | 49 200 FCFA | 50 297 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | SLBC | achat | 1 | 40 905 | 40 500 FCFA | 41 414 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | SNTS | achat | 62 | 4 080 | 250 480 FCFA | 256 107 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | SPHC | achat | 1 | 7 720 | 7 645 FCFA | 7 816 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | STBC | achat | 1 | 21 535 | 21 325 FCFA | 21 803 FCFA | 25/11/2026 | liquidités initiales |
-| 1 | 23/11/2026 | TTLC | achat | 3 | 3 015 | 8 970 FCFA | 9 157 FCFA | 25/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | BICB | achat | 3 | 7 575 | 22 500 FCFA | 23 008 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | BICC | achat | 1 | 31 310 | 31 000 FCFA | 31 699 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | BOAB | achat | 2 | 9 185 | 18 190 FCFA | 18 598 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | BOABF | achat | 2 | 7 775 | 15 400 FCFA | 15 743 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | BOAC | achat | 2 | 11 100 | 21 990 FCFA | 22 476 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | BOAS | achat | 2 | 7 775 | 15 400 FCFA | 15 743 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | CBIBF | achat | 2 | 27 780 | 55 010 FCFA | 56 251 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | CIEC | achat | 3 | 4 440 | 13 200 FCFA | 13 486 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | ECOC | achat | 3 | 14 940 | 44 385 FCFA | 45 379 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | NSBC | achat | 1 | 15 150 | 15 000 FCFA | 15 338 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | NTLC | achat | 1 | 12 925 | 12 800 FCFA | 13 086 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | ONTBF | achat | 4 | 2 830 | 11 220 FCFA | 11 461 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | ORAC | achat | 9 | 19 440 | 173 250 FCFA | 177 137 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | SGBC | achat | 1 | 39 180 | 38 795 FCFA | 39 666 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | SIBC | achat | 6 | 8 280 | 49 200 FCFA | 50 297 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | SLBC | achat | 1 | 40 905 | 40 500 FCFA | 41 414 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | SNTS | achat | 62 | 4 080 | 250 480 FCFA | 256 107 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | SPHC | achat | 1 | 7 720 | 7 645 FCFA | 7 816 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | STBC | achat | 1 | 21 535 | 21 325 FCFA | 21 803 FCFA | 26/11/2026 | liquidités initiales |
+| 1 | 24/11/2026 | TTLC | achat | 3 | 3 015 | 8 970 FCFA | 9 157 FCFA | 26/11/2026 | liquidités initiales |
 
 ## 4. Revenus attendus : dividendes sur 12 mois (estimation)
 
@@ -179,9 +197,181 @@ Effet des notes sur les poids cibles (même décision recalculée sans aucune no
 
 Revenu net attendu 38 458 FCFA (brut 43 333 FCFA, IRVM 4 875 FCFA) ; rendement net du portefeuille 3,85 % de la valeur (4,44 % de l'investi). Dernier dividende reconduit : hypothèse, pas une promesse ; un dividende n'est acquis que si les titres sont détenus la veille du détachement.
 
+## 5. Rendement net et pertes
+
+> **Performance passée ≠ garantie. Aucun gain n'est garanti.**
+
+**Étude seulement : aucune méthode de la plate-forme n'a réussi son test. Sur 2017-2022, la règle de référence, sans les notes, a fait 5,6 points de moins par an que le marché ; les notes n'ont jamais été testées.**
+
+**Prochaine séance : aucun achat. Aucune méthode n'est validée : avec les règles actuelles, la plate-forme ne recommandera pas d'argent réel. Changer ces règles serait votre décision, jamais avant le 01/06/2027 (6 mois de suivi sur papier à partir du 01/12/2026).**
+
+Tarif employé : Tarif supposé (central) (statut : supposé).
+
+### Du brut au net
+
+| Poste | Montant | Fréquence | Statut | Action possible | % du capital | % des dividendes bruts |
+|---|---|---|---|---|---|---|
+| Dividendes bruts attendus | 43 333 FCFA | par an | estimé | — | 4,33 % | 100,0 % |
+| Impôt sur les dividendes | 4 875 FCFA | par an | supposé | aucune (retenu à la source) | 0,49 % | 11,3 % |
+| Courtage | 6 931 FCFA | une fois | supposé | négociable | 0,69 % | 16,0 % |
+| Taxe sur le courtage | 1 247 FCFA | une fois | supposé | à vérifier (une taxe ne se négocie pas) | 0,12 % | 2,9 % |
+| Commission de la BRVM | 1 733 FCFA | une fois | compté | aucune | 0,17 % | 4,0 % |
+| Commission du dépositaire (DC/BR) | 865 FCFA | une fois | compté | aucune | 0,09 % | 2,0 % |
+| Écart entre acheteurs et vendeurs | 2 276 FCFA | une fois | estimé | exécution | 0,23 % | 5,3 % |
+| Effet de l'ordre sur le prix | 438 FCFA | une fois | estimé | exécution | 0,04 % | 1,0 % |
+| Droits de garde | 2 166 FCFA | par an | supposé | négociable | 0,22 % | 5,0 % |
+| Tenue de compte par ligne | 100 000 FCFA | par an | supposé | selon le courtier | 10,00 % | 230,8 % |
+| Forfait de compte | 0 FCFA | par an | supposé | selon le courtier | 0,00 % | 0,0 % |
+| Taxe sur les frais annuels | 0 FCFA | par an | supposé | à vérifier | 0,00 % | 0,0 % |
+| Encaissement des dividendes | 0 FCFA | par an | supposé | selon le courtier | 0,00 % | 0,0 % |
+
+- Frais et impôt de la 1re année : 120 531 FCFA (12,05 % du capital) ; années suivantes, sans transaction : 107 041 FCFA
+- Dividendes moins frais : 1re année −77 198 FCFA ; années suivantes, sans transaction −63 708 FCFA [estimé]
+- Part supposée ou estimée (statut le plus faible) : 97,8 % de la facture (117 933 FCFA) ; 97,8 % des seuls frais (113 058 FCFA)
+- Ce qui la lèverait : la grille écrite 110 344 FCFA ; l'avis d'opéré (exécution) 2 714 FCFA ; le taux d'impôt non vérifié 623 FCFA ; le paiement des dividendes estimés 4 252 FCFA
+- Par action possible : aucune 7 473 FCFA ; négociable 9 097 FCFA ; selon le courtier 100 000 FCFA ; à vérifier 1 247 FCFA ; exécution 2 714 FCFA
+- Contrôle : dividendes bruts − (frais et impôt) = dividendes moins frais, écart 0 FCFA
+- Si les dividendes baissent de 7,5 % : 1re année −80 082 FCFA ; ensuite −66 592 FCFA
+- Si les dividendes baissent de 20,0 % : 1re année −84 890 FCFA ; ensuite −71 400 FCFA
+- Remise à niveau de janvier et sorties forcées (hors totaux) : Estimation ; à mesurer pendant le suivi sur papier : 3 252 FCFA à 12 300 FCFA par an
+- Aller-retour : 26 980 FCFA (3,11 % de l'investi)
+- Variations de cours : non comptées. Les cours peuvent monter ou baisser bien plus que ces montants.
+- Impôt sur les plus-values : non compté (0 supposé, non vérifié).
+- Ces frais n'existent que si vous achetez. Montants calculés sur un tarif supposé tant que la grille de votre courtier n'est pas saisie.
+
+### Frais évités par rapport au tarif supposé
+
+Frais évités par rapport au tarif supposé ; 0 si votre courtier ne facture pas ce poste.
+
+| Geste | Une fois | Par an | 1re année | Condition | Contrepartie |
+|---|---|---|---|---|---|
+| Courtier sans tenue de compte par ligne | 0 FCFA | 100 000 FCFA | — | si votre courtier facture 5 000 FCFA par ligne | changer de courtier ; courtage peut-être plus élevé ; transfert de 5 000 à 34 375 FCFA par ligne si des titres sont déjà détenus |
+| Droits de garde à 0,10 % au lieu de 0,25 % | 0 FCFA | 1 300 FCFA | — | si le taux est obtenu par écrit | aucune connue |
+| Courtage à 0,50 % au lieu de 0,80 % | 3 065 FCFA | sur chaque ordre futur | — | si le taux est obtenu par écrit | aucune connue ; le taux réel de départ est inconnu |
+| Ensemble, avec la grille connue sans frais par ligne (courtage 1,00 %, forfait 4 000) | surcoût de 2 047 FCFA | 96 000 FCFA | 93 953 FCFA | grille homologuée lue ; non confirmée pour vous | courtage plus élevé à l'entrée (+2 047 FCFA) |
+| Borne non attestée (0,50 % et aucun frais par ligne) | 3 065 FCFA | 96 000 FCFA | 99 065 FCFA | aucune grille lue ne cumule ces avantages | — |
+
+### Inconnues à lever
+
+- Taxe sur le courtage : de 0 à 1 247 FCFA (554 de moins si elle est de 10 %)
+- Minimum par ordre : +50 822 FCFA s'il est de 2 500 FCFA
+- Taxe sur les frais annuels : +18 390 FCFA par an si elle est de 18 %
+- Impôt sur les plus-values : non compté
+
+### Ce que j'accepte de risquer
+
+Chocs par franc investi [estimé] : marché de 2018 × sensibilité du panier 24,23 % ; choc subi par la règle de référence dans son test publié 29,32 % (mesuré, lecture d'un résultat publié, pas un test) ; retenu 29,32 % ; pire moment de 2018 31,86 % ; baisse de 2017-2020 45,09 %.
+
+| Je risque | En actions | En réserve | Année comme 2018 | Pire moment de 2018 | Si 2017-2020 revenait | Dividendes moins frais (1re année ; ensuite) | Année ordinaire (prudente) | Année ordinaire (flatteuse) |
+|---|---|---|---|---|---|---|---|---|
+| 50 000 FCFA | 0 | 1 000 000 FCFA | À ce tarif, le plus petit montant en actions à 20 lignes risque plus que ce que vous acceptez. |  |  |  |  |  |
+| 100 000 FCFA | 0 | 1 000 000 FCFA | À ce tarif, le plus petit montant en actions à 20 lignes risque plus que ce que vous acceptez. |  |  |  |  |  |
+| 200 000 FCFA | 0 | 1 000 000 FCFA | À ce tarif, le plus petit montant en actions à 20 lignes risque plus que ce que vous acceptez. |  |  |  |  |  |
+| tout | 1 000 000 FCFA | 0 FCFA | −325 583 FCFA à −369 643 FCFA | −391 655 FCFA | −506 237 FCFA | −77 198 FCFA ; −63 708 FCFA | −38 171 FCFA | +2 524 FCFA |
+
+La lecture « passé rejoué » rejoue les gagnants d'aujourd'hui : elle flatte. Le seul test réel de la règle de référence a donné 5,6 points de moins par an que le marché.
+
+- Fréquences d'un seul passé (2017-2026 : quatre années de baisse, puis six de hausse). Ce ne sont pas des probabilités. Descriptif, pas un test. Ce que vous acceptez de risquer n'est pas une limite. Une baisse plus forte a existé : le marché a perdu 46,7 % de mars 2017 à octobre 2020. Les intérêts de la réserve ne sont jamais déduits de la perte estimée.
+
+- Un titre en moins (choc de 30 %) : SONATEL SN 75 144 FCFA (7,5 % du capital) [estimé]
+- Un titre en moins (choc de 30 %) : ORANGE COTE D'IVOIRE 51 975 FCFA (5,2 % du capital) [estimé]
+- Un titre en moins (choc de 30 %) : CORIS BANK INTERNATIONAL 16 503 FCFA (1,7 % du capital) [estimé]
+- Poids des deux premières lignes : 42,4 % ; lignes effectives 7,0
+
+### Où dort le reste
+
+- Réserve 1 000 000 FCFA ; taux inconnu : compté à 0 % ; un point d'intérêt vaut 10 000 FCFA par an ; intérêts attendus 0 FCFA [supposé], montrés à part
+- Les intérêts de la réserve ne sont jamais déduits de la perte estimée.
+
+### Argent qui dort et provision
+
+- 20 000 + 113 740 − 13 490 = 120 250 FCFA [estimé]
+- Argent qui dort : 100 250 FCFA au-delà de la réserve de 2 % ; dont hors de la règle testée 0 FCFA (cause : argent laissé par l'arrondi vers le bas de l'ordre en cours). [estimé]
+- Réserve de fonctionnement (information) : de quoi payer les frais fixes de 2 trimestres (51 083 FCFA) ou 3 trimestres (76 625 FCFA). [supposé]
+- Provision à avoir avant l'ordre : 885 665 FCFA. Part investie maximale à ce tarif : 97,81 % (la cible de 98 % n'est pas atteignable). Marge : +114 335 FCFA ; avec un courtage plus cher de 0,2 point : +112 267 FCFA [supposé] ; provision calculée sur un tarif supposé.
+- Avec l'arrondi « plus forts restes » : +61 025 FCFA placés (92,73 % au lieu de 86,63 %), marge du pire cas 51 942 FCFA. Option --arrondi restes, écart à la règle testée. Gain ou perte selon le marché. [compté]
+- Projection à cours constants (compte des francs, ne prévoit rien) : dividendes 38 458 FCFA en 20 paiements ; liquidités moyennes 86 774 FCFA de février à janvier ; pointe 120 250 FCFA ; à la remise à niveau 46 186 FCFA [estimé].
+
+### Argent placé en plus : gain ou perte selon le marché
+
+Placer plus, c'est gagner plus si le marché monte et perdre plus s'il baisse.
+
+| Changement | Francs placés en plus | Dividendes attendus [estimé] | Année ordinaire du passé (prudente à flatteuse) | Une année sur dix (flatteuse ; prudente ; périodes réelles) | Nature |
+|---|---|---|---|---|---|
+| Arrondi « plus forts restes » (F13c) | 61 025 FCFA | +2 709 FCFA par an | −2 329 FCFA à +154 FCFA | −10 469 FCFA ; −12 147 FCFA ; −15 501 FCFA | option, écart déclaré |
+| Réinvestissement mensuel (F13d, règle corrigée) | 0 FCFA en moyenne | 0 FCFA par an | 0 FCFA à 0 FCFA | 0 FCFA ; 0 FCFA ; 0 FCFA | option, essai E-D |
+
+Fréquences d'un seul passé (2017-2026 : quatre années de baisse, puis six de hausse). Ce ne sont pas des probabilités. Descriptif, pas un test.
+
+Les lignes du tableau B se recoupent : elles ne s'additionnent pas. La lecture « passé rejoué » rejoue les gagnants d'aujourd'hui : elle flatte. Le seul test réel de la règle de référence a donné 5,6 points de moins par an que le marché.
+
+### Passer l'ordre
+
+- Vos ordres sont à cours limité. Certaines lignes peuvent ne pas être servies le jour même, ou seulement en partie.
+- Horaires (heure d'Abidjan) : saisie avant l'ouverture de 9 h 00 à 9 h 45 ; cotation en continu jusqu'à 14 h 00 ; fixing de clôture à 14 h 30 ; négociation au dernier cours jusqu'à 15 h 00.
+- Demandez une validité de plusieurs séances (10 au plus). La plate-forme réévalue ensuite.
+- Le jour d'un détachement de dividende ou d'une division, la BRVM annule les ordres en attente : il faut les ressaisir.
+- Le produit d'une vente n'est disponible que deux jours de bourse plus tard.
+- Après quelques séances, relancez la commande avec ce que vous détenez vraiment.
+- Au dernier carnet, 5 lignes ont un prix demandé au-dessus de votre limite et 1 n'offrent pas assez de titres au meilleur prix.
+
+### Points à vérifier
+
+- FUITE : Les frais annuels (102 166 FCFA) dépassent les dividendes nets attendus (38 458 FCFA). À cours inchangés, ce portefeuille perd 63 708 FCFA par an.
+- Tarif non vérifié : 98 % des frais de la 1re année sont supposés ou estimés (113 058 sur 115 656 FCFA). Envoyez les 8 questions à votre courtier.
+- FUITE : 18 ligne(s) coûtent plus qu'elles ne versent en dividendes, en FCFA par an [supposé] : NTLC (5 032 de frais pour 370 de dividende), TTLC (5 022 de frais pour 419 de dividende), SPHC (5 019 de frais pour 430 de dividende), ONTBF (5 028 de frais pour 581 de dividende), CIEC (5 033 de frais pour 618 de dividende), NSBC (5 038 de frais pour 676 de dividende) et 12 autres.
+- Argent qui dort : 100 250 FCFA, prévu par la règle testée (argent laissé par l'arrondi vers le bas de l'ordre en cours).
+
+### Détail ligne par ligne : frais annuels contre dividende attendu
+
+| Titre | Frais annuels | Dividende net attendu | Rapport | Niveau | Statut |
+|---|---|---|---|---|---|
+| NTLC | 5 032 FCFA | 370 FCFA | 1360 % | rouge | frais supposé ; dividende estimé |
+| TTLC | 5 022 FCFA | 419 FCFA | 1199 % | rouge | frais supposé ; dividende estimé |
+| SPHC | 5 019 FCFA | 430 FCFA | 1167 % | rouge | frais supposé ; dividende estimé |
+| ONTBF | 5 028 FCFA | 581 FCFA | 865 % | rouge | frais supposé ; dividende estimé |
+| CIEC | 5 033 FCFA | 618 FCFA | 814 % | rouge | frais supposé ; dividende estimé |
+| NSBC | 5 038 FCFA | 676 FCFA | 745 % | rouge | frais supposé ; dividende estimé |
+| BICB | 5 056 FCFA | 764 FCFA | 662 % | rouge | frais supposé ; dividende estimé |
+| BOABF | 5 039 FCFA | 794 FCFA | 635 % | rouge | frais supposé ; dividende estimé |
+| BOAS | 5 039 FCFA | 900 FCFA | 560 % | rouge | frais supposé ; dividende estimé |
+| BICC | 5 078 FCFA | 1 157 FCFA | 439 % | rouge | frais supposé ; dividende estimé |
+| BOAB | 5 045 FCFA | 1 170 FCFA | 431 % | rouge | frais supposé ; dividende estimé |
+| BOAC | 5 055 FCFA | 1 189 FCFA | 425 % | rouge | frais supposé ; dividende estimé |
+| STBC | 5 053 FCFA | 1 707 FCFA | 296 % | rouge | frais supposé ; dividende estimé |
+| CBIBF | 5 138 FCFA | 1 800 FCFA | 285 % | rouge | frais supposé ; dividende estimé |
+| SLBC | 5 101 FCFA | 1 872 FCFA | 272 % | rouge | frais supposé ; dividende estimé |
+| SIBC | 5 123 FCFA | 2 244 FCFA | 228 % | rouge | frais supposé ; dividende estimé |
+| SGBC | 5 097 FCFA | 2 299 FCFA | 222 % | rouge | frais supposé ; dividende estimé |
+| ECOC | 5 111 FCFA | 2 344 FCFA | 218 % | rouge | frais supposé ; dividende estimé |
+| ORAC | 5 433 FCFA | 6 336 FCFA | 86 % | orange | frais supposé ; dividende estimé |
+| SNTS | 5 626 FCFA | 10 788 FCFA | 52 % | orange | frais supposé ; dividende estimé |
+
+### Projection des liquidités par mois (cours constants, estimation)
+
+| Mois | Liquidités en fin de mois | Dividendes du mois |
+|---|---|---|
+| 2026-11 | 120 250 FCFA | 0 FCFA |
+| 2026-12 | 109 893 FCFA | 0 FCFA |
+| 2027-01 | 109 893 FCFA | 0 FCFA |
+| 2027-02 | 109 893 FCFA | 0 FCFA |
+| 2027-03 | 84 702 FCFA | 0 FCFA |
+| 2027-04 | 84 702 FCFA | 0 FCFA |
+| 2027-05 | 100 987 FCFA | 16 285 FCFA |
+| 2027-06 | 83 333 FCFA | 7 817 FCFA |
+| 2027-07 | 91 590 FCFA | 8 257 FCFA |
+| 2027-08 | 97 270 FCFA | 5 680 FCFA |
+| 2027-09 | 71 937 FCFA | 419 FCFA |
+| 2027-10 | 71 937 FCFA | 0 FCFA |
+| 2027-11 | 71 937 FCFA | 0 FCFA |
+| 2027-12 | 46 186 FCFA | 0 FCFA |
+| 2028-01 | 46 186 FCFA | 0 FCFA |
+
+> **Performance passée ≠ garantie. Aucun gain n'est garanti.**
+
 Valorisation du marché « cher » (prime du BOC 0,58 < 1 %) : les stress sont affichés en premier (§4.5) ; l'exposition ne change pas.
 
-## 5. Scénarios de stress (§9.3)
+## 6. Scénarios de stress (§9.3)
 
 Source : brvm_alpha.portfolio.stress.stress_tests.
 
@@ -206,7 +396,7 @@ Source : brvm_alpha.portfolio.stress.stress_tests.
 | ST10 | rupture de parité ou sortie de l'UEMOA : règle « sévère » sur les titres AES et les filiales de SNTS — sévère 21 % | −48 650 FCFA | −4,9 % | exposition 23,17 % du capital (AES ; SNTS : ML, GN, SL, GW) ; perte de change NON chiffrée (aucune source) | [R05] §7 |
 | ST10 | rupture de parité ou sortie de l'UEMOA : règle « sévère » sur les titres AES et les filiales de SNTS — stress 26 % | −60 234 FCFA | −6,0 % | exposition 23,17 % du capital (AES ; SNTS : ML, GN, SL, GW) ; perte de change NON chiffrée (aucune source) | [R05] §7 |
 
-## 6. Distribution historique à 12 mois (pas une prévision)
+## 7. Distribution historique à 12 mois (pas une prévision)
 
 Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) des rendements hebdomadaires TR des lignes aux poids réalisés et du Composite TR, tirés ensemble ; fenêtre toute l'histoire 2017-2026 (le registre indique que le test unique S1 a été exécuté) (492 semaines, du 06/01/2017 au 20/11/2026). Nets des coûts du plan et des frais fixes de l'horizon (11,57 %). C'est une distribution historique, pas une prévision.
 
@@ -220,13 +410,31 @@ Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) d
 | P10 | −17,2 % (828 447 FCFA) | −10,9 % |
 | P90 | +20,8 % (1 208 238 FCFA) | +35,4 % |
 | P(perte) | 49,3 % | — |
-| P(battre le TR) | 2,3 % (fréquence historique aux poids actuels) | test S1 : REF −5,6 %/an contre le TR (REJETÉ) |
+| Fréquence passée au-dessus du marché, aux poids d'aujourd'hui (flatteuse : le test S1 a donné −5,6 points par an) | 2,3 % (fréquence historique aux poids actuels) | test S1 : REF −5,6 %/an contre le TR (REJETÉ) |
 | Rendement des dividendes (net) | 3,85 % | inclus dans le TR |
 | Rendement annualisé du TR sur la fenêtre (fait) | — (poids actuels : biais rétrospectif) | +10,2 % |
 | Volatilité annualisée (hebdo) | 10,7 % | 11,6 % |
 | β hebdomadaire contre le TR (06/01/2017 → 20/11/2026) | 0,86 | 1 |
 
-## 7. Déclencheurs de revue
+### Lectures du risque : plusieurs lectures d'un seul passé
+
+| Lecture | Périodes en perte (graine 0 ; médiane des graines) | Année ordinaire | Une année sur dix | Une année sur vingt | Pire tirage |
+|---|---|---|---|---|---|
+| Passé rejoué, blocs de 8 semaines | 49,3 % ; 49,6 % | +0,3 % ; +0,2 % | −17,2 % ; −17,0 % | −21,1 % ; −21,3 % | −41,4 % |
+| Marché chargé des mêmes frais, blocs de 8 semaines | 61,0 % ; 60,8 % | −3,8 % ; −4,0 % | −19,9 % ; −20,0 % | −23,6 % ; −24,0 % | — |
+| Passé rejoué, blocs de 26 semaines | 47,8 % ; 48,6 % | +1,2 % ; +0,7 % | −20,9 % ; −21,1 % | −26,5 % ; −26,3 % | −42,7 % |
+| Marché chargé des mêmes frais, blocs de 26 semaines | 57,1 % ; 57,7 % | −3,2 % ; −3,6 % | −23,3 % ; −23,4 % | −28,1 % ; −28,1 % | — |
+| Passé rejoué, blocs de 52 semaines | 45,4 % ; 47,5 % | +3,4 % ; +1,7 % | −22,3 % ; −22,5 % | −28,4 % ; −28,9 % | −44,6 % |
+| Marché chargé des mêmes frais, blocs de 52 semaines | 53,8 % ; 56,4 % | −1,8 % ; −3,3 % | −24,9 % ; −25,1 % | −29,4 % ; −29,4 % | — |
+| Périodes réellement observées | 47 sur 107 (43,9 %) | — | −25,40 % | — | −30,5 % (départ 2018-03) |
+
+Fréquences d'un seul passé (2017-2026 : quatre années de baisse, puis six de hausse). Ce ne sont pas des probabilités. Descriptif, pas un test. Selon la façon de compter et le tirage, environ 44 % à 61 % des périodes de 12 mois ont fini en perte, et une année sur dix a fini sous −17 % à −25 %.
+
+La lecture « passé rejoué » rejoue les gagnants d'aujourd'hui : elle flatte. Le seul test réel de la règle de référence a donné 5,6 points de moins par an que le marché.
+
+Libellé : « Fréquence passée au-dessus du marché, aux poids d'aujourd'hui (flatteuse : le test S1 a donné −5,6 points par an) ».
+
+## 8. Déclencheurs de revue
 
 - Prochaine revue mensuelle (dernière séance du mois) : 30/11/2026
 - Rebalancement annuel de l'indice discipliné (première décision de janvier) : 29/01/2027 ; entre deux, seules les sorties forcées s'appliquent
@@ -237,7 +445,7 @@ Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) d
 - À revoir avant achat NSBC : −29,4 % contre le TR sur 63 séances (seuil de revue −25 %, §9.1) ; l'achat reste proposé, la revue est à faire par l'utilisateur avant de transmettre l'ordre
 - À revoir avant achat CIEC : −32,3 % contre le TR sur 63 séances (seuil de revue −25 %, §9.1) ; l'achat reste proposé, la revue est à faire par l'utilisateur avant de transmettre l'ordre
 - Notes de l'analyste : 0 veto(s), 0 inclinaison(s), 8 titre(s) avec filtre R issu des notes
-- Notes connues au 22/11/2026 18:44 UTC, appliquées à la séance du 23/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
+- Notes connues au 23/11/2026 14:30 UTC, appliquées à la séance du 24/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
 - Scores des notes : 41 note(s) en vigueur sur 114 portent un score directionnel non nul.
 - Filtre R2 sur ETIT (annulation ou report d'AG : −1 en gouvernance, aucun achat (60 séances)) depuis le 26/10/2026, jusqu'au 19/01/2027 — note 4a46238f820f du 23/10/2026 « ETI TG : Communiqué - Annulation de l'Assemblée Générale Ordinaire » ; achats bloqués ; titre hors du plan
 - Filtre R10 sur FTSC (ΔRN ≤ −25 % sans alerte sur résultats préalable (depuis le 01/10/2025)) depuis le 04/11/2026, jusqu'au 22/04/2027 — note 267c82b0e226 du 03/11/2026 « FILTISAC CI : Rapport d'activités - 1er semestre 2026 » ; titre hors du plan
@@ -387,20 +595,20 @@ Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) d
 
 | Indice | Position | Confiance | Score | Lecture |
 |---|---|---|---|---|
-| BRVM Composite | SOUS-PONDÉRER | 0,63 | −0,52 | Score composite −0,52 (tendance −0,42 × 0,35 ; valorisation −0,97 × 0,29 ; largeur −1,56 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,06 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,63 (accord des composantes avec la position 0,79, marge au seuil 0,02, couverture 1,00, qualité des données 1,00). |
-| BRVM Composite Total Return | SOUS-PONDÉRER | 0,57 | −0,53 | Score composite −0,53 (tendance −0,43 × 0,35 ; valorisation −0,97 × 0,29 ; largeur −1,56 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,06 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,57 (accord des composantes avec la position 0,79, marge au seuil 0,03, couverture 1,00, qualité des données 0,90). |
-| BRVM 30 | SOUS-PONDÉRER | 0,84 | −0,84 | Score composite −0,84 (tendance −0,20 × 0,35 ; valorisation −2,42 × 0,29 ; largeur −1,37 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,06 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,84 (accord des composantes avec la position 0,85, marge au seuil 0,34, couverture 1,00, qualité des données 1,00). |
-| BRVM Prestige | SOUS-PONDÉRER | 0,75 | −0,71 | Score composite −0,71 (tendance −0,37 × 0,35 ; valorisation −1,88 × 0,29 ; largeur −1,22 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,10 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,75 (accord des composantes avec la position 0,82, marge au seuil 0,21, couverture 1,00, qualité des données 1,00). |
+| BRVM Composite | SOUS-PONDÉRER | 0,63 | −0,52 | Score composite −0,52 (tendance −0,42 × 0,35 ; valorisation −0,97 × 0,29 ; largeur −1,56 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,05 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,63 (accord des composantes avec la position 0,79, marge au seuil 0,02, couverture 1,00, qualité des données 1,00). |
+| BRVM Composite Total Return | SOUS-PONDÉRER | 0,57 | −0,53 | Score composite −0,53 (tendance −0,43 × 0,35 ; valorisation −0,97 × 0,29 ; largeur −1,56 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,05 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,57 (accord des composantes avec la position 0,79, marge au seuil 0,03, couverture 1,00, qualité des données 0,90). |
+| BRVM 30 | SOUS-PONDÉRER | 0,84 | −0,84 | Score composite −0,84 (tendance −0,20 × 0,35 ; valorisation −2,42 × 0,29 ; largeur −1,37 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,05 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,84 (accord des composantes avec la position 0,85, marge au seuil 0,34, couverture 1,00, qualité des données 1,00). |
+| BRVM Prestige | SOUS-PONDÉRER | 0,75 | −0,71 | Score composite −0,71 (tendance −0,37 × 0,35 ; valorisation −1,88 × 0,29 ; largeur −1,22 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,09 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,75 (accord des composantes avec la position 0,82, marge au seuil 0,21, couverture 1,00, qualité des données 1,00). |
 | BRVM Principal | SOUS-PONDÉRER | 0,95 | −1,21 | Score composite −1,21 (tendance −1,37 × 0,35 ; valorisation −2,07 × 0,29 ; largeur −1,67 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,01 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,95 (accord des composantes avec la position 0,89, marge au seuil 0,71, couverture 1,00, qualité des données 1,00). |
-| sectoriel Services financiers | SOUS-PONDÉRER | 0,80 | −0,92 | Score composite −0,92 (tendance −0,36 × 0,35 ; valorisation −2,28 × 0,29 ; largeur −1,66 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,01 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,80 (accord des composantes avec la position 0,86, marge au seuil 0,42, couverture 1,00, qualité des données 0,90). |
-| sectoriel Télécommunications | NEUTRE | 0,77 | −0,23 | Score composite −0,23 (tendance +1,07 × 0,35 ; valorisation −2,39 × 0,29 ; largeur −0,63 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,17 × 0,15) → NEUTRE (seuils ±0,5) ; confiance 0,77 (accord des composantes avec la position 0,84, marge au seuil 0,27, couverture 1,00, qualité des données 0,97). |
+| sectoriel Services financiers | SOUS-PONDÉRER | 0,80 | −0,92 | Score composite −0,92 (tendance −0,36 × 0,35 ; valorisation −2,28 × 0,29 ; largeur −1,66 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,00 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,80 (accord des composantes avec la position 0,86, marge au seuil 0,42, couverture 1,00, qualité des données 0,90). |
+| sectoriel Télécommunications | NEUTRE | 0,77 | −0,24 | Score composite −0,24 (tendance +1,07 × 0,35 ; valorisation −2,39 × 0,29 ; largeur −0,63 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,15 × 0,15) → NEUTRE (seuils ±0,5) ; confiance 0,77 (accord des composantes avec la position 0,83, marge au seuil 0,26, couverture 1,00, qualité des données 0,97). |
 | sectoriel Consommation de base | SOUS-PONDÉRER | 0,84 | −0,78 | Score composite −0,78 (tendance −1,62 × 0,35 ; valorisation −0,24 × 0,29 ; largeur −0,72 × 0,18 ; régime +0,00 × 0,18 ; plus notes −0,06 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,84 (accord des composantes avec la position 1,00, marge au seuil 0,28, couverture 1,00, qualité des données 0,97). |
-| sectoriel Consommation discrétionnaire | SOUS-PONDÉRER | 0,95 | −1,53 | Score composite −1,53 (tendance −2,31 × 0,35 ; valorisation −0,50 × 0,29 ; largeur −1,30 × 0,18 ; régime −2,00 × 0,18 ; plus notes +0,15 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,95 (accord des composantes avec la position 0,98, marge au seuil 1,03, couverture 1,00, qualité des données 0,97). |
-| sectoriel Énergie | SOUS-PONDÉRER | 0,75 | −0,73 | Score composite −0,73 (tendance −0,69 × 0,35 ; valorisation −2,25 × 0,29 ; largeur −0,13 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,11 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,75 (accord des composantes avec la position 0,83, marge au seuil 0,23, couverture 1,00, qualité des données 0,97). |
-| sectoriel Industriels | SOUS-PONDÉRER | 0,90 | −1,50 | Score composite −1,50 (tendance −0,31 × 0,35 ; valorisation −2,91 × 0,29 ; largeur −0,93 × 0,18 ; régime −2,00 × 0,18 ; plus notes −0,12 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,90 (accord des composantes avec la position 1,00, marge au seuil 1,00, couverture 1,00, qualité des données 0,90). |
-| sectoriel Services publics | SOUS-PONDÉRER | 0,71 | −1,41 | Score composite −1,41 (tendance −0,30 × 0,35 ; valorisation −2,82 × 0,29 ; largeur −0,85 × 0,18 ; régime −2,00 × 0,18 ; plus notes +0,18 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,71 (accord des composantes avec la position 0,98, marge au seuil 0,91, couverture 1,00, qualité des données 0,72). |
+| sectoriel Consommation discrétionnaire | SOUS-PONDÉRER | 0,95 | −1,53 | Score composite −1,53 (tendance −2,31 × 0,35 ; valorisation −0,50 × 0,29 ; largeur −1,30 × 0,18 ; régime −2,00 × 0,18 ; plus notes +0,13 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,95 (accord des composantes avec la position 0,99, marge au seuil 1,03, couverture 1,00, qualité des données 0,97). |
+| sectoriel Énergie | SOUS-PONDÉRER | 0,75 | −0,74 | Score composite −0,74 (tendance −0,69 × 0,35 ; valorisation −2,25 × 0,29 ; largeur −0,13 × 0,18 ; régime +1,00 × 0,18 ; plus notes +0,10 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,75 (accord des composantes avec la position 0,83, marge au seuil 0,24, couverture 1,00, qualité des données 0,97). |
+| sectoriel Industriels | SOUS-PONDÉRER | 0,90 | −1,50 | Score composite −1,50 (tendance −0,31 × 0,35 ; valorisation −2,91 × 0,29 ; largeur −0,93 × 0,18 ; régime −2,00 × 0,18 ; plus notes −0,11 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,90 (accord des composantes avec la position 1,00, marge au seuil 1,00, couverture 1,00, qualité des données 0,90). |
+| sectoriel Services publics | SOUS-PONDÉRER | 0,71 | −1,41 | Score composite −1,41 (tendance −0,30 × 0,35 ; valorisation −2,82 × 0,29 ; largeur −0,85 × 0,18 ; régime −2,00 × 0,18 ; plus notes +0,17 × 0,15) → SOUS-PONDÉRER (seuils ±0,5) ; confiance 0,71 (accord des composantes avec la position 0,98, marge au seuil 0,91, couverture 1,00, qualité des données 0,72). |
 
-## 8. Explications (titres retenus et 5 premiers écartés)
+## 9. Explications (titres retenus et 5 premiers écartés)
 
 | Titre | Statut | Rang | Poids | Explication |
 |---|---|---|---|---|
@@ -430,7 +638,7 @@ Bootstrap stationnaire (5 000 tirages, blocs moyens de 8 semaines, graine 0) d
 | SDSC | écarté | 24 | 0,00 % | capitalisation n° 24 parmi les éligibles : hors des 20 plus grosses (D8) |
 | SMBC | écarté | 25 | 0,00 % | capitalisation n° 25 parmi les éligibles : hors des 20 plus grosses (D8) |
 
-## 9. Faits, estimations, hypothèses
+## 10. Faits, estimations, hypothèses
 
 ### Faits (publiés ou réglementaires)
 
