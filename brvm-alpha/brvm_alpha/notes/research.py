@@ -95,7 +95,7 @@ import unicodedata
 import uuid
 import zlib
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -729,10 +729,28 @@ def _state_path(cache_dir: str | Path) -> Path:
 
 #: Délai d'attente du verrou de l'état de politesse (s) : il n'est tenu que quelques millisecondes.
 STATE_LOCK_TIMEOUT_S = 15.0
-#: Clés d'une réservation de créneau dans l'état partagé (``politeness.json``).
-_CLES_RESERVATION = ("last", "session", "reserved_at")
 #: Une réservation d'une autre session n'est suivie que jusqu'à ce nombre de délais d'avance.
 MAX_CHAINED_SLOTS = 6
+#: Attente maximale (s), en plus de deux délais, d'une requête d'une autre session encore en cours vers le même site
+#: (verrou d'envoi) : sa durée est bornée par le délai total d'un PDF (:data:`brvm_alpha.net.DELAI_PDF_MAX`).
+ENVOI_ATTENTE_S = _net.DELAI_PDF_MAX + 120.0
+
+
+def _envoi_path(cache_dir: str | Path, key: str) -> Path:
+    """Verrou d'envoi d'un site (``politeness.envoi.<site>.lock``) : tenu pendant chaque requête vers ce site, toutes
+    sessions confondues ; libéré par le système à la mort du processus."""
+    safe = re.sub(r"[^a-z0-9.\-]", "_", str(key or "").lower())[:120] or "_"
+    return Path(cache_dir) / f"politeness.envoi.{safe}.lock"
+
+
+def _attente_apres_fin(fin: Any, now: dt.datetime, delay: float) -> float:
+    """Attente (s) pour partir un délai après ``fin`` (fin d'une requête, date ISO), comptée depuis ``now`` : entre 0
+    et un délai. Une fin datée dans le futur (horloge recalée) ou illisible coûte un délai, jamais plus."""
+    try:
+        fin_t = to_utc(fin)
+    except (TypeError, ValueError, OverflowError):
+        return float(delay)
+    return min(max((fin_t - now).total_seconds() + delay, 0.0), float(delay))
 
 
 @contextmanager
@@ -1101,17 +1119,23 @@ class PoliteSession:
     def _wait_turn(self, url: str) -> dict[str, Any] | None:
         """Attend son tour : délai depuis la dernière requête de cette session (horloge
         ``clock``) **et** depuis la dernière requête d'une autre session vers ce site (état
-        partagé, horloge ``now``), y compris pour la première requête de la session. Le
+        partagé, horloge ``now`` : sa réservation, et la **fin** de sa dernière vraie requête,
+        clé ``fin``), y compris pour la première requête de la session. Le
         créneau est réservé sous verrou : deux sessions simultanées ne partent pas ensemble.
         Le créneau réservé inclut l'attente propre à la session : une autre session qui arrive
         pendant cette attente part après lui, pas en même temps.
 
+        Une réservation n'est jamais retirée ni remplacée par une date plus ancienne : une requête refusée
+        seulement à la connexion garde la sienne (prudent : cela ne coûte qu'une attente). Une requête refusée
+        par les contrôles d'avant l'envoi (:meth:`_controle_avant_envoi`) n'arrive pas ici : elle ne réserve rien.
+
         Horloge recalée : une réservation datée dans le futur (faite « après » maintenant, ou sans
         date de réservation et plus d'un délai en avance) est ignorée et remplacée par un seul délai ;
-        l'attente ne dépasse jamais :data:`MAX_CHAINED_SLOTS` délais.
+        une fin datée dans le futur ne coûte qu'un délai ; l'attente ne dépasse jamais
+        :data:`MAX_CHAINED_SLOTS` délais.
 
-        Renvoie la réservation posée (``{"hote", "avant", "posee"}``, ou ``None`` si l'état n'a pas été écrit) :
-        :meth:`_annuler_reservation` la retire si la requête est refusée avant l'envoi."""
+        Renvoie ``{"hote", "fin_vue"}`` (la fin notée au moment de la réservation, pour :meth:`_depart`), ou
+        ``None`` si l'état partagé n'a pas pu être écrit."""
         host = url_host(url)
         delay = self.crawl_delay(url)
         wait = 0.0
@@ -1125,7 +1149,6 @@ class PoliteSession:
         jeton: dict[str, Any] = {"hote": host}
 
         def reserve(entry: dict[str, Any]) -> float:
-            jeton["avant"] = {k: entry.get(k) for k in _CLES_RESERVATION}
             slot = now + dt.timedelta(seconds=own)
             prev = entry.get("last")
             if prev and entry.get("session") != sid:
@@ -1144,49 +1167,101 @@ class PoliteSession:
                         slot = max(slot, now + dt.timedelta(seconds=delay))
                     else:
                         slot = max(slot, prev_t + dt.timedelta(seconds=delay))
+            fin, fin_by = entry.get("fin"), entry.get("fin_session")
+            jeton["fin_vue"] = [fin, fin_by]
+            if fin and fin_by != sid:  # fin d'une vraie requête d'une autre session : un délai après elle
+                slot = max(slot, now + dt.timedelta(seconds=_attente_apres_fin(fin, now, delay)))
             wait_s = min(max((slot - now).total_seconds(), 0.0), cap)
             entry["last"] = (now + dt.timedelta(seconds=wait_s)).isoformat()
             entry["session"] = sid
             entry["reserved_at"] = now.isoformat()
-            jeton["posee"] = {k: entry.get(k) for k in _CLES_RESERVATION}
             return wait_s
 
         posee = None
         try:
             wait = max(wait, self._state_update(host, reserve))
-            posee = jeton if "posee" in jeton else None
+            posee = jeton
         except OSError as exc:  # l'état partagé est une sécurité de plus, jamais un blocage
             log.warning("état de politesse non écrit : %s", exc)
         if wait > 0:
             self.sleep(wait)
         return posee
 
-    def _annuler_reservation(self, jeton: dict[str, Any] | None) -> None:
-        """Requête refusée **avant l'envoi** (adresse interdite, hôte hors liste blanche) : la réservation de
-        :meth:`_wait_turn` est retirée de l'état partagé (aucune requête n'est partie : le lancement suivant n'a pas à
-        attendre un délai de plus). Une réservation posée depuis par une autre session reste en place."""
-        if not jeton:
-            return
-        host, avant, posee = jeton["hote"], jeton.get("avant") or {}, jeton.get("posee") or {}
+    def _controle_avant_envoi(self, url: str) -> None:
+        """Contrôles de sûreté faits **avant** de réserver un créneau ou d'attendre : liste blanche (hôte, schéma,
+        port), puis, pour le client commun du moteur (attribut ``controle_avant_envoi`` du transport), adresse obtenue
+        par résolution DNS. Une requête refusée ici ne réserve rien dans ``politeness.json``, n'attend pas et n'est pas
+        comptée ; la session s'arrête (« politique »). Un nom introuvable (erreur passagère) est laissé à l'envoi, qui
+        le traite comme avant (nouvel essai, créneau réservé). Le client refait ces contrôles à l'envoi, et contrôle
+        l'adresse réellement jointe après la connexion."""
+        controle = getattr(self._transport, "controle_avant_envoi", None)
         try:
-            with _state_locked(self.cache_dir, STATE_LOCK_TIMEOUT_S) as path:
-                data = _state_load(path, strict=True)
-                key = cle_politesse(host)
-                entry = data["hosts"].get(key)
-                if not isinstance(entry, dict) or any(entry.get(k) != v for k, v in posee.items()):
-                    return  # une autre session a réservé depuis : sa réservation reste
-                for k in _CLES_RESERVATION:
-                    if avant.get(k) is None:
-                        entry.pop(k, None)
-                    else:
-                        entry[k] = avant[k]
-                if not entry:
-                    data["hosts"].pop(key, None)
-                _state_save(path, data)
-        except (OSError, ResearchError, _err.ErreurMoteur) as exc:
-            log.warning("réservation de politesse non retirée : %s", exc)
+            self._policy(True).controler(url)
+            if callable(controle):
+                controle(url)
+        except _net.RefusPolitique as exc:
+            self._log(event="policy_refused", url=url, reason=str(exc), avant_envoi=True)
+            self._stop("politique", f"adresse refusée : {exc}")
+            raise PolicyRefused(f"Requête refusée : {exc}") from exc
+        except _net.ErreurReseau:
+            return
+
+    @contextmanager
+    def _depart(self, url: str, jeton: dict[str, Any] | None):
+        """Départ d'une requête dont le créneau est arrivé ; le bloc couvre l'envoi et :meth:`_record_done`.
+
+        - **une seule requête à la fois vers un site**, toutes sessions confondues : verrou d'envoi du site
+          (:func:`_envoi_path`, ``flock``), tenu jusqu'à la fin du bloc ; une session dont le créneau arrive pendant
+          la requête d'une autre attend qu'elle finisse (au plus :data:`ENVOI_ATTENTE_S` plus deux délais, puis
+          :class:`~brvm_alpha.erreurs.VerrouOccupe`, code 4) ;
+        - **jamais moins d'un délai après la FIN de la dernière requête d'une autre session** : si une fin a été notée
+          depuis la réservation (requête finie pendant l'attente du créneau), le complément est attendu, verrou tenu ;
+        - le blocage 403/429 est relu, verrou tenu : un refus reçu par une autre session pendant l'attente arrête
+          celle-ci (:class:`AccessBlocked`) avant tout envoi.
+
+        Verrou impossible à créer (dossier en lecture seule) : avertissement, comme pour l'état partagé."""
+        key = cle_politesse(url_host(url))
+        delay = self.crawl_delay(url)
+        path = _envoi_path(self.cache_dir, key)
+        quoi = f"requête en cours vers {key}"
+        with ExitStack() as pile:
+            try:
+                try:
+                    pile.enter_context(_fichiers.verrou(path, attente=0.0, quoi=quoi))
+                except _err.VerrouOccupe:
+                    self._log(event="attente", url=url, raison="requête d'une autre session en cours vers ce site")
+                    pile.enter_context(_fichiers.verrou(path, attente=ENVOI_ATTENTE_S + 2 * delay, quoi=quoi))
+            except OSError as exc:  # l'état partagé est une sécurité de plus, jamais un blocage
+                log.warning("verrou d'envoi non pris : %s", exc)
+            self._attendre_fin_des_autres(url, key, delay, jeton)
+            self._refuser_si_bloque(url)  # 403/429 reçu par une autre session pendant l'attente : rien ne part
+            yield
+
+    def _attendre_fin_des_autres(self, url: str, key: str, delay: float, jeton: dict[str, Any] | None) -> None:
+        """Si une autre session a noté la fin d'une requête vers ce site depuis la réservation (ou si la réservation
+        n'a pas pu être écrite), attend qu'un délai se soit écoulé depuis cette fin (au plus un délai)."""
+        try:
+            hosts = _state_load(_state_path(self.cache_dir), strict=True).get("hosts", {})
+        except OSError as exc:
+            log.warning("état de politesse non lu : %s", exc)
+            return
+        entry = hosts.get(key) if isinstance(hosts, dict) else None
+        if not isinstance(entry, dict):
+            return
+        fin, fin_by = entry.get("fin"), entry.get("fin_session")
+        if not fin or fin_by == self.session_id:
+            return
+        if jeton is not None and list(jeton.get("fin_vue") or [None, None]) == [fin, fin_by]:
+            return  # déjà comptée dans le créneau réservé
+        wait = _attente_apres_fin(fin, to_utc(self.now()), delay)
+        if wait > 0:
+            self._log(event="attente", url=url, wait_s=round(wait, 3),
+                      raison="fin récente d'une requête d'une autre session vers ce site")
+            self.sleep(wait)
 
     def _record_done(self, host: str) -> None:
+        """Fin d'une vraie requête : notée **toujours** dans ``fin`` (même si une réservation plus tardive d'une autre
+        session existe), et dans ``last`` si elle est plus tardive que la dernière réservation."""
         now = to_utc(self.now())
         sid = self.session_id
 
@@ -1203,6 +1278,10 @@ class PoliteSession:
                 entry["last"] = now.isoformat()
                 entry["session"] = sid
                 entry["reserved_at"] = now.isoformat()
+            # La fin est notée quoi qu'il en soit (verrou d'envoi tenu : c'est la dernière requête finie vers ce site) :
+            # une session qui a réservé pendant cette requête attend un délai après elle avant de partir (_depart).
+            entry["fin"] = now.isoformat()
+            entry["fin_session"] = sid
 
         try:
             self._state_update(host, done)
@@ -1226,18 +1305,10 @@ class PoliteSession:
         self.stopped = reason
         self.stop_kind = kind
 
-    def _network_get(self, url: str, headers: Mapping[str, str], purpose: str = "page",
-                     nature: str = "page") -> FetchResult:
-        """Une requête GET réseau, avec délai, quota, nouveaux essais et arrêts.
-
-        Erreur passagère (5xx, réseau, délai dépassé) : nouvel essai après une attente croissante.
-        Refus de la politique de sûreté (hôte, adresse, taille) : :class:`PolicyRefused`, sans nouvel
-        essai. ``MemoryError`` n'est jamais traitée comme une erreur réseau.
-        """
-        if self.stopped:
-            raise AccessBlocked(f"Session arrêtée ({self.stopped}) : aucune nouvelle requête n'est envoyée.")
-        if self.offline:
-            raise OfflineCacheMiss(f"Mode hors ligne : {url} n'est pas dans le cache.")
+    def _refuser_si_bloque(self, url: str) -> None:
+        """Site bloqué (403/429 enregistré dans ``politeness.json``, par cette session ou une autre) : arrêt, aucune
+        requête. Vérifié au début de chaque requête, et de nouveau au départ (:meth:`_depart`), verrou d'envoi tenu :
+        une session qui attendait son tour pendant la requête refusée d'une autre ne part pas."""
         host = url_host(url)
         blocked = self.persistent_block(host)
         if blocked:
@@ -1251,6 +1322,21 @@ class PoliteSession:
                 "n'est envoyée, sans aucune tentative de contournement. Le blocage ne sera levé qu'explicitement, "
                 f"après accord du site (research.clear_block({host!r}))."
             )
+
+    def _network_get(self, url: str, headers: Mapping[str, str], purpose: str = "page",
+                     nature: str = "page") -> FetchResult:
+        """Une requête GET réseau, avec délai, quota, nouveaux essais et arrêts.
+
+        Erreur passagère (5xx, réseau, délai dépassé) : nouvel essai après une attente croissante.
+        Refus de la politique de sûreté (hôte, adresse, taille) : :class:`PolicyRefused`, sans nouvel
+        essai. ``MemoryError`` n'est jamais traitée comme une erreur réseau.
+        """
+        if self.stopped:
+            raise AccessBlocked(f"Session arrêtée ({self.stopped}) : aucune nouvelle requête n'est envoyée.")
+        if self.offline:
+            raise OfflineCacheMiss(f"Mode hors ligne : {url} n'est pas dans le cache.")
+        host = url_host(url)
+        self._refuser_si_bloque(url)
         if self._transport is None:
             self._transport = _requests_transport(self.user_agent, self._policy(True))
         with_nature = bool(getattr(self._transport, "accepte_nature", False))
@@ -1261,58 +1347,63 @@ class PoliteSession:
             if self.n_requests >= self.max_requests:
                 self._log(event="quota", url=url, n_requests=self.n_requests)
                 raise QuotaExceeded(f"Quota de {self.max_requests} requêtes atteint : collecte interrompue.")
+            # Liste blanche et adresse résolue contrôlées AVANT de réserver ou d'attendre : un refus ne réserve rien.
+            self._controle_avant_envoi(url)
             jeton = self._wait_turn(url)
-            self.n_requests += 1
-            t0 = self.clock()
-            try:
-                resp = (self._transport(url, hdrs, self.timeout, nature=nature) if with_nature
-                        else self._transport(url, hdrs, self.timeout))
-                status = int(resp.status_code)
-                content = bytes(resp.content or b"")
-                rheaders = {str(k): str(v) for k, v in dict(getattr(resp, "headers", {}) or {}).items()}
-                final_url = str(getattr(resp, "url", None) or url)
-                error = None
-                if len(content) > cap:
-                    raise _net.ReponseTropGrosse(f"{url} : réponse de {len(content)} octets, plafond {cap} ({nature}).")
-            except MemoryError:
-                raise
-            except (_err.ConfigurationError, _err.VerrouOccupe):
-                raise
-            except _net.RefusPolitique as exc:  # refus définitif : aucun nouvel essai
-                self._log(event="policy_refused", url=url, reason=str(exc), attempt=attempt)
-                if isinstance(exc, (_net.AdresseInterdite, _net.HoteNonAutorise)):
-                    # Refusée avant l'envoi (nom résolu en adresse interdite, hôte hors liste) : aucune requête
-                    # n'est partie, elle n'est pas comptée et son créneau n'est pas gardé.
-                    self.n_requests -= 1
-                    self._annuler_reservation(jeton)
-                    self._stop("politique", f"adresse refusée : {exc}")
-                else:
+            with self._depart(url, jeton):  # une requête à la fois vers le site ; un délai après la fin de la précédente
+                self.n_requests += 1
+                t0 = self.clock()
+                try:
+                    resp = (self._transport(url, hdrs, self.timeout, nature=nature) if with_nature
+                            else self._transport(url, hdrs, self.timeout))
+                    status = int(resp.status_code)
+                    content = bytes(resp.content or b"")
+                    rheaders = {str(k): str(v) for k, v in dict(getattr(resp, "headers", {}) or {}).items()}
+                    final_url = str(getattr(resp, "url", None) or url)
+                    error = None
+                    if len(content) > cap:
+                        raise _net.ReponseTropGrosse(f"{url} : réponse de {len(content)} octets, plafond {cap} "
+                                                     f"({nature}).")
+                except MemoryError:
+                    raise
+                except (_err.ConfigurationError, _err.VerrouOccupe):
+                    raise
+                except _net.RefusPolitique as exc:  # refus définitif : aucun nouvel essai
+                    self._log(event="policy_refused", url=url, reason=str(exc), attempt=attempt)
                     self._last_request[cle_politesse(host)] = self.clock()
-                    self._record_done(host)
-                raise PolicyRefused(f"Requête refusée : {exc}") from exc
-            except _net.DelaiDepasse as exc:
-                if nature != "pdf":  # page, robots.txt : traité comme un 5xx (nouvel essai, puis arrêt)
+                    if isinstance(exc, (_net.AdresseInterdite, _net.HoteNonAutorise)):
+                        # Refusée seulement à la connexion (adresse réellement jointe, ou nom qui a changé de réponse
+                        # depuis le contrôle d'avant l'envoi) : rien n'est parti vers le site, la requête n'est pas
+                        # comptée ; son créneau reste réservé (prudent : cela ne coûte qu'une attente).
+                        self.n_requests -= 1
+                        self._stop("politique", f"adresse refusée : {exc}")
+                    else:
+                        self._record_done(host)
+                    raise PolicyRefused(f"Requête refusée : {exc}") from exc
+                except _net.DelaiDepasse as exc:
+                    if nature != "pdf":  # page, robots.txt : traité comme un 5xx (nouvel essai, puis arrêt)
+                        status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
+                    else:  # PDF trop lent pour le lien : mis de côté, sans nouvel essai ni arrêt de la session
+                        self._last_request[cle_politesse(host)] = self.clock()
+                        self._record_done(host)
+                        self._log(event=purpose, url=url, status=0, attempt=attempt, error=f"DelaiDepasse: {exc}",
+                                  elapsed_s=round(self.clock() - t0, 3))
+                        raise DocumentTropLent(f"{url} : délai total dépassé ({exc}) : document mis de côté, à "
+                                               "reprendre plus tard.") from exc
+                except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                    raise
+                except Exception as exc:  # erreur réseau : traitée comme un 5xx
                     status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
-                else:  # PDF trop lent pour le lien : mis de côté, sans nouvel essai ni arrêt de la session
-                    self._last_request[cle_politesse(host)] = self.clock()
-                    self._record_done(host)
-                    self._log(event=purpose, url=url, status=0, attempt=attempt, error=f"DelaiDepasse: {exc}",
-                              elapsed_s=round(self.clock() - t0, 3))
-                    raise DocumentTropLent(f"{url} : délai total dépassé ({exc}) : document mis de côté, à "
-                                           "reprendre plus tard.") from exc
-            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
-                raise
-            except Exception as exc:  # erreur réseau : traitée comme un 5xx
-                status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
-            self._last_request[cle_politesse(host)] = self.clock()
-            self._record_done(host)
-            self._log(event=purpose, url=url, status=status, bytes=len(content), attempt=attempt,
-                      elapsed_s=round(self.clock() - t0, 3), final_url=final_url, error=error)
+                self._last_request[cle_politesse(host)] = self.clock()
+                self._record_done(host)
+                self._log(event=purpose, url=url, status=status, bytes=len(content), attempt=attempt,
+                          elapsed_s=round(self.clock() - t0, 3), final_url=final_url, error=error)
+                if status in STOP_STATUSES:  # noté verrou d'envoi tenu : une session qui attend son tour ne part pas
+                    self._record_block(host, url, status)
             if status in STOP_STATUSES:
                 self._stop("bloque", f"HTTP {status} sur {url}")
                 self.blocked = {"host": host, "status": status, "url": url,
                                 "since": to_utc(self.now()).isoformat(timespec="seconds")}
-                self._record_block(host, url, status)
                 self._log(event="stop", url=url, status=status, reason=self.stopped)
                 raise AccessBlocked(
                     f"Le site {host} a répondu HTTP {status} : la collecte est arrêtée définitivement "

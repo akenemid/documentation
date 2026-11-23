@@ -14,7 +14,10 @@ Chaque essai reproduit un constat du contrôle final (il échouait avant la corr
 - P4 documentation : nombre de fichiers exportés, ``RLIMIT_CPU`` et ``TMPDIR`` dédié dans le lanceur d'exemple ;
 - P5 ``update --simulation --rouvrir`` ne comptait pas les jours rouverts dans ``jours_a_chercher`` ;
 - P6 une requête refusée avant l'envoi (adresse interdite, hôte hors liste) réservait quand même un créneau dans
-  ``politeness.json`` : 10 s d'attente de trop au lancement suivant ;
+  ``politeness.json`` : 10 s d'attente de trop au lancement suivant. Revu ensuite (constat du contrôle de bf68de2,
+  trois sessions simultanées : une requête partait 4 s après la FIN d'une autre, car la réservation retirée remettait
+  une date plus ancienne) : les contrôles d'adresse sont faits avant toute réservation ou attente, une réservation
+  n'est plus jamais retirée, la fin d'une vraie requête est toujours notée, une seule requête à la fois vers le site ;
 - P7 ``recommend`` sur un panel de 7 séances sortait en 7 (``TypeError`` dans l'évaluation des indices).
 
 Hors ligne : dossiers temporaires, doublures, aucune requête vers l'extérieur. Le code 3 n'est jamais attendu.
@@ -31,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -426,10 +430,12 @@ def test_update_simulation_counts_the_reopened_days(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# P6 : aucune réservation de politesse pour une requête refusée avant l'envoi
+# P6 : politesse entre sessions. Contrôles d'adresse AVANT toute réservation ; une réservation n'est jamais retirée
+# ni reculée ; la fin d'une vraie requête est toujours notée ; une requête à la fois vers le site.
 # ---------------------------------------------------------------------------
 
 _NOW = dt.datetime(2026, 11, 23, 3, 40, tzinfo=dt.timezone.utc)
+URL_BOC = "https://www.brvm.org/sites/default/files/boc_20261123.pdf"
 
 
 class _R:
@@ -481,43 +487,335 @@ def _attente_avant_premier_envoi(cache, t0: float) -> float:
     return envoi[0]
 
 
-@pytest.mark.parametrize("refus", ["AdresseInterdite", "HoteNonAutorise"])
-def test_a_request_refused_before_sending_reserves_no_politeness_slot(tmp_path, refus):
+class _SansReseau:
+    """Session ``requests`` de doublure, sans mandataire : tout envoi fait échouer l'essai."""
+
+    proxies: dict = {}
+    trust_env = False
+
+    def get(self, *a, **k):
+        raise AssertionError("aucune requête ne doit partir")
+
+
+def _client_refusant(refus):
+    """Client commun du moteur (``net.ClientHttp``) dont les contrôles d'avant l'envoi refusent www.brvm.org."""
+    import socket
+
+    from brvm_alpha import net
+
+    def resout(ip):
+        return lambda host, port, *a: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port))]
+
+    if refus == "AdresseInterdite":  # le nom se résout en adresse de boucle locale
+        return net.ClientHttp(net.politique_par_defaut(), session=_SansReseau(), resolveur=resout("127.0.0.1"))
+    # hôte hors de la liste blanche du client (la session, elle, le permet)
+    return net.ClientHttp(net.Politique(hotes=frozenset({"brvm.org"})), session=_SansReseau(),
+                          resolveur=resout("52.1.1.1"))
+
+
+@pytest.mark.parametrize("refus, motif", [("AdresseInterdite", "adresse interdite"),
+                                          ("HoteNonAutorise", "hors de la liste blanche")])
+def test_a_request_refused_before_sending_reserves_no_politeness_slot(tmp_path, refus, motif):
+    """Refus avant l'envoi (liste blanche, adresse résolue : contrôles faits AVANT la réservation) : aucune attente,
+    ``politeness.json`` inchangé octet pour octet, rien de compté ; le lancement suivant n'attend que le reste du
+    délai de la vraie requête précédente. Avant : le créneau était réservé et attendu, puis le refus découvert."""
     from brvm_alpha import net
     from brvm_alpha.notes import research as rs
 
     cache = tmp_path / "cache"
     cache.mkdir()
-
-    def transport(url, headers, timeout):
-        raise getattr(net, refus)(f"www.brvm.org refusé avant l'envoi : {url}")
-
-    sess = _session(cache, transport, _Horloge())
-    with pytest.raises(rs.PolicyRefused):
-        sess.get("https://www.brvm.org/sites/default/files/boc_20261123.pdf")
+    h = _Horloge()
+    _session(cache, lambda u, hd, t: _R(404 if u.endswith("robots.txt") else 200, b"%PDF-1.4 x", None, u), h).get(
+        "https://www.brvm.org/sites/default/files/boc_20261120.pdf")  # vraie requête d'un lancement précédent
+    avant = (cache / rs.POLITENESS_STATE).read_bytes()
+    fichiers = sorted(p.name for p in cache.iterdir())
+    h2 = _Horloge(h.t + 3.0)  # 3 s après la fin de cette requête
+    sess = _session(cache, net.transport_http(client=_client_refusant(refus)), h2)
+    with pytest.raises(rs.PolicyRefused, match=motif):
+        sess.get(URL_BOC)
+    assert h2.attentes == []  # avant : 7 s d'attente (reste du délai), puis le refus
     assert sess.n_requests == 0 and sess.stop_kind == "politique"
-    hosts = _etat_politesse(cache).get("hosts", {})
-    assert not any("last" in e for e in hosts.values()), hosts  # avant : « last » noté, aucune requête partie
-    assert _attente_avant_premier_envoi(cache, 1000.5) == 0.0  # avant : 10 s d'attente au lancement suivant
+    assert (cache / rs.POLITENESS_STATE).read_bytes() == avant  # rien réservé
+    assert sorted(p.name for p in cache.iterdir()) == fichiers  # pas même un verrou d'envoi
+    assert _attente_avant_premier_envoi(cache, h.t + 3.5) == pytest.approx(6.5)  # 10 s après la vraie requête
 
 
-def test_a_request_that_leaves_still_reserves_its_slot_and_other_sessions_keep_theirs(tmp_path):
+def test_the_standalone_fetcher_checks_the_address_before_waiting_its_turn():
+    from brvm_alpha.data import boc_download as bd
+
+    attentes: list[float] = []
+    f = bd.PoliteFetcher(sleep=attentes.append, clock=lambda: 0.0)
+    f._client = _client_refusant("AdresseInterdite")
+    f._last = 0.0  # une requête vient de finir : avant, 10 s d'attente puis le refus
+    with pytest.raises(bd.DownloadStopped, match="adresse interdite") as ei:
+        f(URL_BOC)
+    assert ei.value.raison == "politique" and attentes == [] and f.n_requests == 0
+
+
+def test_a_request_refused_only_at_connection_keeps_its_reservation(tmp_path):
+    """Refus constaté seulement à la connexion (adresse réellement jointe, ``net._controler_pair``) : rien n'est
+    compté, la session s'arrête (« politique »), et sa réservation **reste** (prudent : une attente de plus au
+    lancement suivant). Avant : elle était retirée, et pouvait remettre une réservation plus ancienne."""
+    from brvm_alpha import net
     from brvm_alpha.notes import research as rs
 
     cache = tmp_path / "cache"
     cache.mkdir()
     h = _Horloge()
-    sess = _session(cache, lambda u, hd, t: _R(404 if u.endswith("robots.txt") else 200, b"%PDF-1.4 x", None, u), h)
-    sess.get("https://www.brvm.org/sites/default/files/boc_20261123.pdf")
+
+    def connexion_refusee(url, headers, timeout):
+        raise net.AdresseInterdite("connexion vers une adresse interdite (127.0.0.1) : aucune requête n'est envoyée.")
+
+    sess = _session(cache, connexion_refusee, h)
+    with pytest.raises(rs.PolicyRefused, match="adresse interdite"):
+        sess.get(URL_BOC)
+    assert sess.n_requests == 0 and sess.stop_kind == "politique" and h.attentes == []
     entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
-    assert entry["last"] and entry["session"] == sess.session_id  # règle inchangée : 10 s entre deux requêtes
-    assert _attente_avant_premier_envoi(cache, h.t) >= 10.0 - 1e-6
-    # une réservation posée depuis par une autre session n'est jamais retirée
-    before = _etat_politesse(cache)
-    sess._annuler_reservation({"hote": "www.brvm.org", "avant": {}, "posee": {"last": "x", "session": "y",
-                                                                             "reserved_at": "z"}})
-    assert _etat_politesse(cache) == before
+    assert entry["session"] == sess.session_id and rs.to_utc(entry["last"]) == h.now()  # créneau gardé
+    assert "fin" not in entry  # aucune vraie requête
+    assert _attente_avant_premier_envoi(cache, h.t + 2.0) == pytest.approx(8.0)  # 10 s après ce créneau
+    assert not hasattr(rs.PoliteSession, "_annuler_reservation")
+
+
+def test_a_request_that_leaves_still_reserves_its_slot_and_other_sessions_keep_theirs(tmp_path):
+    """Vraie requête : créneau réservé, fin notée ; la suivante part 10 s après sa FIN, même longue. La fin d'une
+    requête est notée même si une autre session a réservé plus tard pendant cette requête, et cette réservation reste
+    à son nom (jamais remplacée par une date plus ancienne)."""
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    h = _Horloge()
+
+    def lente(url, headers, timeout):
+        h.t += 6.0  # requête de 6 s
+        return _R(404 if url.endswith("robots.txt") else 200, b"%PDF-1.4 x", None, url)
+
+    sess = _session(cache, lente, h)
+    sess.get(URL_BOC)  # robots.txt (6 s), puis le PDF 10 s après la FIN de robots.txt
+    assert h.attentes == [pytest.approx(10.0)]
+    entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
+    assert entry["session"] == entry["fin_session"] == sess.session_id
+    assert rs.to_utc(entry["last"]) == rs.to_utc(entry["fin"]) == h.now()
+    assert _attente_avant_premier_envoi(cache, h.t + 1.0) == pytest.approx(9.0)  # 10 s après la fin
+    # X part, Y réserve pendant la requête de X (créneau = début de X + 10 s), X finit 6 s après son départ.
+    url = "https://www.brvm.org/fr/page"
+    t = [0.0]
+
+    def now():
+        return _NOW + dt.timedelta(seconds=t[0])
+
+    def mk():
+        return rs.PoliteSession(transport=lente, clock=lambda: t[0], sleep=lambda s: None, now=now, cache_dir=cache,
+                                log_path=tmp_path / "fetch_log.jsonl")
+
+    t[0] = 100.0
+    x, y = mk(), mk()
+    x._wait_turn(url)
+    t[0] += 1.0
+    y._wait_turn(url)
+    t[0] += 5.0
+    x._record_done("www.brvm.org")
+    entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
+    assert entry["session"] == y.session_id and rs.to_utc(entry["last"]) == _NOW + dt.timedelta(seconds=110)
+    assert entry["fin_session"] == x.session_id and rs.to_utc(entry["fin"]) == _NOW + dt.timedelta(seconds=106)
     assert rs.STOP_STATUSES >= {403, 429}  # arrêt au premier 403/429 : inchangé
+
+
+def _sessions_temps_reel(tmp_path, delai):
+    """Sessions en temps réel (fils), délai ``delai`` vers exemple.test, état partagé ; horloge commune monotone."""
+    from brvm_alpha.notes import research as rs
+
+    base, t0 = _NOW, time.monotonic()
+    cache = tmp_path / "cache"
+    cache.mkdir(exist_ok=True)
+
+    def now():
+        return base + dt.timedelta(seconds=time.monotonic() - t0)
+
+    def mk(transport, attentes=None):
+        def sleep(s):
+            if attentes is not None:
+                attentes.append(float(s))
+            time.sleep(s)
+
+        return rs.PoliteSession(transport=transport, cache_dir=cache, log_path=tmp_path / "fetch_log.jsonl",
+                                delay_s=delai, max_retries=1, hosts=("exemple.test",), now=now, sleep=sleep)
+
+    return mk, (lambda: time.monotonic() - t0)
+
+
+@pytest.mark.parametrize("cas", ["refus_a_la_connexion", "refus_avant_envoi", "vraie_requete"])
+def test_three_sessions_never_send_less_than_the_delay_after_the_end_of_another_request(tmp_path, cas):
+    """Constat du contrôle (p6_trois.py, délai 10 s ramené à 1 s) : X envoie une requête longue ; pendant ce temps Y
+    réserve le créneau suivant puis est refusée (ou envoie une vraie requête) ; Z arrive ensuite. Avant : Z partait
+    4 s après la FIN de X (la réservation de Y, retirée, remettait celle de X datée de son début), et une vraie
+    requête de Y partait pendant celle de X quand X durait plus que le délai."""
+    import threading
+
+    from brvm_alpha import net
+    from brvm_alpha.notes import research as rs
+
+    D = 1.0
+    longue = 1.5 if cas == "vraie_requete" else 0.6  # plus longue que le délai : Y attend la fin de X
+    mk, T = _sessions_temps_reel(tmp_path, D)
+    ev: dict[str, float] = {}
+    attentes_y: list[float] = []
+
+    def tr_x(url, h, timeout):
+        ev["X envoi"] = T()
+        time.sleep(longue)
+        ev["X fin"] = T()
+        return _R(404, b"", None, url)
+
+    def tr_y(url, h, timeout):
+        ev["Y envoi"] = T()
+        if cas == "refus_a_la_connexion":
+            raise net.AdresseInterdite("connexion vers une adresse interdite (127.0.0.1)")
+        time.sleep(0.1)
+        ev["Y fin"] = T()
+        return _R(404, b"", None, url)
+
+    def avant_envoi(url):
+        ev["Y refus avant l'envoi"] = T()
+        raise net.AdresseInterdite("exemple.test se résout en adresse interdite (127.0.0.1)")
+
+    if cas == "refus_avant_envoi":
+        tr_y.controle_avant_envoi = avant_envoi
+
+    def tr_z(url, h, timeout):
+        ev["Z envoi"] = T()
+        return _R(404, b"", None, url)
+
+    def lancer(transport, attentes=None):
+        try:
+            mk(transport, attentes)._network_get("https://exemple.test/doc.pdf", {}, nature="pdf")
+        except rs.PolicyRefused:
+            pass
+
+    x = threading.Thread(target=lancer, args=(tr_x,))
+    x.start()
+    time.sleep(0.1)
+    y = threading.Thread(target=lancer, args=(tr_y, attentes_y))
+    y.start()
+    y.join()
+    x.join()
+    lancer(tr_z)
+    marge = 2e-3  # dates notées à la microseconde
+    assert ev["Z envoi"] - ev["X fin"] >= D - marge, ev  # avant : 0,4 s (soit 4 s pour un délai de 10 s)
+    if cas == "refus_avant_envoi":
+        assert "Y envoi" not in ev and attentes_y == []  # refus sans réservation ni attente
+        assert ev["Y refus avant l'envoi"] < ev["X fin"]
+    else:
+        assert ev["Y envoi"] - ev["X fin"] >= D - marge, ev  # avant (vraie requête) : partie pendant celle de X
+    if cas == "refus_a_la_connexion":  # réservation de Y gardée : Z part un délai après elle
+        assert ev["Z envoi"] - ev["X envoi"] >= 2 * D - marge, ev
+    if cas == "vraie_requete":
+        assert ev["Z envoi"] - ev["Y fin"] >= D - marge, ev
+
+
+def test_two_sessions_alternating_real_requests_and_refusals_never_send_within_the_delay_of_an_end(tmp_path):
+    """Deux suites de lancements simultanées (temps réel, délai 0,5 s) : vraies requêtes (dont une plus longue que le
+    délai), refus avant l'envoi, refus à la connexion. Aucune requête ne part moins d'un délai après la FIN d'une vraie
+    requête, deux requêtes ne sont jamais en cours ensemble, et un refus avant l'envoi n'attend rien."""
+    import threading
+
+    from brvm_alpha import net
+    from brvm_alpha.notes import research as rs
+
+    D = 0.5
+    mk, T = _sessions_temps_reel(tmp_path, D)
+    envois: list[tuple[float, float, str]] = []  # (début, fin, nature) de chaque appel du transport
+    garde = threading.Lock()
+    attentes_refus: list[list[float]] = []
+
+    def transport(duree, nature):
+        def tr(url, h, timeout):
+            debut = T()
+            if nature == "connexion":
+                with garde:
+                    envois.append((debut, T(), nature))
+                raise net.AdresseInterdite("connexion vers une adresse interdite (127.0.0.1)")
+            time.sleep(duree)
+            with garde:
+                envois.append((debut, T(), nature))
+            return _R(404, b"", None, url)
+
+        if nature == "avant_envoi":
+            def refus(url):
+                raise net.AdresseInterdite("exemple.test se résout en adresse interdite (127.0.0.1)")
+
+            tr.controle_avant_envoi = refus
+        return tr
+
+    def suite(lancements):
+        for i, (duree, nature) in enumerate(lancements):
+            attentes: list[float] = []
+            if nature == "avant_envoi":
+                attentes_refus.append(attentes)
+            try:
+                mk(transport(duree, nature), attentes)._network_get(f"https://exemple.test/doc{i}.pdf", {},
+                                                                    nature="pdf")
+            except rs.PolicyRefused:
+                pass
+
+    a = threading.Thread(target=suite, args=([(0.2, "vraie"), (0.9, "vraie"), (0.1, "vraie")],))
+    b = threading.Thread(target=suite, args=([(0.0, "avant_envoi"), (0.0, "connexion"), (0.3, "vraie"),
+                                              (0.0, "avant_envoi")],))
+    a.start()
+    time.sleep(0.05)
+    b.start()
+    a.join()
+    b.join()
+    envois.sort()
+    vraies = [e for e in envois if e[2] == "vraie"]
+    assert len(vraies) == 4 and len(envois) == 5, envois
+    marge = 2e-3
+    for debut, _fin, _n in envois:  # aucun envoi moins d'un délai après la fin d'une vraie requête précédente
+        fins = [f for d, f, n in vraies if d < debut]
+        assert not fins or debut - max(fins) >= D - marge, envois
+    for (d1, f1, _), (d2, _f2, _) in zip(vraies, vraies[1:]):  # jamais deux vraies requêtes ensemble
+        assert d2 >= f1 + D - marge, vraies
+    assert attentes_refus and all(w == [] for w in attentes_refus)  # refus avant l'envoi : aucune attente
+
+
+
+def test_a_session_waiting_its_turn_does_not_send_after_a_403_received_by_another_session(tmp_path):
+    """Arrêt au premier 403/429, toutes sessions confondues : B attend son tour pendant la requête de A, que le site
+    refuse (403) ; le blocage est noté avant que B puisse partir, et B s'arrête sans rien envoyer. Avant : B partait à
+    son créneau, pendant la requête de A, puis après le 403."""
+    import threading
+
+    from brvm_alpha.notes import research as rs
+
+    D = 0.5
+    mk, T = _sessions_temps_reel(tmp_path, D)
+    ev: dict[str, float] = {}
+    issue: dict[str, str] = {}
+
+    def tr_a(url, h, timeout):
+        ev["A envoi"] = T()
+        time.sleep(0.8)
+        ev["A fin"] = T()
+        return _R(403, b"refus", None, url)
+
+    def tr_b(url, h, timeout):
+        ev["B envoi"] = T()
+        return _R(404, b"", None, url)
+
+    def lancer(nom, transport):
+        try:
+            mk(transport)._network_get("https://exemple.test/doc.pdf", {}, nature="pdf")
+        except rs.AccessBlocked as exc:
+            issue[nom] = type(exc).__name__
+
+    a = threading.Thread(target=lancer, args=("A", tr_a))
+    a.start()
+    time.sleep(0.1)
+    lancer("B", tr_b)
+    a.join()
+    assert issue == {"A": "AccessBlocked", "B": "AccessBlocked"} and "B envoi" not in ev, ev
+    assert rs.blocked_hosts(tmp_path / "cache")["exemple.test"]["status"] == 403
 
 
 # ---------------------------------------------------------------------------

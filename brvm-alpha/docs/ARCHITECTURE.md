@@ -820,7 +820,10 @@ sécurité, eurobond…) ; `MARCHE`.
 - Politesse : `robots.txt` lu et respecté (brvm.org : `Crawl-delay: 10`),
   User-Agent explicite, cache, arrêt immédiat sur 403/429/5xx répétés. Le délai et le
   blocage après un 403/429 valent **d'une session à l'autre** (`<cache>/politeness.json`,
-  levée explicite par `clear_block(hôte)`) ; redirections suivies à la main et contrôlées
+  levée explicite par `clear_block(hôte)`) ; liste blanche et adresse résolue contrôlées avant de réserver
+  un créneau (un refus ne réserve rien et n'attend pas), une seule requête à la fois vers un site toutes
+  sessions confondues (`politeness.envoi.<site>.lock`), jamais moins d'un délai après la **fin** de la requête
+  d'une autre session (`fin` noté à chaque vraie requête) ; redirections suivies à la main et contrôlées
   à chaque saut ; hôte normalisé (port, casse, point final). `created_at` d'une note
   collectée = instant où la page a été vue (borne de connaissance) ; `published_at` =
   publication sur le marché.

@@ -514,6 +514,14 @@ class ClientHttp:
             raise AdresseInterdite(f"{host} se résout en adresse interdite ({', '.join(bad)}) : aucune requête n'est "
                                    "envoyée.")
 
+    def controler_avant_envoi(self, url: str) -> None:
+        """Contrôles faits sans rien envoyer : liste blanche (:meth:`Politique.controler`) puis adresse obtenue par
+        résolution DNS. ``PoliteSession`` les fait **avant** de réserver son créneau de politesse ou d'attendre : une
+        requête refusée ici ne réserve rien. :meth:`get` les refait à l'envoi, puis contrôle l'adresse réellement
+        jointe après la connexion."""
+        self.politique.controler(url)
+        self._controler_adresses(url)
+
     def get(self, url: str, *, en_tetes: Mapping[str, str] | None = None, nature: str = "page", suivre: int = 0,
             delai_lecture: float | None = None) -> Reponse:
         """GET de ``url`` ; ``suivre`` : redirections suivies (chacune contrôlée), 0 = aucune (3xx rendu tel quel)."""
@@ -664,6 +672,8 @@ def transport_http(user_agent: str = USER_AGENT, politique: Politique | None = N
 
     transport.accepte_nature = True  # type: ignore[attr-defined]
     transport.client = cli  # type: ignore[attr-defined]
+    #: contrôles sans envoi, faits par ``PoliteSession`` avant de réserver son créneau
+    transport.controle_avant_envoi = cli.controler_avant_envoi  # type: ignore[attr-defined]
     return transport
 
 

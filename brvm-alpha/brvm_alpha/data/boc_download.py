@@ -389,11 +389,26 @@ class PoliteFetcher:
         self._robots_read = False
         self._client: net.ClientHttp | None = None
 
+    def _client_http(self) -> net.ClientHttp:
+        if self._client is None:
+            self._client = net.ClientHttp(net.politique_par_defaut(), user_agent=self.user_agent)
+        return self._client
+
+    def _controle_avant_envoi(self, url: str) -> None:
+        """Client commun : liste blanche et adresse résolue contrôlées **avant** d'attendre son tour ; un refus arrête
+        le téléchargement sans attente (rien n'est parti). Un nom introuvable est laissé à l'envoi (nouvel essai)."""
+        if self.session is not None:
+            return
+        try:
+            self._client_http().controler_avant_envoi(url)
+        except net.RefusPolitique as exc:
+            raise self._stop(f"requête refusée : {exc}", "politique") from exc
+        except net.ErreurReseau:
+            return
+
     def _get(self, url: str, nature: str) -> tuple[int, bytes]:
         if self.session is None:
-            if self._client is None:
-                self._client = net.ClientHttp(net.politique_par_defaut(), user_agent=self.user_agent)
-            resp = self._client.get(url, nature=nature, suivre=0, delai_lecture=self.timeout)
+            resp = self._client_http().get(url, nature=nature, suivre=0, delai_lecture=self.timeout)
         else:
             # Redirections non suivies : une réponse 3xx vaut « pas de bulletin à cette adresse ».
             resp = self.session.get(url, timeout=self.timeout, allow_redirects=False,
@@ -423,6 +438,7 @@ class PoliteFetcher:
         for attempt in range(1, MAX_RETRIES + 1):
             if self.max_requests is not None and self.n_requests >= self.max_requests:
                 raise self._stop(f"quota de {self.max_requests} requêtes atteint", "quota")
+            self._controle_avant_envoi(url)
             self._wait()
             self.n_requests += 1
             try:
@@ -434,7 +450,7 @@ class PoliteFetcher:
             except net.ReponseTropGrosse as exc:
                 self._last = self.clock()
                 raise ReponseInexploitable("trop_gros", str(exc)) from exc
-            except net.RefusPolitique as exc:  # liste blanche, adresse locale : arrêt, sans nouvel essai
+            except net.RefusPolitique as exc:  # refus constaté à l'envoi (adresse jointe…) : arrêt ; délai gardé
                 self._last = self.clock()
                 raise self._stop(f"requête refusée : {exc}", "politique") from exc
             except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)

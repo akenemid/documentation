@@ -279,7 +279,7 @@ bibliothèque devient 7.
 | 0 | — | succès | |
 | 1 | `donnees_absentes`, `historique_incomplet` | données absentes ou illisibles, historique non prêt, quota de requêtes atteint | panel introuvable ou abîmé (`.parquet` illisible : « panel illisible ») ; `panel` sans aucun bulletin dans `boc_text/` (installation neuve : « aucun bulletin dans … : lancer d'abord update » ; avant : 7, « KeyError : file ») ; journal des notes présent mais illisible ; `recommend` sur un historique incomplet (mode embarqué) ; `update` arrêté au quota |
 | 2 | `saisie_invalide` | saisie invalide ou refusée, erreurs d'arguments comprises ; **seulement** les saisies | option inconnue, `--couts inconnu`, `--delai nan`, date dans S1, URL invalide, `--racine` inexistant, cible inconnue, `--sortie` vers un dossier ; en mode embarqué, chemin hors des dossiers permis ou option de chemin vide (§ A.2) |
-| 4 | `verrou_occupe` | verrou tenu par une autre opération au-delà du délai | deux `panel`, deux `update`, deux `notes research` à la fois |
+| 4 | `verrou_occupe` | verrou tenu par une autre opération au-delà du délai | deux `panel`, deux `update`, deux `notes research` à la fois ; requête d'une autre session vers le site encore en cours après plus de 32 min (verrou d'envoi, § A.15) |
 | 5 | `acces_refuse` | accès refusé ou réseau | HTTP 403 ou 429, site bloqué, liste blanche, délai dépassé |
 | 6 | `memoire` | mémoire insuffisante | `MemoryError` (jamais avalée : aucun résultat dégradé en code 0) ; bibliothèque compilée impossible à charger faute de mémoire (« failed to map segment ») ; processus de travail du panel tué par `SIGKILL` sous une limite de mémoire, ou mort sans cause connue sous cette limite (le message dit « cause inconnue ») ; limite `RLIMIT_AS` sous 1 Go (refus au démarrage) |
 | 7 | `interne` | erreur interne (exception non prévue) ; trace sur la sortie d'erreur | défaut du moteur ; `ValueError` ou `KeyError` d'une bibliothèque ; processus de travail du panel tué par `SIGSEGV`, `SIGABRT` ou un autre signal qui n'est pas un manque de mémoire |
@@ -370,11 +370,11 @@ détaché.
 | `explain SNTS` | 6,8 s | court | rien | — |
 | `recommend --capital 10000000 [--portefeuille f.csv] [--cash] [--couts central]` | 14,6 s | court | rien, ou `--sortie` (écriture atomique) | — |
 | `report --capital 10000000 --sortie nom.html` | 18,7 s | long | `--sortie` (atomique) ; sans `--sortie`, `<rapports>/rapport_AAAA-MM-JJ.html`, **même nom pour tout capital** : Odoo passe toujours `--sortie` | — |
-| `update --sans-panel [--max-requetes 200] [--delai 10] [--rouvrir AAAA-MM-JJ[..AAAA-MM-JJ]]` | minutes | long | `boc_text/boc_*.txt.gz`, `.meta.json`, `.missing`, `.bad` ; `notes/cache/politeness.json`, `notes/fetch_log.jsonl` | `boc_text/.telechargement.lock`, `notes/cache/politeness.json.lock` |
+| `update --sans-panel [--max-requetes 200] [--delai 10] [--rouvrir AAAA-MM-JJ[..AAAA-MM-JJ]]` | minutes | long | `boc_text/boc_*.txt.gz`, `.meta.json`, `.missing`, `.bad` ; `notes/cache/politeness.json`, `notes/fetch_log.jsonl` | `boc_text/.telechargement.lock`, `notes/cache/politeness.json.lock`, `notes/cache/politeness.envoi.www.brvm.org.lock` (tenu pendant chaque requête) |
 | `update --simulation` | 0,6 s | court | rien | — |
 | `panel` (rien de nouveau) | 5,8 s | long | `panel/` (construction à côté, puis bascule) | `.panel.construction.lock`, attend `.panel.lecture.lock` |
 | `panel --force` (tout l'historique) | 50 s | long | `panel/` | idem |
-| `notes research [--pdf 20]` | jusqu'à 30 min | long | `notes/notes.jsonl` (au fil de l'eau), `notes/cache/`, `notes/fetch_log.jsonl` | `notes/.recherche.lock`, `notes/notes.jsonl.lock`, `politeness.json.lock` |
+| `notes research [--pdf 20]` | jusqu'à 30 min | long | `notes/notes.jsonl` (au fil de l'eau), `notes/cache/`, `notes/fetch_log.jsonl` | `notes/.recherche.lock`, `notes/notes.jsonl.lock`, `politeness.json.lock`, `politeness.envoi.www.brvm.org.lock` |
 | `notes research --hors-ligne --pdf 0` | 4,8 s | court | `notes/notes.jsonl` s'il y a du nouveau | idem |
 | `notes lire [--max 20] [--hors-ligne]` | 10 s hors ligne ; ≈ 10 s par document en ligne | long | `notes/notes.jsonl`, `notes/cache/docs/` | `notes/.recherche.lock`, `notes/notes.jsonl.lock` |
 
@@ -653,7 +653,7 @@ distribution) sont inchangées.
   jour férié coûte donc 15 requêtes au lieu de 5) ; nouveaux fichiers `boc_*.meta.json` ;
 - fichiers de verrou qui restent dans les données (`flock`, jamais supprimés) : `.panel.construction.lock`,
   `.panel.lecture.lock`, `boc_text/.telechargement.lock`, `notes/.recherche.lock`, `notes/notes.jsonl.lock`,
-  `notes/cache/politeness.json.lock` ; **ne jamais faire tourner deux versions du moteur sur le même dossier de
+  `notes/cache/politeness.json.lock`, `notes/cache/politeness.envoi.<site>.lock` ; **ne jamais faire tourner deux versions du moteur sur le même dossier de
   données** : l'ancien code (avant le 22/11/2026) prend un `notes.jsonl.lock` laissé en place pour un verrou
   tenu (attente de 10 s, puis échec), et les deux protocoles ne s'excluent pas. Pour revenir à une ancienne
   version : arrêter toute commande, puis supprimer les `*.lock` des données ;
@@ -683,13 +683,25 @@ distribution) sont inchangées.
   `TypeError`) ;
 - réseau : délai, réservation et blocage comptés **par site** (`www.brvm.org` et `brvm.org` partagent une
   même clé) ; un nom résolu en adresse interdite est signalé comme refus de politique (code 5, `politique`),
-  plus comme « robots.txt interdit », n'est plus compté comme requête et ne réserve plus de créneau dans
-  `politeness.json` (avant : 10 s d'attente de trop au lancement suivant) ; adresse réellement jointe contrôlée
+  plus comme « robots.txt interdit », et n'est plus compté comme requête ; adresse réellement jointe contrôlée
   après la connexion ; délai total tenu jusqu'aux en-têtes ; `politeness.json` illisible : aucune requête,
   code 8, fichier non réécrit (avant : le blocage 403 était oublié et le fichier réécrit sans lui) ;
   `fetch_log.jsonl` tourne au-delà de 10 Mo ; les PDF en double du cache HTTP sont retirés ; `live` sort en 5
   pour un site bloqué ou un réseau en défaut (avant : 1) ; une page HTML servie avec un type PDF est lue comme
   une page (avant : note vide) ;
+- **politesse entre sessions** (P6, revu le 23/11/2026) : la liste blanche et l'adresse obtenue par résolution DNS
+  sont contrôlées **avant** de réserver un créneau ou d'attendre : une requête refusée à ce stade ne réserve rien
+  dans `politeness.json`, n'attend pas et sort aussitôt en 5 `politique` (avant : 10 s d'attente, puis le refus) ;
+  un refus constaté seulement à la connexion (adresse réellement jointe) **garde** sa réservation (prudent : une
+  attente de plus au lancement suivant ; une réservation n'est plus jamais retirée ni remplacée par une date plus
+  ancienne) ; la fin de chaque vraie requête est toujours notée (`fin`, `fin_session`), même si une autre session a
+  réservé plus tard pendant cette requête ; une seule requête à la fois vers le site, toutes sessions confondues
+  (verrou `notes/cache/politeness.envoi.www.brvm.org.lock`, tenu pendant la requête ; une session dont le créneau
+  arrive pendant la requête d'une autre attend sa fin, puis 10 s) : aucune requête ne part moins de 10 s après la
+  **fin** d'une autre. Avant : trois sessions simultanées (X envoie une requête de 6 s ; Y réserve le créneau
+  suivant puis est refusée ; Z arrive ensuite) faisaient partir Z 4,0 s après la fin de X, et une vraie requête de
+  Y partait pendant celle de X si X durait plus de 10 s. Le journal `fetch_log.jsonl` note ces attentes
+  (`"event": "attente"`) ;
 - repli pdfplumber lancé avec `python -I`, depuis le dossier temporaire et avec un environnement réduit ;
 - `python -m brvm_alpha.data.boc_download` passe par le client poli commun (quota de 200 requêtes, blocage
   partagé) ;
