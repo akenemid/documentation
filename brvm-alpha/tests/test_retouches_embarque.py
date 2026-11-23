@@ -17,7 +17,11 @@ Chaque essai reproduit un constat du contrôle final (il échouait avant la corr
   ``politeness.json`` : 10 s d'attente de trop au lancement suivant. Revu ensuite (constat du contrôle de bf68de2,
   trois sessions simultanées : une requête partait 4 s après la FIN d'une autre, car la réservation retirée remettait
   une date plus ancienne) : les contrôles d'adresse sont faits avant toute réservation ou attente, une réservation
-  n'est plus jamais retirée, la fin d'une vraie requête est toujours notée, une seule requête à la fois vers le site ;
+  n'est plus jamais retirée, la fin d'une vraie requête est toujours notée, une seule requête à la fois vers le site.
+  Revu encore (contrôle de 1a1fd28) : une requête interrompue (TERM, Ctrl+C, SIGXCPU, KILL) ne notait pas sa fin, et
+  la session qui attendait partait aussitôt ; désormais la fin est notée à toute sortie, et une marque « envoi en
+  cours » restée sans fin (KILL) coûte un délai entier ; verrou d'envoi impossible alors que politeness.json s'écrit :
+  rien ne part (code 8) ; date illisible : un délai ; 403 d'une autre session : arrêt dès la prise du verrou ;
 - P7 ``recommend`` sur un panel de 7 séances sortait en 7 (``TypeError`` dans l'évaluation des indices).
 
 Hors ligne : dossiers temporaires, doublures, aucune requête vers l'extérieur. Le code 3 n'est jamais attendu.
@@ -572,7 +576,7 @@ def test_a_request_refused_only_at_connection_keeps_its_reservation(tmp_path):
     assert sess.n_requests == 0 and sess.stop_kind == "politique" and h.attentes == []
     entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
     assert entry["session"] == sess.session_id and rs.to_utc(entry["last"]) == h.now()  # créneau gardé
-    assert "fin" not in entry  # aucune vraie requête
+    assert "fin" not in entry and "envoi" not in entry  # aucune vraie requête ; marque « envoi en cours » retirée
     assert _attente_avant_premier_envoi(cache, h.t + 2.0) == pytest.approx(8.0)  # 10 s après ce créneau
     assert not hasattr(rs.PoliteSession, "_annuler_reservation")
 
@@ -595,7 +599,7 @@ def test_a_request_that_leaves_still_reserves_its_slot_and_other_sessions_keep_t
     sess.get(URL_BOC)  # robots.txt (6 s), puis le PDF 10 s après la FIN de robots.txt
     assert h.attentes == [pytest.approx(10.0)]
     entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
-    assert entry["session"] == entry["fin_session"] == sess.session_id
+    assert entry["session"] == entry["fin_session"] == sess.session_id and "envoi" not in entry
     assert rs.to_utc(entry["last"]) == rs.to_utc(entry["fin"]) == h.now()
     assert _attente_avant_premier_envoi(cache, h.t + 1.0) == pytest.approx(9.0)  # 10 s après la fin
     # X part, Y réserve pendant la requête de X (créneau = début de X + 10 s), X finit 6 s après son départ.
@@ -816,6 +820,240 @@ def test_a_session_waiting_its_turn_does_not_send_after_a_403_received_by_anothe
     a.join()
     assert issue == {"A": "AccessBlocked", "B": "AccessBlocked"} and "B envoi" not in ev, ev
     assert rs.blocked_hosts(tmp_path / "cache")["exemple.test"]["status"] == 403
+
+
+# Contrôle de 1a1fd28 : requête interrompue (TERM du lanceur, Ctrl+C, SIGXCPU, KILL), verrou d'envoi impossible,
+# date illisible dans politeness.json, 403 vu par une session qui attend.
+
+
+@pytest.mark.parametrize("interruption", [erreurs.ArretDemande, KeyboardInterrupt, erreurs.TempsCalculDepasse,
+                                          MemoryError, erreurs.VerrouOccupe, erreurs.ConfigurationError])
+def test_an_interrupted_request_still_notes_its_end_and_the_next_session_waits_the_delay_after_it(tmp_path,
+                                                                                                  interruption):
+    """Requête interrompue pendant l'envoi (TERM du lanceur : ``ArretDemande`` ; Ctrl+C ; ``SIGXCPU`` ;
+    ``MemoryError`` ; erreur venue du transport) : la fin est notée quand même, la marque « envoi en cours » est
+    retirée, et la session suivante part 10 s après l'interruption. Avant : aucune fin notée, la session qui
+    attendait partait 0,06 s après le TERM (pendant que le site servait encore la réponse)."""
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    h = _Horloge()
+
+    def coupee(url, headers, timeout):
+        if url.endswith("robots.txt"):
+            return _R(404, b"", None, url)
+        h.t += 4.0  # 4 s de réponse, puis l'interruption
+        raise interruption("interrompue pendant la requête")
+
+    sess = _session(cache, coupee, h)
+    with pytest.raises(interruption):
+        sess.get(URL_BOC)
+    entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
+    assert entry["fin_session"] == sess.session_id and rs.to_utc(entry["fin"]) == h.now()
+    assert "envoi" not in entry
+    assert _attente_avant_premier_envoi(cache, h.t + 1.0) == pytest.approx(9.0)  # avant : 5 s (début + 10 s)
+
+
+_ENVOI_INTERROMPU = r'''
+import signal, sys, time
+from pathlib import Path
+from brvm_alpha import erreurs
+from brvm_alpha.notes import research as rs
+
+cache, journal, marque, delai = sys.argv[1], sys.argv[2], Path(sys.argv[3]), float(sys.argv[4])
+
+
+def term(signum, frame):  # comme la ligne de commande : TERM devient ArretDemande (code 130)
+    raise erreurs.ArretDemande("arrêt demandé (signal TERM)")
+
+
+signal.signal(signal.SIGTERM, term)
+
+
+def lente(url, headers, timeout):
+    marque.write_text(repr(time.time()))
+    time.sleep(60)
+
+
+s = rs.PoliteSession(transport=lente, cache_dir=cache, log_path=journal, delay_s=delai, max_retries=1,
+                     hosts=("exemple.test",))
+try:
+    s._network_get("https://exemple.test/k.pdf", {}, nature="pdf")
+except KeyboardInterrupt:
+    sys.exit(130)
+'''
+
+
+@pytest.mark.parametrize("sig", ["SIGKILL", "SIGTERM"])
+@pytest.mark.parametrize("moment", ["B_attend_le_verrou", "avant_le_creneau_de_B"])
+def test_a_session_killed_during_its_request_never_lets_the_next_one_leave_within_the_delay(tmp_path, sig, moment):
+    """Deux vrais processus (constat majeur du contrôle de 1a1fd28) : K envoie une requête longue ; B, lancée 0,2 s
+    après, attend son tour ; K est tué (KILL) ou reçoit TERM pendant sa requête, alors que B attend le verrou
+    d'envoi, ou avant le créneau de B. B ne part jamais moins d'un délai après le signal : TERM note la fin ; après
+    KILL, la marque « envoi en cours » restée sans fin coûte un délai entier. Avant : B partait 0,03 s après le
+    signal (B attendait le verrou), ou à son créneau, 0,6 s après la coupure."""
+    import threading
+
+    from brvm_alpha.notes import research as rs
+
+    D = 1.0
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    marque = tmp_path / "envoi_K"
+    k = subprocess.Popen([sys.executable, "-B", "-c", _ENVOI_INTERROMPU, str(cache), str(tmp_path / "k.jsonl"),
+                          str(marque), str(D)], env=_env_sous_processus(), cwd=str(ROOT))
+    ev: dict[str, float] = {}
+    try:
+        fin_attente = time.time() + 60
+        while not (marque.exists() and marque.read_text()) and time.time() < fin_attente and k.poll() is None:
+            time.sleep(0.01)
+        t_k = float(marque.read_text())
+        assert "envoi" in _etat_politesse(cache)["hosts"]["exemple.test"]  # marque écrite avant l'envoi
+        coupure = t_k + (2.0 if moment == "B_attend_le_verrou" else 0.4)
+
+        def couper():
+            while time.time() < coupure:
+                time.sleep(0.002)
+            ev["signal"] = time.time()
+            k.send_signal(getattr(signal, sig))
+
+        def tr_b(url, h, timeout):
+            ev["B envoi"] = time.time()
+            return _R(404, b"", None, url)
+
+        th = threading.Thread(target=couper)
+        th.start()
+        while time.time() < t_k + 0.2:
+            time.sleep(0.002)
+        b = rs.PoliteSession(transport=tr_b, cache_dir=cache, log_path=tmp_path / "b.jsonl", delay_s=D,
+                             max_retries=1, hosts=("exemple.test",))
+        b._network_get("https://exemple.test/b.pdf", {}, nature="pdf")
+        th.join()
+        k.wait(timeout=30)
+    finally:
+        if k.poll() is None:
+            k.kill()
+            k.wait(timeout=10)
+    assert k.returncode == (-9 if sig == "SIGKILL" else 130)
+    assert ev["B envoi"] - ev["signal"] >= D - 2e-3, ev  # avant : 0,03 s (verrou) ou 0,6 s (créneau)
+    entry = _etat_politesse(cache)["hosts"]["exemple.test"]
+    assert "envoi" not in entry and entry["fin_session"] == b.session_id  # marque retirée par la fin de B
+    journal = [json.loads(x) for x in (tmp_path / "b.jsonl").read_text(encoding="utf-8").splitlines()]
+    sans_fin = [e for e in journal if e.get("event") == "attente" and e.get("envoi_sans_fin")]
+    assert bool(sans_fin) == (sig == "SIGKILL")  # KILL : un délai entier, faute de fin notée
+
+
+@pytest.mark.parametrize("panne", ["verrou", "marque"])
+def test_no_request_leaves_when_the_send_lock_or_mark_cannot_be_written_while_the_state_can(tmp_path, monkeypatch,
+                                                                                            panne):
+    """Verrou d'envoi impossible à prendre (un dossier à sa place ; fichier d'un autre utilisateur) ou marque
+    « envoi en cours » impossible à écrire, alors que ``politeness.json`` s'écrit : rien ne part (code 8), et c'est
+    noté dans ``fetch_log.jsonl``. Avant : la requête partait quand même, seul un avertissement le disait, et deux
+    requêtes pouvaient se chevaucher."""
+    import errno
+
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    if panne == "verrou":
+        (cache / "politeness.envoi.www.brvm.org.lock").mkdir()
+    else:
+        orig = rs.PoliteSession._state_update
+
+        def update(self, host, fn, *a, **k):
+            if getattr(fn, "__name__", "") == "marque":
+                raise OSError(errno.EIO, "écriture impossible")
+            return orig(self, host, fn, *a, **k)
+
+        monkeypatch.setattr(rs.PoliteSession, "_state_update", update)
+    envois: list[str] = []
+    h = _Horloge()
+
+    def ok(url, headers, timeout):
+        envois.append(url)
+        return _R(404, b"", None, url)
+
+    sess = _session(cache, ok, h)
+    with pytest.raises(rs.PolitesseNonGarantie, match="aucune requête n'est envoyée"):
+        sess.get(URL_BOC)
+    assert envois == [] and sess.n_requests == 0
+    assert erreurs.code_retour(rs.PolitesseNonGarantie("x")) == 8
+    journal = [json.loads(x) for x in (tmp_path / "fetch_log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [e["event"] for e in journal if e["event"] == "politesse_non_garantie"] == ["politesse_non_garantie"]
+
+
+@pytest.mark.parametrize("cle", ["fin", "last"])
+@pytest.mark.parametrize("valeur", ["NaT", "nan", "pas une date", 5])
+def test_an_unreadable_date_in_the_politeness_state_costs_one_delay_never_an_internal_error(tmp_path, cle, valeur):
+    """Date illisible notée par une autre session (``"NaT"``, ``"nan"``, texte, nombre) : un délai d'attente, jamais
+    une erreur interne, jamais aucune attente. Avant : ``fin`` à ``"NaT"`` ou ``"nan"`` donnait le code 7
+    (« cannot convert float NaN to integer ») ; ``last`` illisible était ignorée (aucune attente)."""
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    entry = {cle: valeur, ("fin_session" if cle == "fin" else "session"): "autre session"}
+    (cache / rs.POLITENESS_STATE).write_text(json.dumps({"hosts": {"www.brvm.org": entry}}), encoding="utf-8")
+    assert _attente_avant_premier_envoi(cache, 1000.0) == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("moment", ["B_attend_le_verrou", "creneau_de_B_apres_le_403"])
+def test_a_403_of_another_session_stops_a_waiting_session_as_soon_as_it_takes_the_send_lock(tmp_path, moment):
+    """403 reçu par A pendant que B attend : B s'arrête dès qu'elle prend le verrou d'envoi, sans attendre encore un
+    délai après la fin de A (rien ne part, comme avant ; seule l'attente inutile disparaît). Avant : jusqu'à un
+    délai entier de plus."""
+    import threading
+
+    from brvm_alpha.notes import research as rs
+
+    D = 1.0
+    mk, T = _sessions_temps_reel(tmp_path, D)
+    ev: dict[str, float] = {}
+    duree_a = 1.5 if moment == "B_attend_le_verrou" else 0.6
+
+    def tr_a(url, h, timeout):
+        time.sleep(duree_a)
+        ev["A fin"] = T()
+        return _R(403, b"refus", None, url)
+
+    def tr_b(url, h, timeout):
+        ev["B envoi"] = T()
+        return _R(404, b"", None, url)
+
+    issue: dict[str, str] = {}
+
+    def lancer(nom, transport, url):
+        try:
+            mk(transport)._network_get(url, {}, nature="pdf")
+        except rs.AccessBlocked as exc:
+            ev[f"{nom} refus"] = T()
+            issue[nom] = type(exc).__name__
+
+    a = threading.Thread(target=lancer, args=("A", tr_a, "https://exemple.test/a.pdf"))
+    a.start()
+    time.sleep(0.1)
+    lancer("B", tr_b, "https://exemple.test/b.pdf")
+    a.join()
+    assert issue == {"A": "AccessBlocked", "B": "AccessBlocked"} and "B envoi" not in ev, ev
+    if moment == "B_attend_le_verrou":
+        assert ev["B refus"] - ev["A fin"] < 0.3, ev  # avant : un délai de plus (1,0 s)
+    else:  # créneau de B à 1,0 s, A finie à 0,6 s : refus au créneau (avant : 1,6 s)
+        assert ev["B refus"] - ev["A fin"] < 0.7, ev
+
+
+def test_deployment_doc_lists_the_send_lock_of_every_online_command_and_its_limits():
+    """DEPLOIEMENT.md § A.9 : le verrou d'envoi figure pour toutes les commandes qui envoient des requêtes
+    (``notes lire`` en ligne et ``live`` compris) ; § A.14 : limites du verrou d'envoi (une seule machine)."""
+    doc = (ROOT / "docs" / "DEPLOIEMENT.md").read_text(encoding="utf-8")
+    a9 = doc[doc.index("### A.9 "):doc.index("### A.10 ")]
+    for debut in ("| `update --sans-panel", "| `notes research [--pdf", "| `notes lire", "| `live"):
+        lignes = [x for x in a9.splitlines() if x.startswith(debut)]
+        assert lignes and "politeness.envoi.www.brvm.org.lock" in lignes[0] and "politeness.json.lock" in lignes[0], \
+            debut
+    a14 = doc[doc.index("### A.14 "):doc.index("### A.15 ")]
+    assert "une seule machine" in a14 and "disque réseau" in a14
 
 
 # ---------------------------------------------------------------------------

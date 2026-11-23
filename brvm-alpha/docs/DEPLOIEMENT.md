@@ -283,7 +283,7 @@ bibliothèque devient 7.
 | 5 | `acces_refuse` | accès refusé ou réseau | HTTP 403 ou 429, site bloqué, liste blanche, délai dépassé |
 | 6 | `memoire` | mémoire insuffisante | `MemoryError` (jamais avalée : aucun résultat dégradé en code 0) ; bibliothèque compilée impossible à charger faute de mémoire (« failed to map segment ») ; processus de travail du panel tué par `SIGKILL` sous une limite de mémoire, ou mort sans cause connue sous cette limite (le message dit « cause inconnue ») ; limite `RLIMIT_AS` sous 1 Go (refus au démarrage) |
 | 7 | `interne` | erreur interne (exception non prévue) ; trace sur la sortie d'erreur | défaut du moteur ; `ValueError` ou `KeyError` d'une bibliothèque ; processus de travail du panel tué par `SIGSEGV`, `SIGABRT` ou un autre signal qui n'est pas un manque de mémoire |
-| 8 | `configuration` | configuration manquante ou invalide | dossiers absents, relatifs ou inexistants en mode embarqué, pdftotext absent, paquet Python manquant, dossier de données ou de rapports non inscriptible (lecture seule, droits, disque plein), état de politesse illisible, `validate`, `backtest` ou `serve` en mode embarqué ; limite de temps de calcul (`RLIMIT_CPU`) trop basse au démarrage, ou atteinte en cours de commande (`SIGXCPU`), processus de travail du panel compris (« temps de calcul ») |
+| 8 | `configuration` | configuration manquante ou invalide | dossiers absents, relatifs ou inexistants en mode embarqué, pdftotext absent, paquet Python manquant, dossier de données ou de rapports non inscriptible (lecture seule, droits, disque plein), état de politesse illisible, verrou d'envoi `politeness.envoi.<site>.lock` ou marque « envoi en cours » impossibles à écrire alors que `politeness.json` s'écrit (rien n'est envoyé, § A.15), `validate`, `backtest` ou `serve` en mode embarqué ; limite de temps de calcul (`RLIMIT_CPU`) trop basse au démarrage, ou atteinte en cours de commande (`SIGXCPU`), processus de travail du panel compris (« temps de calcul ») |
 | 130 | `interruption` | interruption : Ctrl+C ou signal TERM | délai du lanceur dépassé |
 
 Le moteur ramène tout autre code à 7 (un `SystemExit(259)` sortirait sinon en 3, car le statut d'un
@@ -376,7 +376,8 @@ détaché.
 | `panel --force` (tout l'historique) | 50 s | long | `panel/` | idem |
 | `notes research [--pdf 20]` | jusqu'à 30 min | long | `notes/notes.jsonl` (au fil de l'eau), `notes/cache/`, `notes/fetch_log.jsonl` | `notes/.recherche.lock`, `notes/notes.jsonl.lock`, `politeness.json.lock`, `politeness.envoi.www.brvm.org.lock` |
 | `notes research --hors-ligne --pdf 0` | 4,8 s | court | `notes/notes.jsonl` s'il y a du nouveau | idem |
-| `notes lire [--max 20] [--hors-ligne]` | 10 s hors ligne ; ≈ 10 s par document en ligne | long | `notes/notes.jsonl`, `notes/cache/docs/` | `notes/.recherche.lock`, `notes/notes.jsonl.lock` |
+| `notes lire [--max 20] [--hors-ligne]` | 10 s hors ligne ; ≈ 10 s par document en ligne | long | `notes/notes.jsonl`, `notes/cache/docs/` ; en ligne, aussi `notes/cache/politeness.json`, `notes/fetch_log.jsonl` | `notes/.recherche.lock`, `notes/notes.jsonl.lock` ; en ligne, aussi `notes/cache/politeness.json.lock` et `notes/cache/politeness.envoi.www.brvm.org.lock` (tenu pendant chaque requête) |
+| `live [--symbole SNTS] [--hors-ligne]` | au moins 10 s en ligne si robots.txt n'est pas en cache (robots.txt, puis la page 10 s après) ; non mesuré contre le vrai site | long | `notes/cache/` (cache HTTP), `notes/cache/politeness.json`, `notes/fetch_log.jsonl` | en ligne : `notes/cache/politeness.json.lock`, `notes/cache/politeness.envoi.www.brvm.org.lock` (tenu pendant chaque requête) |
 
 Les verrous sont des `flock` : jamais supprimés, rendus par le système à la mort du processus ; au-delà
 de `BRVM_ALPHA_ATTENTE_VERROU` secondes (10 par défaut, pour tous les verrous, journal des notes compris),
@@ -610,7 +611,20 @@ fait la même boucle hors Odoo.
   illisible, plus rien n'est envoyé (code 8) jusqu'à sa réparation à la main ; le cache HTTP n'a ni plafond
   de taille ni âge maximal (seuls les PDF en double sont retirés) ;
 - `etat` ne cite pas, dans `raison`, les séances que le panel sait manquantes sous un ancien marqueur vide
-  (129 sur l'historique réel) : `update --rouvrir` permet de les relancer sur décision.
+  (129 sur l'historique réel) : `update --rouvrir` permet de les relancer sur décision ;
+- **limites de la politesse entre sessions** (§ A.15, P6) : le verrou d'envoi `politeness.envoi.<site>.lock` est un
+  `flock` local, qui ne vaut que sur **une seule machine** : un dossier de données partagé entre deux machines
+  (disque réseau, NFS) n'est pas protégé, et ne doit pas servir à deux moteurs à la fois ; si
+  `politeness.json` lui-même ne s'écrit pas (dossier du cache en lecture seule), seul le délai
+  propre à chaque session est tenu (mode dégradé d'avant, avec un avertissement) ; une session tuée pendant une
+  requête (`KILL`) laisse sa marque « envoi en cours », et la suivante attend alors un délai entier à partir de la
+  prise du verrou : l'instant exact de la coupure n'est pas connu ; le délai est compté depuis la coupure faite
+  par le moteur (connexion fermée, puis fin notée), mais le site ne voit la coupure qu'à sa prochaine écriture sur
+  la connexion : dans l'essai, 0,12 à 0,16 s plus tard avec un faux site qui écrit toutes les 0,1 s, 1 à 2 s plus
+  tard avec un faux site qui écrit une fois par seconde ; l'écart vu par le site entre la coupure et la requête
+  suivante était alors de 9,86 à 9,91 s, ou de 8 à 9 s (10,01 à 10,07 s après le signal) ; un `Crawl-delay`
+  supérieur à 10 s n'est pas transmis d'une session à l'autre (sans effet aujourd'hui : brvm.org annonce 10 s, qui
+  est aussi le plancher).
 
 ### A.15 Changements visibles hors mode embarqué
 
@@ -702,6 +716,25 @@ distribution) sont inchangées.
   suivant puis est refusée ; Z arrive ensuite) faisaient partir Z 4,0 s après la fin de X, et une vraie requête de
   Y partait pendant celle de X si X durait plus de 10 s. Le journal `fetch_log.jsonl` note ces attentes
   (`"event": "attente"`) ;
+- **requête interrompue** (contrôle du commit `1a1fd28`) : la fin d'une requête est notée à **toute** sortie du bloc
+  d'envoi, verrou d'envoi tenu : fin normale, erreur, TERM du lanceur, Ctrl+C, `SIGXCPU`, `MemoryError` ; et, juste
+  avant l'envoi, la session écrit dans `politeness.json` une marque « envoi en cours » (clé `envoi` : `debut`,
+  `session`), retirée avec la fin. Une session qui prend le verrou d'envoi et trouve la marque d'une autre session
+  (processus tué par `KILL` pendant sa requête, panne) attend un délai **entier** avant de partir. Avant : une
+  session interrompue pendant sa requête ne notait pas sa fin, et la session qui attendait le verrou partait
+  aussitôt, 0,02 à 0,07 s après le signal, pendant que le site servait encore la réponse coupée. Mesuré dans
+  l'espace réseau privé (faux www.brvm.org en TLS de recette), sur deux vrais processus : la suivante part 10,0 à
+  10,1 s après TERM, Ctrl+C ou `KILL` (voir § A.14 pour l'écart vu par le site) ;
+- un blocage 403/429 noté par une autre session pendant l'attente est relu **dès la prise du verrou d'envoi** : la
+  session qui attendait s'arrête aussitôt, sans attendre encore jusqu'à un délai (avant : jusqu'à 10 s de plus, sans
+  rien envoyer) ;
+- verrou d'envoi impossible à prendre (un dossier à sa place, fichier d'un autre utilisateur) ou marque impossible
+  à écrire, alors que `politeness.json` s'écrit : **rien n'est envoyé**, code 8 (`configuration`), événement
+  `politesse_non_garantie` dans `fetch_log.jsonl` (avant : la requête partait quand même, deux requêtes pouvaient se
+  chevaucher, seul un avertissement sur la sortie d'erreur le disait) ;
+- une date illisible dans `politeness.json` (`"NaT"`, `"nan"`, texte, nombre, pour `fin` comme pour `last`) coûte un
+  délai d'attente (avant : `fin` à `"NaT"` ou `"nan"` faisait sortir toute commande réseau en 7, « cannot convert
+  float NaN to integer » ; une réservation `last` illisible était ignorée, sans aucune attente) ;
 - repli pdfplumber lancé avec `python -I`, depuis le dossier temporaire et avec un environnement réduit ;
 - `python -m brvm_alpha.data.boc_download` passe par le client poli commun (quota de 200 requêtes, blocage
   partagé) ;

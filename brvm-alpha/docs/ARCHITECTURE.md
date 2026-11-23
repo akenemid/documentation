@@ -823,7 +823,10 @@ sécurité, eurobond…) ; `MARCHE`.
   levée explicite par `clear_block(hôte)`) ; liste blanche et adresse résolue contrôlées avant de réserver
   un créneau (un refus ne réserve rien et n'attend pas), une seule requête à la fois vers un site toutes
   sessions confondues (`politeness.envoi.<site>.lock`), jamais moins d'un délai après la **fin** de la requête
-  d'une autre session (`fin` noté à chaque vraie requête) ; redirections suivies à la main et contrôlées
+  d'une autre session (`fin` noté à toute sortie du bloc d'envoi, interruption comprise ; marque « envoi en
+  cours » écrite avant l'envoi : après un `KILL` pendant une requête, la session suivante attend un délai entier ;
+  verrou d'envoi ou marque impossibles à écrire alors que `politeness.json` s'écrit : rien n'est envoyé, code 8 ;
+  verrou valable sur une seule machine) ; redirections suivies à la main et contrôlées
   à chaque saut ; hôte normalisé (port, casse, point final). `created_at` d'une note
   collectée = instant où la page a été vue (borne de connaissance) ; `published_at` =
   publication sur le marché.

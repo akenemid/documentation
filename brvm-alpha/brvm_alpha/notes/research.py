@@ -743,14 +743,33 @@ def _envoi_path(cache_dir: str | Path, key: str) -> Path:
     return Path(cache_dir) / f"politeness.envoi.{safe}.lock"
 
 
+def _date_etat(value: Any) -> dt.datetime:
+    """Date lue dans ``politeness.json`` (ISO) ; ``ValueError`` si elle est vide ou illisible, ``"NaT"`` et ``"nan"``
+    compris (``to_utc`` les rend en ``NaT``, qui fausse toute comparaison et tout calcul d'attente)."""
+    d = to_utc(value)
+    if d is None or pd.isna(d):
+        raise ValueError(f"date illisible : {value!r}")
+    return d
+
+
 def _attente_apres_fin(fin: Any, now: dt.datetime, delay: float) -> float:
     """Attente (s) pour partir un délai après ``fin`` (fin d'une requête, date ISO), comptée depuis ``now`` : entre 0
-    et un délai. Une fin datée dans le futur (horloge recalée) ou illisible coûte un délai, jamais plus."""
+    et un délai. Une fin datée dans le futur (horloge recalée) ou illisible (``"NaT"``, ``"nan"``, nombre, texte)
+    coûte un délai, jamais plus, jamais moins."""
     try:
-        fin_t = to_utc(fin)
+        wait = (_date_etat(fin) - now).total_seconds() + delay
     except (TypeError, ValueError, OverflowError):
         return float(delay)
-    return min(max((fin_t - now).total_seconds() + delay, 0.0), float(delay))
+    if not math.isfinite(wait):
+        return float(delay)
+    return min(max(wait, 0.0), float(delay))
+
+
+class PolitesseNonGarantie(_err.ConfigurationError):
+    """``politeness.json`` s'écrit, mais le verrou d'envoi du site ou la marque « envoi en cours » ne peuvent pas être
+    écrits (fichier d'un autre utilisateur, dossier à la place du fichier…) : la règle « une requête à la fois, et un
+    délai après la fin de la précédente » ne serait plus tenue entre sessions. Aucune requête n'est envoyée (code 8) ;
+    l'événement est noté dans ``fetch_log.jsonl``."""
 
 
 @contextmanager
@@ -1153,11 +1172,18 @@ class PoliteSession:
             prev = entry.get("last")
             if prev and entry.get("session") != sid:
                 try:
-                    prev_t = to_utc(prev)
-                    made = to_utc(entry["reserved_at"]) if entry.get("reserved_at") else None
-                except (TypeError, ValueError):
-                    prev_t = made = None
-                if prev_t is not None:
+                    prev_t = _date_etat(prev)
+                except (TypeError, ValueError, OverflowError):
+                    prev_t = None
+                try:
+                    made = _date_etat(entry["reserved_at"]) if entry.get("reserved_at") else None
+                except (TypeError, ValueError, OverflowError):
+                    made = None
+                if prev_t is None:  # réservation illisible ("NaT", texte…) : un délai, jamais aucun (avant : ignorée)
+                    log.warning("état de politesse : dernière requête vers %s illisible (%r) : un délai est observé",
+                                host, prev)
+                    slot = max(slot, now + dt.timedelta(seconds=delay))
+                else:
                     skew = ((made is not None and made > now + dt.timedelta(seconds=1))
                             or (made is None and prev_t > now + dt.timedelta(seconds=delay))
                             or prev_t > now + dt.timedelta(seconds=cap))
@@ -1208,19 +1234,32 @@ class PoliteSession:
 
     @contextmanager
     def _depart(self, url: str, jeton: dict[str, Any] | None):
-        """Départ d'une requête dont le créneau est arrivé ; le bloc couvre l'envoi et :meth:`_record_done`.
+        """Départ d'une requête dont le créneau est arrivé ; le bloc couvre l'envoi, et sa sortie note la fin.
 
         - **une seule requête à la fois vers un site**, toutes sessions confondues : verrou d'envoi du site
           (:func:`_envoi_path`, ``flock``), tenu jusqu'à la fin du bloc ; une session dont le créneau arrive pendant
           la requête d'une autre attend qu'elle finisse (au plus :data:`ENVOI_ATTENTE_S` plus deux délais, puis
           :class:`~brvm_alpha.erreurs.VerrouOccupe`, code 4) ;
+        - le blocage 403/429 est relu dès le verrou pris (un refus reçu par une autre session pendant l'attente arrête
+          celle-ci aussitôt, :class:`AccessBlocked`, sans attente de plus), puis de nouveau juste avant l'envoi ;
         - **jamais moins d'un délai après la FIN de la dernière requête d'une autre session** : si une fin a été notée
           depuis la réservation (requête finie pendant l'attente du créneau), le complément est attendu, verrou tenu ;
-        - le blocage 403/429 est relu, verrou tenu : un refus reçu par une autre session pendant l'attente arrête
-          celle-ci (:class:`AccessBlocked`) avant tout envoi.
+          si une autre session a laissé une marque « envoi en cours » sans fin (processus tué pendant sa requête :
+          ``KILL``, panne), un délai **entier** est attendu à partir de la prise du verrou
+          (:meth:`_attendre_fin_des_autres`) ;
+        - avant l'envoi, verrou tenu, la marque « envoi en cours » de cette session est écrite (clé ``envoi`` :
+          ``debut``, ``session``) ;
+        - à la sortie du bloc, **quelle qu'elle soit** (fin normale, erreur, TERM ou Ctrl+C, ``SIGXCPU``,
+          ``MemoryError``…), la fin est notée (:meth:`_record_done`) et la marque retirée, avant de rendre le
+          verrou. Le bloc reçoit ``{"partie": True}`` : ``False`` pour un refus constaté à la connexion (rien n'est
+          parti vers le site) ; seule la marque est alors retirée, la réservation reste.
 
-        Verrou impossible à créer (dossier en lecture seule) : avertissement, comme pour l'état partagé."""
-        key = cle_politesse(url_host(url))
+        Verrou ou marque impossibles à écrire alors que ``politeness.json`` s'écrit : rien n'est envoyé
+        (:class:`PolitesseNonGarantie`, code 8, noté dans ``fetch_log.jsonl``). Si ``politeness.json`` lui-même ne
+        s'écrit pas (dossier en lecture seule : ``jeton`` vaut ``None``), mode dégradé d'avant : avertissement, seul
+        le délai propre à la session est tenu."""
+        host = url_host(url)
+        key = cle_politesse(host)
         delay = self.crawl_delay(url)
         path = _envoi_path(self.cache_dir, key)
         quoi = f"requête en cours vers {key}"
@@ -1231,15 +1270,77 @@ class PoliteSession:
                 except _err.VerrouOccupe:
                     self._log(event="attente", url=url, raison="requête d'une autre session en cours vers ce site")
                     pile.enter_context(_fichiers.verrou(path, attente=ENVOI_ATTENTE_S + 2 * delay, quoi=quoi))
-            except OSError as exc:  # l'état partagé est une sécurité de plus, jamais un blocage
-                log.warning("verrou d'envoi non pris : %s", exc)
+            except OSError as exc:
+                self._politesse_non_garantie(url, jeton, f"verrou d'envoi {path.name} non pris", exc)
+            self._refuser_si_bloque(url)  # 403/429 reçu par une autre session pendant l'attente du verrou : arrêt
             self._attendre_fin_des_autres(url, key, delay, jeton)
-            self._refuser_si_bloque(url)  # 403/429 reçu par une autre session pendant l'attente : rien ne part
-            yield
+            self._refuser_si_bloque(url)  # 403/429 reçu pendant le complément d'attente : rien ne part
+            self._marquer_envoi(url, host, jeton)
+            envoi = {"partie": True}
+            try:
+                yield envoi
+            finally:
+                # Toute sortie du bloc note la fin, verrou tenu : une interruption (TERM du lanceur, Ctrl+C, SIGXCPU,
+                # MemoryError, erreur de configuration) ne laisse jamais partir la session suivante sans délai.
+                self._last_request[key] = self.clock()
+                if envoi["partie"]:
+                    self._record_done(host)
+                else:
+                    self._effacer_marque(host)
+
+    def _politesse_non_garantie(self, url: str, jeton: dict[str, Any] | None, quoi: str, exc: BaseException) -> None:
+        """Verrou d'envoi ou marque « envoi en cours » impossibles à écrire. ``politeness.json`` écrit à la réservation
+        (``jeton``) : rien n'est envoyé (:class:`PolitesseNonGarantie`, code 8), et c'est noté dans le journal. Sinon
+        (état partagé lui-même non inscriptible), mode dégradé d'avant : avertissement."""
+        if jeton is None:
+            log.warning("%s : %s (état de politesse non inscriptible : seul le délai de la session est tenu)",
+                        quoi, exc)
+            return
+        self._log(event="politesse_non_garantie", url=url, reason=f"{quoi} : {type(exc).__name__} : {exc}")
+        raise PolitesseNonGarantie(
+            f"{quoi} ({type(exc).__name__} : {exc}) alors que politeness.json s'écrit : une seule requête à la fois "
+            "vers le site, et un délai après la fin de la précédente, ne seraient plus garantis entre sessions. Par "
+            f"prudence, aucune requête n'est envoyée : vérifier les droits de {self.cache_dir} (fichiers du même "
+            "utilisateur que le moteur, pas de dossier à la place d'un fichier).") from exc
+
+    def _marquer_envoi(self, url: str, host: str, jeton: dict[str, Any] | None) -> None:
+        """Marque « envoi en cours » de cette session (clé ``envoi`` : ``debut``, ``session``), écrite verrou d'envoi
+        tenu, juste avant l'envoi ; retirée avec la fin (:meth:`_record_done`). Si le processus meurt pendant la
+        requête (``KILL``), elle reste : la session suivante attend un délai entier."""
+        now = to_utc(self.now())
+        sid = self.session_id
+
+        def marque(entry: dict[str, Any]) -> None:
+            entry["envoi"] = {"debut": now.isoformat(), "session": sid}
+
+        try:
+            self._state_update(host, marque)
+        except OSError as exc:
+            self._politesse_non_garantie(url, jeton, "marque « envoi en cours » non écrite dans politeness.json", exc)
+
+    def _effacer_marque(self, host: str) -> None:
+        """Retire la marque « envoi en cours » de cette session, sans noter de fin (refus constaté à la connexion :
+        rien n'est parti vers le site ; la réservation reste)."""
+        sid = self.session_id
+
+        def efface(entry: dict[str, Any]) -> None:
+            m = entry.get("envoi")
+            if isinstance(m, dict) and m.get("session") == sid:
+                entry.pop("envoi", None)
+
+        try:
+            self._state_update(host, efface)
+        except (OSError, ResearchError, _err.VerrouOccupe) as exc:  # marque laissée : un délai de plus, rien de pire
+            log.warning("état de politesse non écrit : %s", exc)
 
     def _attendre_fin_des_autres(self, url: str, key: str, delay: float, jeton: dict[str, Any] | None) -> None:
-        """Si une autre session a noté la fin d'une requête vers ce site depuis la réservation (ou si la réservation
-        n'a pas pu être écrite), attend qu'un délai se soit écoulé depuis cette fin (au plus un délai)."""
+        """Verrou d'envoi tenu (aucune autre requête n'est en cours vers ce site) :
+
+        - marque « envoi en cours » d'une autre session encore présente : cette requête s'est terminée sans que sa fin
+          soit notée (processus tué : ``KILL``, panne), à un instant inconnu mais passé : un délai **entier** est
+          attendu à partir de maintenant ;
+        - sinon, si une autre session a noté la fin d'une requête vers ce site depuis la réservation (ou si la
+          réservation n'a pas pu être écrite), attente jusqu'à un délai après cette fin (au plus un délai)."""
         try:
             hosts = _state_load(_state_path(self.cache_dir), strict=True).get("hosts", {})
         except OSError as exc:
@@ -1247,6 +1348,13 @@ class PoliteSession:
             return
         entry = hosts.get(key) if isinstance(hosts, dict) else None
         if not isinstance(entry, dict):
+            return
+        marque = entry.get("envoi")
+        if marque and not (isinstance(marque, dict) and marque.get("session") == self.session_id):
+            debut = marque.get("debut") if isinstance(marque, dict) else marque
+            self._log(event="attente", url=url, wait_s=round(float(delay), 3), envoi_sans_fin=str(debut)[:40],
+                      raison="requête d'une autre session interrompue sans fin notée : un délai entier")
+            self.sleep(float(delay))
             return
         fin, fin_by = entry.get("fin"), entry.get("fin_session")
         if not fin or fin_by == self.session_id:
@@ -1261,16 +1369,18 @@ class PoliteSession:
 
     def _record_done(self, host: str) -> None:
         """Fin d'une vraie requête : notée **toujours** dans ``fin`` (même si une réservation plus tardive d'une autre
-        session existe), et dans ``last`` si elle est plus tardive que la dernière réservation."""
+        session existe), et dans ``last`` si elle est plus tardive que la dernière réservation ; la marque « envoi en
+        cours » de cette session est retirée dans la même écriture. Appelée par :meth:`_depart` à toute sortie du bloc
+        d'envoi (interruption comprise)."""
         now = to_utc(self.now())
         sid = self.session_id
 
         def done(entry: dict[str, Any]) -> None:
             prev = entry.get("last")
             try:
-                made = to_utc(entry["reserved_at"]) if entry.get("reserved_at") else None
-                later = prev is None or to_utc(prev) < now or (made is not None and made > now)
-            except (TypeError, ValueError):
+                made = _date_etat(entry["reserved_at"]) if entry.get("reserved_at") else None
+                later = prev is None or _date_etat(prev) < now or (made is not None and made > now)
+            except (TypeError, ValueError, OverflowError):
                 later = True
             # Une réservation plus tardive d'une autre session (faite pendant cette requête)
             # reste à son nom : sinon la requête suivante de cette session l'ignorerait.
@@ -1282,10 +1392,14 @@ class PoliteSession:
             # une session qui a réservé pendant cette requête attend un délai après elle avant de partir (_depart).
             entry["fin"] = now.isoformat()
             entry["fin_session"] = sid
+            m = entry.get("envoi")
+            if isinstance(m, dict) and m.get("session") == sid:
+                entry.pop("envoi", None)
 
         try:
             self._state_update(host, done)
-        except (OSError, ResearchError, _err.VerrouOccupe) as exc:
+        except (OSError, ResearchError, _err.VerrouOccupe, _err.ConfigurationError) as exc:
+            # Fin non notée : la marque « envoi en cours » reste, la session suivante attend un délai entier.
             log.warning("état de politesse non écrit : %s", exc)
 
     def _record_block(self, host: str, url: str, status: int) -> None:
@@ -1350,7 +1464,9 @@ class PoliteSession:
             # Liste blanche et adresse résolue contrôlées AVANT de réserver ou d'attendre : un refus ne réserve rien.
             self._controle_avant_envoi(url)
             jeton = self._wait_turn(url)
-            with self._depart(url, jeton):  # une requête à la fois vers le site ; un délai après la fin de la précédente
+            # Une requête à la fois vers le site, un délai après la fin de la précédente ; la sortie du bloc, quelle
+            # qu'elle soit (interruption comprise), note la fin de cette requête.
+            with self._depart(url, jeton) as envoi:
                 self.n_requests += 1
                 t0 = self.clock()
                 try:
@@ -1370,22 +1486,19 @@ class PoliteSession:
                     raise
                 except _net.RefusPolitique as exc:  # refus définitif : aucun nouvel essai
                     self._log(event="policy_refused", url=url, reason=str(exc), attempt=attempt)
-                    self._last_request[cle_politesse(host)] = self.clock()
                     if isinstance(exc, (_net.AdresseInterdite, _net.HoteNonAutorise)):
                         # Refusée seulement à la connexion (adresse réellement jointe, ou nom qui a changé de réponse
                         # depuis le contrôle d'avant l'envoi) : rien n'est parti vers le site, la requête n'est pas
-                        # comptée ; son créneau reste réservé (prudent : cela ne coûte qu'une attente).
+                        # comptée et aucune fin n'est notée ; son créneau reste réservé (prudent : cela ne coûte
+                        # qu'une attente).
+                        envoi["partie"] = False
                         self.n_requests -= 1
                         self._stop("politique", f"adresse refusée : {exc}")
-                    else:
-                        self._record_done(host)
                     raise PolicyRefused(f"Requête refusée : {exc}") from exc
                 except _net.DelaiDepasse as exc:
                     if nature != "pdf":  # page, robots.txt : traité comme un 5xx (nouvel essai, puis arrêt)
                         status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
                     else:  # PDF trop lent pour le lien : mis de côté, sans nouvel essai ni arrêt de la session
-                        self._last_request[cle_politesse(host)] = self.clock()
-                        self._record_done(host)
                         self._log(event=purpose, url=url, status=0, attempt=attempt, error=f"DelaiDepasse: {exc}",
                                   elapsed_s=round(self.clock() - t0, 3))
                         raise DocumentTropLent(f"{url} : délai total dépassé ({exc}) : document mis de côté, à "
@@ -1394,8 +1507,6 @@ class PoliteSession:
                     raise
                 except Exception as exc:  # erreur réseau : traitée comme un 5xx
                     status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
-                self._last_request[cle_politesse(host)] = self.clock()
-                self._record_done(host)
                 self._log(event=purpose, url=url, status=status, bytes=len(content), attempt=attempt,
                           elapsed_s=round(self.clock() - t0, 3), final_url=final_url, error=error)
                 if status in STOP_STATUSES:  # noté verrou d'envoi tenu : une session qui attend son tour ne part pas
