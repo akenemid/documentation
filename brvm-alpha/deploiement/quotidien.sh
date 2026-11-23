@@ -1,5 +1,6 @@
 #!/bin/sh
-# Tâche quotidienne de BRVM Alpha, pensée pour la nuit : nouveaux bulletins, panel, notes, rapport.
+# Tâche quotidienne de BRVM Alpha, pensée pour la nuit : nouveaux bulletins, panel, suivi sur papier, notes,
+# rapport.
 #
 # Usage :  sh quotidien.sh
 # Exemple de planification (cron, heure UTC, après la parution du BOC du soir) :
@@ -51,6 +52,12 @@ esac
 # 2. Panel : calcul local (seuls les bulletins nouveaux sont relus).
 lancer panel
 if [ "$BRVM_CODE_RETOUR" -ne 0 ]; then echecs=1; fi
+
+# 2 bis. Suivi sur papier : ligne de la semaine des portefeuilles suivis (calcul local, aucune requête).
+lancer suivi maj
+if [ "$BRVM_CODE_RETOUR" -ne 0 ]; then
+    journal "suivi maj en échec : la tâche continue vers le rapport."; echecs=1
+fi
 
 # 3. Notes : collecte polie des publications, puis lecture de 20 documents au plus.
 if [ "$reseau" = oui ]; then
