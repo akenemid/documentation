@@ -133,6 +133,86 @@ def test_division_du_panel_titres_et_ordre_ressaisi(tmp_path):
     assert len(res) == 1 and res[0]["titres"] == 30 and res[0]["limite"] == 100.0
 
 
+class _Tue(BaseException):
+    """Arrêt brutal simulé (KILL, panne) : rien ne s'exécute après."""
+
+
+def _panel_division():
+    raw = [1000.0] * 5 + [100.0] * 15
+    act = [{"date": JOURS[5], "symbol": "AAA", "kind": "split", "ratio": 10.0, "confidence": "haute"}]
+    return J.panel_simple(JOURS, {"AAA": [100.0] * 20}, raw={"AAA": raw}, actions=act, volume=1.0)
+
+
+def _carnet_division(tmp_path):
+    c = _carnet(tmp_path)
+    c.ajouter({"type": "execution", "date": JOURS[0], "symbole": "AAA", "sens": "achat", "titres": 64, "prix": 1000,
+               "frais": {}, "source": "papier"})
+    return c
+
+
+def test_arret_brutal_apres_une_division_la_relance_ne_l_inscrit_pas_deux_fois(tmp_path, monkeypatch):
+    """Contrôle de a58b4c8, constat 4 : arrêté après l'ajout de la division et avant papier.json, « suivi maj » relancé
+    inscrivait la division une seconde fois (64 titres devenaient 6 400). La relance reconnaît maintenant les
+    mouvements déjà inscrits pour la séance et n'inscrit que ce qui manque."""
+    from brvm_alpha import fichiers
+
+    p = _panel_division()
+    c = _carnet_division(tmp_path)
+    vrai = fichiers.ecrire_atomique
+
+    def coupe(chemin, texte, *a, **k):
+        if str(chemin).endswith("papier.json") and "en_cours" not in texte and c.mouvements(types=("division",)):
+            raise _Tue()
+        return vrai(chemin, texte, *a, **k)
+
+    monkeypatch.setattr(fichiers, "ecrire_atomique", coupe)
+    with pytest.raises(_Tue):
+        PA.executer(c, p, JOURS[8])
+    assert len(c.mouvements(types=("division",))) == 1
+    monkeypatch.setattr(fichiers, "ecrire_atomique", vrai)
+    PA.executer(c, p, JOURS[8])
+    assert len(c.mouvements(types=("division",))) == 1 and c.positions()["AAA"]["titres"] == 640
+    assert c.verifier()["chaine_ok"]
+    # même carnet qu'une exécution sans arrêt (aux instants d'écriture près)
+    c2 = _carnet_division(tmp_path / "sans_arret")
+    PA.executer(c2, p, JOURS[8])
+    sans = [{k: v for k, v in m.items() if k not in ("n", "ecrit_utc", "precedente", "empreinte")} for m in c2.mouvements()]
+    avec = [{k: v for k, v in m.items() if k not in ("n", "ecrit_utc", "precedente", "empreinte")} for m in c.mouvements()]
+    assert avec == sans
+    assert "en_cours" not in (c.dossier / "papier.json").read_text(encoding="utf-8")
+
+
+def test_term_pendant_une_seance_est_reporte_jusqu_a_papier_json(tmp_path, monkeypatch):
+    """TERM reçu pendant l'ajout d'un mouvement d'une séance : la séance finit (mouvements et papier.json), puis la
+    commande s'arrête (130) ; la relance ne rejoue pas la séance."""
+    from brvm_alpha import demarrage, erreurs
+    from brvm_alpha.suivi import carnet as cn
+
+    p = _panel_division()
+    c = _carnet_division(tmp_path)
+    vrai = cn.Carnet.ajouter_plusieurs
+    vu = []
+
+    def avec_term(self, ms, **k):
+        out = vrai(self, ms, **k)
+        if any(m.get("type") == "division" for m in ms) and not vu:
+            vu.append(1)
+            demarrage._on_term(15, None)  # comme le gestionnaire de TERM de la ligne de commande
+        return out
+
+    demarrage.reinitialiser()
+    monkeypatch.setattr(cn.Carnet, "ajouter_plusieurs", avec_term)
+    with pytest.raises(erreurs.ArretDemande):
+        PA.executer(c, p, JOURS[8])
+    import json as _json
+
+    st = _json.loads((c.dossier / "papier.json").read_text(encoding="utf-8"))
+    assert st["jusqu_au"] == JOURS[5].date().isoformat() and "en_cours" not in st
+    monkeypatch.setattr(cn.Carnet, "ajouter_plusieurs", vrai)
+    PA.executer(c, p, JOURS[8])
+    assert len(c.mouvements(types=("division",))) == 1 and c.positions()["AAA"]["titres"] == 640
+
+
 def test_refus_S1_et_aucune_vente_creee(tmp_path):
     p = J.panel_simple(JOURS, {"AAA": [100.0] * 20})
     c = _carnet(tmp_path)

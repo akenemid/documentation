@@ -123,7 +123,13 @@ def executer(carnet: _cn.Carnet, panels: Mapping[str, Any], jusqu_a: Any, *, mod
     les séances déjà traitées (``papier.json`` du portefeuille) ne sont jamais rejouées. Rend les mouvements ajoutés et
     les mesures (:func:`mesures`). Aucune vente n'est créée : seuls les ordres du carnet sont exécutés. Tout le passage
     (état lu, séances rejouées, mouvements et état écrits) se fait sous le verrou d'écriture du portefeuille : deux
-    exécutions simultanées ne rejouent jamais deux fois la même séance (code 4 si le verrou reste tenu)."""
+    exécutions simultanées ne rejouent jamais deux fois la même séance (code 4 si le verrou reste tenu).
+
+    Une séance s'écrit d'un bloc : TERM et ``SIGXCPU`` reçus pendant ses mouvements sont reportés jusqu'à l'écriture de
+    ``papier.json`` (:func:`brvm_alpha.demarrage.ecriture_protegee`). Avant le premier mouvement d'une séance,
+    ``papier.json`` note la séance en cours et le nombre de lignes du carnet (clé ``en_cours``) : si la commande est
+    tuée au milieu (KILL, panne), la relance reconnaît les mouvements déjà inscrits pour cette séance et n'inscrit que
+    les étapes qui manquent (avant : une division, un dividende ou des frais pouvaient être inscrits deux fois)."""
     if mode not in MODES:
         raise ValueError(f"mode : {', '.join(MODES)}")
     _s.refuser_s1(jusqu_a, "l'exécution sur papier")
@@ -137,9 +143,7 @@ def executer(carnet: _cn.Carnet, panels: Mapping[str, Any], jusqu_a: Any, *, mod
 
 def _executer(carnet: _cn.Carnet, panels: Mapping[str, Any], jusqu_a: Any, *, mode: str, grille: Any, costs: Any,
               maintenant: Any, reglages: Mapping[str, Any] | None) -> dict[str, Any]:
-    from brvm_alpha import fichiers
-    from brvm_alpha.portfolio import recommend as R
-    from brvm_alpha.quant import macro
+    from brvm_alpha import demarrage, fichiers
 
     fin = _s.refuser_s1(jusqu_a, "l'exécution sur papier")
     part = float(_rg.lire(reglages, "suivi.participation_volume", 0.10))
@@ -161,139 +165,187 @@ def _executer(carnet: _cn.Carnet, panels: Mapping[str, Any], jusqu_a: Any, *, mo
     divs = divisions(panels)
     ajoutes: list[dict[str, Any]] = []
     tout = pd.DatetimeIndex(pd.to_datetime(panels["close"].index)).normalize()
+    session: dict[str, Any] = {}
 
-    def ecrire(ms: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not ms:
+    def ecrire(ms: list[dict[str, Any]], etape: int) -> list[dict[str, Any]]:
+        if not ms or etape <= session["faite"]:  # étape déjà inscrite par un passage interrompu : jamais deux fois
             return []
+        if not session["marquee"]:  # séance en cours notée avant son premier mouvement (reprise après un arrêt)
+            fichiers.ecrire_atomique(etat_p, json.dumps({**st_prec, "en_cours": {
+                "seance": session["jour"], "lignes_avant": len(carnet.lignes_brutes())}}, ensure_ascii=False) + "\n")
+            session["marquee"] = True
         out = carnet.ajouter_plusieurs(ms, maintenant=maintenant, autoriser_double=True)
         ajoutes.extend(out)
         return out
 
+    st_prec = {k: v for k, v in st.items() if k != "en_cours"}
     for d in seances:
-        mouv = carnet.mouvements()
-        ops = _cn.operations_depuis_mouvements(mouv)
-        pos = _cn.positions_depuis_operations(ops, d - pd.Timedelta(days=1))
-        held = {k: int(v["titres"]) for k, v in pos.items() if v["titres"] > 0}
-        # 1. divisions du jour (titres × rapport ; ordres annulés et ressaisis)
-        jour_div = divs[divs["date"] == d] if len(divs) else divs
-        nouveaux: list[dict[str, Any]] = []
-        rapports: dict[str, float] = {}
-        for r in jour_div.itertuples(index=False):
-            if held.get(r.symbole, 0) > 0:
-                nouveaux.append({"type": "division", "date": d.date().isoformat(), "symbole": r.symbole,
-                                 "rapport": float(r.rapport), "source": "papier"})
-            rapports[r.symbole] = float(r.rapport)
-        ecrire(nouveaux)
-        # 2. dividendes payés ce jour (titres détenus la veille du détachement)
-        nouveaux = []
-        if len(detach):
-            paie = detach[(detach["date_paiement"] == d)]
-            for r in paie.itertuples(index=False):
-                p_ex = _cn.positions_depuis_operations(ops, r.date_detachement - pd.Timedelta(days=1)).get(r.symbole)
-                n = int(p_ex["titres"]) if p_ex else 0
-                if n > 0 and r.net_par_titre > 0:
-                    nouveaux.append({"type": "dividende", "date": d.date().isoformat(), "symbole": r.symbole,
-                                     "titres": n, "net_par_titre": float(r.net_par_titre),
-                                     "montant": float(R.round_fcfa(n * r.net_par_titre)),
-                                     "date_detachement": r.date_detachement.date().isoformat(), "source": "papier"})
-        ecrire(nouveaux)
-        # 3. ordres en attente : annulation et ressaisie (détachement, division), exécution, expiration
-        mouv = carnet.mouvements()
-        ords = [o for o in _cn.etat_des_ordres(mouv) if o["etat"] == "en cours" and o["reste"] > 0
-                and pd.Timestamp(o["date"]).normalize() < d]
-        ex_jour = set(detach.loc[detach["date_detachement"] == d, "symbole"]) if len(detach) else set()
-        ressaisies = []
-        for o in ords:
-            s = o["symbole"]
-            if s in rapports or s in ex_jour:
-                if s in rapports:
-                    fac, titres = 1.0 / rapports[s], int(math.floor(o["reste"] * rapports[s] + 1e-9))
-                else:
-                    prev = px[s].loc[: d - pd.Timedelta(days=1)].dropna() if s in px.columns else pd.Series(dtype=float)
-                    dv = float(detach.loc[(detach["symbole"] == s) & (detach["date_detachement"] == d), "net_par_titre"].sum())
-                    ref = float(prev.iloc[-1]) if len(prev) else float(o.get("cours_reference") or 0)
-                    fac, titres = ((ref - dv) / ref if ref > dv > 0 else 1.0), int(o["reste"])
-                ressaisies.append({"type": "ordre", "date": d.date().isoformat(), "symbole": s, "sens": o["sens"],
-                                   "titres": titres, "limite": _limite_ajustee(o["limite"], fac, o["sens"]),
-                                   "cours_reference": _f(o.get("cours_reference")) * fac, "validite": o.get("validite", validite),
-                                   "motif": o.get("motif"), "ressaisie_de": int(o["n"]),
-                                   "date_decision": o.get("date_decision") or o["date"],
-                                   "seances_ecoulees": _seances_ecoulees(o, tout, d),
-                                   "raison": "division" if s in rapports else "détachement", "source": "papier"})
-        ecrire(ressaisies)
-        mouv = carnet.mouvements()
-        ops = _cn.operations_depuis_mouvements(mouv)
-        L = float(ops["montant_net"].sum()) if len(ops) else 0.0
-        # produits de ventes non réglés : indisponibles avant le règlement (deux séances)
-        bloque = 0.0
-        for r in ops[ops["type"] == "vente"].itertuples(index=False):
-            try:
-                regle = R.settlement_date(r.date, tout)
-            except ValueError:
-                regle = pd.Timestamp(r.date) + pd.offsets.BDay(int(macro.settlement_lag(r.date)))
-            if regle > d:
-                bloque += float(r.montant_net)
-        dispo = L - bloque
-        ords = [o for o in _cn.etat_des_ordres(mouv) if o["etat"] == "en cours" and o["reste"] > 0
-                and pd.Timestamp(o["date"]).normalize() < d]
-        ords = [o for o in ords if o.get("ressaisie_de") is None or pd.Timestamp(o["date"]).normalize() <= d]
-        ords.sort(key=lambda o: (0 if o["sens"] == "vente" else 1, int(o["n"])))
-        nouveaux = []
-        for o in ords + [o2 for o2 in _cn.etat_des_ordres(mouv) if o2.get("ressaisie_de") is not None
-                         and pd.Timestamp(o2["date"]).normalize() == d and o2["etat"] == "en cours"]:
-            s = o["symbole"]
-            v_j = _f(vol[s].get(d)) if vol is not None and s in vol.columns and d in vol.index else 0.0
-            a_j = _f(val[s].get(d)) if val is not None and s in val.columns and d in val.index else 0.0
-            cap = int(math.floor(part * v_j + 1e-9))
-            if v_j > 0 and a_j > 0 and cap > 0:
-                vwap = a_j / v_j
-                ok = True if mode == "test" else (vwap <= float(o["limite"]) + 1e-9 if o["sens"] == "achat"
-                                                    else vwap >= float(o["limite"]) - 1e-9)
-                q = min(int(o["reste"]), cap) if ok else 0
-                if q > 0 and o["sens"] == "achat":
-                    while q > 0:
-                        fr = _frais_execution(q, vwap, cm, mode, panels, s, d)
-                        if q * vwap + sum(fr.values()) <= dispo + 1e-6:
-                            break
-                        q -= 1
-                if q > 0:
-                    fr = _frais_execution(q, vwap, cm, mode, panels, s, d)
-                    nouveaux.append({"type": "execution", "date": d.date().isoformat(), "symbole": s, "sens": o["sens"],
-                                     "titres": int(q), "prix": float(vwap), "frais": fr, "ordre": int(o["n"]),
-                                     "cours_reference": _f(o.get("cours_reference"), vwap), "source": "papier",
-                                     "mode": mode})
-                    if o["sens"] == "achat":
-                        dispo -= q * vwap + sum(fr.values())
-                    o["reste"] -= q
-            if o["reste"] > 0 and _seances_ecoulees(o, tout, d) >= int(o.get("validite") or validite):
-                nouveaux.append({"type": "expiration", "date": d.date().isoformat(), "symbole": s,
-                                 "titres": int(o["reste"]), "ordre": int(o["n"]), "source": "papier"})
-        ecrire(nouveaux)
-        # 4. frais fixes en fin de trimestre civil (dernière séance du trimestre)
-        fin_trim = (d + pd.offsets.QuarterEnd(0)).normalize()
-        suiv = tout[tout > d]
-        prochaine = suiv[0] if len(suiv) else pd.Timestamp(R.future_sessions(d, 1)[0])
-        if prochaine > fin_trim:
-            mouv = carnet.mouvements()
-            ops = _cn.operations_depuis_mouvements(mouv)
-            pos = _cn.positions_depuis_operations(ops, d)
-            lignes = {k: v for k, v in pos.items() if v["titres"] > 0}
-            if lignes:
-                prec = [pd.Timestamp(m["date"]) for m in mouv if m.get("type") == "frais"]
-                achats = [pd.Timestamp(m["date"]) for m in mouv if m.get("type") == "execution"]
-                depuis = max(prec) if prec else (min(achats) if achats else d)
-                jours = max(0, (d - depuis).days)
-                T = sum(int(v["titres"]) * _f(px[k].loc[:d].dropna().iloc[-1]) for k, v in lignes.items()
-                        if k in px.columns and px[k].loc[:d].notna().any())
-                montant = R.round_fcfa((cm.annual_custody * T + cm.account_fee_per_line_fcfa * len(lignes) + forfait)
-                                       * jours / 365.0)
-                if montant > 0:
-                    ecrire([{"type": "frais", "date": d.date().isoformat(), "nature": "garde et tenue de compte",
-                             "montant": float(montant), "jours": int(jours), "source": "papier",
-                             "hypothese": "prélèvement en fin de trimestre civil (date réelle inconnue)"}])
-        st = {"jusqu_au": d.date().isoformat(), "mode": mode}
-        fichiers.ecrire_atomique(etat_p, json.dumps(st, ensure_ascii=False) + "\n")
+        session.update(jour=d.date().isoformat(), marquee=False,
+                       faite=_etape_deja_faite(carnet, st.get("en_cours"), d.date().isoformat()))
+        with demarrage.ecriture_protegee():  # une séance d'un bloc : mouvements, puis papier.json
+            st_prec = _seance(carnet, d, ecrire, panels=panels, mode=mode, cm=cm, forfait=forfait, part=part,
+                              validite=validite, vol=vol, val=val, px=px, detach=detach, divs=divs, tout=tout,
+                              etat_p=etat_p)
+            st = st_prec
     return {"ajoutes": ajoutes, "mesures": mesures(carnet), "jusqu_au": st.get("jusqu_au"), "mode": mode}
+
+
+#: Étape de l'exécution d'une séance qui inscrit chaque type de mouvement sur papier (reprise après un arrêt).
+_ETAPES = {"division": 1, "dividende": 2, "ordre": 3, "execution": 4, "expiration": 4, "frais": 5}
+
+
+def _etape_deja_faite(carnet: _cn.Carnet, en_cours: Any, jour: str) -> int:
+    """Dernière étape de la séance ``jour`` déjà inscrite par un passage interrompu (0 : aucune) : mouvements sur papier
+    de cette séance écrits après la marque ``en_cours`` de ``papier.json``. Chaque étape s'écrit d'un seul ajout ; une
+    étape sans mouvement n'en écrit aucun et se rejoue à l'identique."""
+    if not isinstance(en_cours, Mapping) or en_cours.get("seance") != jour:
+        return 0
+    try:
+        avant = int(en_cours.get("lignes_avant"))
+    except (TypeError, ValueError):
+        avant = 0
+    faite = 0
+    for m in carnet.mouvements(actifs=False):
+        if int(m.get("n", 0)) <= avant or m.get("source") != "papier" or str(m.get("date"))[:10] != jour:
+            continue
+        if m.get("type") == "ordre" and m.get("ressaisie_de") is None:
+            continue
+        faite = max(faite, _ETAPES.get(str(m.get("type")), 0))
+    return faite
+
+
+def _seance(carnet: _cn.Carnet, d: pd.Timestamp, ecrire: Any, *, panels: Mapping[str, Any], mode: str, cm: Any,
+            forfait: float, part: float, validite: int, vol: Any, val: Any, px: Any, detach: pd.DataFrame,
+            divs: pd.DataFrame, tout: pd.DatetimeIndex, etat_p: Any) -> dict[str, Any]:
+    """Exécution sur papier de la séance ``d`` (étapes 1 à 5), puis ``papier.json`` ; rend le nouvel état."""
+    from brvm_alpha import fichiers
+    from brvm_alpha.portfolio import recommend as R
+    from brvm_alpha.quant import macro
+
+    mouv = carnet.mouvements()
+    ops = _cn.operations_depuis_mouvements(mouv)
+    pos = _cn.positions_depuis_operations(ops, d - pd.Timedelta(days=1))
+    held = {k: int(v["titres"]) for k, v in pos.items() if v["titres"] > 0}
+    # 1. divisions du jour (titres × rapport ; ordres annulés et ressaisis)
+    jour_div = divs[divs["date"] == d] if len(divs) else divs
+    nouveaux: list[dict[str, Any]] = []
+    rapports: dict[str, float] = {}
+    for r in jour_div.itertuples(index=False):
+        if held.get(r.symbole, 0) > 0:
+            nouveaux.append({"type": "division", "date": d.date().isoformat(), "symbole": r.symbole,
+                             "rapport": float(r.rapport), "source": "papier"})
+        rapports[r.symbole] = float(r.rapport)
+    ecrire(nouveaux, 1)
+    # 2. dividendes payés ce jour (titres détenus la veille du détachement)
+    nouveaux = []
+    if len(detach):
+        paie = detach[(detach["date_paiement"] == d)]
+        for r in paie.itertuples(index=False):
+            p_ex = _cn.positions_depuis_operations(ops, r.date_detachement - pd.Timedelta(days=1)).get(r.symbole)
+            n = int(p_ex["titres"]) if p_ex else 0
+            if n > 0 and r.net_par_titre > 0:
+                nouveaux.append({"type": "dividende", "date": d.date().isoformat(), "symbole": r.symbole,
+                                 "titres": n, "net_par_titre": float(r.net_par_titre),
+                                 "montant": float(R.round_fcfa(n * r.net_par_titre)),
+                                 "date_detachement": r.date_detachement.date().isoformat(), "source": "papier"})
+    ecrire(nouveaux, 2)
+    # 3. ordres en attente : annulation et ressaisie (détachement, division), exécution, expiration
+    mouv = carnet.mouvements()
+    ords = [o for o in _cn.etat_des_ordres(mouv) if o["etat"] == "en cours" and o["reste"] > 0
+            and pd.Timestamp(o["date"]).normalize() < d]
+    ex_jour = set(detach.loc[detach["date_detachement"] == d, "symbole"]) if len(detach) else set()
+    ressaisies = []
+    for o in ords:
+        s = o["symbole"]
+        if s in rapports or s in ex_jour:
+            if s in rapports:
+                fac, titres = 1.0 / rapports[s], int(math.floor(o["reste"] * rapports[s] + 1e-9))
+            else:
+                prev = px[s].loc[: d - pd.Timedelta(days=1)].dropna() if s in px.columns else pd.Series(dtype=float)
+                dv = float(detach.loc[(detach["symbole"] == s) & (detach["date_detachement"] == d), "net_par_titre"].sum())
+                ref = float(prev.iloc[-1]) if len(prev) else float(o.get("cours_reference") or 0)
+                fac, titres = ((ref - dv) / ref if ref > dv > 0 else 1.0), int(o["reste"])
+            ressaisies.append({"type": "ordre", "date": d.date().isoformat(), "symbole": s, "sens": o["sens"],
+                               "titres": titres, "limite": _limite_ajustee(o["limite"], fac, o["sens"]),
+                               "cours_reference": _f(o.get("cours_reference")) * fac, "validite": o.get("validite", validite),
+                               "motif": o.get("motif"), "ressaisie_de": int(o["n"]),
+                               "date_decision": o.get("date_decision") or o["date"],
+                               "seances_ecoulees": _seances_ecoulees(o, tout, d),
+                               "raison": "division" if s in rapports else "détachement", "source": "papier"})
+    ecrire(ressaisies, 3)
+    mouv = carnet.mouvements()
+    ops = _cn.operations_depuis_mouvements(mouv)
+    L = float(ops["montant_net"].sum()) if len(ops) else 0.0
+    # produits de ventes non réglés : indisponibles avant le règlement (deux séances)
+    bloque = 0.0
+    for r in ops[ops["type"] == "vente"].itertuples(index=False):
+        try:
+            regle = R.settlement_date(r.date, tout)
+        except ValueError:
+            regle = pd.Timestamp(r.date) + pd.offsets.BDay(int(macro.settlement_lag(r.date)))
+        if regle > d:
+            bloque += float(r.montant_net)
+    dispo = L - bloque
+    ords = [o for o in _cn.etat_des_ordres(mouv) if o["etat"] == "en cours" and o["reste"] > 0
+            and pd.Timestamp(o["date"]).normalize() < d]
+    ords = [o for o in ords if o.get("ressaisie_de") is None or pd.Timestamp(o["date"]).normalize() <= d]
+    ords.sort(key=lambda o: (0 if o["sens"] == "vente" else 1, int(o["n"])))
+    nouveaux = []
+    for o in ords + [o2 for o2 in _cn.etat_des_ordres(mouv) if o2.get("ressaisie_de") is not None
+                     and pd.Timestamp(o2["date"]).normalize() == d and o2["etat"] == "en cours"]:
+        s = o["symbole"]
+        v_j = _f(vol[s].get(d)) if vol is not None and s in vol.columns and d in vol.index else 0.0
+        a_j = _f(val[s].get(d)) if val is not None and s in val.columns and d in val.index else 0.0
+        cap = int(math.floor(part * v_j + 1e-9))
+        if v_j > 0 and a_j > 0 and cap > 0:
+            vwap = a_j / v_j
+            ok = True if mode == "test" else (vwap <= float(o["limite"]) + 1e-9 if o["sens"] == "achat"
+                                                else vwap >= float(o["limite"]) - 1e-9)
+            q = min(int(o["reste"]), cap) if ok else 0
+            if q > 0 and o["sens"] == "achat":
+                while q > 0:
+                    fr = _frais_execution(q, vwap, cm, mode, panels, s, d)
+                    if q * vwap + sum(fr.values()) <= dispo + 1e-6:
+                        break
+                    q -= 1
+            if q > 0:
+                fr = _frais_execution(q, vwap, cm, mode, panels, s, d)
+                nouveaux.append({"type": "execution", "date": d.date().isoformat(), "symbole": s, "sens": o["sens"],
+                                 "titres": int(q), "prix": float(vwap), "frais": fr, "ordre": int(o["n"]),
+                                 "cours_reference": _f(o.get("cours_reference"), vwap), "source": "papier",
+                                 "mode": mode})
+                if o["sens"] == "achat":
+                    dispo -= q * vwap + sum(fr.values())
+                o["reste"] -= q
+        if o["reste"] > 0 and _seances_ecoulees(o, tout, d) >= int(o.get("validite") or validite):
+            nouveaux.append({"type": "expiration", "date": d.date().isoformat(), "symbole": s,
+                             "titres": int(o["reste"]), "ordre": int(o["n"]), "source": "papier"})
+    ecrire(nouveaux, 4)
+    # 4. frais fixes en fin de trimestre civil (dernière séance du trimestre)
+    fin_trim = (d + pd.offsets.QuarterEnd(0)).normalize()
+    suiv = tout[tout > d]
+    prochaine = suiv[0] if len(suiv) else pd.Timestamp(R.future_sessions(d, 1)[0])
+    if prochaine > fin_trim:
+        mouv = carnet.mouvements()
+        ops = _cn.operations_depuis_mouvements(mouv)
+        pos = _cn.positions_depuis_operations(ops, d)
+        lignes = {k: v for k, v in pos.items() if v["titres"] > 0}
+        if lignes:
+            prec = [pd.Timestamp(m["date"]) for m in mouv if m.get("type") == "frais"]
+            achats = [pd.Timestamp(m["date"]) for m in mouv if m.get("type") == "execution"]
+            depuis = max(prec) if prec else (min(achats) if achats else d)
+            jours = max(0, (d - depuis).days)
+            T = sum(int(v["titres"]) * _f(px[k].loc[:d].dropna().iloc[-1]) for k, v in lignes.items()
+                    if k in px.columns and px[k].loc[:d].notna().any())
+            montant = R.round_fcfa((cm.annual_custody * T + cm.account_fee_per_line_fcfa * len(lignes) + forfait)
+                                   * jours / 365.0)
+            if montant > 0:
+                ecrire([{"type": "frais", "date": d.date().isoformat(), "nature": "garde et tenue de compte",
+                         "montant": float(montant), "jours": int(jours), "source": "papier",
+                         "hypothese": "prélèvement en fin de trimestre civil (date réelle inconnue)"}], 5)
+    st = {"jusqu_au": d.date().isoformat(), "mode": mode}
+    fichiers.ecrire_atomique(etat_p, json.dumps(st, ensure_ascii=False) + "\n")
+    return st
 
 
 def _seances_ecoulees(o: Mapping[str, Any], seances: pd.DatetimeIndex, d: pd.Timestamp) -> int:
