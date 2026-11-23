@@ -120,6 +120,30 @@ def test_stale_panel_warns_marks_orders_and_never_dates_execution_in_the_past(sy
     assert past.execution["perime"] is False
 
 
+def test_an_order_pushed_past_an_open_session_missing_from_the_panel_is_stale(synth, tmp_path):
+    """Contrôle de a58b4c8, constat 17 : entre 09h00 et 15h00 UTC, les notes connues repoussent la première séance
+    d'exécution au lendemain ; la séance du jour, ouverte, manque au panel. Avant : aucun avertissement (« ORDRES
+    PÉRIMÉS » n'apparaissait qu'après 15h00, pour le même ordre). Les quantités ne changent pas."""
+    last = pd.Timestamp(synth["close"].index[-1]).normalize()
+    jour = last + pd.offsets.BDay(1)
+    apres = pd.Timestamp(jour.date().isoformat() + " 14:30", tz="UTC")
+    avant = pd.Timestamp(jour.date().isoformat() + " 08:30", tz="UTC")
+    o = _rec(synth, tmp_path, today=apres, notes_known_at=apres)
+    assert o.execution["perime"] is True and o.execution["seances_manquantes"] == [jour]
+    assert o.execution["premiere_seance"] > jour
+    w = o.avertissements[0]
+    assert w.startswith("PANEL EN RETARD de 1 séance(s)") and "est ouverte et n'est pas dans le panel" in w
+    assert "PÉRIMÉS" in w and "ORDRES PÉRIMÉS" in o.to_markdown()
+    # avant 09h00 : la séance du jour est celle de l'ordre, rien de périmé ; après 15h00 : périmé, comme avant
+    tot = _rec(synth, tmp_path, today=avant, notes_known_at=avant)
+    assert tot.execution["perime"] is False and not any("RETARD" in x for x in tot.avertissements)
+    soir = pd.Timestamp(jour.date().isoformat() + " 16:00", tz="UTC")
+    tard = _rec(synth, tmp_path, today=soir, notes_known_at=soir)
+    assert tard.execution["perime"] is True and tard.execution["seances_manquantes"] == [jour]
+    q = {r["symbole"]: r["quantite"] for r in o.to_dict()["lignes"]}
+    assert q and q == {r["symbole"]: r["quantite"] for r in tard.to_dict()["lignes"]}
+
+
 # ---------------------------------------------------------------------------
 # Mineurs du module recommend
 # ---------------------------------------------------------------------------

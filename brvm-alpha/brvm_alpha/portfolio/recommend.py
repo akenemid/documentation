@@ -436,22 +436,33 @@ def panel_staleness(last_session: Any, now: Any) -> tuple[list[pd.Timestamp], bo
     return expected_missing_sessions(last_session, day, include_today=closed), closed, day
 
 
-def stale_panel_message(last_session: Any, now: Any, *, orders: bool = True) -> str | None:
+def stale_panel_message(last_session: Any, now: Any, *, orders: bool = True,
+                        sautee: Any = None, execution: Any = None) -> str | None:
     """« PANEL EN RETARD de N séance(s) … Lancer python -m brvm_alpha update » ou ``None`` (panel à jour).
 
     ``orders=True`` ajoute que les ordres sont périmés (ordre de bataille) ; ``False`` : message court
-    pour les autres sorties (indices, explication, tableau de bord, rapport)."""
+    pour les autres sorties (indices, explication, tableau de bord, rapport). ``sautee`` : séance du jour, ouverte et
+    absente du panel, que l'ordre ne pourra pas suivre (première séance d'exécution ``execution`` repoussée au lendemain
+    par les notes connues après la coupure de 09h00 UTC) : comptée comme attendue, comme après la clôture de 15h00."""
     stale, closed, day = panel_staleness(last_session, now)
+    if sautee is not None:
+        sautee = pd.Timestamp(sautee).normalize()
+        if sautee not in stale:
+            stale = sorted([*stale, sautee])
     if not stale:
         return None
     last = pd.Timestamp(last_session).normalize()
-    jusqu_a = "jusqu'à" if closed else "avant"  # hors de la f-string : Python 3.11 (image Odoo 17) refuse « \' » dedans
+    jusqu_a = "jusqu'à" if closed or sautee is not None else "avant"  # hors de la f-string : Python 3.11 refuse « \' »
     msg = (f"PANEL EN RETARD de {len(stale)} séance(s) : dernier BOC du panel le {_d(last)}, "
            f"séance(s) attendue(s) {jusqu_a} aujourd'hui : "
            f"{', '.join(_d(x) for x in stale[:5])}" + ("…" if len(stale) > 5 else "")
            + " (jours ouvrés hors fériés fixes, hypothèse")
     if closed and stale and stale[-1] == day:
         msg += f" ; la séance du {_d(day)} est close depuis {SESSION_CLOSE_UTC:%Hh%M} UTC, son BOC paraît en soirée"
+    elif sautee is not None:
+        apres = f" ; l'ordre ne part qu'à la séance du {_d(execution)}" if execution is not None else ""
+        msg += (f" ; la séance du {_d(sautee)} est ouverte et n'est pas dans le panel{apres} : son BOC paraît en "
+                "soirée")
     msg += "). Lancer `python -m brvm_alpha update` puis recalculer"
     if orders:
         msg += (f" : les ordres ci-dessous sont PÉRIMÉS (cours, bornes et prix limites du {_d(last)}), à ne pas "
@@ -3091,6 +3102,8 @@ def recommend(
     # Fraîcheur du panel : le dernier BOC attendu avant aujourd'hui est-il présent ?
     stale: list[pd.Timestamp] = []
     exec_after: pd.Timestamp | None = None
+    today_ts: pd.Timestamp | None = None
+    now_ts = None
     full_close = _get(panels, "close_raw")
     full_close = full_close if isinstance(full_close, pd.DataFrame) and len(full_close) else _get(panels, "close")
     last_panel = pd.Timestamp(pd.DatetimeIndex(full_close.index).max()).normalize()
@@ -3118,6 +3131,17 @@ def recommend(
             raise
         except Exception:  # module des notes absent ou calendrier illisible : l'exécution reste datée du panel
             pass
+    # Séance du jour sautée : entre 09h00 et 15h00 UTC, les notes connues repoussent la première séance d'exécution au
+    # lendemain, alors que la séance du jour, ouverte, n'est pas dans le panel. L'ordre partirait sur des cours vieux
+    # d'une séance : il est périmé, comme après 15h00 (avant : aucun avertissement entre 09h00 et 15h00, puis
+    # « ORDRES PÉRIMÉS » au même ordre recalculé après 15h00 ; contrôle de a58b4c8, constat 17).
+    if (today_ts is not None and exec_after is not None and t >= last_panel and today_ts > last_panel
+            and exec_after >= today_ts and today_ts.weekday() < 5 and not _is_fixed_holiday(today_ts)
+            and today_ts not in stale):
+        premiere = future_sessions(exec_after, 1, sessions)
+        stale = sorted([*stale, today_ts])
+        stale_msg = stale_panel_message(last_panel, now_ts, sautee=today_ts,
+                                        execution=premiere[0] if premiere else None)
     choice = choose_variant(variant, validation_dir, registry_path)
     warn = ([stale_msg] if stale_msg else []) + list(choice["avertissements"]) + warn
     from brvm_alpha.strategy import VARIANT_SPECS
