@@ -1372,8 +1372,9 @@ class OrdreDeBataille:
             "explications": self.explications, "comparaison": self.comparaison, "faits": self.faits,
             "estimations": self.estimations, "hypotheses": self.hypotheses, "avertissements": self.avertissements,
             "messages_modele": self.messages_modele, "meta": self.meta,
-            "rendement_net": self.rendement_net,
         }
+        if self.rendement_net:  # module éteint (--sans-rendement, rendement=False) : pas de clé, comme avant le module
+            d["rendement_net"] = self.rendement_net
         return _jsonable(d)
 
     def to_markdown(self) -> str:

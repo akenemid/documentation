@@ -92,7 +92,8 @@ def test_l_ordre_par_defaut_ne_change_pas_et_recoit_la_cle_rendement_net(jeu):
     d, d0 = o.to_dict(), o0.to_dict()
     for b in BLOCS_ORDRE:
         assert _js(d[b]) == _js(d0[b]), b
-    assert d0["rendement_net"] == {} and o0.rendement_net == {}
+    # module éteint : pas de clé rendement_net (contrôle de a58b4c8, constat 2 : la clé vide « {} » était écrite)
+    assert "rendement_net" not in d0 and o0.rendement_net == {}
     rn = d["rendement_net"]
     for k in CLES_45:
         assert k in rn, k
