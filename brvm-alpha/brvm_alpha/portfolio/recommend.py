@@ -1730,6 +1730,8 @@ def _rn_safe(fn: Any) -> Any:
     """Blocs du module « Rendement net et pertes » : une erreur du module ne fait jamais tomber l'ordre."""
     try:
         return fn()
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - bloc d'information seulement
         return None
 
@@ -1756,6 +1758,8 @@ def _libelle_p_battre_tr() -> str:
         from brvm_alpha.rendement import risque as _rq
 
         return str(_rq.LIBELLE_P_BATTRE_TR)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - module absent : ancien libellé
         return "P(battre le TR)"
 
@@ -3339,11 +3343,15 @@ def recommend(
             try:
                 if sess_av is None and pdir is not None and (pdir / "sessions.parquet").exists():
                     sess_av = pd.read_parquet(pdir / "sessions.parquet", columns=["date", "available"])
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # noqa: BLE001 - table des séances illisible : W7 dit « non vérifiable »
                 sess_av = None
             carnet_cl = None
             try:
                 carnet_cl = _rn.liquidites.carnet_de_cloture(pdir, t) if pdir is not None else None
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # noqa: BLE001 - carnet illisible : consigne 7 sans compte
                 carnet_cl = None
             today_v = today if today is not None else (None if panels_given else pd.Timestamp.now(tz="UTC"))
@@ -3392,6 +3400,8 @@ def recommend(
             o_aff.rendement_net = rn
             o_aff.avertissements = av
             ordre = o_aff
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # noqa: BLE001 - le module ne fait jamais tomber l'ordre
             ordre.rendement_net = {}
             if perte_toleree is not None:

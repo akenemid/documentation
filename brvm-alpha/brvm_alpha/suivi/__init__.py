@@ -126,6 +126,8 @@ def _jsonable(x: Any) -> Any:
     if hasattr(x, "item") and not isinstance(x, (str, bytes)):
         try:
             return _jsonable(x.item())
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # noqa: BLE001
             return str(x)
     if hasattr(x, "isoformat"):

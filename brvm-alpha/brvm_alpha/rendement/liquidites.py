@@ -132,6 +132,8 @@ def dividendes_depuis_janvier(ordre: Any, panels: Mapping[str, Any] | None) -> d
         if f is None or not pd.notna(f):
             try:
                 f = float(R._split_factor_after(panels, sym, pd.Timestamp(r.ex_date), t))
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:  # noqa: BLE001 - facteur illisible : le montant n'est pas calculé (jamais 1)
                 return {"montant": None, "depuis": t0.strftime("%Y-%m-%d"), "statut": ESTIMATION, "lignes": [],
                         "non_calcule": f"dividendes depuis janvier : non calculés (facteur de division de {sym} "
@@ -231,6 +233,8 @@ def argent_qui_dort(ordre: Any, carnet: Mapping[str, Any] | None = None, *, memo
         try:
             ar = arrondi_restes(o, reglages=reglages)
             place = float(ar.get("francs_ajoutes") or 0)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # noqa: BLE001
             place = 0.0
         ajoute("arrondi_au_dela_marge", "arrondi au-delà de la marge", place, False, FAIT)
@@ -542,6 +546,8 @@ def provision_entree(ordre: Any, costs: Any = None, *, reglages: Mapping[str, An
         try:
             t2 = float(settings.cost_scenario(nom).rate())
             parts[nom] = 1.0 / (rho * (1.0 + t2)) if rho else None
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # noqa: BLE001
             parts[nom] = None
     pmax = 1.0 / (rho * (1.0 + tau)) if rho else None

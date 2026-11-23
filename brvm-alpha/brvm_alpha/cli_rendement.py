@@ -939,6 +939,8 @@ def _declares(jour: pd.Timestamp) -> set[str]:
 
     try:
         ev = DE.en_vigueur(jour, dossier_declaration())
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - déclaration illisible : seul le témoin est suivi
         return set()
     return {k for k, a in (ev.get("articles") or {}).items() if isinstance(a, Mapping) and a.get("type") == "essai"} \
@@ -1003,6 +1005,8 @@ def _maj_carnet(nom: str, P: Mapping[str, Any], D: Path, jour: pd.Timestamp) -> 
         try:
             proj = LQ.projection_detenus(titres, P, derniere, c.liquidites(), costs=cm, grille=g)
             prevu = BU.prevu_depuis_projection(proj)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # noqa: BLE001 - projection impossible : condition (b) du feu « Fuites » « non calculé »
             prevu = None
         lignes = BU.lignes_semaines(c.operations(), P, debut=debut, ordres=c.ordres(), jusqu_au=jour, prevu=prevu)

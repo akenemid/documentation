@@ -118,6 +118,8 @@ def choc_ref_publie(validation_dir: str | Path | None = None, panels: Mapping[st
                 "vl_2018": float(v.loc[days[-1]] / v.loc[days[0]] - 1.0),
                 "part_investie_2018": float(part.mean()), "frais_2018": float(t18["cost"].sum()) if "cost" in t18 else None,
                 "debut": days[0].strftime("%Y-%m-%d"), "fin": days[-1].strftime("%Y-%m-%d"), "n_seances": int(len(days))}
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - fichiers illisibles : valeur de repli, écrite comme telle
         return {**base, "motif": f"{exc.__class__.__name__} : {exc}",
                 "mention": "choc de repli (fichiers publiés illisibles)"}
@@ -364,6 +366,8 @@ def _ligne(o: Mapping[str, Any], X: float | None, pp: Mapping[str, Any], ch: Map
             lu = lecteur.poche(pp)
             ordi = {"prudente": lu["mediane_prudente_fcfa"], "flatteuse": lu["mediane_flatteuse_fcfa"]}
             freq = {"prudente": lu["p_perte_prudente"], "flatteuse": lu["p_perte_flatteuse"]}
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:  # noqa: BLE001 - lecture du passé indisponible : « non calculé »
             ordi = {"prudente": None, "flatteuse": None, "erreur": str(exc)}
     prix = prix_fl = None

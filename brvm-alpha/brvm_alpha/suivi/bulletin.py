@@ -653,6 +653,8 @@ def rendez_vous(titres: Mapping[str, int], panels: Mapping[str, Any], date: Any,
             r = cal.iloc[0]
             out["dividende"] = {"symbole": str(r["symbole"]), "date": pd.Timestamp(r["_p"]).date().isoformat(),
                                 "montant": int(r["montant_net"]), "statut": "estimé"}
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - un calendrier illisible ne fait pas tomber le bulletin : « non calculé »
         out.pop("titres", None)
     cm = costs if isinstance(costs, CostModel) else CostModel()

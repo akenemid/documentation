@@ -714,6 +714,8 @@ def _inscrire(d: Path, p: Path, base: str) -> list[str]:
                 derniers.pop(k)
     try:
         fp = settings.config_fingerprint(settings.load_strategy_config())
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - empreinte illisible : celle de la ligne signée fait foi
         fp = None
     rows = []

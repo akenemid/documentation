@@ -38,6 +38,8 @@ _EN_COURS: contextvars.ContextVar[bool] = contextvars.ContextVar("rendement_en_c
 def _bloc(fn: Callable[[], Any]) -> Any:
     try:
         return fn()
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - un bloc en échec ne doit jamais faire tomber l'ordre de bataille
         return {"erreur": f"{exc.__class__.__name__} : {exc}"}
 
@@ -70,6 +72,8 @@ def _sans_objets(d: Any) -> Any:
     if hasattr(d, "item") and not isinstance(d, (str, bytes)):
         try:
             return d.item()
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # noqa: BLE001
             return d
     return d
@@ -113,6 +117,8 @@ def construire(ordre: Any, *, panels: Mapping[str, Any] | None = None, asof: Any
                            memoire=memoire, completer=completer, forced_exits=forced_exits,
                            non_employee=grille_enregistree_non_employee, aujourd_hui=aujourd_hui, rg=reglages_module,
                            graines=graines, memo=memo, t0=t0)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - dernier filet : construire ne lève jamais
         return {"version": VERSION, "bandeau": BANNER, "erreur": f"{exc.__class__.__name__} : {exc}"}
     finally:
@@ -148,6 +154,8 @@ def pour_ordre_poche(rn_capital: Mapping[str, Any], ordre_poche: Any, **kw: Any)
                     "en_actions": A, "reserve": max(0.0, K - A)})
         out["contexte"] = ctx
         return out
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - dernier filet : jamais d'exception vers l'ordre de bataille
         return {"version": VERSION, "bandeau": BANNER, "erreur": f"{exc.__class__.__name__} : {exc}"}
 

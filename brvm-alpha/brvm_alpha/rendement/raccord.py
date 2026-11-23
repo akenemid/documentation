@@ -66,6 +66,8 @@ def options_execution(*, memoire: Mapping[str, Any] | None, apport: Any, complet
         if sv is None and pdir is not None and (pdir / "sessions.parquet").exists():
             try:
                 sv = pd.read_parquet(pdir / "sessions.parquet", columns=["date", "available"])
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # noqa: BLE001 - table illisible : aucun trou détectable, rien ne change
                 sv = None
         opts["continuite"] = {"sessions": sv, "fenetre": int(settings.get_param(
@@ -88,6 +90,8 @@ def mention_ecart(cle: str, jour: Any) -> str:
         art = (_de.en_vigueur(j, _paths.REPO_ROOT / "reports" / "suivi_S2").get("articles") or {}).get(ident) or {}
         if art.get("date_utc") and "non" not in str(art.get("reponse") or "oui"):  # « non », « option 2 : non »
             quand = R._d(pd.Timestamp(str(art["date_utc"])[:10]))
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - déclaration illisible : « non déclaré »
         quand = None
     if essai:
@@ -217,6 +221,8 @@ def reinvestir_fin_de_mois(lines: list[dict[str, Any]], opts: Mapping[str, Any],
     up = None
     try:
         up = (R._explain_one(m_ref, d_ref, t, panels, sym, held_w if len(held_w) else None).get("caps") or {}).get("upper")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - plafond de ligne inconnu : seule la borne « w + 1 point » s'applique
         up = None
     cap = min(float(up) if up is not None else 1.0, float(w_ref[sym]) + 0.01)
@@ -261,5 +267,7 @@ def etat_journal_ref_s2(dossier: str | Path | None = None) -> str | None:
                 f"référence (REF-S2), semaine {R._int(der.get('semaine'))} au {R._d(der.get('vendredi'))} : {ec_txt} "
                 "(sans argent réel : ce n'est pas une performance). Seuils à surveiller : −10 % alerte, −15 % "
                 "exposition active ÷ 2, −20 % arrêt et indice discipliné")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - journal absent ou illisible : mention d'origine
         return None

@@ -202,6 +202,8 @@ def charger(dossier: str | Path | None = None) -> GrilleSGI:
         if not isinstance(brut, Mapping):
             raise ValueError("un dictionnaire est attendu")
         g = GrilleSGI.from_dict(brut)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - toute erreur est signalée avec le chemin
         raise ValueError(f"grille du courtier illisible : {p} ({exc})") from exc
     c = controler(g)
@@ -244,6 +246,8 @@ def lire_fichier(chemin: str | Path) -> GrilleSGI:
         if not isinstance(brut, Mapping):
             raise ValueError("un dictionnaire est attendu")
         g = GrilleSGI.from_dict(brut)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"grille du courtier illisible : {p} ({exc})") from exc
     c = controler(g)
@@ -480,6 +484,8 @@ def cost_model_de(o: Mapping[str, Any], costs: CostModel | str | None = None) ->
     c = o.get("couts") or {}
     try:
         b = settings.cost_scenario(str(c.get("scenario") or "central"))
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - scénario « fourni » ou inconnu : valeurs de l'ordre
         b = CostModel()
     ch: dict[str, Any] = {}

@@ -105,7 +105,7 @@ sh deploiement/exporter-moteur.sh /chemin/hors/du/depot/moteur
 - Écrit `VERSION` : première ligne = commit court (suivi de `+modifie` si le code exporté diffère du
   commit), puis la date UTC, le commit long, le nombre de fichiers et l'empreinte sha256 de chaque fichier.
   Vérification : `grep -E '^[0-9a-f]{64}  ' VERSION | sha256sum -c --quiet`.
-- Refuse un dossier situé dans le code ou non vide (code 2). Mesuré : 88 fichiers, 11 Mo.
+- Refuse un dossier situé dans le code ou non vide (code 2). Mesuré : 110 fichiers, 11 Mo.
 - Le module Odoo garde ces fichiers **frères** (`brvm_alpha/`, `configs/`, `reports/` au même niveau) : le
   moteur les lit à côté de son code. Le code peut être en lecture seule.
 

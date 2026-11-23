@@ -191,6 +191,8 @@ def charger(chemin: str | Path | None = None) -> dict[str, Any]:
         import yaml
 
         brut = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - toute erreur de lecture est signalée avec le chemin
         raise ValueError(f"réglages illisibles : {p} ({exc.__class__.__name__} : {exc})") from exc
     if not isinstance(brut, Mapping):

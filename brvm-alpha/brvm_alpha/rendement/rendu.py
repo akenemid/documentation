@@ -373,6 +373,8 @@ def sous_blocs_rapport(rn: Mapping[str, Any]) -> dict[str, list[Bloc]]:
         from brvm_alpha.rendement import plan as _plan
 
         carte = _plan.vers_blocs(rn["plan"]) if _ok(rn.get("plan")) else [("p", f"Carte « Mon plan » : {_err(rn.get('plan'))}.")]
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - la section « bandeau » reste « ok » même si la carte échoue (§F1-11)
         carte = [("p", f"Carte « Mon plan » : {NON_CALCULE} ({exc.__class__.__name__}).")]
     # La carte garde son bandeau en tête, avant PH_ETUDE (§F1) ; le sous-bloc finit aussi par le bandeau (§7.2).
