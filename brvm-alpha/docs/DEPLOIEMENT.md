@@ -674,6 +674,12 @@ Mesures du 23/11/2026 (§ A.9), relevées dans `/proc` toutes les 50 ms, process
 | `panel --force` | 803 (parent) ; 337 par enfant (4 enfants) | 625 ; 151 par enfant |
 | `notes research --hors-ligne --pdf 0` | 428 | 233 |
 | `notes lire --hors-ligne` | 386 | 187 |
+| `plan` (export, contrôle de `a58b4c8`) | 700 | 371 |
+| `plan --enregistrer` (export) | 698 | — |
+| `suivi bulletin` (export) | 698 | 326 |
+| `suivi maj` (export) | 694 | 322 |
+| `suivi verifier` (export) | 366 | 131 |
+| `suivi demarrer`, `suivi saisir` (export) | 338 | — |
 
 Avant les réglages du mode embarqué (un fil, pool « system » d'Arrow, deux arènes de malloc), les pics
 étaient de 1,9 Go (`etat`) à 2,3 Go (`recommend`, `report`), et 1,5 Go par enfant du panel : trop près des
@@ -717,6 +723,8 @@ l'autre**, en travaux détachés, à basse priorité :
    (200 requêtes, 10 s au moins entre deux), les trous de l'historique. Code 1 au quota : normal tant que
    l'historique n'est pas complet ; code 5 avec `site.bloque` (lu par `etat`) : **ne plus rien envoyer** ;
 2. `panel --format json` (6 s s'il n'y a qu'un bulletin de plus) ;
+   2 bis. `suivi maj --format json` (suivi sur papier, § A.17 ; calcul local, aucune requête, 4 s environ) : un
+   échec n'arrête pas la suite (il est consigné, et le code de la tâche le dit) ;
 3. si le site n'a pas refusé : `notes research --pdf 20 --format json` (150 requêtes au plus, 25 minutes
    au plus, puis 20 documents) ;
 4. `etat --format json`, puis, seulement si `pret` est vrai : `report --capital … --format json`.
@@ -945,6 +953,14 @@ Durées mesurées le 23/11/2026 sur la machine de développement (4 processeurs)
 virtuel de test, code du dépôt, pas l'export), mode embarqué (`BRVM_ALPHA_EMBARQUE=1`, `env -i`, `-B`), copie
 des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent par `--format json`. Les chemins
 écrits s'entendent dans `BRVM_ALPHA_DONNEES` (`<rapports>` : `BRVM_ALPHA_RAPPORTS`).
+
+Mesures sur l'**export** (contrôle de `a58b4c8`, 23/11/2026) : CPython 3.11.15 autonome, code et interpréteur en
+lecture seule, `RLIMIT_AS` 3 Go, lanceur du § A.6 sous un faux travailleur Odoo ; durée, et pic de mémoire
+virtuelle (VmPeak) : `plan` 12,9 s (700 Mo) ; `plan --enregistrer` 16,6 s (698 Mo) ; `plan grille` 1,9 s sous
+`strace` (336 Mo) ; `suivi bulletin` 4,5 s (698 Mo) ; `suivi maj` 3,7 s (694 Mo) ; `suivi verifier` 0,7 s
+(366 Mo) ; `suivi demarrer` et `suivi saisir` 0,55 s (338 Mo) ; `recommend` 17,5 s (800 Mo) ; `report` 19,9 s
+(799 Mo). Aucun fichier n'est écrit hors de `<D>`, `<R>` et `<T>` ; aucun fichier n'est **laissé** dans `TMPDIR`
+(`notes add`, `notes archive` et `report` y créent puis retirent un fichier d'essai : sonde de `tempfile`).
 
 | Commande | Durée | Nature | Écrit | Codes |
 |---|---|---|---|---|
@@ -1346,8 +1362,9 @@ tâches se lancent **dans le conteneur du moteur** (le verrou est un `flock` sur
 ## 8. Tâche quotidienne
 
 `deploiement/quotidien.sh` lance `update --sans-panel` (le bulletin du jour et, dans la limite du quota,
-les trous de l'historique depuis le 02/01/2017), `panel`, `notes research --pdf 20`, puis `report` si
-`etat` dit « prêt ». Il prend le même verrou que la première collecte. Il tourne en priorité basse
+les trous de l'historique depuis le 02/01/2017), `panel`, `suivi maj` (suivi sur papier ; un échec n'arrête pas
+la suite), `notes research --pdf 20`, puis `report` si `etat` dit « prêt ». Il prend le même verrou que la
+première collecte. Il tourne en priorité basse
 (`nice -n 19`, et `ionice -c 2 -n 7` s'il existe : la classe « inactive » pouvait affamer la tâche).
 
 Modèle cron (heure UTC, soirs de bourse, après la parution du bulletin) :
