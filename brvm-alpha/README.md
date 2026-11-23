@@ -133,9 +133,11 @@ python -m brvm_alpha notes lire --hors-ligne --relire    # relit les documents d
 python -m brvm_alpha validate --sample S0
 ```
 
-Ordres de bataille publiés pour le 20/11/2026 (aucun titre détenu), régénérés le 22/11/2026 après la
-recette finale, avec les notes connues à cet instant (mode direct, séance d'application du 23/11/2026 ;
-l'instant exact est écrit en tête de chaque ordre) :
+Ordres de bataille publiés pour le 20/11/2026 (aucun titre détenu), régénérés le 23/11/2026 à 17 h 12 UTC
+après le contrôle de l'état fusionné, avec les notes connues à cet instant (mode direct, séance d'application
+du 24/11/2026 ; l'instant exact est écrit en tête de chaque ordre). Le panel s'arrête au BOC du 20/11/2026 et la
+séance du 23/11/2026 est close sans être dans le panel : les trois ordres sont donc marqués **« PANEL EN RETARD »**
+et **« ORDRES PÉRIMÉS »**, à recalculer après `update` ; ce sont des études, à ne pas transmettre :
 [10 M FCFA](reports/ordre_de_bataille_2026-11-20.md),
 [1 M FCFA](reports/ordre_de_bataille_2026-11-20_1M.md),
 [50 M FCFA](reports/ordre_de_bataille_2026-11-20_50M.md). Le rapport HTML
@@ -322,7 +324,7 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
     10 M FCFA, son poids cible de 6,16 % passe à 0 % ; les règles de construction existantes (D8) le
     **redistribuent** : TotalEnergies Marketing CI (TTLC) entre comme vingtième ligne et les autres
     poids montent en proportion ; le total investi cible reste de 98 %. Les ordres publiés dans
-    `reports/` ont été régénérés le 22/11/2026 avec ce blocage. Le tableau « Poids cibles sans et avec les
+    `reports/` ont été régénérés le 23/11/2026 avec ce blocage. Le tableau « Poids cibles sans et avec les
     notes » donne le motif de chaque écart : « filtre R2 » pour ETIT, « redistribution (construction) » pour
     les autres lignes — en indice discipliné, un filtre de simple surveillance (R10 sur NSIA Banque CI)
     ne change aucun poids et n'est pas cité comme motif.
@@ -402,11 +404,12 @@ une nouvelle version et l'historique est conservé. Codes de cibles : `SNTS` (sy
 ## Ordre de bataille au 20/11/2026 (10 M FCFA, estimation)
 
 Variante retenue : **REF** (A REJETÉ sur S1). Ce sont 20 ordres d'achat, exécutables en une séance
-le 23/11/2026, pour un brut de 9 650 560 FCFA (96,51 % investis), 160 588 FCFA de coûts d'entrée
+le 24/11/2026 (ordres périmés : panel en retard d'une séance, voir plus haut), pour un brut de 9 650 560 FCFA (96,51 % investis), 160 588 FCFA de coûts d'entrée
 (1,61 %) et 124 126 FCFA de frais fixes par an. **Achat bloqué par une note** : ETIT (filtre R2,
 annulation de l'assemblée générale, note du 23/10/2026, jusqu'au 19/01/2027) ; son poids cible de 6,16 %
 est redistribué par les règles de construction et TTLC entre comme vingtième ligne. Notes prises en
-compte : celles connues le 22/11/2026 au moment de la régénération, appliquées à la séance du 23/11/2026
+compte : celles connues le 23/11/2026 à 17 h 12 UTC, au moment de la régénération, appliquées à la séance du
+24/11/2026
 (114 en vigueur, aucune manuelle, 8 filtres de risque actifs, dont les filtres R10 de surveillance nés de
 la lecture des documents). Deux lignes à acheter sont signalées **« à revoir avant achat »** (plus de 25 %
 de retard sur le TR en 63 séances, §9.1) : NSBC et CIEC ; l'achat reste proposé, la revue revient à

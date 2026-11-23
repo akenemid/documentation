@@ -4,6 +4,8 @@
 
 **Recommandation à titre d'étude ; suivi réel (paper trading) requis avant tout engagement d'argent réel.**
 
+> ⚠ PANEL EN RETARD de 1 séance(s) : dernier BOC du panel le 20/11/2026, séance(s) attendue(s) jusqu'à aujourd'hui : 23/11/2026 (jours ouvrés hors fériés fixes, hypothèse ; la séance du 23/11/2026 est close depuis 15h00 UTC, son BOC paraît en soirée). Lancer `python -m brvm_alpha update` puis recalculer : les ordres ci-dessous sont PÉRIMÉS (cours, bornes et prix limites du 20/11/2026), à ne pas transmettre.
+
 > ⚠ ACHAT BLOQUÉ par une note : ETIT (R2, annulation ou report d'AG : −1 en gouvernance, aucun achat (60 séances)) — note 4a46238f820f du 23/10/2026 « ETI TG : Communiqué - Annulation de l'Assemblée Générale Ordinaire », jusqu'au 19/01/2027. Effet : aucun achat (poids cible 6,16 % sans les notes, 0 % avec) ; ce poids est redistribué aux autres lignes par les règles de construction (voir le tableau d'effet). Pour lever le blocage : archiver la note (python -m brvm_alpha notes archive 4a46238f820f, ou bouton « Archiver » de sa fiche dans l'interface) : l'archivage écrit une nouvelle version, l'historique est conservé.
 
 > ⚠ Biais rétrospectif : poids actuels et sélection d'aujourd'hui (plus grosses capitalisations au 20/11/2026) appliqués à toute l'histoire 2017-2026 ; les titres alors en difficulté ou radiés n'y figurent pas, ce qui flatte la distribution. Lignes sans historique complet : ORAC (18,2 %, depuis le 06/01/2023), ECOC (5,1 %, depuis le 15/12/2017), BICB (2,7 %, depuis le 02/05/2025), NSBC (2,3 %, depuis le 27/10/2017), soit 28,4 % du portefeuille ; 790 valeur(s) antérieure(s) à la cotation : poids renormalisés sur les lignes cotées (et non comptées à 0 %). 0 valeur(s) manquante(s) après cotation (suspensions) comptée(s) à 0 %.
@@ -27,7 +29,7 @@
 
 Décision à la clôture du BOC du 20/11/2026 ; exécution à partir du 24/11/2026. Capital 50 000 000 FCFA ; valeur du portefeuille avant ordres 50 000 000 FCFA, dont liquidités 50 000 000 FCFA.
 
-Notes connues au 23/11/2026 14:31 UTC, appliquées à la séance du 24/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
+Notes connues au 23/11/2026 17:13 UTC, appliquées à la séance du 24/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
 
 ## 1. Variante et statut de validation
 
@@ -136,8 +138,10 @@ Effet des notes sur les poids cibles (même décision recalculée sans aucune no
 
 - fenêtres comptées en séances (additif v1.1, D1) : 1 BOC manquants dans les 126 dernières séances ; seuils minimaux au prorata des BOC disponibles (planchers 40 / 20), bornes de rendement à 5 séances au plus
 - modulateur du momentum : séries de performance des modulateurs (spread du momentum, TR de marché) restreintes à S0 (≥ 17/11/2022) : échantillon vierge S1 protégé ; validation_s1=True est réservé au test pré-enregistré
-- notes de l'analyste prises en compte : 0 veto(s), 0 inclinaison(s), 8 titre(s) avec filtre R (mode direct : notes connues au 23/11/2026 14:31 UTC, appliquées à la séance du 24/11/2026)
+- notes de l'analyste prises en compte : 0 veto(s), 0 inclinaison(s), 8 titre(s) avec filtre R (mode direct : notes connues au 23/11/2026 17:13 UTC, appliquées à la séance du 24/11/2026)
 - indice discipliné (additif v1.1, D8) : 20 plus grosses capitalisations éligibles, poids proportionnels à la capitalisation sous plafonds, 98,00 % investis (aucune promesse d'alpha)
+
+> ⚠ ORDRES PÉRIMÉS : panel en retard (voir l'avertissement en tête) ; ne pas transmettre.
 
 ## 3. Exécution : échéancier par séance
 
@@ -450,7 +454,7 @@ Libellé : « Fréquence passée au-dessus du marché, aux poids d'aujourd'hui (
 - À revoir avant achat NSBC : −29,4 % contre le TR sur 63 séances (seuil de revue −25 %, §9.1) ; l'achat reste proposé, la revue est à faire par l'utilisateur avant de transmettre l'ordre
 - À revoir avant achat CIEC : −32,3 % contre le TR sur 63 séances (seuil de revue −25 %, §9.1) ; l'achat reste proposé, la revue est à faire par l'utilisateur avant de transmettre l'ordre
 - Notes de l'analyste : 0 veto(s), 0 inclinaison(s), 8 titre(s) avec filtre R issu des notes
-- Notes connues au 23/11/2026 14:31 UTC, appliquées à la séance du 24/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
+- Notes connues au 23/11/2026 17:13 UTC, appliquées à la séance du 24/11/2026 : 114 en vigueur (dont 0 manuelles), 8 filtre(s) de risque actif(s) ; achats bloqués : ETIT, SEMC, SICC.
 - Scores des notes : 41 note(s) en vigueur sur 114 portent un score directionnel non nul.
 - Filtre R2 sur ETIT (annulation ou report d'AG : −1 en gouvernance, aucun achat (60 séances)) depuis le 26/10/2026, jusqu'au 19/01/2027 — note 4a46238f820f du 23/10/2026 « ETI TG : Communiqué - Annulation de l'Assemblée Générale Ordinaire » ; achats bloqués ; titre hors du plan
 - Filtre R10 sur FTSC (ΔRN ≤ −25 % sans alerte sur résultats préalable (depuis le 01/10/2025)) depuis le 04/11/2026, jusqu'au 22/04/2027 — note 267c82b0e226 du 03/11/2026 « FILTISAC CI : Rapport d'activités - 1er semestre 2026 » ; titre hors du plan
