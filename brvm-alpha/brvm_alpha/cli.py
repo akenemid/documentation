@@ -1312,6 +1312,7 @@ def _cmd_update(args: argparse.Namespace) -> int:
     first = args.start.date() if args.start is not None else None
     last = args.end.date() if args.end is not None else None
     rouverts: list[str] = []
+    days_r: list[dt.date] = []
     if getattr(args, "rouvrir", None):
         r0, r1 = args.rouvrir
         days_r = sorted(d for d in boc_download.weekdays(r0, r1) if boc_download.marker_path(boc_dir, d).exists())
@@ -1324,6 +1325,12 @@ def _cmd_update(args: argparse.Namespace) -> int:
             print(f"{len(rouverts)} marqueur(s) « sans bulletin » retiré(s) du {r0:%d/%m/%Y} au {r1:%d/%m/%Y} : ces "
                   "jours seront cherchés de nouveau.")
     start, end, days = update_window(boc_dir, first, last, today)
+    if args.simulation and days_r:
+        # Simulation : les marqueurs ne sont pas retirés, mais les jours rouverts seraient cherchés (dans la fenêtre, sans
+        # bulletin déjà là), comme dans un vrai lancement.
+        known = set(days)
+        days = sorted(known | {d for d in days_r if start <= d <= end and d not in known
+                               and not (boc_dir / f"boc_{d:%Y%m%d}.txt.gz").exists()})
     delay = boc_download.delai_poli(args.delai)
     print(f"BOC manquants du {start:%d/%m/%Y} au {end:%d/%m/%Y} : {len(days)} jour(s) ouvré(s) à chercher "
           f"(dossier {boc_dir}).")
@@ -2600,7 +2607,8 @@ def _resolve_path_options(args: argparse.Namespace) -> None:
     relatif désigne ainsi le même dossier dans toutes les fonctions appelées (avant : deux résolutions dans
     ``report``). ``--sortie`` vers un dossier existant est refusé (code 2). Mode embarqué : ``--sortie`` reste dans
     les rapports ou le dossier temporaire, hors des fichiers du moteur ; ``--fichier`` et ``--portefeuille`` ne
-    lisent que dans les dossiers de données, de rapports ou temporaire (code 2 sinon)."""
+    lisent que dans les dossiers de données, de rapports ou temporaire ; ``--racine``, ``--panel-dir`` et
+    ``--boc-dir`` désignent un sous-dossier des données (code 2 sinon)."""
     if args.command in EMBEDDED_REFUSED:
         return  # validation : comportement inchangé
     for attr, base in _PATH_OPTIONS:
@@ -2617,11 +2625,16 @@ def _resolve_path_options(args: argparse.Namespace) -> None:
                 _check_embedded_output(resolved)
         elif attr in _READ_OPTIONS and paths.est_embarque():
             _check_embedded_input(resolved, attr)
+        elif attr in _DATA_DIR_OPTIONS and paths.est_embarque():
+            _check_embedded_data_dir(resolved, attr)
         setattr(args, attr, str(resolved))
 
 
 #: Options qui désignent un fichier LU (contrôlé en mode embarqué).
 _READ_OPTIONS = ("portefeuille", "fichier")
+#: Options qui désignent un dossier de données (journal des notes, panel, BOC) : en mode embarqué, toujours un
+#: sous-dossier de ``BRVM_ALPHA_DONNEES``.
+_DATA_DIR_OPTIONS = ("racine", "panel_dir", "boc_dir")
 #: Sous-dossiers des données réservés au moteur : jamais la cible de ``--sortie`` (journal des notes, panel, BOC).
 _ENGINE_DIRS = ("notes", "panel", "boc_text")
 
@@ -2652,6 +2665,34 @@ def _check_embedded_output(path: Path) -> None:
         return
     raise SaisieInvalide(f"refusé : --sortie {path} est hors des dossiers permis en mode embarqué (rapports "
                          f"{paths.REPORTS_DIR}, fichiers temporaires {tempfile.gettempdir()}).")
+
+
+def _dans_reel(path: Path, base: Path) -> bool:
+    """``path`` est-il ``base`` ou dans ``base``, liens symboliques et « .. » résolus des deux côtés ?"""
+    try:
+        Path(os.path.realpath(path)).relative_to(Path(os.path.realpath(base)))
+    except ValueError:
+        return False
+    return True
+
+
+def _check_embedded_data_dir(path: Path, attr: str) -> None:
+    """Mode embarqué : ``--racine``, ``--panel-dir`` et ``--boc-dir`` désignent un sous-dossier de
+    ``BRVM_ALPHA_DONNEES``, liens symboliques et « .. » résolus (un journal, un panel ou des bulletins créés ailleurs
+    échapperaient au module Odoo). ``--panel-dir`` ne recouvre ni ``notes/`` ni ``boc_text/`` : le panel est remplacé
+    d'un bloc à chaque construction. Odoo ne passe jamais ces options. :class:`SaisieInvalide` sinon (rien n'est
+    créé)."""
+    option = "--" + attr.replace("_", "-")
+    data = paths.DATA_DIR
+    if not _dans_reel(path, data) or os.path.realpath(path) == os.path.realpath(data):
+        raise SaisieInvalide(f"refusé : {option} {path} n'est pas un sous-dossier du dossier des données ({data}) ; en "
+                             "mode embarqué, journal, panel et bulletins restent dans BRVM_ALPHA_DONNEES (liens "
+                             "symboliques et « .. » résolus).")
+    if attr == "panel_dir":
+        for sub in ("notes", "boc_text"):
+            if _dans_reel(path, data / sub) or _dans_reel(data / sub, path):
+                raise SaisieInvalide(f"refusé : --panel-dir {path} recouvre {data / sub} ; le panel est remplacé d'un "
+                                     "bloc à chaque construction (choisir un autre sous-dossier des données).")
 
 
 def _check_embedded_input(path: Path, attr: str) -> None:

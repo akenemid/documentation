@@ -2643,8 +2643,10 @@ def _index_evaluation(t: pd.Timestamp, panel_dir: Path | None, panels_given: boo
         if flips:
             effet = next((x for x in reasons if x.startswith("Effet des notes")), "")
             lecture = f"{lecture} {effet}".strip()
+        conf, comp = r.get("confidence"), r.get("composite")  # None sur un historique trop court : « n.d. »
         rows.append({"indice": code, "libelle": str(r.get("label", code)), "position": str(r.get("stance", "")),
-                     "confiance": float(r.get("confidence", np.nan)), "score": float(r.get("composite", np.nan)),
+                     "confiance": np.nan if conf is None else float(conf),
+                     "score": np.nan if comp is None else float(comp),
                      "lecture": lecture, "position_sans_notes": ex_stance, "score_sans_notes": ex_score,
                      "position_changee_par_les_notes": flips})
     return rows, ""

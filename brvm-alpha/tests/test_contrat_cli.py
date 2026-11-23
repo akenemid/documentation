@@ -353,9 +353,11 @@ def test_incomplete_history_warns_in_normal_mode_and_refuses_in_embedded_mode(ti
     code, out, _ = run_cli(capsys, "report", "--capital", "10M", "--format", "json", "--sortie",
                            str(tmp_path / "r.html"), *panel[:2])
     assert code == 0 and one_json(out)["historique_complet"] is False
-    # Mode embarqué : refus (code 1, « historique_incomplet ») sauf option explicite.
+    # Mode embarqué : refus (code 1, « historique_incomplet ») sauf option explicite. Le panel est dans le dossier des
+    # données (--panel-dir hors de BRVM_ALPHA_DONNEES : refusé en mode embarqué, tests/test_retouches_embarque.py).
     monkeypatch.setattr(paths, "est_embarque", lambda environ=None, root=None: True)
     monkeypatch.setattr(paths, "ERREUR_CONFIGURATION", None)
+    monkeypatch.setattr(paths, "DATA_DIR", tiny)
     calls.clear()
     for argv in (["recommend", "--capital", "10M", "--sans-notes"], ["report", "--capital", "10M", "--sortie",
                                                                      str(tmp_path / "r2.html")]):
@@ -525,7 +527,7 @@ def test_update_requires_pdftotext_in_embedded_mode(embedded, tmp_path, capsys, 
     monkeypatch.setattr(cli, "brvm_fetcher", lambda **k: (_ for _ in ()).throw(AssertionError("aucune requête")))
     real_which = sh.which
     monkeypatch.setattr(sh, "which", lambda name, *a, **k: None if name == "pdftotext" else real_which(name, *a, **k))
-    code, out, _ = run_cli(capsys, "update", "--boc-dir", str(tmp_path / "boc"), "--from", "2026-11-18",
+    code, out, _ = run_cli(capsys, "update", "--boc-dir", str(embedded[0] / "boc"), "--from", "2026-11-18",
                            "--jusqu-au", "2026-11-19", "--format", "json")
     d = one_json(out)
     assert code == 8 and d["message"].startswith("pdftotext absent : installer poppler-utils")

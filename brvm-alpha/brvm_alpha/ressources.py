@@ -14,7 +14,8 @@ d'Arrow ; ``recommend`` 2,3 Go puis 0,9 Go. Le calcul est le même : seule la r�
   (à poser **avant** l'import de numpy, donc dans l'environnement d'un processus à lancer) ;
 - :func:`regler_processus_embarque` : réglages du processus courant en mode embarqué (appelé par
   ``brvm_alpha/__init__.py`` avant tout import lourd) ;
-- :func:`initialiser_travailleur` : réglages d'un processus de travail (pyarrow à 1 fil).
+- :func:`initialiser_travailleur` : réglages d'un processus de travail (pyarrow à 1 fil) ;
+- :func:`preparer_lien_parent` : lien au parent d'un outil lancé par ``subprocess`` (outils de poppler).
 
 Une variable déjà posée par l'appelant n'est jamais écrasée.
 """
@@ -23,7 +24,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
 
 #: Variables qui bornent les fils des bibliothèques de calcul (lues à l'import de numpy).
@@ -215,6 +216,40 @@ def lier_au_parent(parent: int | None = None) -> bool:
     return ok
 
 
+def preparer_lien_parent() -> Callable[[], None] | None:
+    """Sous-processus lancé par ``subprocess`` (outils de poppler) : fonction à appeler **dans l'enfant**, avant
+    ``exec`` (``preexec_fn``), qui le lie au processus courant (``PR_SET_PDEATHSIG`` = ``SIGKILL``, gardé par
+    ``exec``). Si le moteur meurt seul (``KILL`` au seul PID, tueur de mémoire du noyau), l'outil meurt avec lui au
+    lieu d'être récolté par le processus 1 (le maître Odoo) avec son propre code de sortie (poppler documente le
+    code 3).
+
+    Tout est préparé ici, dans le parent : l'enfant ne charge aucune bibliothèque après ``fork``. Le lien vaut pour
+    le fil qui lance l'outil (le fil principal dans le moteur). ``None`` hors Linux ou sans ``prctl``.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    import signal
+
+    try:
+        import ctypes
+
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        prctl.restype = ctypes.c_int
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
+    except Exception:  # pragma: no cover - libc sans prctl  # noqa: BLE001
+        return None
+    parent, sig = os.getpid(), int(signal.SIGKILL)
+
+    def lier() -> None:  # dans l'enfant, avant exec : un appel système, rien d'autre
+        prctl(1, sig, 0, 0, 0)  # 1 = PR_SET_PDEATHSIG
+        if os.getppid() != parent:
+            os._exit(1)  # parent mort avant la pose : l'outil ne démarre pas
+
+    return lier
+
+
 def initialiser_travailleur(parent: int | None = None) -> None:
     """Initialisation d'un processus de travail du panel : lié à son parent (:func:`lier_au_parent`), pyarrow à
     un fil (les variables BLAS viennent du parent)."""
@@ -224,4 +259,4 @@ def initialiser_travailleur(parent: int | None = None) -> None:
 
 __all__ = ["VARIABLES_FILS", "VARIABLE_POOL_ARROW", "WORKERS_MAX", "ARENES_MALLOC", "processeurs_disponibles",
            "workers_par_defaut", "limiter_fils", "limiter_arenes", "regler_arrow", "regler_processus_embarque",
-           "installer_garde_chargement", "lier_au_parent", "initialiser_travailleur"]
+           "installer_garde_chargement", "lier_au_parent", "preparer_lien_parent", "initialiser_travailleur"]

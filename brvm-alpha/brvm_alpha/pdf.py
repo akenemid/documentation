@@ -1,7 +1,8 @@
 """Extraction du texte des PDF : ``pdftotext`` (poppler), repli ``pdfplumber`` hors mode embarqué.
 
 - ``pdftotext`` tourne en sous-processus **borné** (:func:`lancer_outil`) : délai (:data:`DELAI_PDFTOTEXT_S`),
-  mémoire virtuelle (:data:`MEMOIRE_OUTIL`) et taille de la sortie (:data:`SORTIE_MAX`) ;
+  mémoire virtuelle (:data:`MEMOIRE_OUTIL`) et taille de la sortie (:data:`SORTIE_MAX`) ; il est **lié au
+  moteur** (``PR_SET_PDEATHSIG``) : si le moteur meurt seul, l'outil meurt avec lui, sans orphelin ;
 - ``pdfplumber`` (repli pur Python, plus lent) tourne lui aussi dans un **sous-processus** borné en
   durée (:data:`DELAI_PDFPLUMBER_S`) : un PDF pathologique ne fige ni ne gonfle le processus du moteur ;
 - en **mode embarqué** (:func:`brvm_alpha.paths.est_embarque`), ``pdftotext`` est obligatoire :
@@ -23,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from brvm_alpha import paths
+from brvm_alpha import paths, ressources
 from brvm_alpha.erreurs import ConfigurationError
 
 #: Délai d'une extraction par pdftotext (s) : un BOC se convertit en moins de 2 s.
@@ -53,9 +54,13 @@ class ExtractionRatee(RuntimeError):
 
 
 def _limites_outil(memoire: int, sortie: int):
-    def poser() -> None:  # dans l'enfant, avant exec : rien d'autre que des appels système
-        import resource
+    import resource
 
+    lier = ressources.preparer_lien_parent()  # préparé ici, dans le moteur : l'enfant ne charge rien
+
+    def poser() -> None:  # dans l'enfant, avant exec : rien d'autre que des appels système
+        if lier is not None:
+            lier()  # l'outil meurt avec le moteur (aucun orphelin récolté par le processus 1)
         for lim, val in ((resource.RLIMIT_AS, memoire), (resource.RLIMIT_FSIZE, sortie), (resource.RLIMIT_CORE, 0)):
             try:
                 _soft, hard = resource.getrlimit(lim)
@@ -72,7 +77,8 @@ def lancer_outil(cmd: list[str], *, delai: float, memoire: int = MEMOIRE_OUTIL,
     (``memoire``, ``RLIMIT_AS``) et taille de la sortie (``sortie`` : fichier temporaire limité par
     ``RLIMIT_FSIZE``, l'outil est arrêté au-delà). Un PDF piégé ne peut ni figer le moteur, ni lui faire garder des
     dizaines de mégaoctets en mémoire, ni monter à plus de ``memoire`` octets. :class:`ExtractionRatee` si l'outil
-    est arrêté (délai, mémoire, sortie trop grosse) ; ``OSError`` s'il ne peut pas être lancé.
+    est arrêté (délai, mémoire, sortie trop grosse) ; ``OSError`` s'il ne peut pas être lancé. L'outil est lié au moteur
+    (:func:`brvm_alpha.ressources.preparer_lien_parent`) : il meurt avec lui.
     """
     import signal
     import tempfile
@@ -126,10 +132,10 @@ def version_pdftotext() -> str | None:
     if not exe:
         return None
     try:
-        out = subprocess.run([exe, "-v"], capture_output=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+        _code, out, err = lancer_outil([exe, "-v"], delai=10, sortie=64 * 1024)  # borné et lié au moteur
+    except (OSError, subprocess.SubprocessError, ExtractionRatee):
         return None
-    text = (out.stderr or out.stdout or b"").decode("utf-8", "replace")
+    text = (err or out or b"").decode("utf-8", "replace")
     for line in text.splitlines():
         if "version" in line.lower():
             return line.split()[-1].strip()

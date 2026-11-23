@@ -870,7 +870,8 @@ def test_update_reopen_removes_markers_of_a_period_explicitly(tmp_path, capsys, 
             "--jusqu-au", "2021-05-10", "--sans-panel", "--format", "json"]
     code, out, _ = run_cli(capsys, *base, "--rouvrir", "2021-05-07..2021-05-10", "--simulation")
     d = one_json(out)
-    assert code == 0 and d["marqueurs_rouverts"] == ["2021-05-07", "2021-05-10"] and d["jours_a_chercher"] == 0
+    assert code == 0 and d["marqueurs_rouverts"] == ["2021-05-07", "2021-05-10"]
+    assert d["jours_a_chercher"] == 2  # jours rouverts comptés (tests/test_retouches_embarque.py, P5)
     assert len(list(boc.glob("*.missing"))) == 3  # simulation : rien n'est retiré
     calls = []
     monkeypatch.setattr(cli, "_exiger_extracteur", lambda: None)

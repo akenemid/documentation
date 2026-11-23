@@ -45,6 +45,7 @@ import threading
 from contextlib import contextmanager
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -53,7 +54,7 @@ from typing import Any, Iterable, Iterator
 import numpy as np
 import pandas as pd
 
-from .. import fichiers, paths, ressources
+from .. import erreurs, fichiers, paths, ressources
 from .. import reference
 from . import boc_parser
 from .boc_parser import EQUITY_COLUMNS, INDEX_COLUMNS, ORDER_BOOK_COLUMNS, parse_boc_file, warning_code
@@ -325,14 +326,30 @@ def _parse_all(todo: list[Path], workers: int | None) -> list[dict[str, Any]]:
     ressources.limiter_fils()
     old_hook = threading.excepthook
     threading.excepthook = _sans_etat_invalide(old_hook)
+    procs: dict[Any, Any] = {}
+    gestion: Any = None
     try:
         with ProcessPoolExecutor(max_workers=min(n_workers, len(todo)), mp_context=ctx,
                                  initializer=ressources.initialiser_travailleur) as pool:
+            # Même dictionnaire que celui du pool (rempli au fil des lancements) : gardé pour lire, une fois le pool
+            # fermé, les codes de sortie des processus de travail.
+            if isinstance(getattr(pool, "_processes", None), dict):
+                procs = pool._processes
             try:
                 return list(pool.map(_parse_one, [str(p) for p in todo], chunksize=8))
             except BaseException:  # interruption (TERM, Ctrl+C), mémoire : travaux en attente annulés
+                gestion = getattr(pool, "_executor_manager_thread", None)  # oublié par le pool après shutdown
                 pool.shutdown(wait=False, cancel_futures=True)
                 raise
+    except BrokenProcessPool as exc:
+        # Processus de travail mort : ses codes de sortie disent la cause (SIGXCPU : temps de calcul, 8 ; SIGKILL sous
+        # une limite de mémoire : mémoire, 6 ; SIGSEGV ou autre signal : 7 ; brvm_alpha.erreurs.cause_travailleur).
+        # Ils ne sont lus qu'une fois le fil de gestion du pool fini : lus en même temps que lui, l'un des deux lecteurs
+        # du tube du serveur de processus reçoit 255 (« code illisible ») au lieu du vrai code.
+        if gestion is not None:
+            gestion.join(timeout=30)
+        setattr(exc, erreurs.ATTR_CODES_TRAVAILLEURS, _codes_sortie(procs))
+        raise
     finally:
         threading.excepthook = old_hook
         for k, v in saved.items():
@@ -340,6 +357,19 @@ def _parse_all(todo: list[Path], workers: int | None) -> list[dict[str, Any]]:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+def _codes_sortie(procs: Any) -> list[int]:
+    """Codes de sortie connus des processus de travail d'un pool fermé (négatif : tué par ce signal)."""
+    out: list[int] = []
+    for p in list(dict(procs or {}).values()):
+        try:
+            code = p.exitcode
+        except (AttributeError, ValueError):  # processus déjà fermé
+            continue
+        if isinstance(code, int):
+            out.append(code)
+    return out
 
 
 def _sans_etat_invalide(hook: Any) -> Any:

@@ -47,6 +47,12 @@ fonction le décide : `brvm_alpha.paths.est_embarque()`. Alors :
   celui des fichiers temporaires du système, et jamais sur un fichier du moteur (`notes/`, `panel/`,
   `boc_text/` des données) ; `--fichier` et `--portefeuille` ne lisent que dans les dossiers de données, de
   rapports ou temporaire (code 2 sinon). Côté Odoo, la règle reste : chemins fabriqués par le module seul ;
+- `--racine`, `--panel-dir` et `--boc-dir` désignent toujours un **sous-dossier** de `BRVM_ALPHA_DONNEES`,
+  liens symboliques et « .. » résolus : un chemin absolu qui en sort (ou un lien qui mène ailleurs) est refusé en
+  code 2, avant toute écriture (avant : `notes add --racine /ailleurs` y créait un journal). `--panel-dir` ne
+  recouvre ni `notes/` ni `boc_text/`, car le panel est remplacé d'un bloc à chaque construction. **Odoo ne
+  passe jamais ces trois options** : les dossiers par défaut (`<données>/notes`, `panel`, `boc_text`) suffisent.
+  Hors mode embarqué, rien ne change ;
 - `pdftotext` (paquet système **poppler-utils**) est **obligatoire** : sans lui, `update`, `notes
   research --pdf N` (N > 0) et `notes lire` sortent en code 8 avec le message « pdftotext absent :
   installer poppler-utils » ; `etat` le signale (clé `extracteur_pdf.manquant`) ;
@@ -73,7 +79,8 @@ au § A.15.
 | `BRVM_ALPHA_PROXY` | mandataire HTTPS explicite pour www.brvm.org | facultatif |
 | `BRVM_ALPHA_ATTENTE_VERROU` | attente maximale d'un verrou, en secondes (défaut 10) ; vaut pour **tous** les verrous, journal des notes compris | facultatif |
 | `BRVM_ALPHA_MEMOIRE_MIN` | limite de mémoire virtuelle minimale, en Mo (défaut 1024 ; `0` : aucun contrôle) ; en dessous, code 6 sans rien charger (§ A.10) | facultatif |
-| `TMPDIR` | dossier des fichiers temporaires (défaut `/tmp`) | facultatif |
+| `BRVM_ALPHA_CPU_MIN` | marge minimale de temps de calcul, en secondes (défaut 900 ; `0` : aucun contrôle) : limite souple `RLIMIT_CPU` moins le temps déjà consommé ; en dessous, code 8 sans rien charger (§ A.6) | facultatif, à laisser vide |
+| `TMPDIR` | dossier des fichiers temporaires (défaut `/tmp`) ; un dossier **dédié** au moteur est conseillé (§ A.6) | conseillé |
 
 Avec `python3 -I`, les variables `PYTHON…` (dont `PYTHONPATH` et `PYTHONDONTWRITEBYTECODE`) sont
 ignorées : c'est voulu. Le code est trouvé par le fichier `.pth` (§ A.5), et `-B` remplace
@@ -92,7 +99,7 @@ sh deploiement/exporter-moteur.sh /chemin/hors/du/depot/moteur
 - Écrit `VERSION` : première ligne = commit court (suivi de `+modifie` si le code exporté diffère du
   commit), puis la date UTC, le commit long, le nombre de fichiers et l'empreinte sha256 de chaque fichier.
   Vérification : `grep -E '^[0-9a-f]{64}  ' VERSION | sha256sum -c --quiet`.
-- Refuse un dossier situé dans le code ou non vide (code 2). Mesuré : 86 fichiers, 11 Mo.
+- Refuse un dossier situé dans le code ou non vide (code 2). Mesuré : 88 fichiers, 11 Mo.
 - Le module Odoo garde ces fichiers **frères** (`brvm_alpha/`, `configs/`, `reports/` au même niveau) : le
   moteur les lit à côté de son code. Le code peut être en lecture seule.
 
@@ -165,7 +172,7 @@ faire échouer la construction s'il manque). Le script le signale s'il est absen
 Ligne exacte (environnement explicite, rien hérité d'Odoo) :
 
 ```sh
-env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME=/var/lib/odoo/rz_brvm_alpha TMPDIR=/tmp \
+env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME=/var/lib/odoo/rz_brvm_alpha TMPDIR=/var/lib/odoo/rz_brvm_alpha/tmp \
     BRVM_ALPHA_DONNEES=/var/lib/odoo/rz_brvm_alpha/donnees \
     BRVM_ALPHA_RAPPORTS=/var/lib/odoo/rz_brvm_alpha/rapports \
     /opt/rz-brvm-alpha/python/bin/python3.11 -I -B -m brvm_alpha etat --format json
@@ -180,8 +187,22 @@ Règles du lanceur :
 - **mémoire** : Odoo ne pose que la limite **douce** de `RLIMIT_AS` (`limit_memory_hard`), dont hérite le
   sous-processus ; le lanceur la **relève à 3 Go** (sans dépasser la limite dure). Toutes les commandes
   embarquées tiennent sous 0,9 Go de mémoire virtuelle, enfants compris (§ A.10) ;
-- **dossiers** : le module crée `BRVM_ALPHA_DONNEES` et `BRVM_ALPHA_RAPPORTS` à l'installation (code 8 s'ils
-  manquent) ;
+- **temps de calcul** : un travailleur Odoo pose sur lui-même une limite **souple** de temps de calcul
+  (`RLIMIT_CPU` = temps déjà consommé + `limit_time_cpu`, la limite dure ne change pas), dont hérite le
+  sous-processus ; le lanceur la **relève à la limite dure** (souple = dure). Temps de calcul mesurés :
+  `recommend` 14 s, `report` 16 s, `panel --force` 13 s pour le processus principal et 40 s pour **chaque**
+  processus de travail (chacun a sa propre limite). Au démarrage, si la marge (limite souple moins temps déjà
+  consommé) est sous 900 s (`BRVM_ALPHA_CPU_MIN`), le moteur sort aussitôt en **8** (« limite de temps de calcul
+  trop basse … : le lanceur doit relever RLIMIT_CPU ») ; il ne relève jamais la limite lui-même. Limite atteinte en
+  cours de commande (signal `SIGXCPU`) : sortie propre en 8 avec un objet JSON ; processus de travail du panel tué
+  par `SIGXCPU` : 8 « temps de calcul » (avant : −24 sans objet JSON, ou 6 « memoire ») ;
+- **dossier temporaire** : donner au moteur un `TMPDIR` **dédié** (par exemple
+  `/var/lib/odoo/rz_brvm_alpha/tmp`, créé par le module, 70 caractères au plus). `--fichier`, `--portefeuille` et
+  `--sortie` acceptent le dossier temporaire du système : avec `TMPDIR=/tmp`, partagé avec Odoo, un chemin relayé
+  pourrait y lire ou y écrire un fichier d'Odoo. Au-delà de 70 caractères, le socket des processus de travail du
+  panel ne tient plus dans un chemin de socket Unix (`/tmp` est alors pris le temps du panel) ;
+- **dossiers** : le module crée `BRVM_ALPHA_DONNEES`, `BRVM_ALPHA_RAPPORTS` et le `TMPDIR` dédié à
+  l'installation (code 8 si les deux premiers manquent) ;
 - **groupe de processus** : nouveau groupe (`start_new_session=True`) ; au-delà du délai, `TERM` au
   **groupe** (le moteur s'arrête proprement : code 130, dès le démarrage, chargement de pandas compris), puis
   `KILL` au groupe après 15 s. Le `KILL` au groupe est **obligatoire** : un processus figé dans une
@@ -205,9 +226,13 @@ def _limite():  # dans l'enfant, avant exec
     _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
     soft = TROIS_GO if hard == resource.RLIM_INFINITY else min(TROIS_GO, hard)
     resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+    # Temps de calcul : le travailleur Odoo a baissé sa limite souple (limit_time_cpu), le moteur en hérite ;
+    # elle est relevée à la limite dure, qu'Odoo ne touche pas.
+    _soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
+    resource.setrlimit(resource.RLIMIT_CPU, (hard, hard))
 
-def lancer(args, delai_s, sortie, erreurs, donnees, rapports):
-    env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": donnees, "TMPDIR": "/tmp",
+def lancer(args, delai_s, sortie, erreurs, donnees, rapports, tmp):
+    env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": donnees, "TMPDIR": tmp,  # TMPDIR dédié
            "BRVM_ALPHA_DONNEES": donnees, "BRVM_ALPHA_RAPPORTS": rapports}
     with open(sortie, "wb") as out, open(erreurs, "wb") as err:
         p = subprocess.Popen([MOTEUR, "-I", "-B", "-m", "brvm_alpha", *args, "--format", "json"],
@@ -231,7 +256,8 @@ def lancer(args, delai_s, sortie, erreurs, donnees, rapports):
 ```
 
 Dans un Odoo multi-fils (mode développement), `preexec_fn` n'est pas sûr : préfixer plutôt la commande par
-`prlimit --as=3221225472: --` (util-linux).
+`prlimit --as=3221225472: --cpu=unlimited: --` (util-linux ; si la limite dure de temps de calcul est finie,
+donner sa valeur à la place de `unlimited`).
 
 ### A.7 Codes de retour
 
@@ -247,9 +273,9 @@ bibliothèque devient 7.
 | 2 | `saisie_invalide` | saisie invalide ou refusée, erreurs d'arguments comprises ; **seulement** les saisies | option inconnue, `--couts inconnu`, `--delai nan`, date dans S1, URL invalide, `--racine` inexistant, cible inconnue, `--sortie` vers un dossier |
 | 4 | `verrou_occupe` | verrou tenu par une autre opération au-delà du délai | deux `panel`, deux `update`, deux `notes research` à la fois |
 | 5 | `acces_refuse` | accès refusé ou réseau | HTTP 403 ou 429, site bloqué, liste blanche, délai dépassé |
-| 6 | `memoire` | mémoire insuffisante | `MemoryError` (jamais avalée : aucun résultat dégradé en code 0) ; bibliothèque compilée impossible à charger faute de mémoire (« failed to map segment ») ; processus de travail du panel mort sous une limite de mémoire ; limite `RLIMIT_AS` sous 1 Go (refus au démarrage) |
-| 7 | `interne` | erreur interne (exception non prévue) ; trace sur la sortie d'erreur | défaut du moteur ; `ValueError` ou `KeyError` d'une bibliothèque |
-| 8 | `configuration` | configuration manquante ou invalide | dossiers absents, relatifs ou inexistants en mode embarqué, pdftotext absent, paquet Python manquant, dossier de données ou de rapports non inscriptible (lecture seule, droits, disque plein), état de politesse illisible, `validate`, `backtest` ou `serve` en mode embarqué |
+| 6 | `memoire` | mémoire insuffisante | `MemoryError` (jamais avalée : aucun résultat dégradé en code 0) ; bibliothèque compilée impossible à charger faute de mémoire (« failed to map segment ») ; processus de travail du panel tué par `SIGKILL` sous une limite de mémoire, ou mort sans cause connue sous cette limite (le message dit « cause inconnue ») ; limite `RLIMIT_AS` sous 1 Go (refus au démarrage) |
+| 7 | `interne` | erreur interne (exception non prévue) ; trace sur la sortie d'erreur | défaut du moteur ; `ValueError` ou `KeyError` d'une bibliothèque ; processus de travail du panel tué par `SIGSEGV`, `SIGABRT` ou un autre signal qui n'est pas un manque de mémoire |
+| 8 | `configuration` | configuration manquante ou invalide | dossiers absents, relatifs ou inexistants en mode embarqué, pdftotext absent, paquet Python manquant, dossier de données ou de rapports non inscriptible (lecture seule, droits, disque plein), état de politesse illisible, `validate`, `backtest` ou `serve` en mode embarqué ; limite de temps de calcul (`RLIMIT_CPU`) trop basse au démarrage, ou atteinte en cours de commande (`SIGXCPU`), processus de travail du panel compris (« temps de calcul ») |
 | 130 | `interruption` | interruption : Ctrl+C ou signal TERM | délai du lanceur dépassé |
 
 Le moteur ramène tout autre code à 7 (un `SystemExit(259)` sortirait sinon en 3, car le statut d'un
@@ -257,10 +283,18 @@ processus est le code modulo 256). Un code hors table vient de l'interpréteur o
 120 (sortie standard impossible à vider), 127 (« cannot allocate memory for thread-local data » : le chargeur
 dynamique n'a pas pu démarrer l'interpréteur), 1 sans objet JSON (OpenBLAS ou l'interpréteur avant le
 moteur), ou une valeur négative côté Python (tué par un signal : −9 pour `KILL`, −11 pour une erreur de
-segmentation sous une mémoire trop basse, −15 pour un `TERM` reçu dans les toutes premières millisecondes,
-avant que la garde du démarrage ne soit posée). Sous la limite du § A.6 (3 Go), aucun de ces cas n'a été observé.
-Les traiter comme 7. Avec `--format json`, une sortie standard fermée par le lecteur donne 1 (l'objet n'a pas
-pu être lu).
+segmentation sous une mémoire trop basse, −15 pour un `TERM` ou −24 pour un `SIGXCPU` reçus dans les toutes
+premières millisecondes, avant que la garde du démarrage ne soit posée). Sous les limites du § A.6 (3 Go, temps de
+calcul relevé), aucun de ces cas n'a été observé. Les traiter comme 7. Avec `--format json`, une sortie standard
+fermée par le lecteur donne 1 (l'objet n'a pas pu être lu).
+
+**Petits-enfants.** Les processus que lance le moteur meurent avec lui, même s'il est tué seul (`KILL` au seul
+PID, tueur de mémoire du noyau) : processus de travail du panel et leur serveur, et outils de poppler (`pdftotext`,
+`pdfinfo`, `pdffonts`, `pdfimages`), liés au moteur par `PR_SET_PDEATHSIG`. Vérifié : un `pdftotext` lent (faux
+outil qui dort puis sort en 3) meurt avec le moteur, sans jamais sortir en 3 (avant : récolté 4 s plus tard par
+le processus 1, avec le code 3). Le module Odoo doit de toute façon lancer le moteur dans un **nouveau groupe de
+processus**, tuer le **groupe**, et ne jamais se faire **récolteur des petits-enfants** (pas de
+`PR_SET_CHILD_SUBREAPER`, pas de `waitpid(-1)`) : il n'attend que son enfant direct.
 
 ### A.8 Sortie JSON
 
@@ -416,7 +450,8 @@ remplacé, le temps du panel, par `/tmp`).
   `--delai S` : nombre **fini** de 10 à 3600 (sinon code 2, aucune requête). `--rouvrir AAAA-MM-JJ[..AAAA-MM-JJ]` :
   décision explicite, retire les marqueurs « sans bulletin » (même définitifs, anciens marqueurs vides
   compris) de la période, cherchée de nouveau dans ce lancement (clé `marqueurs_rouverts` ; avec
-  `--simulation`, compte seulement).
+  `--simulation`, rien n'est retiré, mais les jours rouverts sont comptés dans `jours_a_chercher` et listés dans
+  `jours`, comme dans un vrai lancement).
 - `panel` : `panel` {`fichiers`, `analyses`, `en_cache`, `erreurs`, `seances`, `premiere_seance`,
   `derniere_seance`, `symboles`, `lignes_actions`, `seances_sans_boc`, `trous`, `dossier`}. `--workers`
   vaut par défaut `min(2, processeurs disponibles)` (quota du cgroup compris).
@@ -465,7 +500,8 @@ jamais avalée : essayé sur les données réelles avec le contrôle désactivé
 sort en 6 à chaque fois (avant : code 0 avec un ordre de bataille dégradé, ou −11). Hors mode embarqué, la
 réservation est de 2,3 Go : une limite de 1 à 3 Go peut encore figer OpenBLAS ; y préférer 3 Go ou le mode
 embarqué. Un processus de **pdftotext** (et `pdfinfo`, `pdffonts`, `pdfimages`) a sa propre limite : 512 Mo de
-mémoire virtuelle, 32 Mo de sortie (fichier temporaire, jamais en mémoire), 60 s pour un bulletin.
+mémoire virtuelle, 32 Mo de sortie (fichier temporaire, jamais en mémoire), 60 s pour un bulletin ; il meurt avec
+le moteur (§ A.7).
 
 ### A.11 Historique incomplet
 
@@ -527,9 +563,11 @@ fait la même boucle hors Odoo.
 
 ### A.14 Ce qui reste non vérifié
 
-- **aucun essai dans un vrai Odoo** : ni le lanceur, ni `limit_memory_hard`, ni le maître Odoo comme
-  processus 1, ni les travaux détachés ; la commande a été lancée ici comme Odoo le fera (même
-  interpréteur autonome, `-I -B`, `env -i`, `RLIMIT_AS` 3 Go, nouveau groupe, sorties dans des fichiers) ;
+- **aucun essai dans un vrai Odoo** : ni le lanceur, ni `limit_memory_hard`, ni `limit_time_cpu`, ni le maître
+  Odoo comme processus 1, ni les travaux détachés ; la commande a été lancée ici comme Odoo le fera (même
+  interpréteur autonome, `-I -B`, `env -i`, `RLIMIT_AS` 3 Go, nouveau groupe, sorties dans des fichiers), et la
+  limite de temps de calcul d'un travailleur a été jouée par `RLIMIT_CPU` (5 et 20 s) ; la façon dont Odoo 17
+  pose cette limite est tirée de son code, pas d'un essai ;
 - l'image `odoo:17.0` elle-même (Ubuntu jammy, glibc 2.35) : l'interpréteur et les roues manylinux_2_28 y
   sont compatibles sur le papier, mais n'y ont pas tourné ; le poppler de jammy (22.02) n'est pas celui de la
   machine de développement (24.02) : la mise en page du texte des nouveaux bulletins peut différer ;
@@ -596,9 +634,20 @@ distribution) sont inchangées.
   fichier ordinaire, `/dev/stdout` refusé hors root) ; chemins relatifs des options rendus absolus depuis le
   dossier courant dès le départ ;
 - le signal TERM arrête une commande proprement (code 130), dès le démarrage ;
+- **temps de calcul** : une limite `RLIMIT_CPU` qui laisse moins de 900 s de marge au démarrage donne 8, sans rien
+  charger (`BRVM_ALPHA_CPU_MIN=0` désactive le contrôle) ; `SIGXCPU` en cours de commande donne 8 avec un objet JSON
+  (avant : −24, sans objet) ; un processus de travail du panel mort prend le code de sa cause : `SIGXCPU` 8,
+  `SIGKILL` sous une limite de mémoire 6, `SIGSEGV` ou autre signal 7 (avant : 6 dès qu'une limite de mémoire était
+  posée) ;
+- outils de poppler liés au moteur (`PR_SET_PDEATHSIG`) : ils meurent avec lui ;
+- `update --simulation --rouvrir` compte les jours rouverts dans `jours_a_chercher` (avant : 1 jour pour 35
+  marqueurs rouverts) ;
+- `recommend` sur un tout petit panel (7 séances) : code 0, avec l'évaluation des indices « n.d. » (avant : 7,
+  `TypeError`) ;
 - réseau : délai, réservation et blocage comptés **par site** (`www.brvm.org` et `brvm.org` partagent une
   même clé) ; un nom résolu en adresse interdite est signalé comme refus de politique (code 5, `politique`),
-  plus comme « robots.txt interdit », et n'est plus compté comme requête ; adresse réellement jointe contrôlée
+  plus comme « robots.txt interdit », n'est plus compté comme requête et ne réserve plus de créneau dans
+  `politeness.json` (avant : 10 s d'attente de trop au lancement suivant) ; adresse réellement jointe contrôlée
   après la connexion ; délai total tenu jusqu'aux en-têtes ; `politeness.json` illisible : aucune requête,
   code 8, fichier non réécrit (avant : le blocage 403 était oublié et le fichier réécrit sans lui) ;
   `fetch_log.jsonl` tourne au-delà de 10 Mo ; les PDF en double du cache HTTP sont retirés ; `live` sort en 5

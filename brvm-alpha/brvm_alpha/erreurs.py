@@ -12,10 +12,12 @@ Codes (toutes les commandes, en mode normal comme embarqué) :
 2  saisie invalide : :class:`SaisieInvalide` et erreurs d'argparse **seulement**
 4  verrou occupé (une autre opération tient le même fichier)
 5  accès refusé ou réseau (HTTP 403 ou 429, refus de la liste blanche, délai dépassé…)
-6  mémoire insuffisante (``MemoryError``, bibliothèque impossible à charger faute de mémoire)
-7  erreur interne : toute exception non prévue (``ValueError`` et ``KeyError`` d'une bibliothèque comprises)
+6  mémoire insuffisante (``MemoryError``, bibliothèque impossible à charger faute de mémoire, processus de
+   travail tué par ``SIGKILL`` sous une limite de mémoire virtuelle)
+7  erreur interne : toute exception non prévue (``ValueError`` et ``KeyError`` d'une bibliothèque comprises,
+   processus de travail tué par ``SIGSEGV`` ou un autre signal)
 8  configuration manquante ou invalide (mode embarqué sans dossiers, extracteur PDF absent, paquet
-   manquant, dossier de données non inscriptible…)
+   manquant, dossier de données non inscriptible, limite de temps de calcul trop basse ou atteinte…)
 130 interruption (Ctrl+C, signal TERM)
 == =====================================================================================
 
@@ -130,6 +132,15 @@ class ArretDemande(KeyboardInterrupt):
     """Signal TERM reçu (Odoo, superviseur, script) : la commande s'arrête comme sur Ctrl+C (code 130)."""
 
 
+class TempsCalculDepasse(KeyboardInterrupt):
+    """Signal ``SIGXCPU`` reçu : la limite souple de temps de calcul (``RLIMIT_CPU``) est atteinte (code 8).
+
+    Comme :class:`ArretDemande`, elle dérive de ``KeyboardInterrupt`` : aucun ``except Exception`` ne l'avale, la
+    commande s'arrête proprement (verrous rendus, fichiers temporaires retirés) et rend un objet JSON. Le code est 8
+    (configuration) : c'est au lanceur de relever ``RLIMIT_CPU``.
+    """
+
+
 def code_sur(code: Any) -> int:
     """Code de sortie admis : un code de la table (:data:`CODES`), sinon :data:`INTERNE` ; jamais 3."""
     if isinstance(code, bool):
@@ -153,6 +164,78 @@ def limite_memoire() -> int | None:
     return None if soft == resource.RLIM_INFINITY or soft < 0 else int(soft)
 
 
+def limite_cpu() -> float | None:
+    """Limite souple de temps de calcul du processus (``RLIMIT_CPU``, secondes), ou ``None`` sans limite."""
+    try:
+        import resource
+
+        soft, _hard = resource.getrlimit(resource.RLIMIT_CPU)
+    except (ImportError, OSError, ValueError, AttributeError):  # pragma: no cover - plate-forme sans RLIMIT_CPU
+        return None
+    return None if soft == resource.RLIM_INFINITY or soft < 0 else float(soft)
+
+
+#: Attribut posé par le moteur sur une ``BrokenProcessPool`` (:func:`brvm_alpha.data.store._parse_all`) : codes de
+#: sortie des processus de travail, relevés une fois le pool fermé (négatif : tué par ce signal).
+ATTR_CODES_TRAVAILLEURS = "codes_sortie_travailleurs"
+
+
+def _nom_signal(n: int) -> str:
+    try:
+        import signal
+
+        return f"{signal.Signals(n).name} ({n})"
+    except (ImportError, ValueError):  # pragma: no cover - numéro inconnu
+        return f"n° {n}"
+
+
+def _cause_pool(e: BaseException) -> tuple[int, str]:
+    """``(code, message)`` d'un processus de travail mort (``BrokenProcessPool`` ``e``), d'après les codes de sortie.
+
+    - tué par ``SIGXCPU`` : limite de temps de calcul atteinte → 8 ;
+    - tué par ``SIGKILL`` sous une limite de mémoire virtuelle : manque de mémoire → 6 ;
+    - tué par un autre signal (``SIGSEGV``, ``SIGABRT``, ``SIGBUS``…) → 7 ;
+    - cause inconnue (codes absents, code positif, ou seulement ``SIGTERM``, que le pool envoie lui-même aux autres
+      processus) : classement d'avant (6 sous une limite de mémoire virtuelle, 7 sinon), dit dans le message.
+    """
+    import signal
+
+    codes = [int(c) for c in (getattr(e, ATTR_CODES_TRAVAILLEURS, None) or ()) if isinstance(c, int)]
+    sigs = sorted({-c for c in codes if c < 0 and -c != int(signal.SIGTERM)})
+    sous_as = limite_memoire() is not None
+    xcpu = int(getattr(signal, "SIGXCPU", 24))
+    if xcpu in sigs:
+        return CONFIGURATION, ("arrêt : temps de calcul épuisé : un processus de travail du panel a été arrêté par le "
+                               "signal SIGXCPU (limite de temps de calcul RLIMIT_CPU atteinte). Le lanceur doit relever "
+                               "RLIMIT_CPU (limite souple = limite dure, docs/DEPLOIEMENT.md § A.6).")
+    if int(signal.SIGKILL) in sigs and sous_as:
+        return MEMOIRE, ("mémoire insuffisante : un processus de travail du panel a été tué par le signal SIGKILL sous "
+                         "une limite de mémoire virtuelle (tueur de mémoire du noyau, le plus souvent). Relever la limite "
+                         "de mémoire virtuelle (3 Go conseillés).")
+    autres = [s for s in sigs if s != int(signal.SIGKILL)]
+    if autres:
+        return INTERNE, ("erreur interne : un processus de travail du panel a été arrêté par le signal "
+                         + ", ".join(_nom_signal(s) for s in autres)
+                         + " (défaut d'une bibliothèque compilée, le plus souvent) ; ce n'est pas un manque de mémoire.")
+    vus = ", ".join(str(c) for c in sorted(set(codes))) or "non relevés"
+    if sous_as:
+        return MEMOIRE, ("mémoire insuffisante (cause inconnue) : un processus de travail du panel est mort (codes de "
+                         f"sortie des processus de travail : {vus}) ; classé « mémoire » parce qu'une limite de mémoire "
+                         "virtuelle est posée. Relever la limite de mémoire virtuelle (3 Go conseillés) et vérifier la "
+                         "limite de temps de calcul (RLIMIT_CPU).")
+    return INTERNE, ("erreur interne : un processus de travail du panel est mort, cause inconnue (codes de sortie des "
+                     f"processus de travail : {vus}).")
+
+
+def cause_travailleur(exc: BaseException | None) -> tuple[int, str] | None:
+    """Processus de travail mort (``BrokenProcessPool`` dans la chaîne de ``exc``) : ``(code, message)``, sinon
+    ``None``. Voir :func:`_cause_pool`."""
+    for e in _chaine(exc):
+        if type(e).__name__ == "BrokenProcessPool":
+            return _cause_pool(e)
+    return None
+
+
 def _chaine(exc: BaseException | None):
     seen: set[int] = set()
     while exc is not None and id(exc) not in seen:
@@ -166,8 +249,10 @@ def est_memoire(exc: BaseException | None) -> bool:
 
     ``MemoryError`` ; ``ImportError`` ou ``OSError`` dont le message dit « failed to map segment », « cannot
     allocate memory »… (bibliothèque partagée impossible à charger sous une limite de mémoire virtuelle) ou de
-    code ``ENOMEM`` ; ``BrokenProcessPool`` (processus de travail mort) quand une limite de mémoire virtuelle est
-    posée. Un manque de place pour les variables de fil (« static TLS ») n'est pas un manque de mémoire.
+    code ``ENOMEM`` ; ``BrokenProcessPool`` (processus de travail mort) quand :func:`cause_travailleur` y voit un manque
+    de mémoire (tué par ``SIGKILL`` sous une limite de mémoire virtuelle, ou cause inconnue sous cette limite) : un
+    processus tué par ``SIGXCPU`` ou ``SIGSEGV`` n'est pas un manque de mémoire. Un manque de place pour les
+    variables de fil (« static TLS ») n'est pas un manque de mémoire.
     """
     for e in _chaine(exc):
         if isinstance(e, MemoryError):
@@ -178,7 +263,7 @@ def est_memoire(exc: BaseException | None) -> bool:
             msg = str(e).lower()
             if "static tls" not in msg and any(m in msg for m in _MOTIFS_MEMOIRE):
                 return True
-        if type(e).__name__ == "BrokenProcessPool" and limite_memoire() is not None:
+        if type(e).__name__ == "BrokenProcessPool" and _cause_pool(e)[0] == MEMOIRE:
             return True
     return False
 
@@ -231,10 +316,13 @@ def code_retour(exc: BaseException) -> int:
 
     Seules les saisies (:class:`SaisieInvalide`, erreurs d'argparse) donnent 2 : une ``ValueError`` ou une
     ``KeyError`` venue d'ailleurs (bibliothèque, défaut du moteur) est une erreur interne (7). Un panel illisible
-    (``.parquet`` abîmé) donne 1, un manque de mémoire 6 (:func:`est_memoire`), un paquet manquant ou un dossier
-    configuré non inscriptible 8 (:func:`est_configuration`).
+    (``.parquet`` abîmé) donne 1, un manque de mémoire 6 (:func:`est_memoire`), un processus de travail mort le code de
+    sa cause (:func:`cause_travailleur`), un paquet manquant ou un dossier configuré non inscriptible 8
+    (:func:`est_configuration`), le signal ``SIGXCPU`` 8 (:class:`TempsCalculDepasse`).
     """
-    if isinstance(exc, KeyboardInterrupt):
+    if isinstance(exc, TempsCalculDepasse):
+        code = CONFIGURATION
+    elif isinstance(exc, KeyboardInterrupt):
         code = INTERRUPTION
     elif isinstance(exc, SystemExit):  # argparse : 2 pour une saisie invalide, 0 pour --help
         raw = exc.code
@@ -243,6 +331,8 @@ def code_retour(exc: BaseException) -> int:
         code = int(getattr(exc, "code_sortie", INTERNE))
     elif est_memoire(exc):
         code = MEMOIRE
+    elif (cause := cause_travailleur(exc)) is not None:
+        code = cause[0]
     elif est_configuration(exc):
         code = CONFIGURATION
     elif isinstance(exc, FileNotFoundError) or est_panel_illisible(exc):
@@ -268,9 +358,14 @@ def message_erreur(exc: BaseException) -> str:
     """Texte français de l'erreur, sans trace d'appel."""
     if isinstance(exc, MemoryError):
         return "mémoire insuffisante : la commande a été arrêtée (aucun résultat partiel n'est donné)."
+    if isinstance(exc, TempsCalculDepasse):
+        return str(exc.args[0]) if exc.args else "arrêt : limite de temps de calcul atteinte (signal SIGXCPU)."
     if isinstance(exc, KeyboardInterrupt):
         return str(exc.args[0]) if isinstance(exc, ArretDemande) and exc.args else "commande interrompue."
     if not isinstance(exc, ErreurMoteur):
+        cause = cause_travailleur(exc)
+        if cause is not None and not any(isinstance(e, MemoryError) for e in _chaine(exc)):
+            return cause[1]
         if est_memoire(exc):
             return ("mémoire insuffisante : une bibliothèque n'a pas pu être chargée ou un processus de travail est "
                     f"mort ({type(exc).__name__} : {str(exc)[:200]}). Relever la limite de mémoire virtuelle "
@@ -299,5 +394,6 @@ def erreur_json(exc: BaseException, bandeau: str) -> dict[str, Any]:
 __all__ = ["OK", "DONNEES_ABSENTES", "SAISIE_INVALIDE", "VERROU_OCCUPE", "ACCES_REFUSE", "MEMOIRE", "INTERNE",
            "CONFIGURATION", "INTERRUPTION", "CODE_INTERDIT", "TYPES", "ErreurMoteur", "DonneesAbsentes",
            "HistoriqueIncomplet", "SaisieInvalide", "CleInconnue", "JournalIllisible", "VerrouOccupe", "AccesRefuse",
-           "ConfigurationError", "ArretDemande", "CODES", "code_sur", "limite_memoire", "est_memoire",
+           "ConfigurationError", "ArretDemande", "TempsCalculDepasse", "CODES", "code_sur", "limite_memoire",
+           "limite_cpu", "ATTR_CODES_TRAVAILLEURS", "cause_travailleur", "est_memoire",
            "est_panel_illisible", "est_configuration", "code_retour", "type_erreur", "message_erreur", "erreur_json"]

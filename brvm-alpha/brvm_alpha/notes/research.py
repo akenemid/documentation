@@ -729,6 +729,8 @@ def _state_path(cache_dir: str | Path) -> Path:
 
 #: Délai d'attente du verrou de l'état de politesse (s) : il n'est tenu que quelques millisecondes.
 STATE_LOCK_TIMEOUT_S = 15.0
+#: Clés d'une réservation de créneau dans l'état partagé (``politeness.json``).
+_CLES_RESERVATION = ("last", "session", "reserved_at")
 #: Une réservation d'une autre session n'est suivie que jusqu'à ce nombre de délais d'avance.
 MAX_CHAINED_SLOTS = 6
 
@@ -1096,7 +1098,7 @@ class PoliteSession:
         return delay
 
     # -- requêtes -------------------------------------------------------------
-    def _wait_turn(self, url: str) -> None:
+    def _wait_turn(self, url: str) -> dict[str, Any] | None:
         """Attend son tour : délai depuis la dernière requête de cette session (horloge
         ``clock``) **et** depuis la dernière requête d'une autre session vers ce site (état
         partagé, horloge ``now``), y compris pour la première requête de la session. Le
@@ -1106,7 +1108,10 @@ class PoliteSession:
 
         Horloge recalée : une réservation datée dans le futur (faite « après » maintenant, ou sans
         date de réservation et plus d'un délai en avance) est ignorée et remplacée par un seul délai ;
-        l'attente ne dépasse jamais :data:`MAX_CHAINED_SLOTS` délais."""
+        l'attente ne dépasse jamais :data:`MAX_CHAINED_SLOTS` délais.
+
+        Renvoie la réservation posée (``{"hote", "avant", "posee"}``, ou ``None`` si l'état n'a pas été écrit) :
+        :meth:`_annuler_reservation` la retire si la requête est refusée avant l'envoi."""
         host = url_host(url)
         delay = self.crawl_delay(url)
         wait = 0.0
@@ -1117,8 +1122,10 @@ class PoliteSession:
         sid = self.session_id
         own = wait
         cap = MAX_CHAINED_SLOTS * delay
+        jeton: dict[str, Any] = {"hote": host}
 
         def reserve(entry: dict[str, Any]) -> float:
+            jeton["avant"] = {k: entry.get(k) for k in _CLES_RESERVATION}
             slot = now + dt.timedelta(seconds=own)
             prev = entry.get("last")
             if prev and entry.get("session") != sid:
@@ -1141,14 +1148,43 @@ class PoliteSession:
             entry["last"] = (now + dt.timedelta(seconds=wait_s)).isoformat()
             entry["session"] = sid
             entry["reserved_at"] = now.isoformat()
+            jeton["posee"] = {k: entry.get(k) for k in _CLES_RESERVATION}
             return wait_s
 
+        posee = None
         try:
             wait = max(wait, self._state_update(host, reserve))
+            posee = jeton if "posee" in jeton else None
         except OSError as exc:  # l'état partagé est une sécurité de plus, jamais un blocage
             log.warning("état de politesse non écrit : %s", exc)
         if wait > 0:
             self.sleep(wait)
+        return posee
+
+    def _annuler_reservation(self, jeton: dict[str, Any] | None) -> None:
+        """Requête refusée **avant l'envoi** (adresse interdite, hôte hors liste blanche) : la réservation de
+        :meth:`_wait_turn` est retirée de l'état partagé (aucune requête n'est partie : le lancement suivant n'a pas à
+        attendre un délai de plus). Une réservation posée depuis par une autre session reste en place."""
+        if not jeton:
+            return
+        host, avant, posee = jeton["hote"], jeton.get("avant") or {}, jeton.get("posee") or {}
+        try:
+            with _state_locked(self.cache_dir, STATE_LOCK_TIMEOUT_S) as path:
+                data = _state_load(path, strict=True)
+                key = cle_politesse(host)
+                entry = data["hosts"].get(key)
+                if not isinstance(entry, dict) or any(entry.get(k) != v for k, v in posee.items()):
+                    return  # une autre session a réservé depuis : sa réservation reste
+                for k in _CLES_RESERVATION:
+                    if avant.get(k) is None:
+                        entry.pop(k, None)
+                    else:
+                        entry[k] = avant[k]
+                if not entry:
+                    data["hosts"].pop(key, None)
+                _state_save(path, data)
+        except (OSError, ResearchError, _err.ErreurMoteur) as exc:
+            log.warning("réservation de politesse non retirée : %s", exc)
 
     def _record_done(self, host: str) -> None:
         now = to_utc(self.now())
@@ -1225,7 +1261,7 @@ class PoliteSession:
             if self.n_requests >= self.max_requests:
                 self._log(event="quota", url=url, n_requests=self.n_requests)
                 raise QuotaExceeded(f"Quota de {self.max_requests} requêtes atteint : collecte interrompue.")
-            self._wait_turn(url)
+            jeton = self._wait_turn(url)
             self.n_requests += 1
             t0 = self.clock()
             try:
@@ -1246,8 +1282,9 @@ class PoliteSession:
                 self._log(event="policy_refused", url=url, reason=str(exc), attempt=attempt)
                 if isinstance(exc, (_net.AdresseInterdite, _net.HoteNonAutorise)):
                     # Refusée avant l'envoi (nom résolu en adresse interdite, hôte hors liste) : aucune requête
-                    # n'est partie, elle n'est pas comptée.
+                    # n'est partie, elle n'est pas comptée et son créneau n'est pas gardé.
                     self.n_requests -= 1
+                    self._annuler_reservation(jeton)
                     self._stop("politique", f"adresse refusée : {exc}")
                 else:
                     self._last_request[cle_politesse(host)] = self.clock()
