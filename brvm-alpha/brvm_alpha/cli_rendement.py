@@ -23,6 +23,7 @@ Performance passée ≠ garantie. Aucun gain n'est garanti.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import csv
 import io
@@ -32,7 +33,7 @@ import shutil
 import tempfile
 import warnings
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 import pandas as pd
 
@@ -205,6 +206,22 @@ def _ok(b: Any) -> bool:
     return isinstance(b, Mapping) and not b.get("erreur")
 
 
+@contextlib.contextmanager
+def _saisie(quoi: str = "") -> Iterator[None]:
+    """Refus d'une saisie par le module (``ValueError`` : doublon au carnet, nom invalide, grille illisible…) rendu
+    comme une saisie invalide (code 2). Seules les opérations qui portent une saisie de l'utilisateur sont
+    enveloppées : un défaut du calcul garde son propre code."""
+    try:
+        yield
+    except SaisieInvalide:
+        raise
+    except ValueError as exc:
+        msg = str(exc).strip() or type(exc).__name__
+        if not msg.lower().startswith(("refusé", "échec")):
+            msg = "refusé : " + (f"{quoi} : " if quoi else "") + msg
+        raise SaisieInvalide(msg) from exc
+
+
 def _panels(panel_dir: Any = None) -> Mapping[str, Any]:
     """Panels du moteur (``strategy.build_panels``) ; panel absent : :class:`DonneesAbsentes` (code 1)."""
     from brvm_alpha.strategy import build_panels
@@ -279,17 +296,23 @@ def ajouter_options(p: argparse.ArgumentParser, commande: str) -> None:
 
 
 def _grille_option(value: Any) -> str:
+    """Option ``--grille`` contrôlée avant le calcul : grille enregistrée présente et lisible, ou fichier lisible."""
+    from brvm_alpha.rendement import grille as G
+
     v = str(value or "").strip()
     if v in ("", "central"):
         return "central"
     if v == "ma_sgi":
-        from brvm_alpha.rendement import grille as G
-
         if not G.enregistree():
             raise SaisieInvalide("refusé : --grille ma_sgi : aucune grille enregistrée (la saisir avec « python -m "
                                  "brvm_alpha plan grille --courtage … »)")
+        with _saisie("--grille ma_sgi"):
+            G.charger()
         return v
-    return str(_fichier_lu(v, "--grille"))
+    p = _fichier_lu(v, "--grille")
+    with _saisie("--grille"):
+        G.lire_fichier(p)
+    return str(p)
 
 
 def options_recommend(args: argparse.Namespace, commande: str = "recommend") -> dict[str, Any]:
@@ -315,6 +338,12 @@ def options_recommend(args: argparse.Namespace, commande: str = "recommend") -> 
             raise SaisieInvalide("refusé : --forcer ne sert qu'avec --arrondi restes")
         kw["forcer"] = True
     if getattr(args, "apport", None) is not None:
+        cash = getattr(args, "cash", None)
+        if cash is None and not getattr(args, "suivi", None):
+            raise SaisieInvalide("refusé : --apport : liquidités réelles nécessaires (--cash, qui comprend l'apport, "
+                                 "ou --suivi)")
+        if cash is not None and float(cash) + 1.0 < float(args.apport):
+            raise SaisieInvalide("refusé : --apport supérieur aux liquidités réelles : --cash doit comprendre l'apport")
         kw["apport"] = float(args.apport)
     for cle in ("completer", "reinvestir", "continuite"):
         if getattr(args, cle, False):
@@ -330,7 +359,8 @@ def _carnet_existant(nom: str) -> Any:
     if nom in NOMS_MOTEUR:
         raise SaisieInvalide(f"refusé : {nom} est tenu par le moteur (journal du témoin, sans carnet) ; les carnets "
                              "sont ceux de PLAN, MOI, E-C et E-D")
-    c = cn.ouvrir(nom, dossier_suivi(), creer=False)
+    with _saisie("portefeuille"):
+        c = cn.ouvrir(nom, dossier_suivi(), creer=False)
     if not c.fichier.exists():
         raise DonneesAbsentes(f"échec : portefeuille suivi « {nom} » introuvable ({c.fichier}) : le démarrer avec "
                               f"python -m brvm_alpha suivi demarrer --nom {nom}")
@@ -341,7 +371,8 @@ def _grille_du_mandat(mandat: Mapping[str, Any] | None) -> Any:
     from brvm_alpha.rendement import grille as G
 
     if (mandat or {}).get("grille") == "ma_sgi" and G.enregistree():
-        return G.charger()
+        with _saisie("grille enregistrée"):
+            return G.charger()
     return G.defaut()
 
 
@@ -719,7 +750,8 @@ def _plan_grille(args: argparse.Namespace) -> int:
 
     cli = _cli()
     champs = {champ: getattr(args, "g_" + opt) for opt, champ, _n in CHAMPS_GRILLE if getattr(args, "g_" + opt) is not None}
-    avant = G.charger()
+    with _saisie("grille enregistrée"):
+        avant = G.charger()
     chemin = None
     avertissements: list[str] = []
     if champs or args.investisseur or args.pays is not None:
@@ -754,7 +786,8 @@ def _plan_grille(args: argparse.Namespace) -> int:
         od = _ordre_pour_comparer(capital, args)
         grilles: dict[str, Any] = {"central": G.defaut()}
         if G.enregistree():
-            grilles["ma_sgi"] = G.charger()
+            with _saisie("grille enregistrée"):
+                grilles["ma_sgi"] = G.charger()
         grilles.update(G.exemples())
         comparaison = {"capital": capital, "capital_ordre": od.get("_capital_ordre", capital),
                        "source": od.get("_source"),
@@ -835,8 +868,9 @@ def _suivi_demarrer(args: argparse.Namespace) -> int:
         raise SaisieInvalide(f"refusé : {nom} est tenu par le moteur (« suivi maj ») : il n'a pas de carnet")
     D = dossier_suivi()
     paths.verifier_ecriture(D)
-    S.dossier_portefeuille(nom, D)  # nom valide, jamais sous reports/
-    c = cn.ouvrir(nom, D, creer=False)
+    with _saisie("portefeuille"):
+        S.dossier_portefeuille(nom, D)  # nom valide, jamais sous reports/
+        c = cn.ouvrir(nom, D, creer=False)
     if c.fichier.exists() and c.mandat():
         raise SaisieInvalide(f"refusé : le portefeuille « {nom} » est déjà démarré (mandat du {c.mandat()['date']}) ; "
                              "rien n'est écrit")
@@ -847,7 +881,8 @@ def _suivi_demarrer(args: argparse.Namespace) -> int:
               "grille": "ma_sgi" if G.enregistree() else "central", "perte_toleree": pe.get("perte_toleree"),
               "taux_reserve": pe.get("taux_reserve"), "options_execution": []}
     c = cn.ouvrir(nom, D, creer=True)
-    ecrits = c.ajouter_plusieurs([mandat, {"type": "apport", "date": jour, "montant": capital}])
+    with _saisie("carnet"):
+        ecrits = c.ajouter_plusieurs([mandat, {"type": "apport", "date": jour, "montant": capital}])
     return _sortie_simple(args, {"nom": nom, "carnet": str(c.fichier), "mouvements": ecrits, "mode": args.mode,
                                  "capital": capital},
                           [f"Portefeuille « {nom} » démarré le {jour} ({'sur papier' if args.mode == 'papier' else 'réel'}) "
@@ -934,6 +969,11 @@ def _suivi_maj(args: argparse.Namespace) -> int:
     D = dossier_suivi()
     paths.verifier_ecriture(D)
     jour = _aujourd_hui()
+    if args.nom:
+        from brvm_alpha import suivi as S
+
+        with _saisie("portefeuille"):
+            S.dossier_portefeuille(args.nom, D)
     if args.nom == "N" and "N" not in _declares(jour):
         raise SaisieInvalide("refusé : N (essai avec les notes) n'est suivi que s'il est déclaré (suivi declarer)")
     P = _panels(args.panel_dir)
@@ -1019,7 +1059,8 @@ def _suivi_bulletin(args: argparse.Namespace) -> int:
     cli = _cli()
     nom = str(args.nom or "REF-S2").strip()
     D = dossier_suivi()
-    d = S.dossier_portefeuille(nom, D)
+    with _saisie("portefeuille"):
+        d = S.dossier_portefeuille(nom, D)
     jour = _aujourd_hui()
     try:
         P: Mapping[str, Any] | None = _panels(args.panel_dir)
@@ -1108,7 +1149,8 @@ def _suivi_saisir(args: argparse.Namespace) -> int:
     if args.apport is not None or args.retrait is not None:
         ty = "apport" if args.apport is not None else "retrait"
         montant = float(args.apport if args.apport is not None else args.retrait)
-        m = c.ajouter({"type": ty, "date": jour, "montant": montant})
+        with _saisie("carnet"):
+            m = c.ajouter({"type": ty, "date": jour, "montant": montant})
         return _sortie_simple(args, {"nom": c.nom, "mouvement": m},
                               [f"{ty.capitalize()} de {cli.fr_num(montant, 0)} FCFA consigné au carnet « {c.nom} » "
                                f"le {jour}."])
@@ -1116,8 +1158,9 @@ def _suivi_saisir(args: argparse.Namespace) -> int:
         raise SaisieInvalide("refusé : un avis d'opéré ne se saisit que dans un portefeuille réel (suivi demarrer --mode "
                              "reel) ; un portefeuille sur papier est exécuté par « suivi maj »")
     lignes = lire_avis(_fichier_lu(args.fichier, "--fichier"))
-    g0 = G.charger()
-    r = c.saisir_avis(lignes, g0)
+    with _saisie("avis d'opéré"):
+        g0 = G.charger()
+        r = c.saisir_avis(lignes, g0)
     chemin = None
     if r["concorde"]:
         paths.verifier_ecriture(dossier_profil() / "grille_sgi.yaml")
@@ -1157,8 +1200,9 @@ def _suivi_revue(args: argparse.Namespace) -> int:
     c = _carnet_existant(str(args.nom).strip())
     paths.verifier_ecriture(c.fichier)
     jour = _aujourd_hui().date().isoformat()
-    m = c.ajouter({"type": "revue", "date": jour, "alerte": str(args.alerte), "decision": args.decision,
-                   "texte": str(args.texte)})
+    with _saisie("carnet"):
+        m = c.ajouter({"type": "revue", "date": jour, "alerte": str(args.alerte), "decision": args.decision,
+                       "texte": str(args.texte)})
     return _sortie_simple(args, {"nom": c.nom, "mouvement": m, "phrase": RG.PH_REVUE},
                           [f"Revue consignée au carnet « {c.nom} » le {jour} : alerte {args.alerte}, décision "
                            f"« {args.decision} ». Aucun ordre n'est créé.", RG.PH_REVUE])

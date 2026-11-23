@@ -200,6 +200,8 @@ def test_new_recommend_options_reach_recommend(donnees, fausse_reco, capsys):
     (["--taux-reserve", "200"], 2, "erreur"),
     (["--suivi", "REF-S2"], 2, "tenu par le moteur"),
     (["--suivi", "MOI"], 1, "suivi demarrer"),
+    (["--apport", "1M"], 2, "liquidités réelles nécessaires"),
+    (["--apport", "1M", "--cash", "500k"], 2, "--cash doit comprendre"),
 ])
 def test_refused_option_combinations_give_their_code_and_one_json(donnees, fausse_reco, capsys, argv, code, mot):
     n = len(fausse_reco)
@@ -377,6 +379,10 @@ def test_suivi_carnet_commands_write_only_in_the_data_folder(donnees, horloge, p
     assert code == 2 and "portefeuille réel" in one_json(out)["message"]  # sur papier : pas d'avis d'opéré
     code, out, _ = run_cli(capsys, "suivi", "saisir", "--nom", "INCONNU", "--apport", "1000", "--format", "json")
     assert code == 1 and "suivi demarrer" in one_json(out)["message"]
+    for argv in (["demarrer", "--nom", "../X"], ["saisir", "--nom", ".cache", "--apport", "1"], ["bulletin", "--nom", "a/b"],
+                 ["maj", "--nom", "../X"]):
+        code, out, _ = run_cli(capsys, "suivi", *argv, "--format", "json")
+        assert code == 2 and "nom de portefeuille invalide" in one_json(out)["message"], argv  # refus, pas une panne
     c = CN.ouvrir("PLAN", data / "suivi", creer=False)
     assert c.verifier()["ok"] and c.liquidites() == 2_400_000
     assert not any(reports.iterdir())
@@ -649,3 +655,17 @@ def test_real_process_json_contract_in_normal_and_embedded_mode(tmp_path):
         d = json.loads(r.stdout)
         assert r.returncode == attendu and d["bandeau"] == cli.BANNER and d["ok"] is (attendu == 0), (argv, r.stderr)
     assert not any(reports.iterdir()) and not any(data.iterdir())  # refus et lectures : rien n'est écrit
+
+
+def test_unreadable_grid_file_or_saved_grid_is_an_input_error(donnees, fausse_reco, capsys, tmp_path):
+    bad = tmp_path / "grille.yaml"
+    bad.write_text("champs: [", encoding="utf-8")
+    n = len(fausse_reco)
+    code, out, _ = run_cli(capsys, "recommend", "--capital", "10M", "--sans-notes", "--grille", str(bad), "--format",
+                           "json")
+    assert code == 2 and "grille du courtier illisible" in one_json(out)["message"] and len(fausse_reco) == n
+    (donnees[0] / "profil").mkdir()
+    (donnees[0] / "profil" / "grille_sgi.yaml").write_text("champs: {courtage: 0.9}\n", encoding="utf-8")
+    for argv in (["plan", "--sans-notes"], ["plan", "grille"], ["recommend", "--capital", "1M", "--grille", "ma_sgi"]):
+        code, out, _ = run_cli(capsys, *argv, "--format", "json")
+        assert code == 2 and "illisible" in one_json(out)["message"], argv  # 90 % de courtage : hors plage
