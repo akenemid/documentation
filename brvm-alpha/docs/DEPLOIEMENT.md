@@ -213,6 +213,15 @@ Règles du lanceur :
   `--sortie` acceptent le dossier temporaire du système : avec `TMPDIR=/tmp`, partagé avec Odoo, un chemin relayé
   pourrait y lire ou y écrire un fichier d'Odoo. Au-delà de 70 caractères, le socket des processus de travail du
   panel ne tient plus dans un chemin de socket Unix (`/tmp` est alors pris le temps du panel) ;
+- **purge de `<T>`** (le `TMPDIR` dédié) : conseillée après chaque lancement (fichiers de titre ou de motif écrits par
+  le module, § A.9 ; restes d'un moteur arrêté par `KILL`, comme le dossier du socket des processus de travail du
+  panel), quand aucun autre lancement n'utilise ce même `<T>` ;
+- **`HOME`** : le dossier des données (`<D>`), son parent comme dans la ligne ci-dessus, ou `<D>/home` (créé par le
+  module) sont admis. Le moteur ne lit rien sous `HOME`, sauf par `expanduser` d'un chemin donné en option
+  (`~/…`), qu'Odoo ne passe pas. Mesuré le 23/11/2026 (code exporté, CPython 3.11.15 autonome, `env -i`,
+  `HOME=<D>/home` vide, accès aux fichiers relevés par `strace -f`) : `panel`, `etat`, `notes add`, `notes list`,
+  `recommend`, `indices` et une extraction par `pdftotext` n'ouvrent aucun fichier sous `HOME`, qui reste vide ;
+  seul `etat` parcourt `<D>/home` en mesurant la taille du dossier des données (`donnees.taille_octets`) ;
 - **dossiers** : le module crée `BRVM_ALPHA_DONNEES`, `BRVM_ALPHA_RAPPORTS` et le `TMPDIR` dédié à
   l'installation (code 8 si les deux premiers manquent) ;
 - **groupe de processus** : nouveau groupe (`start_new_session=True`) ; au-delà du délai, `TERM` au
@@ -224,6 +233,24 @@ Règles du lanceur :
   tueur de mémoire du noyau) ;
 - **sorties** : sortie standard et sortie d'erreur redirigées vers des **fichiers** (jamais un tube non
   lu, qui figerait le moteur) ; lire l'objet JSON dans le fichier de sortie standard ;
+- **récolte des processus** : la règle dépend de l'endroit où tourne le lanceur.
+  - Lanceur **dans le travailleur Odoo** (l'exemple ci-dessous) : n'attendre que l'enfant direct (`p.wait`), **jamais**
+    `PR_SET_CHILD_SUBREAPER`, **jamais** `waitpid(-1)`. Le travailleur récolterait sinon les autres enfants d'Odoo
+    (leur `Popen.wait` perdrait leur code) et deviendrait le parent d'orphelins qu'il ne récolte pas. Un petit-enfant
+    orphelin du moteur revient alors au processus 1 du conteneur (§ A.7).
+  - Lanceur **processus dédié** (petit programme lancé par Odoo, qui n'attend que lui ; il lance le moteur et ne fait
+    rien d'autre) : il **peut** se faire récolteur (`prctl(PR_SET_CHILD_SUBREAPER, 1)`), ce qui retire le risque d'un
+    code 3 récolté par le processus 1, à **trois conditions** :
+    (a) il attend d'abord son enfant direct par `Popen.wait`, dans **un seul fil**, **sans gestionnaire de
+    `SIGCHLD`** (un autre fil ou un gestionnaire qui récolterait le moteur avant `Popen.wait` lui ferait perdre le
+    code du moteur : `Popen` rend alors 0) ;
+    (b) il récolte **jusqu'à `ECHILD`** avant toute sortie (`os.waitpid(-1, …)` jusqu'à `ChildProcessError`), y
+    compris après le `KILL` ciblé du groupe du moteur et sur erreur ou arrêt du lanceur (bloc `finally`, TERM et
+    Ctrl+C du lanceur changés en exception) ;
+    (c) sa propre sortie vaut **0 ou 1, jamais 3** (`os._exit` dans le `finally`) : le code et l'objet JSON du
+    moteur passent par des fichiers, et un lanceur resté orphelin (travailleur Odoo tué) peut être récolté sans
+    risque par le maître Odoo.
+    Un seul fil : `preexec_fn` y est sûr. Exemple essayé (`test_controle_retouches.py`) : second bloc ci-dessous ;
 - **une seule opération longue à la fois** côté Odoo (§ A.12 : verrous du moteur).
 
 Exemple de lanceur Odoo (Python), à adapter :
@@ -271,6 +298,86 @@ Dans un Odoo multi-fils (mode développement), `preexec_fn` n'est pas sûr : pr�
 `prlimit --as=3221225472: --cpu=unlimited: --` (util-linux ; si la limite dure de temps de calcul est finie,
 donner sa valeur à la place de `unlimited`).
 
+Exemple de **lanceur dédié** récolteur (programme à part, conditions (a), (b) et (c) ci-dessus), à adapter. Odoo le
+lance, n'attend que lui (`p.wait`, délai plus large que `delai_s + grace_s` + 10 s), puis lit `resultat`
+(`{"code": …, "orphelins": […]}`) et l'objet JSON du moteur dans `sortie` :
+
+```python
+# Lanceur dédié : processus à part, en un seul fil, sans gestionnaire de SIGCHLD. Il lance le moteur, récolte les
+# orphelins du moteur et sort toujours en 0 ou 1 (jamais 3). Code du moteur et objet JSON : dans des fichiers.
+import contextlib, ctypes, json, os, signal, subprocess, time
+
+PR_SET_CHILD_SUBREAPER = 36
+
+
+class ArretLanceur(Exception):
+    """TERM ou Ctrl+C reçu par le lanceur : le moteur est arrêté, ses processus récoltés, puis sortie en 1."""
+
+
+def _arret(signum, _frame):
+    raise ArretLanceur(signal.Signals(signum).name)
+
+
+def _recolter(groupe, attente_s=10.0):
+    """(b) Récolte jusqu'à ECHILD ; un orphelin encore vivant après attente_s : KILL au seul groupe du moteur."""
+    codes, fin, tue = [], time.monotonic() + attente_s, groupe is None
+    while True:
+        try:
+            pid, statut = os.waitpid(-1, 0 if tue else os.WNOHANG)
+        except ChildProcessError:  # ECHILD : plus aucun enfant
+            return codes
+        if pid:
+            codes.append(os.waitstatus_to_exitcode(statut))
+        elif time.monotonic() < fin:
+            time.sleep(0.05)
+        else:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(groupe, signal.SIGKILL)
+            tue = True
+
+
+def lancer_dedie(cmd, env, delai_s, sortie, erreurs, resultat, preexec_fn=None, grace_s=15.0):
+    """Lance le moteur, écrit {"code", "orphelins"} dans resultat ; ne rend jamais la main (os._exit 0 ou 1)."""
+    signal.signal(signal.SIGTERM, _arret)
+    signal.signal(signal.SIGINT, _arret)
+    code = groupe = None
+    sortie_lanceur = 1
+    try:
+        if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER refusé")
+        with open(sortie, "wb") as out, open(erreurs, "wb") as err:
+            p = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                 preexec_fn=preexec_fn, start_new_session=True, close_fds=True)
+            groupe = p.pid
+            try:
+                code = p.wait(delai_s)  # (a) l'enfant direct d'abord, par Popen.wait
+            except subprocess.TimeoutExpired:
+                os.killpg(groupe, signal.SIGTERM)  # le moteur sort en 130 avec son objet JSON
+                try:
+                    code = p.wait(grace_s)
+                except subprocess.TimeoutExpired:
+                    os.killpg(groupe, signal.SIGKILL)  # KILL ciblé : le seul groupe du moteur
+                    code = p.wait()
+    except BaseException:
+        if groupe is not None and code is None:  # arrêt du lanceur ou erreur : le moteur ne lui survit pas
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(groupe, signal.SIGKILL)
+        raise
+    finally:
+        try:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            orphelins = _recolter(groupe)  # (b) avant toute sortie, erreur comprise
+            with open(resultat, "w", encoding="utf-8") as fh:
+                json.dump({"code": code, "orphelins": orphelins}, fh)
+            sortie_lanceur = 0 if code is not None else 1
+        finally:
+            os._exit(sortie_lanceur)  # (c) 0 ou 1, jamais 3
+```
+
+Un code négatif, 120, 127 ou un objet JSON absent se traitent comme 7 (§ A.7) ; `orphelins` liste les codes des
+processus du moteur récoltés par le lanceur (un 3 d'un outil de poppler y apparaît sans effet sur rien).
+
 ### A.7 Codes de retour
 
 Mêmes codes pour toutes les commandes, en mode normal comme embarqué (`brvm_alpha.erreurs`). Le
@@ -317,11 +424,16 @@ fermée par le lecteur donne 1 (l'objet n'a pas pu être lu).
   seul moteur de 0 à 100 ms après le premier processus de travail, 12 essais : aucun processus vivant 8 s plus tard,
   aucun code 3 (avant : des orphelins dans 10 essais sur 13).
 
-Le module Odoo doit de toute façon lancer le moteur dans un **nouveau groupe de processus**, tuer le **groupe**, et
-ne jamais se faire **récolteur des petits-enfants** (pas de `PR_SET_CHILD_SUBREAPER`, pas de `waitpid(-1)`) : il
-n'attend que son enfant direct. Un petit-enfant orphelin est alors récolté par le processus 1 du conteneur : si c'est
-le maître Odoo, le risque d'un code 3 récolté ne disparaît qu'avec un vrai processus 1 (par exemple `tini` ou
-`dumb-init` en tête de l'image), qui récolte les orphelins sans s'arrêter. Non vérifié dans l'image odoo:17.0.
+Le module Odoo doit de toute façon lancer le moteur dans un **nouveau groupe de processus** et tuer le **groupe**. Un
+lanceur qui tourne **dans le travailleur Odoo** ne se fait jamais **récolteur des petits-enfants** (pas de
+`PR_SET_CHILD_SUBREAPER`, pas de `waitpid(-1)`) : il n'attend que son enfant direct. Un petit-enfant orphelin est
+alors récolté par le processus 1 du conteneur : si c'est le maître Odoo, le risque d'un code 3 récolté ne disparaît
+qu'avec un vrai processus 1 (par exemple `tini` ou `dumb-init` en tête de l'image), qui récolte les orphelins sans
+s'arrêter (non vérifié dans l'image odoo:17.0), **ou** avec un **lanceur dédié** qui se fait récolteur aux trois
+conditions du § A.6 : il attend d'abord le moteur par `Popen.wait` dans un seul fil sans gestionnaire de `SIGCHLD`,
+récolte jusqu'à `ECHILD` avant toute sortie (après le `KILL` ciblé du groupe et sur erreur compris), et ne sort
+jamais en 3 (`os._exit(0)` ou `os._exit(1)`). Les orphelins du moteur lui reviennent alors, jamais au processus 1.
+La règle « jamais de récolteur » ne vaut donc que pour un lanceur qui tourne dans le travailleur Odoo.
 
 ### A.8 Sortie JSON
 

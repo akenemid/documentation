@@ -547,8 +547,104 @@ def test_deployment_doc_states_the_remaining_risks_plainly():
     assert "reportés" in a8 and "seul `KILL` l'arrête" in a8
     a6 = plat.split("### A.6", 1)[1].split("### A.7", 1)[0]
     assert "reste **court**" in a6
+    # récolte : « jamais de récolteur » seulement dans le travailleur Odoo ; un lanceur dédié peut l'être, à trois
+    # conditions ; HOME=<D>/home admis ; purge du dossier temporaire conseillée
+    a6n = a6.replace("**", "")
+    assert "Lanceur dans le travailleur Odoo" in a6n and "jamais PR_SET_CHILD_SUBREAPER, jamais waitpid(-1)" in \
+        a6n.replace("`", "")
+    assert "Lanceur processus dédié" in a6n and "trois conditions" in a6n
+    for condition in ("(a) il attend d'abord son enfant direct par `Popen.wait`, dans un seul fil, sans gestionnaire "
+                      "de `SIGCHLD`", "(b) il récolte jusqu'à `ECHILD` avant toute sortie",
+                      "après le `KILL` ciblé du groupe du moteur et sur erreur", "(c) sa propre sortie vaut 0 ou 1, "
+                      "jamais 3 (`os._exit` dans le `finally`)"):
+        assert condition in a6n, condition
+    assert "`<D>/home`" in a6n and "sauf par `expanduser` d'un chemin donné en option" in a6n
+    assert "purge de `<T>`" in a6n and "après chaque lancement" in a6n
+    assert "ne vaut donc que pour un lanceur qui tourne dans le travailleur Odoo" in a7
     a3 = plat.split("### A.3", 1)[1].split("### A.4", 1)[0]
     assert "seul `0` coupe le contrôle" in a3
     a2 = plat.split("### A.2", 1)[1].split("### A.3", 1)[0]
     assert "vide ou faite seulement d'espaces" in a2.replace("**", "")
     assert "Performance passée ≠ garantie. Aucun gain n'est garanti." in doc
+
+
+# ---------------------------------------------------------------------------
+# Documentation : le lanceur dédié récolteur du § A.6, essayé tel qu'il est écrit
+# ---------------------------------------------------------------------------
+
+_PILOTE_LANCEUR_DEDIE = r"""
+import json, sys
+ns = {"__name__": "lanceur_dedie"}
+exec(compile(open(sys.argv[1], encoding="utf-8").read(), "DEPLOIEMENT.md § A.6 (lanceur dédié)", "exec"), ns)
+spec = json.loads(sys.argv[2])
+ns["lancer_dedie"](spec["cmd"], spec["env"], spec["delai_s"], spec["sortie"], spec["erreurs"], spec["resultat"],
+                   grace_s=spec["grace_s"])
+raise SystemExit(3)  # jamais atteint : lancer_dedie ne rend pas la main
+"""
+
+_FAUX_MOTEUR = r"""
+import json, os, signal, subprocess, sys, time
+mode, trace = sys.argv[1], sys.argv[2]
+if mode == "ignore_term":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+duree = "0.5" if mode == "orphelin" else "60"
+petit = subprocess.Popen([sys.executable, "-c", "import sys, time; time.sleep(float(sys.argv[1])); sys.exit(3)", duree])
+with open(trace, "w") as fh:
+    fh.write(json.dumps({"moteur": os.getpid(), "petit_enfant": petit.pid}))
+print(json.dumps({"ok": True, "bandeau": "Performance passée ≠ garantie. Aucun gain n'est garanti."}), flush=True)
+if mode == "orphelin":
+    os._exit(0)  # sort sans attendre son enfant : un orphelin qui sortira en 3 (comme un outil de poppler)
+time.sleep(60)
+"""
+
+
+def _bloc_lanceur_dedie() -> str:
+    doc = (ROOT / "docs" / "DEPLOIEMENT.md").read_text(encoding="utf-8")
+    a6 = doc.split("### A.6", 1)[1].split("### A.7", 1)[0]
+    blocs = [b.split("```", 1)[0] for b in a6.split("```python")[1:]]
+    dedies = [b for b in blocs if b.lstrip().startswith("# Lanceur dédié")]
+    assert len(dedies) == 1, "un seul exemple de lanceur dédié au § A.6"
+    return dedies[0]
+
+
+def _vivant(pid: int) -> bool:
+    try:
+        st = open(f"/proc/{pid}/stat").read()
+    except OSError:
+        return False
+    return st[st.rfind(")") + 2] != "Z"
+
+
+@pytest.mark.skipif(not LINUX, reason="PR_SET_CHILD_SUBREAPER : Linux seulement")
+@pytest.mark.parametrize("cas", ["orphelin", "ignore_term", "term_lanceur", "commande_absente"])
+def test_the_dedicated_reaping_launcher_of_the_doc_reaps_every_process_and_never_exits_3(tmp_path, cas):
+    """Lanceur dédié du § A.6, essayé tel qu'il est écrit : (a) code du moteur par Popen.wait ; (b) orphelins du moteur
+    récoltés par le lanceur (jamais par le processus 1), après le KILL du groupe et sur arrêt du lanceur compris ;
+    (c) sortie du lanceur en 0 ou 1, jamais 3, même quand un orphelin sort en 3."""
+    (tmp_path / "lanceur.py").write_text(_bloc_lanceur_dedie(), encoding="utf-8")
+    (tmp_path / "pilote.py").write_text(_PILOTE_LANCEUR_DEDIE, encoding="utf-8")
+    (tmp_path / "moteur.py").write_text(_FAUX_MOTEUR, encoding="utf-8")
+    trace = tmp_path / "trace.json"
+    mode = {"orphelin": "orphelin", "ignore_term": "ignore_term"}.get(cas, "attend")
+    cmd = ([str(tmp_path / "absent")] if cas == "commande_absente"
+           else [sys.executable, "-I", "-B", str(tmp_path / "moteur.py"), mode, str(trace)])
+    spec = {"cmd": cmd, "env": {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, "sortie": str(tmp_path / "sortie.json"),
+            "erreurs": str(tmp_path / "erreurs.txt"), "resultat": str(tmp_path / "resultat.json"),
+            "delai_s": 0.5 if cas == "ignore_term" else 30.0, "grace_s": 0.5}
+    p = subprocess.Popen([sys.executable, "-I", "-B", str(tmp_path / "pilote.py"), str(tmp_path / "lanceur.py"),
+                          json.dumps(spec)], cwd=str(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if cas == "term_lanceur":
+        fin = time.monotonic() + 30
+        while not (trace.exists() and trace.read_text()) and time.monotonic() < fin:
+            time.sleep(0.01)
+        p.send_signal(signal.SIGTERM)  # le lanceur lui-même est arrêté pendant que le moteur tourne
+    _out, err = p.communicate(timeout=60)
+    res = json.loads((tmp_path / "resultat.json").read_text(encoding="utf-8"))
+    attendu = {"orphelin": (0, 0, [3]), "ignore_term": (0, -9, [-9]), "term_lanceur": (1, None, [-9, -9]),
+               "commande_absente": (1, None, [])}[cas]
+    assert (p.returncode, res["code"], sorted(res["orphelins"])) == attendu, (res, err.decode()[-800:])
+    assert p.returncode != 3
+    if cas != "commande_absente":
+        pids = json.loads(trace.read_text())
+        assert not _vivant(pids["moteur"]) and not _vivant(pids["petit_enfant"])  # tout est récolté, rien ne reste
+        assert json.loads((tmp_path / "sortie.json").read_text())["ok"] is True  # objet du moteur, dans un fichier
