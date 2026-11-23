@@ -299,8 +299,7 @@ def leviers(ordre: Any, grille: _gr.GrilleSGI | None = None, lectures: Mapping[s
         u, a_, p1 = evite(r)
         A.append({"geste": "Ensemble, avec la grille connue sans frais par ligne (courtage 1,00 %, forfait 4 000)",
                   "une_fois": u, "par_an": a_, "premiere_annee": p1,
-                  "texte": f"{_rg.fcfa(p1, unite=False)} de moins la 1re année, puis {_rg.fcfa(a_, unite=False)} de "
-                           "moins par an" if p1 >= 0 else "surcoût par rapport à votre tarif",
+                  "texte": _texte_evite(p1, a_),
                   "condition": "grille homologuée lue ; non confirmée pour vous",
                   "contrepartie": f"courtage plus élevé à l'entrée ({_rg.fcfa(-u, signe=True)})" if u < 0 else "—",
                   "sans_objet": False, "statut": HYPOTHESE})
@@ -308,16 +307,19 @@ def leviers(ordre: Any, grille: _gr.GrilleSGI | None = None, lectures: Mapping[s
         r = res["borne_non_attestee"]
         u, a_, p1 = evite(r)
         A.append({"geste": "Borne non attestée (0,50 % et aucun frais par ligne)", "une_fois": u, "par_an": a_,
-                  "premiere_annee": p1, "texte": f"{_rg.fcfa(p1, unite=False)} puis {_rg.fcfa(a_, unite=False)}",
+                  "premiere_annee": p1, "texte": _texte_evite(p1, a_),
                   "condition": "aucune grille lue ne cumule ces avantages", "contrepartie": "—", "sans_objet": False,
                   "borne_non_attestee": True, "statut": HYPOTHESE})
     for x in A:
         if x.get("equivalent_annuel") is None:
             x["equivalent_annuel"] = int(x["par_an"] + (R.round_fcfa(x["une_fois"] / H) if H else 0))
 
-    # Inconnues à lever (ni gestes, ni gains)
+    # Inconnues à lever (ni gestes, ni gains). Les postes de l'ordre sont recalculés avec la grille employée (comme la
+    # ligne E2 du tableau du brut au net) : la borne haute de la taxe est celle de cette grille, pas du tarif central.
     inc: list[dict[str, Any]] = []
-    c = o.get("couts") or {}
+    c = dict(o.get("couts") or {})
+    if grille is not None:
+        c.update(_gr.couts_recalcules(o, grille, _gr.cost_model_de(o, costs)))
     if _gr.statut_champ(g, "taxe_courtage") != FAIT:
         r10 = _avec_grille(o, g, {"t10": g.avec(taxe_courtage=0.10)}, costs)["t10"]
         inc.append({"inconnue": "Taxe sur le courtage", "de": 0, "a": int(c.get("tva") or 0),
@@ -357,9 +359,21 @@ def leviers(ordre: Any, grille: _gr.GrilleSGI | None = None, lectures: Mapping[s
     if reinvestir and not reinvestir.get("erreur") and reinvestir.get("remis_au_travail_moyen") is not None:
         B.append(ligne_b("Réinvestissement mensuel (F13d, règle corrigée)", float(reinvestir["remis_au_travail_moyen"]),
                          "option, essai E-D", moyenne=True))
+    # Le tableau B porte une année ordinaire du passé et « une année sur dix », dont la lecture flatteuse : PH_PASSE,
+    # PH_DESCRIPTIF et PH_FLATTE l'accompagnent (règle 8 du §1, §F1-10).
     return {"frais_evites": A, "phrase_frais_evites": _rg.PH_ECONOMIE, "inconnues": inc, "argent_place": B,
             "phrase_argent_place": _rg.PH_PLACE, "horizon_ans": H,
+            "phrases": [_rg.PH_PASSE, _rg.PH_DESCRIPTIF, _rg.PH_FLATTE],
             "note": "Les lignes du tableau B se recoupent : elles ne s'additionnent pas."}
+
+
+def _texte_evite(premiere_annee: int, par_an: int) -> str:
+    """« 73 224 de moins la 1re année, puis 96 000 de moins par an » ; une valeur négative s'écrit « surcoût » (§F2)."""
+    def un(x: int, quand: str) -> str:
+        if x >= 0:
+            return f"{_rg.fcfa(x, unite=False)} de moins {quand}"
+        return f"surcoût de {_rg.fcfa(-x, unite=False)} {quand}"
+    return un(int(premiere_annee), "la 1re année") + ", puis " + un(int(par_an), "par an")
 
 
 def amortissement(poche: Mapping[str, Any]) -> dict[str, Any]:

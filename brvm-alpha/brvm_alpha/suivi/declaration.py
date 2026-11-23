@@ -43,7 +43,10 @@ __all__ = ["CONFIRMATION_REGISTRE", "CODE_REFUS", "FICHIER", "HorsDepot", "IDS",
 
 FICHIER = "declaration.jsonl"
 TYPES = ("reference", "essai", "ecart_execution", "regle_papier", "decision_humaine", "derogation", "retrait", "remplace")
-IDS = ("REF-S2", "N", "E-C", "E-D", "PLAN", "E-A", "E-B", "E-L")
+#: Identifiants des articles (§8, §F9). ``E-T`` : entrée en plusieurs fois (F15), écart de calendrier de même nature
+#: que E-L, E-B, E-A (§8.3), ajouté par l'utilisateur s'il l'applique ; signé après le début, il ne vaut que pour
+#: l'avenir.
+IDS = ("REF-S2", "N", "E-C", "E-D", "PLAN", "E-A", "E-B", "E-L", "E-T")
 #: Code de sortie d'un refus (ligne de commande).
 CODE_REFUS = 2
 MESSAGE_HORS_DEPOT = "La déclaration se signe dans le dépôt de développement, puis se livre par un commit."
@@ -94,6 +97,9 @@ def modele(reglages: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     option 1 ou 2 pour E-C et E-D ; seuils marqués « Hypothèse de travail » à valider ou corriger)."""
     debut = str(_rg.lire(reglages, "dates.debut_suivi", "2026-12-01"))
     capital = int(_rg.lire(reglages, "suivi.capital_temoin_fcfa", 10_000_000))
+    from brvm_alpha.suivi import temoin as _tm
+
+    d0 = _tm.date_de_depart(reglages).date().isoformat()
     ref = _article(
         type="reference", id="REF-S2", reponse_requise=False, reponse="oui", proposition="oui",
         phrase=("Le panier de référence suit la règle testée : les 20 plus grosses sociétés éligibles, remises à niveau "
@@ -109,12 +115,12 @@ def modele(reglages: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
                          "10 séances",
             "notes": "aucune (D11 : aucun rôle dans le test)", "couts": "scénario central",
             "capital": f"{capital} FCFA",
-            "depart": f"première décision à la dernière séance avant le {debut} ; première exécution à la première séance "
-                      f"à partir du {debut}",
+            "depart": f"première décision le {d0} (dernière séance avant le {debut}, date figée) ; première exécution à "
+                      f"la première séance à partir du {debut}",
             "code": "le moteur du test, plus un seul refus explicite (forfait de compte non nul) ; fabrique "
                     "brvm_alpha.suivi.temoin.temoin_model, sans modification de validation/runner.py"},
         parametres={"variante": "REF", "couts": "central", "capital_fcfa": capital, "notes": None,
-                    "mode_decision": "evenementiel", "debut_suivi": debut,
+                    "mode_decision": "evenementiel", "debut_suivi": debut, "date_premiere_decision": d0,
                     "fabrique": "brvm_alpha.suivi.temoin.temoin_model",
                     "budget_de_retard_points": {"premiere_annee": [3.3, 4.2], "par_an_ensuite": [1.7, 2.6]},
                     "points_d_etape": ["2026-12-01", "2027-01-29", "2027-06-01", "2027-12-01", "2028-01-31",
@@ -273,6 +279,12 @@ def preparer(articles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             fautes.append(f"{a['id']} : réponse attendue parmi {a['choix']} (proposition : {a.get('proposition')})")
             continue
         out.append(a)
+    opts = {a["id"]: str(a.get("reponse") or "") for a in out if a.get("id") in ("E-C", "E-D") and a.get("type") == "essai"}
+    genres = {r.split(" :")[0] for r in opts.values() if r.startswith("option")}
+    if len(genres) > 1:
+        fautes.append("E-C et E-D : une seule option pour les deux (option 1 : essais déclarés ; option 2 : dérogation "
+                      "signée), §8.4 et §8.5 ; réponses données : "
+                      + ", ".join(f"{k} « {v} »" for k, v in sorted(opts.items())))
     if fautes:
         raise ValueError("déclaration incomplète : " + " ; ".join(fautes))
     lignes_: list[dict[str, Any]] = []
@@ -338,10 +350,19 @@ def lire_signature(profil: str | Path | None = None) -> dict[str, str]:
 
 
 def depot_de_developpement(racine: str | Path | None = None) -> bool:
-    """Vrai si ``racine`` (défaut : racine du code) est le dépôt de développement : un dossier ou fichier ``.git`` à la
-    racine ou dans son dossier parent (``reports/`` et ``docs/`` y sont suivis par git)."""
+    """Vrai si ``racine`` (défaut : racine du code) est le dépôt de développement : un ``.git`` à la racine ou dans son
+    dossier parent **et** ``reports/trials.parquet`` suivi par git (``git ls-files --error-unmatch``), c'est-à-dire
+    ``reports/`` suivi par git. Une simple présence de ``.git`` (copie de l'installation par un clone) ne suffit pas :
+    il faut aussi que le registre soit un fichier suivi de ce dépôt."""
     r = Path(racine) if racine is not None else _paths.REPO_ROOT
-    return (r / ".git").exists() or (r.parent / ".git").exists()
+    if not ((r / ".git").exists() or (r.parent / ".git").exists()):
+        return False
+    try:
+        res = subprocess.run(["git", "-C", str(r), "ls-files", "--error-unmatch", "reports/trials.parquet"],
+                             capture_output=True, text=True, timeout=20, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return res.returncode == 0
 
 
 def _sha_fichier(p: Path) -> str | None:
@@ -401,10 +422,35 @@ def lignes(dossier: str | Path) -> list[dict[str, Any]]:
     return [o for _b, o in _s.lire_jsonl(Path(dossier) / FICHIER) if o is not None]
 
 
-def verifier(dossier: str | Path) -> dict[str, Any]:
+def _sceaux_du_registre(registre: str | Path) -> list[dict[str, Any]]:
+    """Sceaux de la déclaration écrits dans le registre à l'inscription (lignes S2) : ``n`` et empreinte de la ligne
+    citée, nombre de lignes et empreinte de la dernière ligne au moment de l'inscription."""
+    p = Path(registre)
+    if not p.exists():
+        return []
+    reg = pd.read_parquet(p)
+    out = []
+    for r in reg.to_dict("records"):
+        if str(r.get("echantillon")) != "S2" or FICHIER not in str(r.get("source") or ""):
+            continue
+        try:
+            par = json.loads(str(r.get("parametres") or "{}"))
+        except (TypeError, ValueError):
+            par = {}
+        sc = par.get("declaration") if isinstance(par, Mapping) else None
+        if isinstance(sc, Mapping):
+            out.append({"id": str(r.get("id")), **sc})
+    return out
+
+
+def verifier(dossier: str | Path, registre: str | Path | None = None) -> dict[str, Any]:
     """Contrôle de la déclaration : chaque ligne se lit, ``n`` suit 1, 2, 3…, ``empreinte`` est celle de son contenu et
     ``precedente`` est le SHA-256 du texte exact de la ligne précédente. Toute réécriture rompt la chaîne
-    (``chaine_ok`` faux : le feu « Données » passe au rouge). Fichier absent : ``existe`` faux, aucune anomalie."""
+    (``chaine_ok`` faux : le feu « Données » passe au rouge). Fichier absent : ``existe`` faux, aucune anomalie.
+
+    ``registre`` (chemin du registre des essais, lecture seule) : la suppression des **dernières** lignes ne rompt pas
+    la chaîne à elle seule ; les sceaux écrits à l'inscription (ligne citée par ``source``, nombre de lignes et
+    empreinte de la dernière ligne) la détectent."""
     p = Path(dossier) / FICHIER
     brut = _s.lire_jsonl(p)
     anomalies: list[str] = []
@@ -424,6 +470,19 @@ def verifier(dossier: str | Path) -> dict[str, Any]:
         if obj.get("type") not in TYPES:
             anomalies.append(f"ligne {i} : type inconnu {obj.get('type')!r}")
         prec = _s.empreinte_texte(txt)
+    if registre is not None:
+        textes = [t for t, _o in brut]
+        objets = [o for _t, o in brut]
+        for sc in _sceaux_du_registre(registre):
+            n, nl = int(sc.get("n") or 0), int(sc.get("n_lignes") or 0)
+            if n < 1 or n > len(objets) or not isinstance(objets[n - 1], Mapping) or \
+                    objets[n - 1].get("empreinte") != sc.get("empreinte_ligne"):
+                anomalies.append(f"registre {sc['id']} : la ligne {n} de la déclaration manque ou a changé")
+            if nl > len(textes):
+                anomalies.append(f"registre {sc['id']} : {nl} lignes à l'inscription, {len(textes)} aujourd'hui "
+                                 "(dernières lignes retirées)")
+            elif nl >= 1 and _s.empreinte_texte(textes[nl - 1]) != sc.get("empreinte_derniere"):
+                anomalies.append(f"registre {sc['id']} : la ligne {nl} (dernière à l'inscription) a changé")
     ok = not anomalies
     return {"fichier": str(p), "existe": p.exists(), "n_lignes": len(brut), "chaine_ok": ok, "ok": ok,
             "anomalies": anomalies, "derniere": prec if brut else None,
@@ -551,22 +610,31 @@ def empreinte_lignes(frame: pd.DataFrame, n: int | None = None) -> str:
     return _s.empreinte(recs)
 
 
-def _source(dossier: Path, n: int) -> str:
+def _base_source(dossier: Path, source_base: str | None) -> str:
+    """Chemin de la déclaration écrit dans ``source`` : relatif à la racine du code ; un dossier hors du dépôt est
+    refusé (aucune provenance fabriquée), sauf ``source_base`` explicite (réservé aux tests sur des copies)."""
+    if source_base is not None:
+        return f"{str(source_base).rstrip('/')}/{FICHIER}"
     try:
         rel = Path(os.path.abspath(dossier / FICHIER)).relative_to(Path(os.path.abspath(_paths.REPO_ROOT)))
-        return f"{rel.as_posix()}#{n}"
     except ValueError:
-        return f"reports/suivi_S2/{FICHIER}#{n}"
+        raise ValueError(f"inscription refusée : la déclaration ({dossier}) n'est pas dans le dépôt "
+                         f"({_paths.REPO_ROOT}) ; la provenance écrite au registre serait fausse") from None
+    return rel.as_posix()
 
 
-def inscrire_au_registre(dossier: str | Path, registre: str | Path, *, confirmer: str | None = None) -> list[str]:
+def inscrire_au_registre(dossier: str | Path, registre: str | Path, *, confirmer: str | None = None,
+                         source_base: str | None = None) -> list[str]:
     """Ajoute au registre des essais les lignes ``S2-REF`` (famille ``S2-temoin``), ``S2-N`` (``S2-rendement``),
     ``S2-EC`` et ``S2-ED`` (``S2-rendement``, seulement s'ils sont déclarés comme essais) et ``S2-PLAN``
     (``S2-execution``) : ``echantillon`` = ``S2``, ``statut`` = ``pré-enregistré``, ``parametres`` = la règle déclarée,
     ``source`` = ``reports/suivi_S2/declaration.jsonl#<n>``. Rend les identifiants ajoutés.
 
     ``registre`` est le chemin **passé explicitement** (aucun défaut) : la fonction n'écrit nulle part ailleurs.
-    ``confirmer`` doit valoir exactement :data:`CONFIRMATION_REGISTRE`. Refus si la chaîne de la déclaration est rompue.
+    ``confirmer`` doit valoir exactement :data:`CONFIRMATION_REGISTRE`. Refus si la chaîne de la déclaration est rompue,
+    ou si le dossier n'est pas dans le dépôt (``source`` serait faux), sauf ``source_base`` explicite (tests). Chaque
+    ligne porte dans ``parametres.declaration`` le sceau de la déclaration (ligne citée et son empreinte, nombre de
+    lignes, empreinte de la dernière) : :func:`verifier` avec le registre détecte ensuite une troncature.
     Les lignes existantes ne sont ni modifiées ni réordonnées (empreinte vérifiée sur une copie avant de remplacer le
     fichier) ; une seconde inscription n'ajoute aucune ligne en double. C'est la seule écriture du module dans ce
     fichier."""
@@ -578,6 +646,7 @@ def inscrire_au_registre(dossier: str | Path, registre: str | Path, *, confirmer
     if confirmer != CONFIRMATION_REGISTRE:
         raise PermissionError(f"inscription refusée : recopiez exactement « {CONFIRMATION_REGISTRE} »")
     d = Path(dossier)
+    base = _base_source(d, source_base)
     v = verifier(d)
     if not v["existe"] or not v["chaine_ok"]:
         raise ValueError("inscription refusée : déclaration absente ou chaîne rompue (" + " ; ".join(v["anomalies"][:3]) + ")")
@@ -610,13 +679,15 @@ def inscrire_au_registre(dossier: str | Path, registre: str | Path, *, confirmer
         if l is None or rid in deja:
             continue
         reg = l["registre"]
+        sceau = {"n": int(l["n"]), "empreinte_ligne": l.get("empreinte"), "n_lignes": int(v["n_lignes"]),
+                 "empreinte_derniere": v["derniere"]}
         rows.append({"id": rid, "variante": str(reg.get("variante") or l.get("id")), "famille": str(reg["famille"]),
                      "parametres": _s.canonique({"regle": l.get("regle"), "parametres": l.get("parametres"),
-                                                 "effet_a_partir_du": l.get("effet_a_partir_du")}),
+                                                 "effet_a_partir_du": l.get("effet_a_partir_du"), "declaration": sceau}),
                      "echantillon": "S2", "statut": STATUT_PREENREGISTRE, "date_execution": pd.NaT,
                      "rendements_hebdo": None, "metriques": None,
                      "empreinte_config": str(l.get("empreinte_config") or fp or ""),
-                     "source": _source(d, int(l["n"])), "note": str(l.get("phrase") or "")})
+                     "source": f"{base}#{int(l['n'])}", "note": str(l.get("phrase") or "")})
     if not rows:
         return []
     neuf = pd.concat([avant.astype(object), pd.DataFrame(rows, columns=list(REGISTRY_COLUMNS)).astype(object)],

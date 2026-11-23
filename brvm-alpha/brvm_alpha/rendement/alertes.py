@@ -201,9 +201,10 @@ def alertes_fuite(ordre: Any, rendement_net: Mapping[str, Any] | None = None, gr
                           + ", ".join(vi) + ") : bulletins manquants non vérifiables (table des séances absente).",
                           "bulletins manquants non vérifiables", ventes=vi))
         elif trou["n"] > 0:
-            out.append(_a("W7", "rouge", VERIFIER, f"Ne vendez pas à cause d'un trou de données : {trou['n']} bulletins "
-                          f"manquent entre le {trou['du']:%d/%m} et le {trou['au']:%d/%m}. Ventes concernées : "
-                          + ", ".join(vi) + ".", "bulletins manquants", ventes=vi, n=trou["n"]))
+            quand = (f"1 bulletin manque le {trou['du']:%d/%m}" if trou["n"] == 1 else
+                     f"{trou['n']} bulletins manquent entre le {trou['du']:%d/%m} et le {trou['au']:%d/%m}")
+            out.append(_a("W7", "rouge", VERIFIER, f"Ne vendez pas à cause d'un trou de données : {quand}. Ventes "
+                          "concernées : " + ", ".join(vi) + ".", "bulletins manquants", ventes=vi, n=trou["n"]))
     # W8, W9
     holds = holdings_fournis if holdings_fournis is not None else any(int(l.get("detenus") or 0) > 0 for l in (o.get("lignes") or []))
     if holds and not memoire and not completer:
@@ -367,10 +368,15 @@ def feux(semaine: Mapping[str, Any] | None, plan: Mapping[str, Any] | None = Non
             if lu - prevu > e_f and (prevu <= 0 or (lu - prevu) / prevu > e_p):
                 cond.append(f"(a) frais lus {_rg.fcfa(lu)} pour {_rg.fcfa(prevu)} prévus par la grille")
                 break
-    ecart = float(s.get("argent_qui_dort") or 0) - float(s.get("argent_qui_dort_prevu") or 0)
-    if ecart > float(_rg.lire(reglages, "feux.argent_qui_dort_ecart_fcfa", 100_000)) and \
-            int(s.get("seances_argent_qui_dort_au_dela") or 0) > int(_rg.lire(reglages, "liquidites.delai_argent_qui_dort_seances", 20)):
-        cond.append(f"(b) argent qui dort {_rg.fcfa(ecart)} au-delà de ce que la règle déclarée prévoit")
+    b_calcule = s.get("argent_qui_dort_prevu") is not None and s.get("argent_qui_dort") is not None
+    if not b_calcule:
+        # Sans la projection de la règle déclarée (§F7 d), la condition (b) n'est pas calculée : elle n'est pas verte.
+        cond.append("(b) argent qui dort au-delà de la règle déclarée : non calculé")
+    else:
+        ecart = float(s["argent_qui_dort"]) - float(s["argent_qui_dort_prevu"])
+        if ecart > float(_rg.lire(reglages, "feux.argent_qui_dort_ecart_fcfa", 100_000)) and \
+                int(s.get("seances_argent_qui_dort_au_dela") or 0) > int(_rg.lire(reglages, "liquidites.delai_argent_qui_dort_seances", 20)):
+            cond.append(f"(b) argent qui dort {_rg.fcfa(ecart)} au-delà de ce que la règle déclarée prévoit")
     if int(s.get("ordres_expires") or 0) > 0:
         cond.append(f"(c) {int(s['ordres_expires'])} ordre(s) non servi(s) expiré(s) après 10 séances")
     ndc = s.get("dividendes_non_credites")
@@ -381,11 +387,18 @@ def feux(semaine: Mapping[str, Any] | None, plan: Mapping[str, Any] | None = Non
         rouge.append("les liquidités ne couvrent pas le prochain prélèvement de frais fixes")
     if s.get("w1_critique"):
         rouge.append("frais annuels supérieurs aux dividendes attendus")
-    reel = [c for c in cond if "sans objet" not in c]
+    reel = [c for c in cond if "sans objet" not in c and "non calculé" not in c]
+    non_calc = [c for c in cond if "non calculé" in c]
     etat_f = "rouge" if rouge else ("orange" if reel else "vert")
     aff, rap = _affichage(etat_f, alertes_ouvertes, "fuites", jour, rappel_j)
-    fuites = {"etat": etat_f, "affichage": aff, "conditions": cond + rouge, "rappel": rap,
-              "phrase": "; ".join(rouge + reel) if (rouge or reel) else "aucune fuite au-delà de ce que la règle prévoit"}
+    if rouge or reel:
+        ph_f = "; ".join(rouge + reel)
+    elif non_calc:
+        ph_f = "aucune fuite constatée ; " + "; ".join(non_calc)
+    else:
+        ph_f = "aucune fuite au-delà de ce que la règle prévoit"
+    fuites = {"etat": etat_f, "affichage": aff, "conditions": cond + rouge, "rappel": rap, "phrase": ph_f,
+              "b_calcule": b_calcule}
     # Données
     bm = int(s.get("bulletins_manquants") or 0)
     o_b = int((_rg.lire(reglages, "feux.bulletins_manquants", {}) or {}).get("orange", 1))

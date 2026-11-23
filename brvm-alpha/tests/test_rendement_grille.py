@@ -12,6 +12,7 @@ import rendement_jeux as J
 from brvm_alpha import settings
 from brvm_alpha.portfolio import recommend as R
 from brvm_alpha.rendement import grille as G
+from brvm_alpha.rendement import reglages as RG
 
 CENTRAL = settings.cost_scenario("central")
 
@@ -136,3 +137,18 @@ def test_option_grille_resolue(tmp_path):
     assert G.resoudre(g) is g
     with pytest.raises(ValueError, match="illisible"):
         G.resoudre(str(tmp_path / "absent.yaml"))
+
+
+def test_statut_ecrit_ou_avis_sans_source_refuse(tmp_path):
+    g = G.defaut()
+    g.champs["courtage"].statut = G.ECRITE
+    c = G.controler(g)
+    assert any("source" in e and "courtage" in e for e in c["erreurs"])
+    with pytest.raises(ValueError, match="source"):
+        G.enregistrer(g, tmp_path)
+    g.champs["courtage"].source = "grille tarifaire écrite du 15/11/2026"
+    g.champs["garde"].statut, g.champs["garde"].source = G.AVIS, ""
+    assert any("droits de garde" in e for e in G.controler(g)["erreurs"])
+    g.champs["garde"].source = "avis d'opéré"
+    assert G.controler(g)["erreurs"] == [] and G.enregistrer(g, tmp_path).exists()
+    assert G.statut_champ(G.charger(tmp_path), "courtage") == RG.FAIT

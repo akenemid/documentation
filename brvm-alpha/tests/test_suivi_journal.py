@@ -200,6 +200,46 @@ def test_bulletin_semaine_zero_et_sans_journal(tmp_path):
     assert b2["semaine"] == 0 and b2["feux"]["perte"]["etat"] == "—"
 
 
+@pytest.mark.parametrize("jour", ["2026-11-23", "2026-11-25", "2026-11-20", "2026-11-22"])
+def test_semaine_zero_en_tete_au_dernier_vendredi(jour):
+    t = BU.rendre(BU.bulletin(None, nom="REF-S2", aujourd_hui=jour))
+    assert t.startswith("BULLETIN DE LA SEMAINE — vendredi 20/11/2026 — semaine 0 — portefeuille sur papier")
+    assert BU.dernier_vendredi(jour) == pd.Timestamp("2026-11-20")
+
+
+def test_semaine_zero_du_temoin_argent_engage_et_pas_encore_de_titres():
+    t = " ".join(BU.rendre(BU.bulletin(None, nom="REF-S2", aujourd_hui="2026-11-23")).split())
+    assert ("Argent engagé : 10 000 000 FCFA (en liquidités) ; premier achat prévu à la séance du 01/12/2026."
+            in t.replace("\u202f", " "))
+    assert "PROCHAINS RENDEZ-VOUS : pas encore de titres ; remise à niveau le 29/01/2027" in t
+    assert "aucun dividende attendu dans les 12 mois" not in t
+    # Un portefeuille dont les rendez-vous ne sont pas calculés ne dit pas « aucun dividende attendu ».
+    ls = _ligne_bulletin_simple()
+    t2 = " ".join(BU.rendre(BU.bulletin(ls[-1], nom="MOI", aujourd_hui="2026-12-21")).split())
+    assert "prochain dividende : non calculé" in t2 and "aucun dividende attendu" not in t2
+
+
+def _ligne_bulletin_simple():
+    import tempfile
+    from pathlib import Path
+
+    return _ligne_bulletin(Path(tempfile.mkdtemp(prefix="bulletin_")))
+
+
+def test_ecart_au_marche_d_un_autre_portefeuille_jamais_sous_le_libelle_du_panier(tmp_path):
+    ls = _ligne_bulletin(tmp_path)
+    BU.ecrire_semaines("MOI", ls, tmp_path)
+    t = " ".join(BU.rendre(BU.depuis_journal("MOI", tmp_path, aujourd_hui="2026-12-21")).split())
+    assert f"{BU.LIGNE_MARCHE} : non calculé" in t  # pas de journal REF-S2 dans le dossier
+    assert RG.pct(ls[-1]["ecart_au_marche"], 1, signe=True) not in t.split(BU.LIGNE_MARCHE)[1][:30]
+    ref = [dict(l, ecart_au_marche=-0.0345) for l in ls]
+    BU.ecrire_semaines("REF-S2", ref, tmp_path)
+    t2 = " ".join(BU.rendre(BU.depuis_journal("MOI", tmp_path, aujourd_hui="2026-12-21")).split())
+    assert f"{BU.LIGNE_MARCHE} : −3,5 %" in t2  # lu dans le journal du témoin
+    t3 = " ".join(BU.rendre(BU.depuis_journal("REF-S2", tmp_path, aujourd_hui="2026-12-21")).split())
+    assert f"{BU.LIGNE_MARCHE} : −3,5 %" in t3
+
+
 def test_remise_a_niveau_de_fin_janvier():
     assert BU.remise_a_niveau_suivante("2026-12-04") == pd.Timestamp("2027-01-29")
     assert BU.remise_a_niveau_suivante("2027-01-29") == pd.Timestamp("2028-01-31")
@@ -224,10 +264,24 @@ def test_etat_par_ligne_si_l_on_vendait(tmp_path):
 
 
 def test_prochains_rendez_vous_dans_le_bulletin(tmp_path):
+    from brvm_alpha.portfolio import recommend as R
+
     p = J.panel_moteur()
     rv = BU.rendez_vous({"ABJC": 100, "BICB": 50}, p, "2024-02-15", valeur_titres=1_000_000)
     assert rv["dividende"]["statut"] == "estimé" and rv["dividende"]["montant"] > 0
-    assert rv["prelevement"] == {"date": "2024-03-31", "statut": "supposé", "montant": round((0.0025 * 1e6 + 2 * 5000) / 4)}
+    # Date de paiement calculée avec le calendrier des séances du panel (comme l'ordre de bataille).
+    sch = R.dividend_schedule({"ABJC": 100, "BICB": 50}, "2024-02-15", p, calendar=pd.DatetimeIndex(p["close"].index))
+    sch = sch[(sch["montant_net"] > 0) & sch["date_paiement_prevue"].notna()]
+    assert rv["dividende"]["date"] == str(pd.to_datetime(sch["date_paiement_prevue"]).min().date())
+    # Prélèvement au prorata des jours depuis le dernier prélèvement (fin du trimestre précédent : 91 jours).
+    assert rv["prelevement"] == {"date": "2024-03-31", "statut": "supposé", "jours": 91,
+                                 "montant": round((0.0025 * 1e6 + 2 * 5000) * 91 / 365)}
+    # Depuis le début du suivi : prorata depuis ce jour-là ; témoin : son rythme de prélèvement (chaque semaine).
+    rv2 = BU.rendez_vous({"ABJC": 100, "BICB": 50}, p, "2024-02-15", valeur_titres=1_000_000, dernier_prelevement="2024-03-01")
+    assert rv2["prelevement"]["jours"] == 30 and rv2["prelevement"]["montant"] == round(12_500 * 30 / 365)
+    rv3 = BU.rendez_vous({"ABJC": 100, "BICB": 50}, p, "2024-02-15", valeur_titres=1_000_000, rythme="semaine")
+    assert rv3["prelevement"] == {"date": "2024-02-16", "statut": "supposé", "jours": 7, "montant": round(12_500 * 7 / 365)}
+    assert rv["frais_annuels"] == 12_500 and rv["dividendes_12_mois"] >= rv["dividende"]["montant"]
     assert rv["remise_a_niveau"] == "2025-01-31"
     ls = _ligne_bulletin(tmp_path)
     t = " ".join(BU.rendre(BU.bulletin(ls[-1], rendez_vous=rv, aujourd_hui="2026-12-21")).split())

@@ -19,6 +19,11 @@ from brvm_alpha.suivi import declaration as D
 AVANT = "2026-11-25T10:00:00Z"
 
 
+#: Provenance écrite au registre pour une déclaration de test (dossier temporaire hors du dépôt) : passée
+#: explicitement, jamais fabriquée par la fonction.
+SOURCE = "reports/suivi_S2"
+
+
 @pytest.fixture(scope="module", autouse=True)
 def registre_du_depot_intact():
     avant = J.sha(J.REGISTRE_DU_DEPOT)
@@ -51,6 +56,8 @@ def test_modele_articles_propositions_et_phrases_simples():
     ref = next(a for a in arts if a["id"] == "REF-S2")
     assert ref["parametres"]["notes"] is None and ref["parametres"]["couts"] == "central"
     assert ref["parametres"]["capital_fcfa"] == 10_000_000 and ref["registre"]["famille"] == "S2-temoin"
+    # Départ figé du témoin (§8.2), écrit en date exacte dans l'article.
+    assert ref["parametres"]["date_premiere_decision"] == "2026-11-30" and "2026-11-30" in ref["regle"]["depart"]
 
 
 def test_signature_chaine_et_ajout_seul(tmp_path):
@@ -118,7 +125,7 @@ def test_inscription_au_registre_sur_une_copie(tmp_path):
     assert len(avant) == 98
     emp = D.empreinte_lignes(avant)
     p = _signer(tmp_path)
-    ids = D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE)
+    ids = D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE, source_base=SOURCE)
     assert ids == ["S2-REF", "S2-N", "S2-EC", "S2-ED", "S2-PLAN"]
     apres = pd.read_parquet(reg)
     assert len(apres) == 103 and D.empreinte_lignes(apres, 98) == emp
@@ -131,7 +138,7 @@ def test_inscription_au_registre_sur_une_copie(tmp_path):
     assert json.loads(neuf.iloc[0]["parametres"])["parametres"]["variante"] == "REF"
     assert TrialRegistry.load(reg).n_trials("S2") == 5
     # seconde inscription : aucune ligne en double
-    assert D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE) == []
+    assert D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE, source_base=SOURCE) == []
     assert len(pd.read_parquet(reg)) == 103
 
 
@@ -144,7 +151,7 @@ def test_derogation_signee_trois_lignes_seulement(tmp_path):
     assert all("nouvel essai à juger sur S2 seulement" in l["parametres"]["texte_cite"] for l in der)
     plan = next(l for l in ls if l["id"] == "PLAN")
     assert plan["parametres"]["ecarts_oui"] == ["E-L", "E-B", "E-C"]
-    assert D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE) == ["S2-REF", "S2-N", "S2-PLAN"]
+    assert D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE, source_base=SOURCE) == ["S2-REF", "S2-N", "S2-PLAN"]
 
 
 def test_non_declare_reste_eteint(tmp_path):
@@ -160,17 +167,17 @@ def test_inscription_refusee_sans_confirmation_ni_registre_explicite(tmp_path):
     h = J.sha(reg)
     p = _signer(tmp_path)
     with pytest.raises(PermissionError):
-        D.inscrire_au_registre(p.parent, reg, confirmer="oui")
+        D.inscrire_au_registre(p.parent, reg, confirmer="oui", source_base=SOURCE)
     with pytest.raises(ValueError, match="chemin obligatoire"):
-        D.inscrire_au_registre(p.parent, None, confirmer=D.CONFIRMATION_REGISTRE)
+        D.inscrire_au_registre(p.parent, None, confirmer=D.CONFIRMATION_REGISTRE, source_base=SOURCE)
     with pytest.raises(FileNotFoundError):
-        D.inscrire_au_registre(p.parent, tmp_path / "autre.parquet", confirmer=D.CONFIRMATION_REGISTRE)
+        D.inscrire_au_registre(p.parent, tmp_path / "autre.parquet", confirmer=D.CONFIRMATION_REGISTRE, source_base=SOURCE)
     assert not (tmp_path / "autre.parquet").exists() and J.sha(reg) == h
     # chaîne rompue : inscription refusée
     t = p.read_text(encoding="utf-8").replace("12 mois", "6 mois", 1)
     p.write_text(t, encoding="utf-8")
     with pytest.raises(ValueError, match="chaîne rompue"):
-        D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE)
+        D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE, source_base=SOURCE)
     assert J.sha(reg) == h
 
 
@@ -230,3 +237,92 @@ def test_aucune_donnee_personnelle_dans_la_declaration(tmp_path):
     assert "@" not in t and str(tmp_path) not in t
     for l in D.lignes(p.parent):
         assert set(l) & {"nom", "adresse", "courriel", "email"} == set()
+
+
+def test_provenance_jamais_fabriquee_hors_du_depot(tmp_path):
+    reg = J.registre(tmp_path)
+    h = J.sha(reg)
+    p = _signer(tmp_path)
+    # Dossier temporaire, hors du dépôt : sans source_base explicite, l'inscription est refusée (aucune provenance
+    # « reports/suivi_S2/... » inventée) et le registre ne change pas.
+    with pytest.raises(ValueError, match="n'est pas dans le dépôt"):
+        D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE)
+    assert J.sha(reg) == h
+    ids = D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE, source_base="essai/copie")
+    assert ids and pd.read_parquet(reg).iloc[98:]["source"].str.match(r"^essai/copie/declaration\.jsonl#\d+$").all()
+
+
+def test_troncature_des_dernieres_lignes_detectee_par_le_registre(tmp_path):
+    reg = J.registre(tmp_path)
+    p = _signer(tmp_path)
+    assert D.inscrire_au_registre(p.parent, reg, confirmer=D.CONFIRMATION_REGISTRE, source_base=SOURCE)
+    assert D.verifier(p.parent, registre=reg)["chaine_ok"]
+    sceau = json.loads(pd.read_parquet(reg).iloc[98]["parametres"])["declaration"]
+    assert sceau["n"] == 1 and sceau["n_lignes"] == 8 and len(sceau["empreinte_derniere"]) == 64
+    texte = p.read_text(encoding="utf-8").splitlines()
+    p.write_text("\n".join(texte[:7]) + "\n", encoding="utf-8")  # « head -n 7 » : la dernière ligne (PLAN) disparaît
+    assert D.verifier(p.parent)["chaine_ok"]  # la chaîne seule ne le voit pas
+    v = D.verifier(p.parent, registre=reg)
+    assert not v["chaine_ok"] and any("dernières lignes retirées" in a for a in v["anomalies"])
+    assert "PLAN" not in D.en_vigueur("2026-12-02", p.parent)["articles"]  # d'où la lecture du registre
+
+
+def test_entree_en_plusieurs_fois_E_T_signee_apres_le_debut(tmp_path):
+    d = tmp_path / "decl"
+    D.signer(J.reponses_proposees(D.modele())[:1], "AB", d, racine=J.depot(tmp_path), maintenant=AVANT)
+    e_t = {"type": "ecart_execution", "id": "E-T", "choix": ["oui", "non"], "reponse": "oui", "proposition": None,
+           "phrase": "Entrer en trois fois, chaque tranche recalculée sur les liquidités réelles.",
+           "regle": {"texte": "F15 : trois tranches, option --apport"}, "parametres": {"tranches": 3},
+           "duree_min": "12 mois", "decision_ecrite": "Écart de calendrier déclaré (§8.3).", "source_spec": "cahier §8.3"}
+    D.signer([e_t], "AB", d, racine=J.depot(tmp_path), maintenant="2026-12-10T09:00:00Z")
+    l = D.lignes(d)[-1]
+    assert l["id"] == "E-T" and l["effet_a_partir_du"] == "2026-12-11" and l["declaree_apres_debut"]
+    assert "E-T" not in D.en_vigueur("2026-12-10", d)["articles"]
+    assert D.en_vigueur("2026-12-11", d)["articles"]["E-T"]["type"] == "ecart_execution"
+
+
+def test_options_melangees_pour_E_C_et_E_D_refusees(tmp_path):
+    arts = J.reponses_proposees(D.modele(), E_C="option 1", E_D="option 2 : oui")
+    with pytest.raises(ValueError, match="une seule option pour les deux"):
+        D.preparer(arts)
+    with pytest.raises(ValueError, match="une seule option"):
+        D.signer(arts, "AB", tmp_path / "decl", racine=J.depot(tmp_path), maintenant=AVANT)
+    assert not (tmp_path / "decl").exists()
+    # « non déclaré » pour l'un et l'option 1 pour l'autre reste permis (§13.3 : déclarer E-D, ou non).
+    assert [a["id"] for a in D.preparer(J.reponses_proposees(D.modele(), E_C="option 1", E_D="non déclaré"))
+            if a["id"] in ("E-C", "E-D")] == ["E-C"]
+
+
+def test_un_dossier_git_seul_n_est_pas_le_depot_de_developpement(tmp_path):
+    # Une installation copiée avec un .git, sans le registre suivi par git, ne peut pas signer.
+    faux = J.faux_depot(tmp_path)
+    assert not D.depot_de_developpement(faux)
+    with pytest.raises(D.HorsDepot):
+        D.signer(J.reponses_proposees(D.modele()), "AB", tmp_path / "decl", racine=faux, maintenant=AVANT)
+    assert not (tmp_path / "decl").exists()
+    assert D.depot_de_developpement(J.depot(tmp_path)) and D.depot_de_developpement()  # la copie de travail : oui
+
+
+def test_document_signe_est_la_copie_integrale_du_cahier():
+    # §8.7, étape 1 : docs/RENDEMENT_NET.md contient le cahier en entier (partie B), dont l'empreinte date la
+    # déclaration ; seuls les chemins de travail sont remplacés par des repères neutres.
+    doc = (J.RACINE / "docs" / "RENDEMENT_NET.md").read_text(encoding="utf-8")
+    assert "# Partie B — Le cahier des charges, copie intégrale" in doc
+    b = doc.split("# Partie B — Le cahier des charges, copie intégrale", 1)[1]
+    assert len(b.splitlines()) >= 1786
+    for n in range(17):
+        assert f"\n## {n}. " in b, n
+    for n in range(1, 17):
+        assert f"\n### F{n} — " in b, n
+    for extrait in ("### 9.1 Trois exceptions déclarées aux tests existants", "(1,645 × 4,31 % × √durée en années)",
+                    "le moteur du test, plus un seul refus explicite (forfait de compte non nul, §4.3)",
+                    "Règles du mode `limite` :", "**(c) Arrondi « plus forts restes » : `--arrondi restes`.**",
+                    "## 14. Registre des chiffres clés", "`M/` = `<mesures>/`", "`D/` = `<dépôt>/`", "cd <mesures>/final"):
+        assert extrait in b, extrait
+    for interdit in ("/tmp/", "/home/", "scratchpad"):
+        assert interdit not in doc.lower(), interdit
+    # La partie A (résumé) ne contredit plus l'article 1 : le moteur reçoit un seul ajout (refus du forfait de compte).
+    a = doc.split("# Partie B", 1)[0]
+    assert "le moteur du test, sans modification" not in a and "ni le moteur, ni" not in a
+    assert "plus un seul refus explicite : forfait de compte non nul" in a
+    assert "## Notes de la copie" in a and "environ 25 % à 40 %" in " ".join(a.split())

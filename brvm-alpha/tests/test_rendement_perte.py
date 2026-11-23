@@ -2,8 +2,8 @@
 §F5). Recette sur les ordres figés du 20/11/2026 ; vérification par l'ordre complet sur le panel de synthèse.
 
 Le choc de 2018 est **mesuré** sur les fichiers S1 publiés (lecture seule de ``reports/validation_S1``) et sur des
-cours de 2018 figés : 0,293209. Le cahier calcule ses tables avec la valeur arrondie 0,2932 : les montants
-« haut » diffèrent donc de quelques dizaines de francs (tolérance de recette : 1 000 FCFA)."""
+cours de 2018 figés : 0,293209, retenu arrondi à 4 décimales comme dans le cahier (0,2932) : les montants « haut » et
+P_vérifiée du cahier sont retrouvés au franc."""
 
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ def test_choc_ref_publie_mesure_sur_les_fichiers_publies(tmp_path):
     c = P.choc_ref_publie(J.VALIDATION_S1, J.panels_s1_2018())
     assert _empreintes(J.VALIDATION_S1) == avant  # aucune écriture
     assert c["source"] == "mesuré" and abs(c["valeur"] - 0.2932) <= 0.0005
+    assert c["valeur"] == 0.2932 and abs(c["valeur_mesuree"] - 0.293209) < 5e-7  # arrondi à 4 décimales, comme le cahier
     assert abs(c["vl_2018"] + 0.2574) < 0.0005 and abs(c["part_investie_2018"] - 0.825) < 0.001
     assert abs(c["frais_2018"] - 61_077) < 1
     vide = P.choc_ref_publie(tmp_path, J.panels_s1_2018())
@@ -123,6 +124,14 @@ def test_recette_table_de_choix(table, i):
         # Contrôle de la règle : P(A*) ≤ X et P(A* + pas) > X.
         assert r["P"] <= X < r["P_pas_suivant"]
     assert (r["mention"] == "frais > dividendes") == (i == 0)
+
+
+def test_bornes_haut_du_cahier_au_franc(table):
+    # Tables du §F4 calculées avec s_ref = 0,2932 : « haut » et P(A* + pas) au franc près (arrondi de round_fcfa).
+    for r, haut in zip(table, (474_919, 974_805, 1_974_832, 3_114_258)):
+        assert abs(r["annee_2018"][1] - haut) <= 1, (r["perte_toleree"], r["annee_2018"][1])
+    for r, nxt in zip(table, (512_908, 1_010_753, 2_004_461)):
+        assert abs(r["P_pas_suivant"] - nxt) <= 1
 
 
 def test_controles_complementaires(table, o10, choc):
@@ -209,7 +218,7 @@ def test_verification_par_ordre_exact_du_20_11(o10, choc, lecteur):
     r = P.ligne_choisie(o10, 1_000_000, choc=choc, lecteur=lecteur, verifier=verifier)
     assert appels == [3_000_000] and r["verifie_par_ordre"] and r["appels"] == 1
     assert r["investi"] == 2_807_310 and r["frais_an1"] == 151_702 and r["dividendes"] == 125_995
-    assert abs(r["stress_2018_plus_frais"] - 827_267) <= 1 and abs(r["P_verifiee"] - 974_805) <= 100
+    assert abs(r["stress_2018_plus_frais"] - 827_267) <= 1 and abs(r["P_verifiee"] - 974_805) <= 1
     assert abs(r["pire_moment_2018"] - 1_039_895) <= 1 and abs(r["baisse_2017_2020"] - 1_408_629) <= 1
     assert r["P_verifiee"] <= 1_000_000 and r["depasse"] == {"pire_moment": True, "2017_2020": True}
 
@@ -270,6 +279,30 @@ def test_estimation_2018_sous_le_montant_choisi(synthese):
     assert compteur["construire"] == 0  # la boucle ne rappelle jamais construire
     assert ch["ref_publie_source"] == "repli"
 
+    # Vérificateur plus risqué que la formule : le stress ST2 de chaque ordre complet vaut 60 % de l'investi. Pour
+    # chaque X : soit un montant vérifié sous X, soit A* = 0 avec le message d'arrêt — jamais le montant de la formule.
+    def risque(A):
+        Od = J.ordre_synthese(Ps, A, tmp, explanations=False).to_dict()
+        for x in Od.get("stress") or []:
+            if x.get("code") == "ST2" and x.get("variante") == "TR":
+                x["perte_fcfa"] = -0.60 * float(Od["couts"]["investi_apres"])
+        return Od
+
+    arretes = 0
+    for X in (700_000, 1_300_000):
+        rn = rendement.construire(d, panels=Ps, validation_dir=tmp / "vide", perte_toleree=X, verifier=risque,
+                                  aujourd_hui=J.AUJOURD_HUI, graines=1)
+        c = rn["perte"]["choix"]
+        assert c["appels"] <= 10
+        if c["verifie_par_ordre"]:
+            assert c["en_actions"] > 0 and c["P_verifiee"] <= X
+        else:
+            arretes += 1
+            assert c["en_actions"] == 0 and rn["reserve"]["montant"] == int(d["capital"])
+            assert c["annee_2018"] == [None, None] and c.get("investi") is None and c["message"]
+            assert "garanti" not in c["message"]
+    assert arretes >= 1
+
 
 def test_textes_de_la_table_et_vocabulaire(table, o10, choc):
     rn = {"perte": {"table": table, "chocs": choc, "choix": None}, "contexte": {"capital": 10_000_000}}
@@ -306,3 +339,21 @@ def test_aucune_poche_possible(o10, choc):
     tout = P.ligne_choisie(o10, 5_000_000, choc=choc)
     assert tout["en_actions"] == 10_000_000 and tout["rappel"] == RG.PH_RISQUE
     assert math.isclose(tout["P"], choc["retenu"] * 9_650_560 + 284_714)
+
+
+def test_ordre_de_verification_avec_ventes_et_titres_detenus(o10, choc):
+    # §F4, cas limite 4 : titres détenus pour plus que A* : l'écart est affiché, aucune vente n'est proposée.
+    o = J.ordre("detenu_624840")
+    avec_vente = copy.deepcopy(J.ordre("3000000"))
+    avec_vente["lignes"][0] = dict(avec_vente["lignes"][0], sens="vente", quantite=5)
+    r = P.ligne_choisie(o, 1_000_000, choc=choc, verifier=lambda A: avec_vente)
+    assert r["verifie_par_ordre"] and r.get("_ordre") is None  # l'ordre avec ventes n'est pas rendu comme ordre de la poche
+    assert r["ventes_refusees"] == [avec_vente["lignes"][0]["symbole"]] and "aucune vente n'est proposée" in r["mention_ventes"]
+    assert r["detenu"]["valeur"] == 9_650_560 and r["detenu"]["ecart"] == 9_650_560 - r["en_actions"]
+    assert r["detenu"]["texte"].startswith("Titres déjà détenus pour 9\u202f650\u202f560 FCFA")
+    memo: dict = {}
+    rn = rendement.construire(o, panels=J.panels_reels(), validation_dir=J.VALIDATION_S1, perte_toleree=1_000_000,
+                              verifier=lambda A: avec_vente, memo=memo, aujourd_hui=J.AUJOURD_HUI, graines=1)
+    assert "ordre_poche" not in memo
+    t = " ".join(PL.rendre_plan(rn["plan"], "texte").split()).replace("\u202f", " ").replace("\u00a0", " ")
+    assert "Titres déjà détenus pour 9 650 560 FCFA" in t and "aucune vente n'est proposée" in t

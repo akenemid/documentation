@@ -64,7 +64,7 @@ def test_W4_fuite_apres_service_partiel():
     a = AL.alertes_fuite(J.ordre("partiel"), memoire={"quantites_origine": orig})
     w4 = _un(a, "W4")
     assert w4["niveau"] == "orange" and w4["prefixe"] == "FUITE" and w4["cause"] == "ordres non servis"
-    assert w4["valeurs"]["D_hors_regle"] == 469_430
+    assert w4["valeurs"]["D_hors_regle"] == 476_412  # 469 430 d'ordres non servis + 6 982 de cause inconnue
 
 
 def test_W5_et_W6():
@@ -146,3 +146,24 @@ def test_textes_sans_mot_interdit_de_l_ecran():
         for a in AL.alertes_fuite(J.ordre(cap)):
             interdits = set(RG.mots_interdits(a["texte"])) - {"au plus"}
             assert not interdits, (a["code"], interdits)
+
+
+def test_W7_un_seul_bulletin_manquant_accord_au_singulier():
+    o = _ordre_vente_ineligible()
+    s = _seances()
+    s.loc[s.index[-20], "available"] = False
+    w = _un(AL.alertes_fuite(o, sessions=s), "W7")
+    jour = pd.Timestamp(s.iloc[-20]["date"])
+    assert w["valeurs"]["n"] == 1 and w["niveau"] == "rouge"
+    assert w["texte"].startswith(f"Ne vendez pas à cause d'un trou de données : 1 bulletin manque le {jour:%d/%m}. ")
+    assert "1 bulletins" not in w["texte"] and "manquent" not in w["texte"]
+
+
+def test_W4_fuite_pour_l_argent_d_origine_inconnue():
+    o = copy.deepcopy(J.ordre("detenu_624840"))
+    for k in ("liquidites_initiales", "valeur_portefeuille"):
+        o[k] += 300_000
+    o["couts"]["liquidites_apres"] += 300_000
+    w = _un(AL.alertes_fuite(o, panels={"dividends_table": J.dividendes_2026()}), "W4")
+    assert w["niveau"] == "orange" and w["prefixe"] == "FUITE" and w["cause"] == "inconnue"
+    assert w["valeurs"]["D"] == 713_332 and w["valeurs"]["D_hors_regle"] >= 100_000

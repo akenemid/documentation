@@ -28,7 +28,7 @@ from typing import Any, Mapping, Sequence
 from brvm_alpha.rendement import reglages as _rg
 from brvm_alpha.rendement.reglages import ESTIMATION, FAIT, HYPOTHESE, arrondi_ecran, fcfa
 
-__all__ = ["UNE_CHOSE", "construire_plan", "rendre_plan"]
+__all__ = ["UNE_CHOSE", "construire_plan", "rendre_plan", "vers_blocs"]
 
 LARGEUR = 100
 UNE_CHOSE = {
@@ -58,6 +58,12 @@ def _sans_signe(x: Any) -> str:
     if x is None:
         return "non calculé"
     return _ecr(x).lstrip("+−")
+
+
+def _env_sans_signe(x: Any) -> str:
+    """« environ 110 000 » (valeur arrondie de l'écran, sans signe) ; « entre 0 et 1 000 » reste tel quel."""
+    t = _sans_signe(x)
+    return t if t == "non calculé" or t.startswith("entre") else "environ " + t
 
 
 def _L(lignes: list, bloc: str, texte: str, detail: str | None = None, *, montant: Any = None, ecran: str | None = None,
@@ -189,17 +195,31 @@ def _bloc_risque(L: list, rn: Mapping[str, Any]) -> None:
     synth = (rq.get("synthese") or {}).get("phrase") if isinstance(rq, Mapping) else None
     choix = p.get("choix") if _ok(p) else None
     _titre(L, "risque", "2. CE QUE J'ACCEPTE DE RISQUER SUR 12 MOIS",
+           "montant en actions à confirmer" if (choix and choix.get("a_confirmer")) else
            "montants estimés" if choix else "à choisir ; montants estimés")
     if not _ok(p):
         _L(L, "risque", "   Table de choix : non calculé.")
+        return
+    if choix and choix.get("a_confirmer"):
+        # §F4, étape 6 : la vérification par l'ordre complet n'a trouvé aucun montant sous X : rien n'est chiffré.
+        X = choix["perte_toleree"]
+        _paragraphe(L, "risque", f"Vous acceptez de risquer {fcfa(X)} sur 12 mois. Ce n'est pas une limite.",
+                    retrait="   ", montant=X, ecran=fcfa(X), statut="compté")
+        _paragraphe(L, "risque", f"Montant en actions : non calculé ({choix.get('message') or 'à confirmer'}). Tout reste "
+                                 f"en réserve : {fcfa(choix['reserve'])}.",
+                    retrait="   ", montant=choix["reserve"], ecran=fcfa(choix["reserve"]), statut="compté")
+        if (choix.get("detenu") or {}).get("texte"):
+            _paragraphe(L, "risque", choix["detenu"]["texte"], retrait="   ")
+        fixes = [_rg.PH_PASSE, _rg.PH_DESCRIPTIF] + ([synth] if synth else []) + [_rg.PH_RISQUE]
+        _paragraphe(L, "risque", " ".join(fixes), retrait="   ")
         return
     if choix and choix.get("en_actions", 0) > 0:
         X = choix["perte_toleree"]
         bas, haut = choix["annee_2018"]
         _paragraphe(L, "risque", f"Vous acceptez de risquer {fcfa(X)} sur 12 mois. Ce n'est pas une limite.",
                     retrait="   ", montant=X, ecran=fcfa(X), statut="compté")
-        _paragraphe(L, "risque", f"En actions : {fcfa(choix['en_actions'])}. En réserve : {fcfa(choix['reserve'])}.",
-                    retrait="   ", montant=choix["en_actions"], ecran=fcfa(choix["en_actions"]), statut="compté")
+        _paragraphe(L, "risque", f"En actions : {fcfa(choix['en_actions'])}. En réserve : {fcfa(choix['reserve'])} [estimé].",
+                    retrait="   ", montant=choix["en_actions"], ecran=fcfa(choix["en_actions"]), statut="estimé")
         dep_pm = (choix.get("depasse") or {}).get("pire_moment")
         dep_lg = (choix.get("depasse") or {}).get("2017_2020")
         _paragraphe(L, "risque",
@@ -211,39 +231,51 @@ def _bloc_risque(L: list, rn: Mapping[str, Any]) -> None:
                     f"{fcfa(-choix['pire_moment_2018'], signe=True)}." + (" Cela dépasse ce que vous acceptez." if dep_pm else ""),
                     retrait="   ", montant=-haut, ecran=_ecr(-haut), statut="estimé")
         _paragraphe(L, "risque",
-                    f"Si la baisse de 2017-2020 revenait : {_env(-choix['baisse_2017_2020'])} FCFA, sur plusieurs années."
-                    + (" Cela dépasse ce que vous acceptez." if dep_lg else ""),
+                    f"Si la baisse de 2017-2020 revenait : {_env(-choix['baisse_2017_2020'])} FCFA, sur plusieurs années "
+                    "[estimé]." + (" Cela dépasse ce que vous acceptez." if dep_lg else ""),
                     f"Si la baisse de 2017-2020 revenait : {fcfa(-choix['baisse_2017_2020'], signe=True)}, sur plusieurs "
-                    "années." + (" Cela dépasse ce que vous acceptez." if dep_lg else ""),
+                    "années [estimé]." + (" Cela dépasse ce que vous acceptez." if dep_lg else ""),
                     retrait="   ", montant=-choix["baisse_2017_2020"], ecran=_ecr(-choix["baisse_2017_2020"]), statut="estimé")
         ordi = (choix.get("annee_ordinaire") or {}).get("prudente")
         tout = ((choix.get("ordre_tout") or {}).get("annee_ordinaire") or {}).get("prudente")
         if ordi is not None and tout is not None:
             prix = float(tout) - float(ordi)
             moins = _sans_signe(-prix)
+            fl = (choix.get("annee_ordinaire") or {}).get("flatteuse")
+            fl_tout = ((choix.get("ordre_tout") or {}).get("annee_ordinaire") or {}).get("flatteuse")
+            det_fl = ""
+            if fl is not None and fl_tout is not None:
+                # Lecture flatteuse : au détail seulement, toujours suivie de PH_FLATTE (§F4, §F1-10).
+                det_fl = (f" Lecture flatteuse (passé rejoué) : {fcfa(fl, signe=True)} au lieu de {fcfa(fl_tout, signe=True)} "
+                          f"({fcfa(float(fl_tout) - float(fl))} de moins). {_rg.PH_FLATTE}")
             _paragraphe(L, "risque",
                         f"Prix de cette prudence : dans une année ordinaire du passé, lecture prudente, {_env(ordi)} FCFA au "
-                        f"lieu de {_ecr(tout)} (environ {moins} FCFA de moins).",
+                        f"lieu de {_ecr(tout)} (environ {moins} FCFA de moins) [estimé].",
                         f"Prix de cette prudence : dans une année ordinaire du passé, lecture prudente, {fcfa(ordi, signe=True)} "
-                        f"au lieu de {fcfa(tout, signe=True)} ({fcfa(prix)} de moins).",
+                        f"au lieu de {fcfa(tout, signe=True)} ({fcfa(prix)} de moins) [estimé]." + det_fl,
                         retrait="   ", montant=-prix, ecran=_ecr(-prix), statut="estimé")
         r1 = choix.get("reste_an1")
         if r1 is not None and r1 < 0 <= int(choix.get("reste_suivant") or 0):
             _paragraphe(L, "risque", f"Au tarif supposé, la 1re année, les frais dépassent les dividendes attendus "
-                                     f"d'environ {_sans_signe(r1)} FCFA. Voir « ce que prend mon courtier ».",
-                        f"Au tarif supposé, la 1re année, les frais dépassent les dividendes attendus de {fcfa(-r1)}. "
-                        "Voir « ce que prend mon courtier ».",
+                                     f"d'environ {_sans_signe(r1)} FCFA [supposé]. Voir « ce que prend mon courtier ».",
+                        f"Au tarif supposé, la 1re année, les frais dépassent les dividendes attendus de {fcfa(-r1)} "
+                        "[supposé]. Voir « ce que prend mon courtier ».",
                         retrait="   ", montant=r1, ecran=_ecr(r1), statut="supposé")
             L[-1]["detail_seul"] = True  # l'écran le montre déjà dans « ce que vous recevriez » (45 lignes au plus)
         elif int(choix.get("reste_suivant") or 0) < 0:
             _paragraphe(L, "risque", f"Au tarif supposé, les frais annuels dépassent les dividendes attendus d'environ "
-                                     f"{_sans_signe(choix['reste_suivant'])} FCFA par an.",
+                                     f"{_sans_signe(choix['reste_suivant'])} FCFA par an [supposé].",
                         retrait="   ", montant=choix["reste_suivant"], ecran=_ecr(choix["reste_suivant"]), statut="supposé")
         _paragraphe(L, "risque", "Un tarif plus bas permet plus d'actions pour le même risque accepté : la somme exposée au "
                                  "marché augmente aussi. Ce que vous acceptez de risquer ne se recharge pas chaque année. "
                                  "Après une perte, relisez ce choix.", retrait="   ")
         if choix.get("message"):
             _paragraphe(L, "risque", choix["message"], retrait="   ")
+        for cle in ("detenu", "mention_ventes"):
+            x = choix.get(cle)
+            t_ = x.get("texte") if isinstance(x, Mapping) else x
+            if t_:
+                _paragraphe(L, "risque", str(t_), retrait="   ")
         fixes = [_rg.PH_PASSE, _rg.PH_DESCRIPTIF] + ([synth] if synth else []) + [_rg.PH_RISQUE]
         _paragraphe(L, "risque", " ".join(fixes), retrait="   ")
         return
@@ -279,6 +311,8 @@ def _bloc_reserve(L: list, rn: Mapping[str, Any]) -> None:
     r = rn.get("reserve")
     ctx = rn.get("contexte") or {}
     K = float(ctx.get("capital") or 0)
+    if _ok(r) and r.get("masque"):
+        return False  # §F5 : réserve nulle, bloc masqué
     connu = _ok(r) and r.get("taux_connu")
     etiq = f"taux saisi : {_rg.pct(r['taux'], 2)} [{r['mot_statut']}]" if connu else "taux inconnu : compté à 0 %"
     _titre(L, "reserve", "3. OÙ DORT LE RESTE, ET À QUEL TAUX", etiq)
@@ -288,11 +322,13 @@ def _bloc_reserve(L: list, rn: Mapping[str, Any]) -> None:
     pt_K = int(round(0.01 * K))
     if r.get("montant", 0) < K - 0.5:
         txt = (f"Avec {fcfa(K - r['montant'])} en actions, la réserve est de {fcfa(r['montant'])} : chaque point d'intérêt "
-               f"vaut {fcfa(r['valeur_d_un_point'])} par an.")
+               f"vaut {fcfa(r['valeur_d_un_point'])} par an [estimé].")
+        st_r = "estimé"
     else:
         txt = f"Pendant l'étude, vos {fcfa(K)} attendent : un point d'intérêt vaut {fcfa(pt_K)} par an."
+        st_r = "compté"
     _paragraphe(L, "reserve", txt, retrait="   ", montant=r["valeur_d_un_point"], ecran=fcfa(r["valeur_d_un_point"]),
-                statut="compté")
+                statut=st_r)
     if connu:
         _paragraphe(L, "reserve", f"Intérêts attendus : {_env(r['interets'])} FCFA par an [{r['mot_statut']}], montrés à part. "
                                   + " ".join(r.get("phrases") or [_rg.PH_INTERETS]),
@@ -383,9 +419,16 @@ def construire_plan(rendement_net: Mapping[str, Any], plan_enregistre: Mapping[s
     if _ok(b):
         t = b["totaux"]
         if t["annuels"] > t["dividendes_nets"]:
-            _paragraphe(L, "entete", f"À ce tarif, {ctx.get('n_lignes_cibles') or 20} lignes coûtent plus qu'elles ne rapportent : "
-                                     f"{fcfa(t['annuels'])} de frais par an pour {fcfa(t['dividendes_nets'])} de dividendes "
-                                     "attendus.", montant=t["annuels"], ecran=fcfa(t["annuels"]), statut="supposé")
+            gr0 = rn.get("grille") if _ok(rn.get("grille")) else {}
+            mot0 = "supposé" if str(gr0.get("statut_global") or "supposé") == "supposé" else "estimé"
+            n0 = ctx.get("n_lignes_cibles") or 20
+            ann, nd = int(t["annuels"]), int(t["dividendes_nets"])
+            _paragraphe(L, "entete",
+                        f"À ce tarif, {n0} lignes coûtent plus qu'elles ne rapportent : {_env_sans_signe(-ann)} FCFA de "
+                        f"frais par an pour {_env_sans_signe(nd)} FCFA de dividendes attendus [{mot0}].",
+                        f"À ce tarif, {n0} lignes coûtent plus qu'elles ne rapportent : {fcfa(ann)} de frais par an pour "
+                        f"{fcfa(nd)} de dividendes attendus [{mot0}], soit {fcfa(ann - nd)} de moins par an à cours "
+                        "inchangés.", montant=ann, ecran=_sans_signe(-ann), statut=mot0)
     jour = ""
     if ctx.get("asof"):
         try:
@@ -404,8 +447,8 @@ def construire_plan(rendement_net: Mapping[str, Any], plan_enregistre: Mapping[s
     _blanc(L, "courtier")
     _bloc_risque(L, rn)
     _blanc(L, "risque")
-    _bloc_reserve(L, rn)
-    _blanc(L, "reserve")
+    if _bloc_reserve(L, rn) is not False:
+        _blanc(L, "reserve")
     code, une = _une_chose(rn, plan_enregistre)
     _L(L, "une_chose", f"SI VOUS NE FAITES QU'UNE CHOSE CETTE SEMAINE : {une}", type_="titre")
     _blanc(L, "une_chose")
@@ -569,9 +612,91 @@ def _html_plan(plan: Mapping[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
+def vers_blocs(plan: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    """Forme écran de la carte (montants arrondis, aucune lecture flatteuse) en blocs ``[(genre, valeur), …]`` (``h3``,
+    ``p``, ``table``, ``ul``, ``strong``, ``banner``) : la carte du bandeau du rapport se rend avec les assistants du
+    rapport (``_table`` : bloc ``tablewrap``), sans feuille de style propre."""
+    B: list[tuple[str, Any]] = []
+    head: list[str] | None = None
+    rows: list[list[str]] = []
+    montants: list[str] = []
+
+    def vider() -> None:
+        nonlocal head, rows, montants
+        if head is not None:
+            B.append(("table", (list(head), [list(r) for r in rows])))
+        if montants:
+            B.append(("ul", list(montants)))
+        head, rows, montants = None, [], []
+
+    for l in plan["lignes"]:
+        if l.get("detail_seul"):
+            continue
+        t = l["type"]
+        if t == "entete_table":
+            vider()
+            head = list(l["cellules"]) + ["Pire moment de 2018 ; si 2017-2020 revenait"]
+            continue
+        if t == "ligne_table":
+            rows.append(list(l["cellules"]) + [""])
+            continue
+        if t == "sous_ligne":
+            if rows:
+                rows[-1][-1] = l["texte"].strip()
+            continue
+        if t == "ligne_montant":
+            montants.append(" ".join(l["texte"].split()))
+            continue
+        vider()
+        if t == "blanc":
+            continue
+        if t == "titre":
+            B.append(("h3", (str(l.get("titre") or l["texte"]).strip()
+                             + (f" [ {l['etiquette']} ]" if l.get("etiquette") else ""))))
+        elif t == "feux":
+            B.append(("strong", " ".join(l["texte"].split())))
+        elif t == "texte" and l["texte"] == _rg.BANNER:
+            B.append(("banner", l["texte"]))
+        else:
+            B.append(("p", l["texte"].strip()))
+    vider()
+    if not any(b == ("banner", _rg.BANNER) for b in B):
+        B.append(("banner", _rg.BANNER))
+    return B
+
+
+def _html_fragment(plan: Mapping[str, Any]) -> str:
+    """Carte de l'écran pour le rapport HTML : aucun ``<style>``, aucune couleur écrite en dur (les variables et les
+    classes du rapport s'appliquent, thème clair ou sombre compris) ; chaque tableau dans ``<div class="tablewrap">``."""
+    e = _html.escape
+    out = ['<div class="mon-plan" lang="fr">']
+    for genre, val in vers_blocs(plan):
+        if genre == "h3":
+            out.append(f"<h3>{e(val)}</h3>")
+        elif genre == "banner":
+            out.append(f'<p class="bandeau"><strong>{e(val)}</strong></p>')
+        elif genre == "strong":
+            out.append(f"<p><strong>{e(val)}</strong></p>")
+        elif genre == "ul":
+            out.append("<ul>" + "".join(f"<li>{e(x)}</li>" for x in val) + "</ul>")
+        elif genre == "table":
+            head, rows = val
+            gauche = {0, 3, 4, 5}
+            th = "".join((f'<th class="l">{e(h)}</th>' if j in gauche else f"<th>{e(h)}</th>")
+                         for j, h in enumerate(head))
+            body = "".join("<tr>" + "".join((f'<td class="l">{e(c)}</td>' if j in gauche else f"<td>{e(c)}</td>")
+                                            for j, c in enumerate(r)) + "</tr>" for r in rows)
+            out.append(f'<div class="tablewrap"><table><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>')
+        else:
+            out.append(f"<p>{e(val)}</p>")
+    out.append("</div>")
+    return "\n".join(out) + "\n"
+
+
 def rendre_plan(plan: Mapping[str, Any], fmt: str = "texte") -> str:
-    """Rendu de l'écran : ``texte`` et ``html`` (formes écran, montants arrondis) ; ``md`` (forme détail, au franc,
-    avec la lecture flatteuse suivie de ``PH_FLATTE``)."""
+    """Rendu de l'écran : ``texte`` et ``html`` (formes écran, montants arrondis ; ``html`` est une page autonome avec
+    sa feuille de style) ; ``fragment`` (forme écran pour la carte du rapport : sans ``<style>``, tableaux dans
+    ``tablewrap``) ; ``md`` (forme détail, au franc, avec la lecture flatteuse suivie de ``PH_FLATTE``)."""
     f = str(fmt).lower()
     if f in ("texte", "text", "txt"):
         return _texte(plan)
@@ -579,4 +704,6 @@ def rendre_plan(plan: Mapping[str, Any], fmt: str = "texte") -> str:
         return _md(plan)
     if f == "html":
         return _html_plan(plan)
-    raise ValueError(f"format inconnu : {fmt!r} (texte, md ou html)")
+    if f == "fragment":
+        return _html_fragment(plan)
+    raise ValueError(f"format inconnu : {fmt!r} (texte, md, html ou fragment)")

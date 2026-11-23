@@ -28,19 +28,91 @@ def _portefeuille(tmp_path, prix=None, dividendes=None):
     return c, p
 
 
+def _projection_regle(cash_apres, titres, cours, dividendes, debut):
+    """Projection de F7 (d) de la règle déclarée (dividendes gardés jusqu'à janvier), sans frais fixes pour coller au
+    carnet de ces jeux d'essai (qui n'en saisit pas)."""
+    from brvm_alpha.config import CostModel
+    from brvm_alpha.rendement import liquidites as LQ
+
+    o = {"asof": str(debut.date()), "execution": {"premiere_seance": str(debut.date())},
+         "lignes": [{"symbole": "AAA", "cibles": titres, "cours_reference": cours, "poids_cible": 0.9, "limite_achat": cours}],
+         "dividendes": [{"symbole": "AAA", "date_paiement_prevue": str(d.date()), "dividende_net_prevu_par_titre": n,
+                         "montant_net": n * titres} for d, n in dividendes],
+         "couts": {"liquidites_apres": cash_apres, "forfait_compte_annuel": 0.0}}
+    return LQ.projection(o, costs=CostModel(annual_custody=0.0, account_fee_per_line_fcfa=0.0), serie=True)
+
+
 def test_regle_testee_dividendes_de_mai_a_septembre_feu_fuites_vert(tmp_path):
     jours_div = [JOURS[20], JOURS[45], JOURS[70], JOURS[100]]
     c, p = _portefeuille(tmp_path)
     for i, d in enumerate(jours_div):
         c.ajouter({"type": "dividende", "date": d, "symbole": "AAA", "titres": 9000, "net_par_titre": 5 + i,
                    "montant": 9000 * (5 + i)})
-    ls = BU.lignes_semaines(c.operations(), p, debut=JOURS[0])
+    # La condition (b) compare à ce que la règle déclarée prévoit : la projection de F7 (d), même date.
+    proj = _projection_regle(1_000_000 - 9000 * 100 - 7200, 9000, 100.0, [(d, 5 + i) for i, d in enumerate(jours_div)],
+                             JOURS[1])
+    ls = BU.lignes_semaines(c.operations(), p, debut=JOURS[0], prevu=BU.prevu_depuis_projection(proj))
     BU.ecrire_semaines("PLAN", ls, tmp_path)
     assert ls[-1]["argent_qui_dort"] > 100_000  # les dividendes attendent la remise à niveau de janvier
+    assert abs(ls[-1]["argent_qui_dort"] - ls[-1]["argent_qui_dort_prevu"]) < 1  # c'est ce que la règle prévoit
     b = BU.depuis_journal("PLAN", tmp_path, aujourd_hui=JOURS[-1])
-    assert b["feux"]["fuites"]["etat"] == "vert"
+    assert b["feux"]["fuites"]["etat"] == "vert" and b["feux"]["fuites"]["b_calcule"]
+    assert b["feux"]["fuites"]["phrase"] == "aucune fuite au-delà de ce que la règle prévoit"
     assert any("sans objet (papier)" in x for x in b["feux"]["fuites"]["conditions"])
     assert b["feux"]["donnees"]["etat"] == "vert" and b["feux"]["perte"]["etat"] == "vert"
+
+
+def test_argent_qui_dort_hors_de_la_regle_declaree_feu_orange_apres_20_seances(tmp_path):
+    # MOI : 886 466 FCFA apportés en plus, jamais placés, pendant 12 semaines ; la règle déclarée ne les prévoit pas.
+    c, p = _portefeuille(tmp_path)
+    c.ajouter({"type": "apport", "date": JOURS[2], "montant": 886_466})
+    proj = _projection_regle(1_000_000 - 9000 * 100 - 7200, 9000, 100.0, [], JOURS[1])
+    ls = BU.lignes_semaines(c.operations(), p, debut=JOURS[0], prevu=BU.prevu_depuis_projection(proj))[:13]
+    assert ls[-1]["argent_qui_dort"] - ls[-1]["argent_qui_dort_prevu"] > 860_000
+    etats = [AL.feux(BU.semaine_pour_feux(ls[: i + 1]))["fuites"]["etat"] for i in range(len(ls))]
+    seances = [BU.semaine_pour_feux(ls[: i + 1])["seances_argent_qui_dort_au_dela"] for i in range(len(ls))]
+    k = next(i for i, x in enumerate(seances) if x > 20)
+    assert set(etats[:k]) == {"vert"} and set(etats[k:]) == {"orange"}
+    f = AL.feux(BU.semaine_pour_feux(ls))["fuites"]
+    assert "(b) argent qui dort" in f["phrase"] and "aucune fuite" not in f["phrase"]
+
+
+def test_sans_la_regle_declaree_la_condition_b_n_est_pas_calculee(tmp_path):
+    # Le même portefeuille, sans projection : l'argent qui dort n'est jamais comparé à lui-même.
+    c, p = _portefeuille(tmp_path)
+    c.ajouter({"type": "apport", "date": JOURS[2], "montant": 886_466})
+    ls = BU.lignes_semaines(c.operations(), p, debut=JOURS[0])[:13]
+    assert ls[-1]["argent_qui_dort_prevu"] is None
+    BU.ecrire_semaines("MOI", ls, tmp_path)
+    assert BU.semaines_du_journal("MOI", tmp_path)[-1]["argent_qui_dort_prevu"] is None
+    b = BU.depuis_journal("MOI", tmp_path, aujourd_hui=ls[-1]["vendredi"])
+    f = b["feux"]["fuites"]
+    assert f["etat"] == "vert" and not f["b_calcule"]
+    assert "(b) argent qui dort au-delà de la règle déclarée : non calculé" in f["phrase"]
+    assert "aucune fuite au-delà de ce que la règle prévoit" not in f["phrase"]
+
+
+def test_dividende_non_credite_prochain_prelevement_et_w1_critique(tmp_path):
+    c, p = _portefeuille(tmp_path)
+    ls = BU.lignes_semaines(c.operations(), p, debut=JOURS[0])
+    det = pd.DataFrame([{"symbole": "AAA", "date_detachement": JOURS[10], "date_paiement": JOURS[12], "montant": 45_000.0}])
+    jour = JOURS[12] + pd.Timedelta(days=31)
+    s = BU.semaine_pour_feux(ls, detaches=det, operations=c.operations(), aujourd_hui=jour)
+    assert s["dividendes_non_credites"] == [{"symbole": "AAA", "date_paiement": str(JOURS[12].date()), "montant": 45_000.0}]
+    assert AL.feux(s)["fuites"]["etat"] == "orange" and "(d) dividende non crédité" in AL.feux(s)["fuites"]["phrase"]
+    assert BU.semaine_pour_feux(ls, detaches=det, operations=c.operations(),
+                                aujourd_hui=JOURS[12] + pd.Timedelta(days=29))["dividendes_non_credites"] == []
+    c.ajouter({"type": "dividende", "date": JOURS[13], "symbole": "AAA", "titres": 9000, "net_par_titre": 5, "montant": 45_000})
+    assert BU.semaine_pour_feux(ls, detaches=det, operations=c.operations(), aujourd_hui=jour)["dividendes_non_credites"] == []
+    # Rouge : liquidités sous le prochain prélèvement, ou frais annuels au-dessus des dividendes attendus (rendez-vous).
+    rdv = {"prelevement": {"date": "2027-12-31", "montant": 10_000_000}, "frais_annuels": 50_000, "dividendes_12_mois": 40_000}
+    s2 = BU.semaine_pour_feux(ls, rendez_vous=rdv)
+    assert s2["prochain_prelevement"] == 10_000_000 and s2["w1_critique"]
+    f = AL.feux(s2)["fuites"]
+    assert f["etat"] == "rouge" and "ne couvrent pas le prochain prélèvement" in f["phrase"]
+    BU.ecrire_semaines("PLAN", ls, tmp_path)
+    b = BU.depuis_journal("PLAN", tmp_path, rendez_vous=rdv, aujourd_hui=JOURS[-1])
+    assert b["feux"]["fuites"]["etat"] == "rouge"
 
 
 def test_argent_qui_dort_hors_regle_plus_de_20_seances_feu_orange(tmp_path):

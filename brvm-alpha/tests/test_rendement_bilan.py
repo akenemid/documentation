@@ -187,3 +187,29 @@ def test_amortissement_des_poches():
     a34 = B.amortissement({"dividendes": p34["dividendes"], "frais_annuels": p34["frais_annuels"],
                            "frais_achat": p34["frais_achat"]})
     assert round(a34["mois_frais_achat"], 1) == 5.3 and round(a34["mois_achat_revente"], 1) == 10.7
+
+
+@pytest.mark.parametrize("nom,attendu", [("sans_frais_par_ligne", 17_370), ("borne_non_attestee", 8_687),
+                                         ("autre", 20_846)])
+def test_inconnue_taxe_sur_le_courtage_suit_la_grille_employee(nom, attendu):
+    o = J.ordre("10M")
+    g = G.exemples()[nom] if nom != "autre" else G.defaut().avec(courtage=0.012, tenue_par_ligne=8000)
+    b = B.bilan_fuites(o, g)
+    e2 = next(x for x in b["lignes"] if x["code"] == "E2")["montant"]
+    inc = next(x for x in B.leviers(o, g)["inconnues"] if x["inconnue"] == "Taxe sur le courtage")
+    assert inc["a"] == e2 == attendu  # la borne haute est la taxe de la grille, pas celle du tarif central (13 896)
+    assert inc["texte"].startswith(f"de 0 à {RG.fcfa(attendu)}")
+
+
+def test_frais_evites_negatifs_ecrits_surcout():
+    from brvm_alpha.rendement import rendu as RD
+
+    o = J.ordre("50M")
+    lv = B.leviers(o)
+    ens = next(x for x in lv["frais_evites"] if x["geste"].startswith("Ensemble"))
+    assert (ens["une_fois"], ens["par_an"], ens["premiere_annee"]) == (-115_176, 96_000, -19_176)
+    assert ens["texte"] == "surcoût de 19\u202f176 la 1re année, puis 96\u202f000 de moins par an"
+    md = RD.fragment(RD.blocs_section({"leviers": lv}), "md")
+    ligne = next(l for l in md.splitlines() if l.startswith("| Ensemble"))
+    assert "surcoût de 115\u202f176 FCFA" in ligne and "surcoût de 19\u202f176 FCFA la 1re année" in ligne
+    assert "−115" not in ligne and "−19" not in ligne

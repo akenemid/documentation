@@ -175,6 +175,9 @@ def controler(grille: GrilleSGI) -> dict[str, list[str]]:
                       "valeur acceptée, à vérifier sur la grille écrite")
         if ch.statut not in STATUTS:
             err.append(f"{lib} : statut « {ch.statut} » inconnu ({', '.join(STATUTS)})")
+        elif ch.statut in (ECRITE, AVIS) and not str(ch.source or "").strip():
+            # §F2 : un tarif reste une Hypothèse tant qu'il n'est pas saisi avec une source.
+            err.append(f"{lib} : statut « {ch.statut} » sans source (indiquez la grille écrite ou l'avis d'opéré)")
     if grille.investisseur not in INVESTISSEURS:
         err.append(f"investisseur : « {grille.investisseur} » inconnu ({' ou '.join(INVESTISSEURS)})")
     if grille.investisseur == INVESTISSEURS[1]:

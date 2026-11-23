@@ -32,9 +32,13 @@ from brvm_alpha.rendement import reglages as _rg
 from brvm_alpha.rendement.reglages import ESTIMATION, FAIT, HYPOTHESE, R
 
 __all__ = ["choc_ref_publie", "chocs", "montant_actions", "poche", "reserve", "table_de_choix", "verifier_par_ordre",
-           "MESSAGE_ARRET", "MESSAGE_AUCUNE"]
+           "MESSAGE_ARRET", "MESSAGE_AUCUNE", "MESSAGE_DETENU", "MESSAGE_VENTES"]
 
 MESSAGE_ARRET = "vérification arrêtée après {n} ordres : montant en actions à confirmer"
+MESSAGE_VENTES = ("l'ordre de vérification propose des ventes ({ventes}) : aucune vente n'est proposée ; il sert seulement "
+                  "à vérifier la perte estimée")
+MESSAGE_DETENU = ("Titres déjà détenus pour {detenu} FCFA, soit {ecart} FCFA de plus que le montant en actions : aucune "
+                  "vente n'est proposée.")
 MESSAGE_AUCUNE = ("À ce tarif, le plus petit montant en actions à {n} lignes risque plus que ce que vous acceptez.")
 RUN_REF = "REF_central_10M"
 
@@ -63,8 +67,9 @@ def choc_ref_publie(validation_dir: str | Path | None = None, panels: Mapping[st
     Lecture seule de ``trades.parquet`` et ``nav.parquet`` (série ``run``) et des cours ajustés des panels
     (``close_adj`` et ``tr_index``) : positions = cumul par titre de ``qty`` ; pour chaque séance de 2018 (de la
     dernière séance de 2017 à la dernière de 2018), poids de la veille ``titres × cours ajusté ÷ valeur des titres`` ;
-    ``r_d = Σ w × r_TR`` ; ``s_ref = |Π(1 + r_d) − 1|``. Contrôles rendus : VL de 2018, part investie moyenne,
-    frais de transaction de 2018. Fichiers illisibles : valeur de repli des réglages, ``source = "repli"``."""
+    ``r_d = Σ w × r_TR`` ; ``s_ref = |Π(1 + r_d) − 1|``, arrondi à 4 décimales comme dans le cahier (la mesure brute
+    est rendue sous ``valeur_mesuree``). Contrôles rendus : VL de 2018, part investie moyenne, frais de transaction de
+    2018. Fichiers illisibles : valeur de repli des réglages, ``source = "repli"``."""
     val_repli = float(repli if repli is not None else _rg.lire(reglages, "perte.choc_2018_ref_publie", 0.2932))
     base = {"valeur": val_repli, "source": "repli", "vl_2018": None, "part_investie_2018": None, "frais_2018": None,
             "statut": ESTIMATION, "run": run,
@@ -107,7 +112,9 @@ def choc_ref_publie(validation_dir: str | Path | None = None, panels: Mapping[st
             raise ValueError("rendement non fini")
         part = (inv_val / v.reindex(days)).iloc[1:]
         t18 = t[(t["date"] > d0) & (t["date"] <= days[-1])]
-        return {**base, "valeur": abs(Rr), "source": "mesuré", "rendement_2018": Rr,
+        # Valeur retenue : la mesure arrondie à 4 décimales, comme le cahier (0,2932) ; la mesure brute reste rendue
+        # (« valeur_mesuree »). Les tables du cahier (bornes « haut », P_vérifiée) sont ainsi retrouvées au franc.
+        return {**base, "valeur": round(abs(Rr), 4), "valeur_mesuree": abs(Rr), "source": "mesuré", "rendement_2018": Rr,
                 "vl_2018": float(v.loc[days[-1]] / v.loc[days[0]] - 1.0),
                 "part_investie_2018": float(part.mean()), "frais_2018": float(t18["cost"].sum()) if "cost" in t18 else None,
                 "debut": days[0].strftime("%Y-%m-%d"), "fin": days[-1].strftime("%Y-%m-%d"), "n_seances": int(len(days))}
@@ -309,9 +316,17 @@ def verifier_par_ordre(A: int, X: float, choc: Mapping[str, Any], verifier: Call
         vue = _vue_verification(od, s_ref)
         essais.append({"A": a_cur, "P_verifiee": vue["P_verifiee"]})
         if vue["P_verifiee"] <= float(X):
-            return {"A": a_cur, "verifie_par_ordre": True, "appels": appels, "ordre": O, "vue": vue, "essais": essais,
-                    "quantites_reduites": bool(vue["reductions"]),
-                    "mention": "quantités réduites par la provision" if vue["reductions"] else ""}
+            ventes = [str(l.get("symbole")) for l in (od.get("lignes") or [])
+                      if l.get("sens") == "vente" and int(l.get("quantite") or 0) > 0]
+            out_ok = {"A": a_cur, "verifie_par_ordre": True, "appels": appels, "ordre": O, "vue": vue, "essais": essais,
+                      "quantites_reduites": bool(vue["reductions"]),
+                      "mention": "quantités réduites par la provision" if vue["reductions"] else ""}
+            if ventes:
+                # §F4, cas limite 4 : aucune vente n'est proposée. L'ordre sert à la vérification, il n'est pas rendu
+                # comme ordre de la poche (l'appelant garde l'ordre du capital total).
+                out_ok.update({"ordre": None, "ventes_refusees": ventes,
+                               "mention_ventes": MESSAGE_VENTES.format(ventes=", ".join(sorted(ventes)))})
+            return out_ok
         a_cur -= int(pas)
     out = {"A": 0, "verifie_par_ordre": False, "appels": appels, "ordre": None, "vue": None, "essais": essais}
     if appels >= n_max:
@@ -351,16 +366,19 @@ def _ligne(o: Mapping[str, Any], X: float | None, pp: Mapping[str, Any], ch: Map
             freq = {"prudente": lu["p_perte_prudente"], "flatteuse": lu["p_perte_flatteuse"]}
         except Exception as exc:  # noqa: BLE001 - lecture du passé indisponible : « non calculé »
             ordi = {"prudente": None, "flatteuse": None, "erreur": str(exc)}
-    prix = None
+    prix = prix_fl = None
     if tout is not None and ordi.get("prudente") is not None and (tout.get("annee_ordinaire") or {}).get("prudente") is not None:
         prix = float(tout["annee_ordinaire"]["prudente"]) - float(ordi["prudente"])
+    if tout is not None and ordi.get("flatteuse") is not None and (tout.get("annee_ordinaire") or {}).get("flatteuse") is not None:
+        prix_fl = float(tout["annee_ordinaire"]["flatteuse"]) - float(ordi["flatteuse"])  # détail seulement (PH_FLATTE)
     return {"perte_toleree": None if X is None else float(X), "tout": X is None, "en_actions": int(pp["A"]),
             "reserve": int(round(K - pp["A"])), "investi": int(I), "frais_an1": int(an1), "frais_achat": int(e),
             "frais_annuels": int(a), "dividendes": int(d), "annee_2018": [bas, haut],
             "pire_moment_2018": pm, "baisse_2017_2020": lg, "depasse": {"pire_moment": dep_pm, "2017_2020": dep_lg},
             "rapport_2017_2020_sur_2018": (lg / haut) if (lg is not None and haut) else None,
             "reste_an1": int(r1), "reste_suivant": int(r2), "annee_ordinaire": ordi, "frequence_perte": freq,
-            "prix_prudence": prix, "mention": mention, "un_titre_en_moins": int(pp["un_titre_en_moins"]),
+            "prix_prudence": prix, "prix_prudence_flatteuse": prix_fl, "mention": mention,
+            "un_titre_en_moins": int(pp["un_titre_en_moins"]),
             "plus_grosse_ligne": pp.get("plus_grosse_ligne"), "lignes": int(pp["lignes"]), "pire_cas": int(pp["pire_cas"]),
             "statut": ESTIMATION}
 
@@ -395,6 +413,7 @@ def table_de_choix(ordre: Any, costs: Any = None, grille: _gr.GrilleSGI | None =
         r["part"] = part
         rows.append(r)
     tout["prix_prudence"] = 0.0 if (tout.get("annee_ordinaire") or {}).get("prudente") is not None else None
+    tout["prix_prudence_flatteuse"] = 0.0 if (tout.get("annee_ordinaire") or {}).get("flatteuse") is not None else None
     tout["P"] = _P(pk, float(ch["retenu"]))
     rows.append(tout)
     return rows
@@ -418,8 +437,8 @@ def ligne_choisie(ordre: Any, X: float, costs: Any = None, grille: _gr.GrilleSGI
     pk = poche(o, K, costs, grille)
     tout = _ligne(o, None, pk, ch, K, lecteur, None)
     if m["A"] <= 0:
-        return {"perte_toleree": float(X), "en_actions": 0, "reserve": int(round(K)), "message": m.get("message"),
-                "verifie_par_ordre": False, "appels": 0, "statut": ESTIMATION}
+        return _avec_detenu(o, {"perte_toleree": float(X), "en_actions": 0, "reserve": int(round(K)),
+                                "message": m.get("message"), "verifie_par_ordre": False, "appels": 0, "statut": ESTIMATION})
     r = _ligne(o, X, m["poche"], ch, K, lecteur, tout)
     r.update({"P": m["P"], "P_pas_suivant": m.get("P_pas_suivant"), "verifie_par_ordre": False, "appels": 0,
               "arithmetique": {"A": m["A"], "P": m["P"]}})
@@ -428,6 +447,17 @@ def ligne_choisie(ordre: Any, X: float, costs: Any = None, grille: _gr.GrilleSGI
     v = choix_verifie
     if v is None and verifier is not None:
         v = verifier_par_ordre(m["A"], X, ch, verifier, pas=m["pas"], reglages=reglages)
+    if v is not None and not v.get("verifie_par_ordre"):
+        # §F4, étape 6 : aucune valeur vérifiée sous X → A* = 0, tout en réserve ; les montants de la formule ne
+        # s'affichent pas (« non calculé ») ; le message d'arrêt et le nombre d'appels restent.
+        return _avec_detenu(o, {"perte_toleree": float(X), "en_actions": 0, "reserve": int(round(K)), "investi": None,
+                "annee_2018": [None, None], "pire_moment_2018": None, "baisse_2017_2020": None,
+                "annee_ordinaire": {"prudente": None, "flatteuse": None}, "prix_prudence": None,
+                "depasse": {"pire_moment": False, "2017_2020": False},
+                "message": v.get("message") or MESSAGE_ARRET.format(n=int(v.get("appels") or 0)),
+                "verifie_par_ordre": False, "appels": int(v.get("appels") or 0), "essais": v.get("essais") or [],
+                "a_confirmer": True, "arithmetique": {"A": m["A"], "P": m["P"]}, "statut": ESTIMATION,
+                "ordre_tout": {"annee_ordinaire": tout["annee_ordinaire"]}})
     if v is not None:
         r["verifie_par_ordre"] = bool(v.get("verifie_par_ordre"))
         r["appels"] = int(v.get("appels") or 0)
@@ -458,9 +488,22 @@ def ligne_choisie(ordre: Any, X: float, costs: Any = None, grille: _gr.GrilleSGI
                 r2["rapport_2017_2020_sur_2018"] = r2["baisse_2017_2020"] / max(vue["P_verifiee"], 1.0)
             if "rappel" in r:
                 r2["rappel"] = r["rappel"]
+            if v.get("mention_ventes"):
+                r2["mention_ventes"] = v["mention_ventes"]
+                r2["ventes_refusees"] = list(v.get("ventes_refusees") or [])
             r2["_ordre"] = v.get("ordre")
             r = r2
     r["ordre_tout"] = {"annee_ordinaire": tout["annee_ordinaire"]}
+    return _avec_detenu(o, r)
+
+
+def _avec_detenu(o: Mapping[str, Any], r: dict[str, Any]) -> dict[str, Any]:
+    """§F4, cas limite 4 : titres déjà détenus pour plus que A* : l'écart est affiché ; aucune vente n'est proposée."""
+    detenu = sum(int(l.get("detenus") or 0) * float(l.get("cours_reference") or 0) for l in (o.get("lignes") or []))
+    if detenu > float(r.get("en_actions") or 0) + 0.5:
+        ecart = int(R.round_fcfa(detenu - float(r.get("en_actions") or 0)))
+        r["detenu"] = {"valeur": int(R.round_fcfa(detenu)), "ecart": ecart,
+                       "texte": MESSAGE_DETENU.format(detenu=_rg.fcfa(detenu, unite=False), ecart=_rg.fcfa(ecart, unite=False))}
     return r
 
 

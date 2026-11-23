@@ -24,8 +24,12 @@ from typing import Any, Callable, Mapping
 from brvm_alpha.rendement import alertes, bilan, grille, liquidites, perte, plan, reglages, rendu, risque
 from brvm_alpha.rendement.reglages import BANNER
 
-__all__ = ["VERSION", "alertes", "bilan", "construire", "grille", "liquidites", "perte", "plan", "reglages", "rendu",
-           "risque"]
+__all__ = ["VERSION", "alertes", "bilan", "construire", "grille", "liquidites", "perte", "plan", "pour_ordre_poche",
+           "reglages", "rendu", "risque"]
+
+#: Blocs gardés de l'ordre du capital total quand l'ordre affiché est celui de la poche (§F4, Intégration) : les
+#: décisions de l'écran (table de choix, ligne retenue, réserve, plan) se prennent sur le capital total.
+BLOCS_DU_CAPITAL_TOTAL = ("perte", "reserve", "plan")
 
 VERSION = 1
 _EN_COURS: contextvars.ContextVar[bool] = contextvars.ContextVar("rendement_en_cours", default=False)
@@ -115,6 +119,39 @@ def construire(ordre: Any, *, panels: Mapping[str, Any] | None = None, asof: Any
         _EN_COURS.reset(jeton)
 
 
+def pour_ordre_poche(rn_capital: Mapping[str, Any], ordre_poche: Any, **kw: Any) -> dict[str, Any]:
+    """Clé ``rendement_net`` de l'**ordre de la poche** (option ``--perte-toleree``, §F4, Intégration). **Ne lève
+    jamais.**
+
+    ``rn_capital`` : sortie de :func:`construire` sur l'ordre du capital total K, avec la perte acceptée (la ligne
+    retenue y est vérifiée par l'ordre complet) ; ``ordre_poche`` : l'ordre O_A rendu dans ``memo["ordre_poche"]``.
+    Les blocs qui décrivent l'ordre affiché sont recalculés sur O_A (``construire`` sans perte acceptée : frais,
+    bilan, leviers, liquidités et provision, « passer l'ordre », alertes, avertissements, lectures du risque et
+    concentration de l'ordre affiché) ; les décisions de l'écran restent celles du capital total (``perte``,
+    ``reserve``, ``plan`` ; lectures du capital total sous ``risque_capital_total``). ``contexte`` porte le capital
+    total, le montant en actions et la réserve (en-tête : :func:`brvm_alpha.rendement.rendu.ligne_entete_poche`).
+    ``kw`` : mêmes paramètres que :func:`construire` (``perte_toleree``, ``verifier``, ``choix_verifie``, ``memo`` et
+    ``capital`` sont ignorés : le capital de O_A est le montant en actions)."""
+    try:
+        sans = {k: v for k, v in kw.items() if k not in ("perte_toleree", "verifier", "choix_verifie", "memo", "capital")}
+        rn_a = construire(ordre_poche, **sans)
+        out = dict(rn_a)
+        for cle in BLOCS_DU_CAPITAL_TOTAL:
+            out[cle] = rn_capital.get(cle)
+        out["risque_capital_total"] = rn_capital.get("risque")
+        ctx_k = rn_capital.get("contexte") if isinstance(rn_capital.get("contexte"), Mapping) else {}
+        K = float(ctx_k.get("capital") or 0)
+        ch = (rn_capital.get("perte") or {}).get("choix") if isinstance(rn_capital.get("perte"), Mapping) else None
+        A = float((ch or {}).get("en_actions") or (rn_a.get("contexte") or {}).get("capital") or 0)
+        ctx = dict(rn_a.get("contexte") or {})
+        ctx.update({"poche": True, "capital": K, "capital_ordre": float((rn_a.get("contexte") or {}).get("capital") or A),
+                    "en_actions": A, "reserve": max(0.0, K - A)})
+        out["contexte"] = ctx
+        return out
+    except Exception as exc:  # noqa: BLE001 - dernier filet : jamais d'exception vers l'ordre de bataille
+        return {"version": VERSION, "bandeau": BANNER, "erreur": f"{exc.__class__.__name__} : {exc}"}
+
+
 def _construire(ordre: Any, *, panels, asof, capital, costs, g, perte_toleree, taux_reserve, statut_taux, plan_enregistre,
                 suivi, appel, verifier, choix_verifie, validation_dir, sessions, carnet_cloture, holdings_fournis,
                 cash_fourni, memoire, completer, forced_exits, non_employee, aujourd_hui, rg, graines, memo,
@@ -197,10 +234,10 @@ def _construire(ordre: Any, *, panels, asof, capital, costs, g, perte_toleree, t
         ch["ref_publie_detail"] = {k: cref.get(k) for k in ("vl_2018", "part_investie_2018", "frais_2018", "motif", "mention")
                                    if cref.get(k) is not None}
         table = perte.table_de_choix(o, cm, g if g is not None else None, ch, lecteur, reglages=R)
-        out: dict[str, Any] = {"chocs": ch, "table": table, "choix": None, "phrases": [reglages.PH_PASSE,
-                                                                                       reglages.PH_DESCRIPTIF,
-                                                                                       reglages.PH_RISQUE,
-                                                                                       reglages.PH_INTERETS]}
+        # La table porte la lecture flatteuse (annee_ordinaire.flatteuse) : PH_FLATTE l'accompagne (règle 8, §F1-10).
+        out: dict[str, Any] = {"chocs": ch, "table": table, "choix": None,
+                               "phrases": [reglages.PH_PASSE, reglages.PH_DESCRIPTIF, reglages.PH_FLATTE,
+                                           reglages.PH_RISQUE, reglages.PH_INTERETS]}
         if X is not None:
             choix = perte.ligne_choisie(o, X, cm, g if g is not None else None, ch, lecteur, verifier=verifier,
                                         reglages=R, choix_verifie=choix_verifie)
@@ -234,7 +271,7 @@ def _construire(ordre: Any, *, panels, asof, capital, costs, g, perte_toleree, t
     rn["leviers"] = _bloc(lambda: bilan.leviers(o, g_eff, lec_res, arrondi=arr if _ok(arr) else None,
                                                reinvestir=proj_ed if _ok(proj_ed) else None, reglages=R, costs=cm))
     rn["passer_l_ordre"] = _bloc(lambda: {"consignes": liquidites.consignes(o, panels, carnet=carnet_cloture),
-                                          "carnet": carnet_cloture is not None,
+                                          "carnet": liquidites.compte_carnet(o, carnet_cloture),
                                           "ne_pas_transmettre": reglages.PH_NE_PAS_TRANSMETTRE})
     al = _bloc(lambda: alertes.alertes_fuite(o, rn, g_eff if g is not None else None, panels, sessions=sess,
                                              holdings_fournis=holdings_fournis, cash_fourni=cash_fourni, memoire=memoire,

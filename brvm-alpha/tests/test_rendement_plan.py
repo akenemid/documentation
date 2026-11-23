@@ -75,7 +75,12 @@ def test_forme_ecran_lexique_lignes_colonnes(cap, X):
         if l.get("montant") is not None:
             assert l["statut"] in ("compté", "estimé", "supposé"), l
     if cap == "1M":
-        assert lignes[0].startswith("À ce tarif, 20 lignes coûtent plus qu'elles ne rapportent : 102")
+        # Règle 10 : montants supposés arrondis, précédés de « environ », avec leur statut ; au franc dans le détail.
+        assert _plat(t).startswith("À ce tarif, 20 lignes coûtent plus qu'elles ne rapportent : environ 110 000 FCFA de "
+                                   "frais par an pour environ 38 000 FCFA de dividendes attendus [supposé].")
+        md = _plat(PL.rendre_plan(rn["plan"], "md"))
+        assert ("102 166 FCFA de frais par an pour 38 458 FCFA de dividendes attendus [supposé], soit 63 708 FCFA de "
+                "moins par an") in md
 
 
 def test_memes_montants_json_md_ecran(rn10):
@@ -141,16 +146,71 @@ def test_choix_du_montant_accepte_et_une_chose():
                      plan_enregistre={"perte_toleree": 1_000_000, "questions_envoyees": True})
     t = _plat(PL.rendre_plan(rn["plan"], "texte"))
     for s in ("Vous acceptez de risquer 1 000 000 FCFA sur 12 mois. Ce n'est pas une limite.",
-              "En actions : 3 000 000 FCFA. En réserve : 7 000 000 FCFA.",
+              "En actions : 3 000 000 FCFA. En réserve : 7 000 000 FCFA [estimé].",
               "Une année comme 2018 : environ −830 000 à −980 000 FCFA, frais compris [estimé]. Au pire moment de l'année : "
               "environ −1 040 000 FCFA. Cela dépasse ce que vous acceptez.",
-              "Si la baisse de 2017-2020 revenait : environ −1 410 000 FCFA, sur plusieurs années.",
-              "environ +110 000 FCFA au lieu de +660 000 (environ 550 000 FCFA de moins)",
-              "chaque point d'intérêt vaut 70 000 FCFA par an", _plat(RG.PH_RISQUE)):
+              "Si la baisse de 2017-2020 revenait : environ −1 410 000 FCFA, sur plusieurs années [estimé].",
+              "environ +110 000 FCFA au lieu de +660 000 (environ 550 000 FCFA de moins) [estimé]",
+              "chaque point d'intérêt vaut 70 000 FCFA par an [estimé]", _plat(RG.PH_RISQUE)):
         assert s in t, s
+    assert "flatteuse" not in t and "915 950" not in t
     assert rn["plan"]["une_chose_code"] == "taux"
     md = _plat(PL.rendre_plan(rn["plan"], "md"))
-    assert "les frais dépassent les dividendes attendus de 25 707 FCFA" in md
+    assert "les frais dépassent les dividendes attendus de 25 707 FCFA [supposé]" in md
+    # Détail : le prix de la prudence en lecture flatteuse (915 950 FCFA), suivi de PH_FLATTE (§F4).
+    i = md.index("Lecture flatteuse (passé rejoué) : +263 350 FCFA au lieu de +1 179 300 FCFA (915 950 FCFA de moins).")
+    assert md.index(_plat(RG.PH_FLATTE), i) > i
+    # Statut des montants de la ligne retenue (§14 : « Estimation (règle du §F4) »).
+    lig = {l["texte"].split(" :")[0].strip(): l for l in rn["plan"]["lignes"] if l["bloc"] == "risque" and l.get("montant") is not None}
+    assert lig["En actions"]["statut"] == "estimé"
+
+
+def test_statut_ecrit_sur_chaque_ligne_de_montant_du_bloc_2():
+    rn = _construire(perte_toleree=1_000_000, verifier=lambda A: J.ordre(str(int(A))), graines=1)
+    vus = 0
+    for l in rn["plan"]["lignes"]:
+        if l["bloc"] != "risque" or l.get("montant") is None or l["texte"].strip().startswith("Vous acceptez de risquer"):
+            continue  # la ligne « Vous acceptez de risquer X » reprend la saisie de l'utilisateur
+        vus += 1
+        assert re.search(r"\[(compté|estimé|supposé)\]", l["texte"]), l["texte"]
+        assert re.search(r"\[(compté|estimé|supposé)\]", l["texte_detail"]), l["texte_detail"]
+    assert vus >= 4
+
+
+def test_verification_par_l_ordre_en_echec_rien_n_est_chiffre():
+    # verifier « trop cher » : chaque ordre complet dépasse ce que l'utilisateur accepte (§F4, étape 6).
+    rn = _construire(perte_toleree=900_000, verifier=lambda A: J.ordre("3000000"), graines=1)
+    ch = rn["perte"]["choix"]
+    assert ch["en_actions"] == 0 and ch["reserve"] == 10_000_000 and ch["appels"] == 10 and not ch["verifie_par_ordre"]
+    assert ch["annee_2018"] == [None, None] and ch["pire_moment_2018"] is None and ch["annee_ordinaire"]["prudente"] is None
+    assert ch["message"] == "vérification arrêtée après 10 ordres : montant en actions à confirmer"
+    assert rn["reserve"]["montant"] == 10_000_000
+    t = _plat(PL.rendre_plan(rn["plan"], "texte"))
+    bloc2 = t[t.index("2. CE QUE J'ACCEPTE"):t.index("3. OÙ DORT LE RESTE")]
+    assert "En actions : 2" not in bloc2 and "En actions : 3" not in bloc2
+    assert not re.search(r"−[\d ]+ à −[\d ]+", bloc2), bloc2  # aucune fourchette « année comme 2018 »
+    assert "montant en actions à confirmer" in bloc2 and "Montant en actions : non calculé" in bloc2
+    sec = _plat(RD.fragment(RD.blocs_section(rn), "md"))
+    assert "montant en actions à confirmer" in sec
+
+
+def test_reserve_nulle_bloc_masque():
+    rn = _construire(perte_toleree=5_000_000, verifier=lambda A: J.ordre("10M"), graines=1)
+    assert rn["perte"]["choix"]["en_actions"] == 10_000_000 and rn["reserve"]["masque"]
+    t = PL.rendre_plan(rn["plan"], "texte")
+    assert "OÙ DORT LE RESTE" not in t and "0 FCFA : chaque point" not in t
+
+
+def test_forme_fragment_pour_la_carte_du_rapport(rn10):
+    f = PL.rendre_plan(rn10["plan"], "fragment")
+    assert "<style" not in f and not re.search(r"#[0-9a-fA-F]{3,6}\b", f) and "background" not in f
+    assert f.count("<table") == f.count('<div class="tablewrap"><table') == 1
+    p = _plat(f)
+    for ph in (RG.BANNER, RG.PH_ETUDE, RG.PH_PASSE, RG.PH_DESCRIPTIF):
+        assert _plat(ph) in p, ph
+    assert "flatteuse" not in f and "environ 290 000" in p
+    blocs = PL.vers_blocs(rn10["plan"])
+    assert ("banner", RG.BANNER) in blocs and sum(1 for g, _v in blocs if g == "table") == 1
 
 
 def test_bloc_essentiel_quatorze_lignes_au_plus(rn10):

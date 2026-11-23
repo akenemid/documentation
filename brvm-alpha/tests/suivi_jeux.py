@@ -4,7 +4,8 @@
   ne lit les données réelles de l'installation ni ne fige un exemple tiré d'une date réelle choisie après coup.
 * Registre des essais : **copie** de ``reports/trials.parquet`` dans un dossier temporaire (le fichier du dépôt est lu,
   jamais écrit).
-* Dépôt de développement factice : un dossier temporaire avec un dossier ``.git`` vide.
+* Dépôt de développement factice : un dossier temporaire où ``git init`` a été lancé et où ``reports/trials.parquet``
+  est suivi (index git).
 """
 
 from __future__ import annotations
@@ -29,8 +30,22 @@ def sha(p: Path) -> str | None:
 
 
 def depot(tmp: Path) -> Path:
-    """Dépôt de développement factice (un dossier ``.git``)."""
+    """Dépôt de développement factice : un vrai dépôt git (``git init``) où ``reports/trials.parquet`` est suivi (dans
+    l'index), comme dans le dépôt de développement. Aucune écriture hors du dossier temporaire."""
+    import subprocess
+
     d = tmp / "depot"
+    if not (d / ".git").exists():
+        (d / "reports").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REGISTRE_DU_DEPOT, d / "reports" / "trials.parquet")
+        subprocess.run(["git", "init", "-q", str(d)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(d), "add", "reports/trials.parquet"], check=True, capture_output=True)
+    return d
+
+
+def faux_depot(tmp: Path) -> Path:
+    """Copie d'installation : un dossier ``.git`` vide, sans registre suivi (refusée par ``depot_de_developpement``)."""
+    d = tmp / "faux_depot"
     (d / ".git").mkdir(parents=True, exist_ok=True)
     return d
 

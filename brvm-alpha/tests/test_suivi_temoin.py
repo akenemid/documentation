@@ -80,12 +80,24 @@ def test_refus_des_dates_de_S1_et_de_reports(panels, tmp_path):
         TM.maj("N", panels, tmp_path, debut=DEBUT)
 
 
-def test_debut_par_defaut_derniere_seance_avant_le_suivi():
+def test_debut_par_defaut_date_figee_independante_du_panel(tmp_path):
     idx = pd.bdate_range("2026-11-20", "2026-12-08")
     p = {"close": pd.DataFrame({"X": 1.0}, index=idx)}
-    assert TM.debut_par_defaut(p) == pd.Timestamp("2026-11-30")
+    assert TM.debut_par_defaut(p) == pd.Timestamp("2026-11-30") == TM.date_de_depart()
+    # Bulletin du 30/11 pas encore arrivé : le départ ne glisse pas vers le 27/11 (§8.2, date figée).
     p2 = {"close": pd.DataFrame({"X": 1.0}, index=idx.drop(pd.Timestamp("2026-11-30")))}
-    assert TM.debut_par_defaut(p2) == pd.Timestamp("2026-11-27")
+    assert TM.debut_par_defaut(p2) == pd.Timestamp("2026-11-30")
+    # Seul le calendrier des séances fait foi : si le 30/11 n'était pas une séance, la veille ouvrée le serait.
+    ses = pd.DataFrame({"date": idx.drop(pd.Timestamp("2026-11-30")), "available": True})
+    assert TM.date_de_depart(sessions=ses) == pd.Timestamp("2026-11-27")
+
+
+def test_rien_n_est_ecrit_tant_que_le_bulletin_du_depart_manque(tmp_path):
+    jours = pd.bdate_range("2026-11-02", "2026-12-18").drop(pd.Timestamp("2026-11-30"))
+    p = J.panel_simple(jours, {"AAA": [100.0] * len(jours)})
+    r = TM.maj("REF-S2", p, tmp_path)
+    assert r["semaine_0"] and not r["ecrit"] and "30/11/2026" in r["mention"]
+    assert not (tmp_path / "REF-S2").exists()
 
 
 def test_semaine_zero_rien_n_est_ecrit(panels, tmp_path):

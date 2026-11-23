@@ -40,8 +40,8 @@ from brvm_alpha.suivi import bulletin as _bu
 from brvm_alpha.suivi import carnet as _cn
 from brvm_alpha.suivi import etat as _et
 
-__all__ = ["CAPITAL", "COUTS", "NOMS", "contexte", "debut_par_defaut", "lancer", "maj", "operations_du_moteur", "spec",
-           "temoin_model"]
+__all__ = ["CAPITAL", "COUTS", "NOMS", "contexte", "date_de_depart", "debut_par_defaut", "lancer", "maj",
+           "operations_du_moteur", "spec", "temoin_model"]
 
 NOMS = ("REF-S2", "N")
 CAPITAL = 10_000_000
@@ -73,14 +73,30 @@ def spec(capital: float = CAPITAL) -> Any:
     return runner.RunSpec("REF", costs=COUTS, capital=float(capital))
 
 
+def date_de_depart(reglages: Mapping[str, Any] | None = None, sessions: Any = None) -> pd.Timestamp:
+    """Date **figée** de la première décision du témoin (§8.2) : la dernière séance du calendrier au plus tard la veille
+    du début du suivi (le 30/11/2026). Calendrier : la table ``sessions`` du panel (``date``) si elle est donnée, sinon
+    les jours ouvrés hors fériés à date fixe. Elle ne dépend jamais du contenu du panel (un bulletin arrivé en retard
+    ne la déplace pas)."""
+    from brvm_alpha.portfolio import recommend as R
+
+    veille = pd.Timestamp(str(_rg.lire(reglages, "dates.debut_suivi", "2026-12-01"))).normalize() - pd.Timedelta(days=1)
+    if isinstance(sessions, pd.DataFrame) and "date" in sessions.columns and len(sessions):
+        cal = pd.DatetimeIndex(pd.to_datetime(sessions["date"])).normalize()
+        avant = cal[cal <= veille]
+        if len(avant):
+            return pd.Timestamp(avant.max())
+    d = veille
+    while d.weekday() >= 5 or R._is_fixed_holiday(d):
+        d -= pd.Timedelta(days=1)
+    return d
+
+
 def debut_par_defaut(panels: Mapping[str, Any], reglages: Mapping[str, Any] | None = None) -> pd.Timestamp:
-    """Dernière séance du panel au plus tard la veille du début du suivi (30/11/2026 si c'est une séance)."""
-    veille = pd.Timestamp(str(_rg.lire(reglages, "dates.debut_suivi", "2026-12-01"))) - pd.Timedelta(days=1)
-    idx = pd.DatetimeIndex(panels["close"].index)
-    avant = idx[idx <= veille]
-    if not len(avant):
-        raise ValueError(f"panel sans séance au plus tard le {veille:%d/%m/%Y}")
-    return pd.Timestamp(avant[-1]).normalize()
+    """Première décision du témoin : :func:`date_de_depart` (calendrier ``sessions`` du panel s'il existe), jamais la
+    dernière séance présente dans le panel."""
+    ses = panels.get("sessions") if isinstance(panels, Mapping) else None
+    return date_de_depart(reglages, ses)
 
 
 def contexte(fin: Any, *, debut: Any, notes: Any = None, history_start: Any = None, sample: str = "S2",
@@ -309,6 +325,12 @@ def maj(nom: str, panels: Mapping[str, Any], dossier: str | Path | None = None, 
     _s.refuser_s1(d0, "le début du témoin")
     idx = pd.DatetimeIndex(pd.to_datetime(panels["close"].index)).normalize()
     d1 = pd.Timestamp(fin).normalize() if fin is not None else idx[-1]
+    if d0 not in idx:
+        # La première décision est figée (§8.2) : tant que le panel n'a pas son bulletin, rien n'est écrit (sinon le
+        # départ glisserait vers la séance précédente, et le passé changerait à l'arrivée du bulletin).
+        return {"nom": nom, "semaine_0": True, "debut": d0.date().isoformat(), "ecrit": False,
+                "mention": f"semaine 0 : le bulletin du {d0:%d/%m/%Y} (première décision) n'est pas encore dans le panel ; "
+                           "rien n'est écrit"}
     if len(idx[idx > d0]) == 0 or d1 <= d0:
         return {"nom": nom, "semaine_0": True, "debut": d0.date().isoformat(), "ecrit": False,
                 "mention": "semaine 0 : état avant achat, aucune séance après la première décision"}
@@ -317,8 +339,9 @@ def maj(nom: str, panels: Mapping[str, Any], dossier: str | Path | None = None, 
         return {"nom": nom, "ok": False, "erreur": run.get("error"), "ecrit": False}
     conv = operations_du_moteur(run, panels, debut=d0, capital=capital, fin=d1)
     ops = conv["operations"]
+    # Le témoin EST la règle déclarée (article 1) : l'argent qui dort prévu est le sien (condition b du feu « Fuites »).
     lignes = _bu.lignes_semaines(ops, panels, debut=d0, fin=d1, jusqu_au=jusqu_au, ordres=conv["ordres"],
-                                 detaches=conv["detaches"], reglages=reglages)
+                                 detaches=conv["detaches"], prevu=lambda _t, l: l["argent_qui_dort"], reglages=reglages)
     d.mkdir(parents=True, exist_ok=True)
     res = _bu.ecrire_semaines(nom, lignes, dossier, maintenant=maintenant)
     der = pd.Timestamp(lignes[-1]["date"]) if lignes else d0

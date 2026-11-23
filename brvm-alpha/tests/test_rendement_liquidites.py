@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 
+import pandas as pd
 import pytest
 
 import rendement_jeux as J
@@ -101,16 +102,21 @@ def test_projection_a_cours_constants():
 
 def test_argent_qui_dort_portefeuille_detenu():
     o = J.ordre("detenu_624840")
+    # Sans panel, les dividendes reçus depuis janvier ne sont pas connus ; aucun ordre n'est en cours (lignes gelées
+    # par la bande) : rien n'est « prévu » sans preuve, l'argent qui dort est de cause « inconnue ».
     a = LQ.argent_qui_dort(o)
-    assert a["D"] == 419_332 and a["D_hors_regle"] == 0 and a["D_prevu"] == a["D"]
-    assert a["aucun_ordre"]
-    assert a["texte"].startswith("Liquidités 624\u202f840 FCFA (6,1 %). Aucun ordre proposé : la règle n'achète pas hors de "
-                                 "la remise à niveau de janvier, et la bande de 2 points gèle chaque ligne. Cet argent est "
-                                 "prévu par la règle testée")
+    assert a["D"] == 419_332 and a["aucun_ordre"] and a["D"] == a["D_prevu"] + a["D_hors_regle"]
+    assert a["D_prevu"] == 0 and [c["code"] for c in a["causes"]] == ["inconnue"] and a["D_hors_regle"] == 419_332
+    # Mesuré (mémoire ou carnet) : l'argent laissé par la dernière remise à niveau est prévu par la règle.
+    m = LQ.argent_qui_dort(o, memoire={"reliquat_remise_a_niveau": 150_000})
+    assert next(c for c in m["causes"] if c["code"] == "bande_mesuree")["montant"] == 150_000 and m["D_prevu"] == 150_000
     p = {"dividends_table": J.dividendes_2026()}
     b = LQ.argent_qui_dort(o, panels=p)
     div = next(c for c in b["causes"] if c["code"] == "dividendes_gardes")
     assert div["statut"] == "Estimation" and div["prevu"] and b["D_hors_regle"] == 0
+    assert b["texte"].startswith("Liquidités 624\u202f840 FCFA (6,1 %). Aucun ordre proposé : la règle n'achète pas hors de "
+                                 "la remise à niveau de janvier, et la bande de 2 points gèle chaque ligne. Cet argent est "
+                                 "prévu par la règle testée")
     assert "(dividendes gardés jusqu'à fin janvier)" in b["texte"]
     assert sum(c["montant"] for c in b["causes"]) == b["D"] == b["D_prevu"] + b["D_hors_regle"]
     est = LQ.dividendes_depuis_janvier(o, p)
@@ -123,7 +129,9 @@ def test_argent_qui_dort_service_partiel():
     a = LQ.argent_qui_dort(o, memoire={"quantites_origine": orig})
     ns = next(c for c in a["causes"] if c["code"] == "ordres_non_servis")
     assert ns["montant"] == 469_430 and not ns["prevu"]
-    assert a["D"] == 476_412 and a["D_hors_regle"] == 469_430 and a["D"] == a["D_prevu"] + a["D_hors_regle"]
+    # Le reste (6 982 FCFA) vient des lignes gelées : cause inconnue sans mesure, sous le seuil de l'alerte.
+    assert a["D"] == 476_412 and a["D_hors_regle"] == 476_412 and a["D"] == a["D_prevu"] + a["D_hors_regle"]
+    assert next(c for c in a["causes"] if c["code"] == "inconnue")["montant"] == 6_982
     sans = LQ.argent_qui_dort(o)
     assert sans["D"] == 476_412
 
@@ -136,3 +144,52 @@ def test_consignes():
     assert c7[:6] == LQ.CONSIGNES
     assert c7[6] == ("Au dernier carnet, 5 lignes ont un prix demandé au-dessus de votre limite et 5 n'offrent pas assez "
                      "de titres au meilleur prix.")
+
+
+def test_argent_d_origine_inconnue_n_est_pas_range_dans_la_regle():
+    # Portefeuille détenu du 20/11/2026 plus 300 000 FCFA d'origine inconnue : la bande de 2 points gèle chaque ligne,
+    # mais elle n'explique pas d'où vient cet argent : il n'est pas « prévu par la règle testée ».
+    o = copy.deepcopy(J.ordre("detenu_624840"))
+    for k in ("liquidites_initiales", "valeur_portefeuille"):
+        o[k] += 300_000
+    o["couts"]["liquidites_apres"] += 300_000
+    a = LQ.argent_qui_dort(o, panels={"dividends_table": J.dividendes_2026()})
+    assert a["D"] == 713_332 and a["D"] == a["D_prevu"] + a["D_hors_regle"]
+    causes = {c["code"]: c for c in a["causes"]}
+    assert causes["dividendes_gardes"]["montant"] == 435_988 and "regle" not in causes  # aucun ordre en cours
+    assert causes["inconnue"]["montant"] == a["D_hors_regle"] == 277_344  # ancienne lecture : 0 (tout « prévu »)
+    assert "(cause : inconnue)" in a["texte"]
+
+
+def test_dividendes_depuis_janvier_sans_les_divisions_d_actions():
+    o = J.ordre("detenu_624840")
+    sans = J.dividendes_2026().drop(columns=["facteur_division"])
+    est = LQ.dividendes_depuis_janvier(o, {"dividends_table": sans})
+    assert est["montant"] is None and "non calculés" in est["non_calcule"]  # jamais un facteur 1 en silence
+    a = LQ.argent_qui_dort(o, panels={"dividends_table": sans})
+    assert "dividendes_gardes" not in {c["code"] for c in a["causes"]}
+    assert "Dividendes depuis janvier : non calculés" in a["texte"]
+    # Avec la table des opérations sur titres (vide : aucune division), le calcul a lieu.
+    ca = pd.DataFrame(columns=["date", "symbol", "kind", "ratio"])
+    assert LQ.dividendes_depuis_janvier(o, {"dividends_table": sans, "corporate_actions": ca})["montant"] is not None
+
+
+def test_arrondi_possible_dit_gain_ou_perte_selon_le_marche_et_carnet_compte():
+    o = J.ordre("10M")
+    ar = LQ.arrondi_restes(o)
+    assert ar["francs_ajoutes"] == 65_485 and ar["texte"].endswith("Gain ou perte selon le marché.")
+    k = LQ.compte_carnet(o, J.carnet())
+    assert k == {"n1": 5, "n2": 5, "date": "2026-11-20"} and LQ.compte_carnet(o, None) is None
+
+
+def test_projection_serie_et_portefeuille_detenu():
+    o = J.ordre("10M")
+    pr = LQ.projection(o, serie=True)
+    assert "serie" not in LQ.projection(o)
+    assert pr["serie"][pr["fin"]] == pr["a_la_remise_a_niveau"] and len(pr["serie"]) > 400
+    from brvm_alpha.suivi import bulletin as BU
+
+    prevu = BU.prevu_depuis_projection(pr)
+    assert prevu(pd.Timestamp("2027-06-30"), {"valeur": 10_000_000}) == pytest.approx(
+        pr["serie"]["2027-06-30"] - 0.02 * 10_000_000)
+    assert prevu(pd.Timestamp("2030-01-01"), {"valeur": 1}) is None

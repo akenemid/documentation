@@ -22,8 +22,8 @@ from typing import Any, Mapping, Sequence
 from brvm_alpha.rendement import reglages as _rg
 from brvm_alpha.rendement.reglages import BANNER, R, fcfa, pct
 
-__all__ = ["SOUS_PARTIES", "bloc_essentiel", "blocs_distribution", "blocs_section", "fragment", "ligne_execution",
-           "ligne_ne_pas_transmettre", "sous_blocs_rapport"]
+__all__ = ["SOUS_PARTIES", "bloc_essentiel", "blocs_distribution", "blocs_section", "fragment", "html_rapport",
+           "ligne_entete_poche", "ligne_execution", "ligne_ne_pas_transmettre", "sous_blocs_rapport"]
 
 Bloc = tuple[str, Any]
 SOUS_PARTIES = ("Du brut au net", "Frais évités par rapport au tarif supposé", "Inconnues à lever",
@@ -42,6 +42,14 @@ def _err(b: Any) -> str:
 
 def _s(x: Any) -> str:
     return fcfa(x, signe=True) if x is not None else NON_CALCULE
+
+
+def _evite(x: Any, quand: str = "") -> str:
+    """Frais évités au franc ; une valeur négative s'écrit « surcoût de … » (§F2 : jamais un frais évité négatif)."""
+    if x is None:
+        return NON_CALCULE
+    v = float(x)
+    return f"surcoût de {fcfa(-v)}{quand}" if v < 0 else fcfa(v)
 
 
 def _ligne_choix(r: Mapping[str, Any]) -> str:
@@ -164,9 +172,9 @@ def blocs_section(rn: Mapping[str, Any]) -> list[Bloc]:
     B.append(("h3", SOUS_PARTIES[1]))
     if _ok(lv):
         B.append(("p", lv["phrase_frais_evites"]))
-        rows = [[x["geste"], fcfa(x["une_fois"]), x.get("par_an_texte") or fcfa(x["par_an"]),
-                 fcfa(x.get("premiere_annee")) if x.get("premiere_annee") is not None else "—", x["condition"],
-                 x["contrepartie"]] for x in lv["frais_evites"]]
+        rows = [[x["geste"], _evite(x["une_fois"]), x.get("par_an_texte") or _evite(x["par_an"]),
+                 _evite(x.get("premiere_annee"), " la 1re année") if x.get("premiere_annee") is not None else "—",
+                 x["condition"], x["contrepartie"]] for x in lv["frais_evites"]]
         B.append(("table", (["Geste", "Une fois", "Par an", "1re année", "Condition", "Contrepartie"], rows)))
         B.append(("h3", SOUS_PARTIES[2]))
         B.append(("ul", [f"{x['inconnue']} : {x['texte']}" for x in lv["inconnues"]]))
@@ -205,18 +213,28 @@ def blocs_section(rn: Mapping[str, Any]) -> list[Bloc]:
                              "Si 2017-2020 revenait", "Dividendes moins frais (1re année ; ensuite)",
                              "Année ordinaire (prudente)", "Année ordinaire (flatteuse)"], rows)))
         B.append(("p", _rg.PH_FLATTE))
-        notes = [" ".join(p.get("phrases") or [])]
+        notes = [" ".join(x for x in (p.get("phrases") or []) if x != _rg.PH_FLATTE)]
         if p.get("choix") and p["choix"].get("verifie_par_ordre"):
             notes.append(f"Montant en actions vérifié par l'ordre complet ({p['choix'].get('appels')} appel(s)) : "
                          f"{fcfa(p['choix'].get('P_verifiee'))} pour une année comme 2018, frais compris.")
         if p.get("choix") and p["choix"].get("message"):
             notes.append(p["choix"]["message"])
+        if p.get("choix") and (p["choix"].get("detenu") or {}).get("texte"):
+            notes.append(p["choix"]["detenu"]["texte"])
+        if p.get("choix") and p["choix"].get("mention_ventes"):
+            notes.append(p["choix"]["mention_ventes"])
+        ch_ = p.get("choix") or {}
+        if ch_.get("en_actions") and ch_.get("prix_prudence") is not None:
+            notes.append(f"Prix de cette prudence (année ordinaire du passé) : lecture prudente {fcfa(ch_['prix_prudence'])} "
+                         "de moins que tout en actions"
+                         + (f" ; lecture flatteuse {fcfa(ch_['prix_prudence_flatteuse'])} de moins. {_rg.PH_FLATTE}"
+                            if ch_.get("prix_prudence_flatteuse") is not None else "."))
         B.append(("ul", notes))
         rq = rn.get("risque") if _ok(rn.get("risque")) else {}
         conc = rq.get("concentration") if isinstance(rq, Mapping) else None
         if _ok(conc):
             B.append(("ul", [f"Un titre en moins (choc de {pct(conc['choc'], 0)}) : {x['nom']} {fcfa(x['perte_choc'])} "
-                             f"({pct(x['pct_capital'], 1)} du capital)" for x in conc["lignes"][:4]]
+                             f"({pct(x['pct_capital'], 1)} du capital)" for x in conc["lignes"]]
                       + [f"Poids des deux premières lignes : {pct(conc['poids_deux_premieres'], 1)} ; lignes effectives "
                          f"{(conc['lignes_effectives'] or 0):.1f}".replace(".", ",")]))
     else:
@@ -258,6 +276,7 @@ def blocs_section(rn: Mapping[str, Any]) -> list[Bloc]:
         B.append(("table", (["Changement", "Francs placés en plus", "Dividendes attendus [estimé]",
                              "Année ordinaire du passé (prudente à flatteuse)",
                              "Une année sur dix (flatteuse ; prudente ; périodes réelles)", "Nature"], rows)))
+        B.append(("p", _rg.PH_PASSE + " " + _rg.PH_DESCRIPTIF))
         B.append(("p", lv["note"] + " " + _rg.PH_FLATTE))
     else:
         B.append(("p", NON_CALCULE + "."))
@@ -328,8 +347,15 @@ def sous_blocs_rapport(rn: Mapping[str, Any]) -> dict[str, list[Bloc]]:
         return sec[i:j]
 
     banner: list[Bloc] = [("banner", BANNER)]
+    try:
+        from brvm_alpha.rendement import plan as _plan
+
+        carte = _plan.vers_blocs(rn["plan"]) if _ok(rn.get("plan")) else [("p", f"Carte « Mon plan » : {_err(rn.get('plan'))}.")]
+        carte = [b for b in carte if b != ("banner", BANNER)]
+    except Exception as exc:  # noqa: BLE001 - la section « bandeau » reste « ok » même si la carte échoue (§F1-11)
+        carte = [("p", f"Carte « Mon plan » : {NON_CALCULE} ({exc.__class__.__name__}).")]
     out = {
-        "bandeau": [("h3", "Mon plan")] + [("p", "Carte « Mon plan » : voir plan.rendre_plan (forme écran).")] + banner,
+        "bandeau": [("h3", "Mon plan")] + carte + banner,
         "ordre": part(SOUS_PARTIES[5], SOUS_PARTIES[6]) + part(SOUS_PARTIES[7], SOUS_PARTIES[8]) + banner,
         "revenus": part(SOUS_PARTIES[0], SOUS_PARTIES[1]) + part(SOUS_PARTIES[1], SOUS_PARTIES[2])
                    + part(SOUS_PARTIES[2], SOUS_PARTIES[3]) + part(SOUS_PARTIES[6], SOUS_PARTIES[7]) + banner,
@@ -340,6 +366,48 @@ def sous_blocs_rapport(rn: Mapping[str, Any]) -> dict[str, list[Bloc]]:
                             _rg.PH_DESCRIPTIF, _rg.PH_PASSE, _rg.PH_INTERETS, _rg.PH_ESSAI])] + banner,
     }
     return out
+
+
+def ligne_entete_poche(rn: Mapping[str, Any]) -> str | None:
+    """En-tête de l'ordre quand l'ordre affiché est celui de la poche (§F4, Intégration) : « Capital total 10 000 000
+    FCFA ; en actions 3 000 000 FCFA ; en réserve 7 000 000 FCFA. » ; ``None`` sinon."""
+    ctx = rn.get("contexte") if isinstance(rn.get("contexte"), Mapping) else {}
+    if not ctx.get("poche"):
+        return None
+    return (f"Capital total {fcfa(ctx.get('capital'))} ; en actions {fcfa(ctx.get('en_actions'))} ; en réserve "
+            f"{fcfa(ctx.get('reserve'))}.")
+
+
+def html_rapport(blocs: Sequence[Bloc], *, table: Any = None, box: Any = None) -> str:
+    """Sous-blocs du rapport HTML rendus avec les assistants du rapport (``table`` = ``report.html._table``, ``box`` =
+    ``report.html._box``), pour que chaque tableau passe par ``tablewrap`` (§7.2). Sans assistant : même forme,
+    écrite ici (``<div class="tablewrap"><table>``, aucune feuille de style)."""
+    import html as _h
+
+    e = _h.escape
+    out: list[str] = []
+    for genre, val in blocs:
+        if genre in ("h2", "h3"):
+            out.append(f"<{genre}>{e(str(val))}</{genre}>")
+        elif genre == "banner":
+            out.append(f'<p class="bandeau"><strong>{e(str(val))}</strong></p>')
+        elif genre == "strong":
+            out.append(f"<p><strong>{e(str(val))}</strong></p>")
+        elif genre == "warn":
+            out.append(str(box("warn", val)) if box is not None else f'<p role="note">⚠ {e(str(val))}</p>')
+        elif genre == "ul":
+            out.append("<ul>" + "".join(f"<li>{e(str(x))}</li>" for x in val if x) + "</ul>")
+        elif genre == "table":
+            head, rows = val
+            if table is not None:
+                out.append(str(table(head, rows)))
+            else:
+                th = "".join(f"<th>{e(str(h))}</th>" for h in head)
+                body = "".join("<tr>" + "".join(f"<td>{e(str(c))}</td>" for c in r) + "</tr>" for r in rows)
+                out.append(f'<div class="tablewrap"><table><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>')
+        else:
+            out.append(f"<p>{e(str(val))}</p>")
+    return "\n".join(out) + "\n"
 
 
 def fragment(blocs: Sequence[Bloc], fmt: str = "md") -> str:

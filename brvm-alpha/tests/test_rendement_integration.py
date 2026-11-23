@@ -145,3 +145,96 @@ def test_blocs_de_l_ordre_et_du_rapport():
     assert ("h3", "Du brut au net") in sb["revenus"] and ("h3", "Ce que j'accepte de risquer") in sb["risques"]
     erreur = RD.blocs_section({"bilan": {"erreur": "x"}, "perte": {"erreur": "y"}})
     assert any("non calculé" in str(v) for _k, v in erreur)
+
+
+
+@pytest.fixture(scope="module")
+def rn10():
+    return rendement.construire(J.ordre("10M"), panels=J.panels_reels(), validation_dir=J.VALIDATION_S1,
+                                carnet_cloture=J.carnet(), aujourd_hui=J.AUJOURD_HUI, graines=2)
+
+
+_MARQUEURS = ("une année sur dix", "une_sur_dix", "flatteuse", "mediane", "médiane", "frequence_perte",
+              "année ordinaire", "annee_ordinaire")
+
+
+def test_garde_phrases_du_passe_dans_chaque_sous_bloc_et_bloc_json(rn10):
+    # Règle 8 du §1, §11 (Honnêteté), §F1-10 : partout où une fréquence, une médiane, « une année sur dix » ou la
+    # lecture flatteuse apparaît, PH_PASSE et PH_DESCRIPTIF ; PH_FLATTE dès que la lecture flatteuse y figure.
+    from brvm_alpha.rendement import rendu as RD
+
+    vus = 0
+    for nom, blocs in RD.sous_blocs_rapport(rn10).items():
+        f = RD.fragment(blocs, "md")
+        bas = f.lower()
+        if any(m in bas for m in _MARQUEURS):
+            vus += 1
+            assert RG.PH_PASSE in f and RG.PH_DESCRIPTIF in f, nom
+            if "flatteuse" in bas or "passé rejoué" in bas:
+                assert RG.PH_FLATTE in f, nom
+    assert vus >= 3
+    for cle, bloc in rn10.items():
+        t = json.dumps(bloc, ensure_ascii=False).lower()
+        if cle in ("plan", "duree_s", "version", "bandeau") or not any(m in t for m in _MARQUEURS):
+            continue
+        brut = json.dumps(bloc, ensure_ascii=False)
+        assert RG.PH_PASSE in brut and RG.PH_DESCRIPTIF in brut, cle
+        if "flatteuse" in t:
+            assert RG.PH_FLATTE in brut, cle
+    assert RG.PH_FLATTE in rn10["perte"]["phrases"] and rn10["leviers"]["phrases"] == [RG.PH_PASSE, RG.PH_DESCRIPTIF, RG.PH_FLATTE]
+
+
+def test_carte_du_bandeau_et_carnet_du_paragraphe_passer_l_ordre(rn10):
+    from brvm_alpha.rendement import rendu as RD
+
+    band = RD.sous_blocs_rapport(rn10)["bandeau"]
+    texte = RD.fragment(band, "md")
+    assert "rendre_plan" not in texte and "Carte « Mon plan » : voir" not in texte  # aucun texte de développeur
+    assert "MON PLAN" in texte and "environ 290 000" in texte.replace("\u202f", " ") and "flatteuse" not in texte
+    assert sum(1 for g, _v in band if g == "table") == 1
+    h = RD.html_rapport(band)
+    assert h.count("<table") == h.count('<div class="tablewrap"><table') == 1 and "<style" not in h
+    vu = []
+    h2 = RD.html_rapport(band, table=lambda head, rows: vu.append(len(rows)) or '<div class="tablewrap"><table></table></div>')
+    assert vu == [4] and "tablewrap" in h2
+    assert rn10["passer_l_ordre"]["carnet"] == {"n1": 5, "n2": 5, "date": "2026-11-20"}
+
+
+def test_concentration_toutes_les_lignes_de_plus_de_5_pourcent(rn10):
+    from brvm_alpha.rendement import rendu as RD
+
+    conc = rn10["risque"]["concentration"]
+    assert len(conc["lignes"]) == 6
+    md = RD.fragment(RD.blocs_section(rn10), "md")
+    lignes = [l for l in md.splitlines() if l.startswith("- Un titre en moins")]
+    assert len(lignes) == 6 and any("ECOBANK" in l for l in lignes)  # 5,03 % : coupée à 4 lignes auparavant
+    for x in conc["lignes"]:
+        assert any(x["nom"] in l for l in lignes)
+
+
+def test_ordre_de_la_poche_recoit_ses_propres_blocs():
+    # --perte-toleree : l'ordre affiché est celui de la poche (3 000 000) ; ses frais, liquidités, provision et alertes
+    # sont les siens, la table de choix et la ligne retenue restent celles du capital total (§F4, Intégration).
+    o10, o3 = J.ordre("10M"), J.ordre("3000000")
+    kw = dict(panels=J.panels_reels(), validation_dir=J.VALIDATION_S1, aujourd_hui=J.AUJOURD_HUI, graines=2,
+              carnet_cloture=J.carnet())
+    memo: dict = {}
+    rn_k = rendement.construire(o10, perte_toleree=1_000_000, verifier=lambda A: J.ordre(str(int(A))), memo=memo,
+                                capital=10_000_000, **kw)
+    assert memo["ordre_poche"] is not None
+    rn_a = rendement.pour_ordre_poche(rn_k, memo["ordre_poche"], perte_toleree=1_000_000, capital=10_000_000, **kw)
+    assert rn_a["perte"] == rn_k["perte"] and rn_a["plan"] == rn_k["plan"] and rn_a["reserve"]["montant"] == 7_000_000
+    assert rn_a["bilan"]["totaux"]["frais_an1"] == 151_702 and rn_k["bilan"]["totaux"]["frais_an1"] == 284_714
+    prov = rn_a["liquidites"]["provision"]["provision_pire_cas"]
+    assert prov == o3["couts"]["achats_pire_cas"] and prov != 9_866_731
+    from brvm_alpha.rendement import rendu as RD
+
+    assert "9\u202f866\u202f731" not in RD.ligne_execution(rn_a)
+    assert RD.ligne_entete_poche(rn_a) == ("Capital total 10\u202f000\u202f000 FCFA ; en actions 3\u202f000\u202f000 FCFA ; "
+                                          "en réserve 7\u202f000\u202f000 FCFA.")
+    assert RD.ligne_entete_poche(rn_k) is None
+    w1 = [a for a in rn_a["alertes"] if a["code"] == "W1"]
+    assert not w1 or "124\u202f126" not in w1[0]["texte"]
+    assert rn_a["risque_capital_total"] == rn_k["risque"] and rn_a["contexte"]["poche"]
+    json.dumps(rn_a, ensure_ascii=False)
+    assert rendement.pour_ordre_poche({}, None)["version"] == rendement.VERSION  # ne lève jamais

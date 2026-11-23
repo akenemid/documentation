@@ -29,8 +29,9 @@ from brvm_alpha.rendement import grille as _gr
 from brvm_alpha.rendement import reglages as _rg
 from brvm_alpha.rendement.reglages import ESTIMATION, FAIT, HYPOTHESE, R
 
-__all__ = ["CONSIGNES", "argent_qui_dort", "arrondi_restes", "carnet_de_cloture", "consignes", "decomposition",
-           "projection", "provision_entree", "reserve_fonctionnement"]
+__all__ = ["CONSIGNES", "argent_qui_dort", "arrondi_restes", "carnet_de_cloture", "compte_carnet", "consignes",
+           "decomposition", "dividendes_depuis_janvier", "projection", "projection_detenus", "provision_entree",
+           "reserve_fonctionnement"]
 
 AES = ("BF", "ML", "NE")
 CONSIGNES = [
@@ -112,6 +113,12 @@ def dividendes_depuis_janvier(ordre: Any, panels: Mapping[str, Any] | None) -> d
     det = {str(l["symbole"]): int(l.get("detenus") or 0) for l in (o.get("lignes") or []) if int(l.get("detenus") or 0) > 0}
     if not det:
         return {"montant": 0, "depuis": t0.strftime("%Y-%m-%d"), "statut": ESTIMATION, "lignes": []}
+    if not isinstance(panels.get("corporate_actions"), pd.DataFrame) and "facteur_division" not in dt.columns:
+        # Sans la table des opérations sur titres, un dividende détaché avant une division serait compté sur la base
+        # de titres d'aujourd'hui (facteur 1) : le montant serait faux. Il n'est pas calculé.
+        return {"montant": None, "depuis": t0.strftime("%Y-%m-%d"), "statut": ESTIMATION, "lignes": [],
+                "non_calcule": "dividendes depuis janvier : non calculés (divisions d'actions inconnues : table "
+                               "corporate_actions absente du panel)"}
     d = dt.copy()
     pay = pd.to_datetime(d["payment_date"].where(d["payment_date"].notna(), d["ex_date"]))
     d = d.assign(paiement_=pay)
@@ -125,8 +132,10 @@ def dividendes_depuis_janvier(ordre: Any, panels: Mapping[str, Any] | None) -> d
         if f is None or not pd.notna(f):
             try:
                 f = float(R._split_factor_after(panels, sym, pd.Timestamp(r.ex_date), t))
-            except Exception:  # noqa: BLE001 - facteur de division illisible : 1
-                f = 1.0
+            except Exception as exc:  # noqa: BLE001 - facteur illisible : le montant n'est pas calculé (jamais 1)
+                return {"montant": None, "depuis": t0.strftime("%Y-%m-%d"), "statut": ESTIMATION, "lignes": [],
+                        "non_calcule": f"dividendes depuis janvier : non calculés (facteur de division de {sym} "
+                                       f"illisible : {exc.__class__.__name__})"}
         net = float(getattr(r, col) if pd.notna(getattr(r, col)) else r.amount) / (f or 1.0)
         m = int(R.round_fcfa(det[sym] * net))
         tot += m
@@ -146,8 +155,10 @@ def argent_qui_dort(ordre: Any, carnet: Mapping[str, Any] | None = None, *, memo
       proposés : ``carnet["quantites_origine"]`` ou ``memoire["quantites_origine"]``) ; reliquat d'arrondi au-delà de
       la marge de F13c (seulement si l'arrondi « plus forts restes » est déclaré) ; cause inconnue ;
     * **prévu par la règle testée** : dividendes gardés jusqu'à la remise à niveau de fin janvier (carnet, ou
-      estimation sur ``dividends_table``) ; produit des sorties forcées (carnet) ; reliquat d'arrondi vers le bas, bande
-      de 2 points et plafonds de l'ordre en cours.
+      estimation sur ``dividends_table``) ; produit des sorties forcées (carnet) ; argent laissé par la dernière remise à
+      niveau s'il est mesuré (carnet ou mémoire) ; reliquat d'arrondi vers le bas et des plafonds de l'ordre en cours
+      (lignes que l'ordre traite). La bande de 2 points gèle une ligne, elle ne crée pas d'argent : l'écart d'une ligne
+      gelée n'est jamais rangé dans « prévu » sans mesure.
 
     ``D_hors_regle = D − D_prevu``."""
     o = _rg.en_dict(ordre)
@@ -185,7 +196,7 @@ def argent_qui_dort(ordre: Any, carnet: Mapping[str, Any] | None = None, *, memo
     def ajoute(code: str, libelle: str, montant: float, prevu: bool, statut: str = FAIT, **kw: Any) -> None:
         nonlocal reste
         m = max(0.0, min(reste, float(montant)))
-        if m <= 0:
+        if m < 0.5:  # moins d'un franc : aucune cause écrite (jamais une ligne « 0 FCFA »)
             return
         reste -= m
         causes.append({"code": code, "cause": libelle, "montant": int(R.round_fcfa(m)), "prevu": prevu, "statut": statut, **kw})
@@ -195,16 +206,27 @@ def argent_qui_dort(ordre: Any, carnet: Mapping[str, Any] | None = None, *, memo
     # 2. Prévu par la règle testée.
     div = src.get("dividendes_depuis_remise_a_niveau")
     div_st = FAIT
+    div_nc = None
     if div is None:
         est = dividendes_depuis_janvier(o, panels)
         if est is not None:
             div, div_st = est["montant"], ESTIMATION
+            div_nc = est.get("non_calcule")
     if div:
         ajoute("dividendes_gardes", "dividendes gardés jusqu'à la remise à niveau de fin janvier", float(div), True, div_st)
     if src.get("produit_sorties_forcees"):
         ajoute("sorties_forcees", "produit des sorties forcées, gardé jusqu'à la remise à niveau", float(src["produit_sorties_forcees"]), True)
-    regle = float(c.get("reliquat_arrondi") or 0) + max(0.0, float(c.get("reliquat_plafonds") or 0)) * V \
-        - float(c.get("achats_couts") or 0) - float(c.get("ventes_couts") or 0) - non_servis
+    # Ce que la règle produit elle-même (§F7 b) : le reliquat d'arrondi vers le bas de l'ordre en cours, recalculé sur
+    # les lignes que cet ordre traite (Σ w × V − q × p : lignes achetées ou vendues, lignes non encore détenues), le
+    # reliquat des plafonds, moins les frais de l'ordre. L'écart d'une ligne gelée par la bande de 2 points dit pourquoi
+    # l'argent n'est pas placé, pas d'où il vient : il n'est compté que s'il est mesuré (argent laissé par la dernière
+    # remise à niveau, carnet ou mémoire : « reliquat_remise_a_niveau »). Le reste n'a pas de cause connue : « inconnue ».
+    reliq_mesure = src.get("reliquat_remise_a_niveau")
+    if reliq_mesure is not None:
+        ajoute("bande_mesuree", "argent laissé par la dernière remise à niveau (arrondi et bande de 2 points, mesuré)",
+               float(reliq_mesure), True, FAIT)
+    regle = _reliquat_ordre_en_cours(o, V) + max(0.0, float(c.get("reliquat_plafonds") or 0)) * V \
+        - float(c.get("achats_couts") or 0) - float(c.get("ventes_couts") or 0)
     if arrondi_declare:
         try:
             ar = arrondi_restes(o, reglages=reglages)
@@ -213,24 +235,42 @@ def argent_qui_dort(ordre: Any, carnet: Mapping[str, Any] | None = None, *, memo
             place = 0.0
         ajoute("arrondi_au_dela_marge", "arrondi au-delà de la marge", place, False, FAIT)
         regle -= place
-    gel = bool(out["aucun_ordre"]) and any("bande" in str(l.get("note") or "") for l in lignes)
-    lib = ("bande de 2 points et arrondi vers le bas de la règle testée" if gel else "argent laissé par l'arrondi vers le bas de l'ordre en cours")
-    ajoute("regle", lib, max(0.0, regle), True, FAIT)
+    ajoute("regle", "argent laissé par l'arrondi vers le bas de l'ordre en cours", max(0.0, regle), True, FAIT)
     ajoute("inconnue", "inconnue", reste, False, HYPOTHESE)
+    if div_nc:
+        out["dividendes_non_calcules"] = div_nc
     prevu = sum(x["montant"] for x in causes if x["prevu"])
     hors = sum(x["montant"] for x in causes if not x["prevu"])
     out.update({"causes": causes, "D_prevu": int(prevu), "D_hors_regle": int(out["D"] - prevu), "D_non_prevu_detail": int(hors)})
     pct_l = _rg.pct(apres / V if V else 0)
+    suffixe = f" {div_nc[0].upper()}{div_nc[1:]}." if div_nc else ""
     if out["aucun_ordre"] and out["D_hors_regle"] < float(_rg.lire(reglages, "liquidites.seuil_argent_qui_dort_fcfa", 100_000)):
         cause = "dividendes gardés jusqu'à fin janvier" if div else "arrondi et bande de la règle"
         out["texte"] = (f"Liquidités {_rg.fcfa(apres)} ({pct_l}). Aucun ordre proposé : la règle n'achète pas hors de la "
                         "remise à niveau de janvier, et la bande de 2 points gèle chaque ligne. Cet argent est prévu par la "
                         f"règle testée ({cause}).")
     else:
-        principale = max(causes, key=lambda x: x["montant"])["cause"] if causes else "inconnue"
+        hors_c = [x for x in causes if not x["prevu"]]
+        principale = max(hors_c or causes, key=lambda x: x["montant"])["cause"] if causes else "inconnue"
         out["texte"] = (f"Argent qui dort : {_rg.fcfa(out['D'])} au-delà de la réserve de {_rg.pct(part, 0)} ; dont hors de la "
-                        f"règle testée {_rg.fcfa(out['D_hors_regle'])} (cause principale : {principale}).")
+                        f"règle testée {_rg.fcfa(out['D_hors_regle'])} (cause : {principale}).")
+    out["texte"] += suffixe
     return out
+
+
+def _reliquat_ordre_en_cours(o: Mapping[str, Any], V: float) -> float:
+    """Reliquat d'arrondi vers le bas de l'ordre en cours : Σ (w × V − q × p) sur les lignes cibles que l'ordre traite
+    (achat ou vente proposés, ou ligne non encore détenue). Les lignes détenues sans ordre (gelées par la bande de 2
+    points) n'y entrent pas : leur écart ne dit pas d'où vient l'argent."""
+    tot = 0.0
+    for l in o.get("lignes") or []:
+        w, p = float(l.get("poids_cible") or 0), float(l.get("cours_reference") or 0)
+        if w <= 0 or p <= 0:
+            continue
+        traitee = (l.get("sens") in ("achat", "vente") and int(l.get("quantite") or 0) > 0) or int(l.get("detenus") or 0) == 0
+        if traitee:
+            tot += w * V - int(l.get("cibles") or 0) * p
+    return tot
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +329,7 @@ def _plafonds(o: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def projection(ordre: Any, grille: _gr.GrilleSGI | None = None, *, reinvestir: bool = False, costs: Any = None,
-               reglages: Mapping[str, Any] | None = None) -> dict[str, Any]:
+               reglages: Mapping[str, Any] | None = None, serie: bool = False) -> dict[str, Any]:
     """Projection jour par jour à cours constants (§F7 d), du premier jour d'exécution au dernier jour ouvré de
     janvier de l'année N+2 : départ = liquidités après l'ordre ; + ``round_fcfa(titres × dividende net prévu)`` à
     chaque date de paiement prévue ; − ``(garde × investi + tenue × lignes + forfait) × jours ÷ 365`` à chaque fin de
@@ -330,7 +370,7 @@ def projection(ordre: Any, grille: _gr.GrilleSGI | None = None, *, reinvestir: b
     part_max = float(ex.get("participation_max_regle") or 0.10)
     cash = float(c.get("liquidites_apres") or 0)
     dernier = d0
-    serie: dict[_dt.date, float] = {}
+    serie_j: dict[_dt.date, float] = {}
     achats: list[dict[str, Any]] = []
     frais_achats = 0
     paiements: list[dict[str, Any]] = []
@@ -376,15 +416,15 @@ def projection(ordre: Any, grille: _gr.GrilleSGI | None = None, *, reinvestir: b
                     frais_achats += int(oc["total"])
                     achats.append({"date": j.isoformat(), "symbole": s, "titres": q, "montant": int(R.round_fcfa(q * p)),
                                    "frais": int(oc["total"])})
-        serie[j] = cash
+        serie_j[j] = cash
         j += _dt.timedelta(days=1)
 
     def moy(a: _dt.date, b: _dt.date) -> float | None:
-        v = [x for d, x in serie.items() if a <= d <= b]
+        v = [x for d, x in serie_j.items() if a <= d <= b]
         return sum(v) / len(v) if v else None
 
     fdm: dict[str, int] = {}
-    for d, v in serie.items():
+    for d, v in serie_j.items():
         fdm[f"{d.year}-{d.month:02d}"] = int(R.round_fcfa(v))
     par_mois: dict[str, int] = {}
     for p_ in paiements:
@@ -393,25 +433,70 @@ def projection(ordre: Any, grille: _gr.GrilleSGI | None = None, *, reinvestir: b
     deb_p = _dt.date(reb1.year, 2, 1)
     m1 = moy(d0, reb1 - _dt.timedelta(days=1))
     m2 = moy(deb_p, fin - _dt.timedelta(days=1))
-    pic_d = max(serie, key=lambda k: serie[k]) if serie else None
+    pic_d = max(serie_j, key=lambda k: serie_j[k]) if serie_j else None
     out = {"debut": d0.isoformat(), "fin": fin.isoformat(), "remise_a_niveau": reb1.isoformat(),
            "dividendes_total": int(sum(p_["montant"] for p_ in paiements)), "n_paiements": len(paiements),
            "premier_paiement": paiements[0]["date"] if paiements else None,
            "dernier_paiement": paiements[-1]["date"] if paiements else None, "dividendes_par_mois": par_mois,
            "fins_de_mois": fdm, "moyenne_avant_remise_a_niveau": m1, "moyenne_annee_suivante": m2,
            "periode_moyenne": [deb_p.isoformat(), (fin - _dt.timedelta(days=1)).isoformat()],
-           "pointe": serie[pic_d] if pic_d else None, "date_pointe": pic_d.isoformat() if pic_d else None,
-           "a_la_remise_a_niveau": serie.get(fin), "statut": ESTIMATION, "reinvestir": bool(reinvestir),
+           "pointe": serie_j[pic_d] if pic_d else None, "date_pointe": pic_d.isoformat() if pic_d else None,
+           "a_la_remise_a_niveau": serie_j.get(fin), "statut": ESTIMATION, "reinvestir": bool(reinvestir),
            "hypotheses": ["cours constants au cours de référence", "dernier dividende reconduit, payé à la date prévue",
                           "frais fixes prélevés en fin de trimestre civil (date réelle inconnue)"],
            "regle": "règle testée : dividendes gardés jusqu'à la remise à niveau de fin janvier" if not reinvestir else
            "essai E-D (F13d), écart à la règle testée : information seulement"}
+    if serie:
+        # Liquidités jour par jour (référence du feu « Fuites », §F11 b) ; hors du JSON de l'ordre par défaut.
+        out["serie"] = {d.isoformat(): float(v) for d, v in serie_j.items()}
     if reinvestir:
         base = projection(o, grille, reinvestir=False, costs=costs, reglages=reglages)
         out.update({"achats": achats, "frais_achats": frais_achats, "achete": int(sum(a["montant"] for a in achats)),
                     "seuil_S": S,
                     "remis_au_travail_moyen": (base["moyenne_annee_suivante"] - m2) if (m2 is not None and base["moyenne_annee_suivante"] is not None) else None})
     return out
+
+
+def projection_detenus(titres: Mapping[str, int], panels: Mapping[str, Any], asof: Any, liquidites: float, *,
+                       costs: Any = None, grille: _gr.GrilleSGI | None = None, calendrier: Any = None,
+                       reglages: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Projection de F7 (d) pour un portefeuille détenu (règle déclarée : dividendes gardés jusqu'à la remise à niveau
+    de fin janvier), sans ordre de bataille : titres au dernier cours connu en ``asof``, dividendes attendus
+    (``recommend.dividend_schedule``, avec le calendrier des séances), frais fixes de ``costs`` ou de la grille.
+    Rend la projection avec sa série journalière (``serie=True``). Lecture seule."""
+    from brvm_alpha.config import CostModel
+
+    t = pd.Timestamp(asof).normalize()
+    q = {str(k): int(v) for k, v in (titres or {}).items() if int(v) > 0}
+    close = panels.get("close_raw") if isinstance(panels.get("close_raw"), pd.DataFrame) else panels.get("close")
+    cal = calendrier
+    if cal is None:
+        ses = panels.get("sessions")
+        cal = (pd.DatetimeIndex(pd.to_datetime(ses["date"])) if isinstance(ses, pd.DataFrame) and "date" in ses.columns
+               else pd.DatetimeIndex(close.index))
+    lignes = []
+    for s_, n in q.items():
+        col = close[s_].loc[:t].dropna() if isinstance(close, pd.DataFrame) and s_ in close.columns else pd.Series(dtype=float)
+        if not len(col):
+            continue
+        lignes.append({"symbole": s_, "cibles": n, "detenus": n, "cours_reference": float(col.iloc[-1]), "poids_cible": 0.0,
+                       "limite_achat": float(col.iloc[-1]), "sens": "garder", "quantite": 0})
+    div = []
+    if q:
+        sch = R.dividend_schedule(q, t, panels, calendar=cal)
+        for r in sch.to_dict("records"):
+            if r.get("date_paiement_prevue") is None or not pd.notna(r.get("date_paiement_prevue")):
+                continue
+            n = int(r.get("titres") or 0)
+            div.append({"symbole": str(r["symbole"]), "date_paiement_prevue": pd.Timestamp(r["date_paiement_prevue"]),
+                        "montant_net": int(r.get("montant_net") or 0),
+                        "dividende_net_prevu_par_titre": (float(r.get("montant_net") or 0) / n) if n else 0.0})
+    cm = costs if isinstance(costs, CostModel) else CostModel()
+    forfait = float(grille.valeur("forfait_compte")) if grille is not None else float(getattr(cm, "account_fee_fixed_fcfa", 0.0) or 0.0)
+    o = {"asof": t.date().isoformat(), "lignes": lignes, "dividendes": div,
+         "couts": {"liquidites_apres": float(liquidites), "forfait_compte_annuel": forfait},
+         "execution": {"premiere_seance": t.date().isoformat()}}
+    return projection(o, grille, costs=cm, reglages=reglages, serie=True)
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +677,7 @@ def arrondi_restes(ordre: Any, costs: Any = None, grille: _gr.GrilleSGI | None =
     if not appliquer:
         out["texte"] = (f"Avec l'arrondi « plus forts restes » : {_rg.fcfa(plus, signe=True)} placés ({_rg.pct(out['part_investie'], 2)} "
                         f"au lieu de {_rg.pct(out['part_investie_depart'], 2)}), marge du pire cas {_rg.fcfa(marge)}. Option "
-                        "--arrondi restes, écart à la règle testée." if plus > 0 else
+                        "--arrondi restes, écart à la règle testée. Gain ou perte selon le marché." if plus > 0 else
                         "Arrondi « plus forts restes » : aucun titre ne peut être ajouté sous les contraintes"
                         + (f" ({motif})." if motif else "."))
     return out
@@ -616,28 +701,38 @@ def carnet_de_cloture(panel_dir: str | Path, asof: Any) -> dict[str, dict[str, f
             if pd.notna(r.ask)}
 
 
+def compte_carnet(ordre: Any, carnet: Mapping[str, Mapping[str, float]] | None) -> dict[str, Any] | None:
+    """Consigne 7 (§F7 g, §4.5 ``passer_l_ordre.carnet``) : ``{"n1", "n2", "date"}`` ; n1 = lignes d'achat dont le prix
+    demandé au dernier carnet dépasse la limite ; n2 = lignes au prix demandé sous la limite mais sans assez de titres
+    au meilleur prix. ``None`` sans carnet."""
+    if not carnet:
+        return None
+    o = _rg.en_dict(ordre)
+    n1 = n2 = 0
+    for l in o.get("lignes") or []:
+        if l.get("sens") != "achat" or int(l.get("quantite") or 0) <= 0:
+            continue
+        b = carnet.get(str(l["symbole"]))
+        if not b or b.get("ask") is None:
+            continue
+        if float(b["ask"]) > float(l["prix_limite"]) + 1e-9:
+            n1 += 1
+        elif float(b.get("ask_qty") or 0) < int(l["quantite"]):
+            n2 += 1  # parmi les lignes dont le prix demandé est sous la limite (04_limites.py)
+    return {"n1": n1, "n2": n2, "date": str(o.get("asof") or "")[:10] or None}
+
+
 def consignes(ordre: Any, panels: Mapping[str, Any] | None = None, *,
               carnet: Mapping[str, Mapping[str, float]] | None = None) -> list[str]:
     """Consignes fixes pour passer l'ordre (§F7 g) ; la 7e seulement si le carnet de clôture est connu : « Au dernier
     carnet, {n1} lignes ont un prix demandé au-dessus de votre limite et {n2} n'offrent pas assez de titres au
     meilleur prix. »"""
     out = list(CONSIGNES)
-    o = _rg.en_dict(ordre)
     cb = carnet
     if cb is None and isinstance(panels, Mapping) and isinstance(panels.get("carnet_cloture"), Mapping):
         cb = panels["carnet_cloture"]
-    if cb:
-        n1 = n2 = 0
-        for l in o.get("lignes") or []:
-            if l.get("sens") != "achat" or int(l.get("quantite") or 0) <= 0:
-                continue
-            b = cb.get(str(l["symbole"]))
-            if not b or b.get("ask") is None:
-                continue
-            if float(b["ask"]) > float(l["prix_limite"]) + 1e-9:
-                n1 += 1
-            elif float(b.get("ask_qty") or 0) < int(l["quantite"]):
-                n2 += 1  # parmi les lignes dont le prix demandé est sous la limite (04_limites.py)
-        out.append(f"Au dernier carnet, {n1} lignes ont un prix demandé au-dessus de votre limite et {n2} n'offrent pas "
-                   "assez de titres au meilleur prix.")
+    k = compte_carnet(ordre, cb)
+    if k is not None:
+        out.append(f"Au dernier carnet, {k['n1']} lignes ont un prix demandé au-dessus de votre limite et {k['n2']} "
+                   "n'offrent pas assez de titres au meilleur prix.")
     return out
