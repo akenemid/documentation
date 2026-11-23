@@ -16,10 +16,14 @@
 # le mode embarqué (brvm_alpha.paths.est_embarque) : dossiers de données obligatoires, aucune écriture dans
 # le code, pdftotext obligatoire, version lue dans VERSION.
 #
-# Vérifier un export :  grep -E '^[0-9a-f]{64}  ' DOSSIER/VERSION | (cd DOSSIER && sha256sum -c --quiet)
+# Vérifier un export (empreintes, puis aucun fichier en plus ni en moins, un .pyc compris) :
+#   cd DOSSIER && grep -E '^[0-9a-f]{64}  ' VERSION | sha256sum -c --quiet \
+#     && [ "$(find . -type f ! -path ./VERSION | sed 's#^\./##' | sort)" = "$(grep -E '^[0-9a-f]{64}  ' VERSION | cut -c67- | sort)" ]
 #
-# DOSSIER : absent ou vide, hors du dossier du code. Avec git, la liste vient de git (fichiers suivis, plus
-# les nouveaux fichiers non ignorés) ; sans git, de l'arbre (sans __pycache__, *.pyc ni fichier caché).
+# DOSSIER : absent ou vide, hors du dossier du code, liens symboliques et « .. » résolus (chemin réel du dossier
+# existant le plus proche). Avec git, la liste vient de git (fichiers suivis, plus les nouveaux fichiers non
+# ignorés) ; sans git, de l'arbre (sans __pycache__, *.pyc, fichier caché ni copie de secours *~, *.orig, *.rej,
+# *.swp), avec un avertissement : sans git, aucun contrôle des fichiers en trop.
 #
 # Codes de sortie (jamais 3) : 0 export écrit ; 1 échec ; 2 mauvaise utilisation.
 # Performance passée ≠ garantie. Aucun gain n'est garanti.
@@ -34,17 +38,42 @@ usage() {
     exit 2
 }
 
+# Chemin réel de $1 : dossier existant le plus proche résolu (liens symboliques et « .. »), puis les éléments qui
+# n'existent pas encore. Un « .. » parmi ces derniers est refusé : il ne se résout pas sans le dossier.
+reel() {
+    p=$1
+    reste=""
+    while [ ! -d "$p" ]; do
+        b=$(basename -- "$p")
+        case "$b" in
+            ..) usage "refusé : DOSSIER ($1) contient « .. » après un dossier absent ; donner un chemin sans « .. »." ;;
+            .) ;;
+            *) reste="/$b$reste" ;;
+        esac
+        p=$(dirname -- "$p")
+    done
+    printf '%s%s\n' "$(CDPATH='' cd -P -- "$p" && pwd -P)" "$reste"
+}
+
 [ $# -eq 1 ] || usage "usage : sh deploiement/exporter-moteur.sh DOSSIER"
+[ -n "$1" ] || usage "refusé : DOSSIER vide."
 ICI=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 CODE=$(CDPATH='' cd -- "$ICI/.." && pwd)
+CODE_REEL=$(CDPATH='' cd -P -- "$CODE" && pwd -P)
 DEST=$1
 case "$DEST" in
     /*) ;;
     *) DEST=$(pwd)/$DEST ;;
 esac
-case "$DEST/" in
-    "$CODE/"*) usage "refusé : DOSSIER ($DEST) est dans le dossier du code ($CODE) ; choisir un dossier à part." ;;
-esac
+DEST_REEL=$(reel "$DEST") || exit 2
+# Comparaison sur les chemins réels (avant : sur le texte ; « code/../code/brvm_alpha/x » ou un lien vers le paquet
+# passaient, et l'export s'écrivait dans le code, puis se recopiait lui-même à l'export suivant).
+for d in "$DEST" "$DEST_REEL"; do
+    case "$d/" in
+        "$CODE/"* | "$CODE_REEL/"*)
+            usage "refusé : DOSSIER ($DEST) est dans le dossier du code ($CODE) ; choisir un dossier à part." ;;
+    esac
+done
 if [ -e "$DEST" ] && [ -n "$(ls -A "$DEST" 2>/dev/null)" ]; then
     usage "refusé : DOSSIER ($DEST) existe et n'est pas vide."
 fi
@@ -69,14 +98,16 @@ if command -v git >/dev/null 2>&1 && git -C "$CODE" rev-parse --is-inside-work-t
     COMMIT_LONG=$(git -C "$CODE" rev-parse HEAD)
     if [ -n "$(git -C "$CODE" status --porcelain --untracked-files=normal -- "$@")" ]; then MODIF=oui; fi
 else
+    printf '%s\n' "Attention : sans git, aucun contrôle des fichiers en trop : tout fichier de l'arbre est exporté (sauf caches, fichiers cachés et copies de secours) sous la version « inconnu »." >&2
     SUIVI_S2=""  # la déclaration signée n'existe qu'après la signature : find échouerait sur un dossier absent
     if [ -d "$CODE/reports/suivi_S2" ]; then SUIVI_S2=reports/suivi_S2; fi
     # shellcheck disable=SC2086 # SUIVI_S2 vide : aucun argument
     (cd "$CODE" && find brvm_alpha configs reports/validation_S1 reports/diagnostic_S0* reports/trials.parquet \
         $SUIVI_S2 deploiement/requirements-moteur-py311.txt -type f) >"$LISTE"
 fi
-# Jamais de cache Python ni de fichier caché ; chaque fichier une seule fois.
-grep -v -e '/__pycache__/' -e '\.pyc$' -e '/\.' -e '^\.' "$LISTE" | sort -u >"$LISTE.tri" || true
+# Jamais de cache Python, de fichier caché ni de copie de secours ; chaque fichier une seule fois.
+grep -v -e '/__pycache__/' -e '\.pyc$' -e '/\.' -e '^\.' -e '~$' -e '\.orig$' -e '\.rej$' -e '\.swp$' "$LISTE" \
+    | sort -u >"$LISTE.tri" || true
 [ -s "$LISTE.tri" ] || echec "aucun fichier à exporter depuis $CODE."
 grep -qx 'brvm_alpha/__init__.py' "$LISTE.tri" || echec "brvm_alpha/__init__.py absent de la liste."
 grep -qx 'deploiement/requirements-moteur-py311.txt' "$LISTE.tri" || \
@@ -107,7 +138,7 @@ fi
     printf '# commit : %s%s\n' "$COMMIT_LONG" "$SUFFIXE"
     printf '# date (UTC) : %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     printf '# fichiers : %s\n' "$n"
-    printf '%s\n' "# Empreintes sha256. Vérification : grep -E '^[0-9a-f]{64}  ' VERSION | sha256sum -c --quiet"
+    printf '%s\n' "# Empreintes sha256. Vérification : grep -E '^[0-9a-f]{64}  ' VERSION | sha256sum -c --quiet ; puis le nombre de fichiers (hors VERSION) doit valoir la ligne « fichiers » ci-dessus."
     while IFS= read -r f; do
         if [ -f "$DEST/$f" ]; then (cd "$DEST" && $EMPREINTE -- "$f"); fi
     done <"$LISTE.tri"

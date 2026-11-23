@@ -100,6 +100,39 @@ def test_export_refuses_a_destination_in_the_code_or_not_empty(exported, tmp_pat
     assert subprocess.run(["sh", str(DEPLOY / "exporter-moteur.sh")], capture_output=True).returncode == 2
 
 
+def test_export_resolves_dot_dot_and_links_before_refusing_the_code_folder(exported, tmp_path):
+    """Contrôle de a58b4c8, constat 24 : la comparaison se faisait sur le texte ; « … /../brvm-alpha/brvm_alpha/x » ou un
+    lien vers le paquet passaient (code 0), l'export s'écrivait dans le paquet et se recopiait à l'export suivant."""
+    detour = str(tmp_path) + "/" + "../" * (len(tmp_path.parts) - 1) + str(ROOT).lstrip("/") + "/brvm_alpha/zz_export"
+    (tmp_path / "lien").symlink_to(ROOT / "brvm_alpha")
+    (tmp_path / "lien_configs").symlink_to(ROOT / "configs")
+    for dest in (str(detour), str(tmp_path / "lien" / "zz_vide"), str(tmp_path / "lien_configs"),
+                 str(tmp_path / "absent" / ".." / "x")):
+        r = subprocess.run(["sh", str(DEPLOY / "exporter-moteur.sh"), dest], capture_output=True, text=True)
+        assert r.returncode == 2 and "refusé" in r.stderr, (dest, r.stdout, r.stderr)
+    assert not list((ROOT / "brvm_alpha").glob("zz_*")) and not list((ROOT / "configs").glob("zz_*"))
+    assert not (tmp_path / "absent").exists()
+
+
+def test_export_without_git_warns_and_leaves_backup_copies_out(tmp_path):
+    """Contrôle de a58b4c8, constat 29 : sans git, les fichiers en trop partaient sans avertissement ; les copies de
+    secours (*~, *.orig, *.rej, *.swp) sont écartées et un avertissement le dit."""
+    arbre = tmp_path / "arbre"
+    for rel in ("brvm_alpha", "configs", "reports/validation_S1", "deploiement"):
+        shutil.copytree(ROOT / rel, arbre / rel, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copy2(ROOT / "reports" / "trials.parquet", arbre / "reports" / "trials.parquet")
+    for d in (ROOT / "reports").glob("diagnostic_S0*"):
+        shutil.copytree(d, arbre / "reports" / d.name)
+    for n in ("cli.py~", "cli.py.orig", "cli.py.rej", ".cli.py.swp"):
+        (arbre / "brvm_alpha" / n).write_text("copie", encoding="utf-8")
+    r = subprocess.run(["sh", str(arbre / "deploiement" / "exporter-moteur.sh"), str(tmp_path / "moteur")],
+                       capture_output=True, text=True, env={**os.environ, "GIT_DIR": str(tmp_path / "pas_de_git")})
+    assert r.returncode == 0 and "sans git, aucun contrôle des fichiers en trop" in r.stderr, r.stderr
+    assert "version inconnu" in r.stdout
+    exp = tmp_path / "moteur" / "brvm_alpha"
+    assert not [p.name for p in exp.iterdir() if p.name.endswith(("~", ".orig", ".rej", ".swp"))]
+
+
 #: Commandes utiles à Odoo, et codes de sortie attendus sur un historique de sept BOC (incomplet).
 COMMANDS = [
     (["etat"], 0),

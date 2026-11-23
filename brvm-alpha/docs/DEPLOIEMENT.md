@@ -17,7 +17,9 @@ toucher à l'environnement Python d'Odoo.
 
 - Le code du moteur est **copié dans le module Odoo** par `deploiement/exporter-moteur.sh` : le paquet
   `brvm_alpha/`, `configs/`, les résultats livrés de la validation (`reports/validation_S1/`,
-  `reports/diagnostic_S0*/`, `reports/trials.parquet`) et un fichier `VERSION`. Rien d'autre.
+  `reports/diagnostic_S0*/`, `reports/trials.parquet`), `deploiement/requirements-moteur-py311.txt`, la déclaration
+  signée du suivi `reports/suivi_S2/` une fois signée, et un fichier `VERSION` ; la liste exacte est au § A.4. Rien
+  d'autre.
 - Il tourne sur son **propre interpréteur** : CPython 3.11.15 autonome dans `/opt/rz-brvm-alpha/python`
   (l'image `odoo:17.0` est en Python 3.10, pandas 3 exige 3.11). Ses 16 paquets sont installés **hors
   ligne** dans `/opt/rz-brvm-alpha/lib`.
@@ -111,8 +113,20 @@ sh deploiement/exporter-moteur.sh /chemin/hors/du/depot/moteur
   `reports/suivi_S2/` (déclaration signée du suivi sur papier, § A.17) part aussi.
 - Écrit `VERSION` : première ligne = commit court (suivi de `+modifie` si le code exporté diffère du
   commit), puis la date UTC, le commit long, le nombre de fichiers et l'empreinte sha256 de chaque fichier.
-  Vérification : `grep -E '^[0-9a-f]{64}  ' VERSION | sha256sum -c --quiet`.
-- Refuse un dossier situé dans le code ou non vide (code 2). Mesuré : 110 fichiers, 11 Mo.
+  Vérification, dans le dossier exporté : les empreintes, puis la liste des fichiers (un fichier ajouté, un `.pyc`
+  dans `__pycache__` compris, n'est pas vu par les seules empreintes ; avec `-B`, un `.pyc` déjà présent serait lu) :
+
+  ```sh
+  grep -E '^[0-9a-f]{64}  ' VERSION | sha256sum -c --quiet \
+    && [ "$(find . -type f ! -path ./VERSION | sed 's#^\./##' | sort)" = "$(grep -E '^[0-9a-f]{64}  ' VERSION | cut -c67- | sort)" ] \
+    && echo export conforme
+  ```
+- Refuse un dossier situé dans le code ou non vide (code 2), liens symboliques et « .. » résolus (chemin réel du
+  dossier existant le plus proche ; un « .. » après un dossier absent est refusé) : avant `a58b4c8` compris, la
+  comparaison se faisait sur le texte, et `…/../brvm-alpha/brvm_alpha/x` ou un lien vers le paquet passaient.
+  Sans git, la liste vient de l'arbre, sous la version « inconnu », sans contrôle des fichiers en trop : un
+  avertissement le dit ; les copies de secours (`*~`, `*.orig`, `*.rej`, `*.swp`) sont écartées. Mesuré : 110 fichiers,
+  11 Mo.
 - Le module Odoo garde ces fichiers **frères** (`brvm_alpha/`, `configs/`, `reports/` au même niveau) : le
   moteur les lit à côté de son code. Le code peut être en lecture seule.
 
