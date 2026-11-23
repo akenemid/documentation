@@ -571,9 +571,12 @@ def real_order(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("reel")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        # Instant fixé (dimanche 22/11/2026) : sans lui, l'essai dépendait de l'horloge et échouait à partir du lundi
+        # 23/11/2026 15h00 UTC (séance du 23/11 close, absente du panel : exécution le 24/11 ; constaté au contrôle
+        # de a58b4c8, sur a58b4c8 comme après).
         return R.recommend("2026-11-20", 10_000_000, validation_dir=tmp / "absent",
                            registry_path=_registry(tmp / "trials.parquet", False), notes_store=False,
-                           n_boot=1000, index_evaluation=False)
+                           n_boot=1000, index_evaluation=False, today=pd.Timestamp("2026-11-22 12:00", tz="UTC"))
 
 
 def test_recommend_real_20261120(real_order):
