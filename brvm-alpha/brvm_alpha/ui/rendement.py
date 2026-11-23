@@ -36,7 +36,7 @@ from typing import Any
 import pandas as pd
 
 from brvm_alpha import paths
-from brvm_alpha.erreurs import ErreurMoteur
+from brvm_alpha.erreurs import ErreurMoteur, VerrouOccupe
 from brvm_alpha.ui import pages as P
 from brvm_alpha.ui.pages import Safe, box, csrf_field, esc, join, link, table
 
@@ -190,14 +190,15 @@ def _select(name: str, options: Sequence[tuple[str, str]], selected: Any = "", i
 
 
 def _champ(id_: str, nom: str, libelle: str, valeur: Any, *, hint: Any = None, mode: str = "text",
-           classe: str = "") -> Safe:
-    """Champ de formulaire : étiquette, saisie, aide (texte échappé)."""
+           classe: str = "", exemple: Any = None) -> Safe:
+    """Champ de formulaire : étiquette, saisie, aide (texte échappé) ; ``exemple`` : texte grisé d'un champ vide."""
     im = {"decimal": ' inputmode="decimal"', "numeric": ' inputmode="numeric"'}.get(mode, "")
     typ = "number" if mode == "number" else "text"
     h = f'<div class="hint">{esc(hint) if not isinstance(hint, Safe) else hint}</div>' if hint else ""
     c = f' class="{esc(classe)}"' if classe else ""
+    ex = f' placeholder="{esc(exemple)}"' if exemple not in (None, "") else ""
     return Safe(f'<div{c}><label for="{esc(id_)}">{esc(libelle)}</label><input type="{typ}" id="{esc(id_)}" '
-                f'name="{esc(nom)}"{im} value="{esc(valeur)}">{h}</div>')
+                f'name="{esc(nom)}"{im} value="{esc(valeur)}"{ex}>{h}</div>')
 
 
 def _case(id_: str, nom: str, libelle: str, coche: bool, hint: Any = None, classe: str = "") -> Safe:
@@ -332,22 +333,24 @@ def portefeuilles_presents(D: Path) -> list[str]:
 
 def _plan_affiche(cache: Mapping[str, Any], pe: Mapping[str, Any], suivi: Mapping[str, Any] | None,
                   jour: pd.Timestamp) -> dict[str, Any]:
-    """Écran « Mon plan » rebâti à l'affichage depuis ``rendement_net`` du cache : la phrase de la séance et les feux
-    sont ceux du jour (règle 2 du cahier : dates et temps du verbe calculés à l'affichage)."""
+    """Écran « Mon plan » du cache, tel que la commande ``plan`` l'a calculé : seules la phrase de la séance, la ligne
+    « une chose » et les feux sont refaits au jour de l'affichage (règle 2 du cahier : dates et temps du verbe calculés
+    à l'affichage). Les montants ne sont jamais rebâtis depuis ``rendement_net`` : avec une perte acceptée, ce bloc
+    porte la facture de l'ordre du montant en actions, pas celle du capital total que montre l'écran."""
     from brvm_alpha.rendement import plan as PL
 
+    rn = cache["rendement_net"]
+    p = cache.get("plan")
+    if _ok(p) and isinstance(p.get("lignes"), list):
+        return PL.rafraichir_plan(p, rn, dict(pe) or None, suivi, jour.date())
+    if (rn.get("contexte") or {}).get("poche"):
+        raise ValueError("écran « Mon plan » absent du calcul enregistré : recalculer")
     rg = _rg()
-    rn = dict(cache["rendement_net"])
+    rn = dict(rn)
     et = rn.get("etude")
     if _ok(et):
         rn["etude"] = {**et, "phrases": [rg.PH_ETUDE, rg.phrase_seance(jour.date())]}
-    try:
-        return PL.construire_plan(rn, dict(pe) or None, suivi, jour.date())
-    except Exception:  # noqa: BLE001 - à défaut, l'écran calculé (daté par la carte)
-        p = cache.get("plan")
-        if not _ok(p):
-            raise
-        return dict(p)
+    return PL.construire_plan(rn, dict(pe) or None, suivi, jour.date())
 
 
 def _choix(cache: Mapping[str, Any] | None) -> list[dict[str, Any]]:
@@ -482,18 +485,20 @@ def _form_grille(ctx: Any, e: Mapping[str, Any]) -> Safe:
     gv = e.get("grille") or {}
     saisie = e.get("valeurs_grille") or {}
 
-    def val(nom: str) -> str:
-        if nom in saisie:
-            return str(saisie[nom])
+    def actuelle(nom: str) -> str:
         return str(((gv.get("champs") or {}).get(nom) or {}).get("valeur") or "")
 
     def statut(nom: str) -> str:
         return str(((gv.get("champs") or {}).get(nom) or {}).get("statut") or "supposé")
 
-    principaux = "".join(str(_champ(f"g-{n}", n, LIBELLES_GRILLE[n], val(n), hint=f"statut : {statut(n)}",
-                                    mode="decimal")) for n, _c, _u in CHAMPS_GRILLE[:5])
-    autres = "".join(str(_champ(f"g-{n}", n, LIBELLES_GRILLE[n], val(n), hint=f"statut : {statut(n)}", mode="decimal"))
-                     for n, _c, _u in CHAMPS_GRILLE[5:])
+    def champ(n: str) -> str:
+        # Champ vide (la valeur actuelle en exemple grisé) : seul un champ rempli reçoit le statut et la source choisis.
+        a = actuelle(n)
+        return str(_champ(f"g-{n}", n, LIBELLES_GRILLE[n], saisie.get(n, ""), mode="decimal", exemple=a,
+                          hint=f"actuel : {a or '—'} ({statut(n)})"))
+
+    principaux = "".join(champ(n) for n, _c, _u in CHAMPS_GRILLE[:5])
+    autres = "".join(champ(n) for n, _c, _u in CHAMPS_GRILLE[5:])
     inv = saisie.get("investisseur", gv.get("investisseur") or "physique")
     autres += (f'<div><label for="g-investisseur">Investisseur</label>'
                f'{_select("investisseur", (("physique", "personne physique résidente"), ("morale", "personne morale")), inv, "g-investisseur")}'
@@ -506,7 +511,8 @@ def _form_grille(ctx: Any, e: Mapping[str, Any]) -> Safe:
         f'(statut : {esc(gv.get("statut") or "supposé")})</summary>'
         '<form method="post" action="/plan/grille" class="grid" autocomplete="off">' + csrf_field(ctx.token) + err
         + '<div class="wide"><p class="hint">Les cinq chiffres de la grille écrite de votre courtier. Taux en pourcentage '
-          "(« 0,8 » pour 0,8 %), montants en FCFA. Un champ vide garde sa valeur.</p></div>"
+          "(« 0,8 » pour 0,8 %), montants en FCFA. Un champ vide garde sa valeur et son statut ; seuls les "
+          "champs remplis reçoivent le statut et la source ci-dessous.</p></div>"
         + principaux
         + '<div class="wide"><details><summary>Plus de champs</summary>' + autres + "</details></div>"
         + str(_champ("g-source", "source", "Source (grille écrite, avis d'opéré)", saisie.get("source", ""),
@@ -649,9 +655,19 @@ def _taux_saisi(texte: str, quoi: str) -> float:
         raise ValueError(f"{quoi} : {exc}") from None
 
 
+def _taux_reserve_saisi(texte: str) -> float:
+    """Taux net de la réserve saisi dans l'interface : même contrôle que ``--taux-reserve`` (de 0 à 15 %)."""
+    try:
+        return _cr().parse_taux_reserve(texte)
+    except ValueError as exc:
+        msg = str(exc)
+        raise ValueError(msg if msg.startswith("taux de la réserve") else f"taux net de la réserve : {msg}") from None
+
+
 def grille_depuis_formulaire(v: Mapping[str, str], avant: Any, jour: str) -> Any:
-    """Grille enregistrée après la saisie : les cinq champs principaux reçoivent le statut choisi ; un champ de « plus
-    de champs » le reçoit seulement si sa valeur change. Un champ vide garde sa valeur et son statut."""
+    """Grille enregistrée après la saisie : seuls les champs remplis reçoivent la valeur, le statut et la source
+    choisis (comme ``plan grille --courtage … --statut …``) ; un champ vide garde sa valeur et son statut. Le
+    formulaire ne préremplit aucun champ : la valeur actuelle y est un exemple grisé."""
     import copy
 
     from brvm_alpha.rendement import grille as G
@@ -661,7 +677,7 @@ def grille_depuis_formulaire(v: Mapping[str, str], avant: Any, jour: str) -> Any
         raise ValueError(f"statut inconnu : {statut[:20]!r} (supposé, grille écrite ou avis d'opéré)")
     source = str(v.get("source") or "").strip()[:200]
     g = copy.deepcopy(avant)
-    for i, (nom, champ, unite) in enumerate(CHAMPS_GRILLE):
+    for nom, champ, unite in CHAMPS_GRILLE:
         brut = str(v.get(nom) or "").strip()
         if not brut:
             continue
@@ -673,9 +689,6 @@ def grille_depuis_formulaire(v: Mapping[str, str], avant: Any, jour: str) -> Any
                 x = _cr().parse_montant(brut)
             except ValueError as exc:
                 raise ValueError(f"{lib} : {exc}") from None
-        change = abs(float(x) - float(g.valeur(champ))) > 1e-12
-        if i >= 5 and not change:
-            continue
         g = g.avec(**{champ: x})
         g.champs[champ].statut = statut
         g.champs[champ].source = source
@@ -731,7 +744,7 @@ def plan_depuis_formulaire(v: Mapping[str, str], avant: Mapping[str, Any], maint
     t = pd.Timestamp(maintenant)
     taux = str(v.get("taux") or "").strip()
     if taux:
-        pe.update({"taux_reserve": _taux_saisi(taux, "taux net de la réserve"), "statut_taux": "supposé",
+        pe.update({"taux_reserve": _taux_reserve_saisi(taux), "statut_taux": "supposé",
                    "date_taux": t.date().isoformat()})
     else:
         for k in ("taux_reserve", "statut_taux", "date_taux"):
@@ -1077,7 +1090,7 @@ def options_portefeuille(v: Mapping[str, str], services: Any, cash: float | None
         except ValueError as exc:
             raise ValueError(f"ce que j'accepte de risquer : {exc}") from None
     if str(v.get("taux") or "").strip():
-        kw["taux_reserve"] = _taux_saisi(v["taux"], "taux net de la réserve")
+        kw["taux_reserve"] = _taux_reserve_saisi(v["taux"])
     tarif = str(v.get("tarif") or "").strip()
     g = None
     if tarif == "ma_sgi":
@@ -1233,8 +1246,8 @@ def post_suivi_revue(h: Any, form: Mapping[str, list[str]]) -> None:
         c = _carnet(s, v["nom"])
         c.ajouter({"type": "revue", "date": jour, "alerte": v["alerte"][:200], "decision": v["decision"],
                    "texte": v["texte"]})
-    except (ValueError, ErreurMoteur, OSError) as exc:
-        _portefeuille(h, 400, erreur_revue=str(exc), valeurs_revue=v)
+    except (ValueError, ErreurMoteur, OSError) as exc:  # journal tenu par une autre écriture : 409, pas une saisie fausse
+        _portefeuille(h, 409 if isinstance(exc, VerrouOccupe) else 400, erreur_revue=str(exc), valeurs_revue=v)
         return
     _portefeuille(h, 200, message=("ok", f"Revue consignée au carnet « {v['nom']} » le {date_fr(jour)} : décision "
                                          f"« {dict(DECISIONS)[v['decision']]} ». Aucun ordre n'est créé. "
@@ -1274,8 +1287,8 @@ def post_suivi_saisir(h: Any, form: Mapping[str, list[str]]) -> None:
                                 "l'enregistrer.</p>")] if r.get("grille_proposee") and not r["grille_enregistree"] else []))
         else:
             raise ValueError("je saisis : un apport, un retrait ou un avis d'opéré")
-    except (ValueError, ErreurMoteur, OSError) as exc:
-        _portefeuille(h, 400, erreur_saisie=str(exc), valeurs_saisie=v)
+    except (ValueError, ErreurMoteur, OSError) as exc:  # journal tenu par une autre écriture : 409, pas une saisie fausse
+        _portefeuille(h, 409 if isinstance(exc, VerrouOccupe) else 400, erreur_saisie=str(exc), valeurs_saisie=v)
         return
     _portefeuille(h, 200, resultat_saisie=res, valeurs_saisie={"nom": v["nom"], "quoi": v["quoi"]})
 

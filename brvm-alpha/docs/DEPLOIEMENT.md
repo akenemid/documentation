@@ -523,21 +523,21 @@ des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent 
 
 | Commande | Durée | Nature | Écrit | Codes |
 |---|---|---|---|---|
-| `plan [--capital K] [--grille ma_sgi\|central\|FICHIER] [--taux-reserve T]` | 10,6 s | court | `profil/plan_cache.json` | 0 ; 1 panel absent ou historique incomplet ; 2 saisie |
+| `plan [--capital K] [--grille ma_sgi\|central\|FICHIER] [--taux-reserve T]` | 10,6 s | court | `profil/plan_cache.json` | 0 ; 1 panel absent ou historique incomplet ; 2 saisie (taux de la réserve hors de 0 à 15 %, perte acceptée au-delà du capital) |
 | `plan --perte-toleree 1000000` | 17,8 s | court | idem | idem |
 | `plan … --enregistrer [--besoin-dans MOIS]` | 11,6 s | court | idem et `profil/plan.json` | idem |
 | `plan grille` (lecture) ; `plan grille --comparer` (lignes du cache) | 0,4 s | court | rien | 0 |
 | `plan grille --courtage T --taxe T --par-ligne M --forfait M [--source TEXTE] [--statut ecrit\|avis]` | 0,4 s | court | `profil/grille_sgi.yaml` | 0 ; 2 valeur hors plage, statut écrit sans source |
 | `plan questions` | 0,4 s | court | rien | 0 |
-| `suivi maj` | 3,2 s (semaine 0) | long (tâche de nuit) | `suivi/<nom>/` (ajout seul) | 0 ; 1 panel absent ; code du premier portefeuille en échec |
+| `suivi maj` | 3,2 s (semaine 0) | long (tâche de nuit) | `suivi/<nom>/` (ajout seul) | 0 ; 1 panel absent ; code du premier portefeuille en échec (4 : journal tenu par une autre écriture) |
 | `suivi bulletin [--nom NOM]` | 3,6 s | court | rien | 0 |
 | `suivi verifier` | 0,4 s | court | rien | 0 ; 1 chaîne rompue |
-| `suivi demarrer --nom MOI [--capital K] [--mode papier\|reel]` | 0,4 s | court | `suivi/MOI/carnet.jsonl` | 0 ; 2 déjà démarré |
-| `suivi saisir --nom MOI --apport M \| --retrait M \| --fichier avis.csv [--confirmer-grille]` | 0,4 s | court | carnet ; grille si l'avis concorde, ou confirmée | 0 ; 1 carnet absent ; 2 saisie, doublon |
-| `suivi revue --nom MOI --alerte ID --decision garder\|ne-plus-acheter\|reduire --texte "…"` | 0,4 s | court | carnet | 0 ; 1 carnet absent |
-| `suivi exporter --sortie DOSSIER [--avec-moi]` | 0,4 s | court | `<rapports>/DOSSIER` (d'un bloc) | 0 ; 1 rien à copier ; 2 dossier non vide |
+| `suivi demarrer --nom MOI [--capital K] [--mode papier\|reel]` | 0,4 s | court | `suivi/MOI/carnet.jsonl` | 0 ; 2 déjà démarré ; 4 journal tenu |
+| `suivi saisir --nom MOI --apport M \| --retrait M \| --fichier avis.csv [--confirmer-grille]` | 0,4 s | court | carnet ; grille si l'avis concorde, ou confirmée | 0 ; 1 carnet absent ; 2 saisie, doublon ; 4 journal tenu |
+| `suivi revue --nom MOI --alerte ID --decision garder\|ne-plus-acheter\|reduire --texte "…"` | 0,4 s | court | carnet | 0 ; 1 carnet absent ; 4 journal tenu |
+| `suivi exporter --sortie DOSSIER [--avec-moi]` | 0,4 s | court | `<rapports>/DOSSIER` (d'un bloc) | 0 ; 1 rien à copier (MOI seul, sans `--avec-moi`), aucun dossier créé ; 2 dossier non vide |
 | `suivi declarer …` | 0,4 s | — | rien | **2 toujours** sur l'installation |
-| `recommend --capital 10000000 --perte-toleree 1000000` | 21,6 s | court | rien, ou `--sortie` | 0 |
+| `recommend --capital 10000000 --perte-toleree 1000000` | 21,6 s | court | rien, ou `--sortie` | 0 ; 2 saisie, refusée avant le calcul (`--arrondi restes` sur un tarif supposé sans `--forcer`, taux ou perte hors plage) |
 | `report --capital 10000000 [--sortie nom.html]` | 16,9 s | long | rapport | 0 |
 
 - **Sans option nouvelle**, `recommend` et `report` rendent les mêmes titres, quantités, prix limites, frais et
@@ -553,13 +553,33 @@ des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent 
   plan ; la durée n'est pas encore calculée (`duree.statut` : « non calculé »).
 - **Carte « Mon plan » dans Odoo** : lire `profil/plan_cache.json` (clés `plan`, `capital`, `asof`,
   `calcule_utc`, `ordre`, `rendement_net`, `bandeau`), sans relancer le calcul ; le rafraîchir par `plan`
-  (travail détaché). Le rapport de nuit ne l'écrit pas.
+  (travail détaché). Le rapport de nuit ne l'écrit pas. Afficher l'écran `plan` tel quel (montants du capital
+  total) : avec `--perte-toleree`, `rendement_net` décrit l'ordre du montant en actions (`contexte.poche` vrai),
+  pas le capital total ; l'écran ne se refait jamais depuis `rendement_net`.
+- **Taux de la réserve** (`--taux-reserve`, champ « taux » de l'interface) : de 0 à 15 % (`reserve.taux_max` de
+  `configs/rendement_net.yaml`) ; au-delà, refus en code 2 (400 dans l'interface), rien n'est écrit. Ce que
+  j'accepte de risquer ne dépasse pas le capital total (code 2).
+- **Écritures simultanées** : chaque journal du suivi (carnet, semaines, exécution sur papier, déclaration et
+  registre) s'écrit sous un verrou de son dossier (`flock` sur le dossier lui-même : aucun fichier ajouté). Une
+  commande qui trouve le verrou tenu attend jusqu'à 10 s (`BRVM_ALPHA_ATTENTE_VERROU`), puis sort en **code 4**
+  (`verrou_occupe`) sans rien écrire : la relancer plus tard. `suivi maj` tient le verrou d'un portefeuille le
+  temps de son exécution sur papier et de ses écritures ; le calcul du moteur du témoin reste hors du verrou.
+  Fichiers d'état (`controles.json`, état de l'exécution sur papier, en-têtes des CSV) : écriture atomique ;
+  lignes ajoutées : `fsync`.
+- **Ordre du montant en actions** (`--perte-toleree`) : la vérification reprend le mode de l'appel (notes,
+  grille, arrondi, continuité), mais ni `--suivi` (mémoire), ni `--apport`, ni `--completer`, ni `--reinvestir`,
+  ni la comparaison des variantes ; l'évaluation des indices est celle de l'ordre du capital total (même date,
+  mêmes notes). Si cet ordre n'est pas obtenu (aucun montant possible, vérification arrêtée, module en échec),
+  l'ordre du capital total est rendu avec, en fin d'avertissements, « ordre du montant en actions non calculé :
+  ordre du capital total affiché ».
 - **Tâche de nuit** (§ A.12) : après `panel`, lancer `suivi maj --format json`. Un échec n'arrête pas la suite
   (notes, puis rapport). Rien n'est écrit tant que le bulletin du 30/11/2026 (première décision du panier de
   référence) n'est pas dans le panel. Au-delà, chaque mise à jour rejoue le moteur depuis le départ : durée non
   mesurée, à suivre.
 - **Déclaration du suivi** : `suivi declarer` ne sert que dans le dépôt de développement ; sur l'installation
-  il sort toujours en code 2. La déclaration signée est livrée par l'export (`reports/suivi_S2/`, § A.4) ;
+  il sort toujours en code 2. Avec `--registre`, la phrase de `--confirmer` et le registre sont contrôlés avant
+  toute signature (refus : rien n'est signé) ; des articles identiques à ceux déjà signés sont refusés (code 2),
+  quelles que soient les initiales. La déclaration signée est livrée par l'export (`reports/suivi_S2/`, § A.4) ;
   `suivi verifier`, le bulletin et l'ordre la lisent en lecture seule.
 
 **Clés JSON** (exemples réels du 23/11/2026, abrégés ; toutes les sorties portent `ok` et `bandeau`) :

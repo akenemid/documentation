@@ -22,6 +22,7 @@ import datetime as _dt
 import io
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -255,8 +256,17 @@ def ecrire_semaines(nom: str, lignes: Sequence[Mapping[str, Any]], dossier: str 
 
     Une semaine déjà écrite n'est jamais réécrite : si son recalcul est identique, rien ne change (idempotence) ; s'il
     diffère, une entrée est ajoutée à ``anomalies.jsonl`` (« le passé a changé », cause probable : donnée corrigée), une
-    seule fois par écart. Rend ``{"ajoutees", "identiques", "anomalies", "passe_a_change"}``."""
+    seule fois par écart. Rend ``{"ajoutees", "identiques", "anomalies", "passe_a_change"}``. Lecture des semaines
+    écrites et ajout sous le verrou d'écriture du portefeuille (code 4 s'il reste tenu par une autre opération)."""
     d = _s.dossier_portefeuille(nom, dossier, creer=True)
+    with _s.verrou_ecriture(d, quoi=f"semaines de {nom}"):
+        return _ecrire_semaines(nom, lignes, dossier, d, maintenant)
+
+
+def _ecrire_semaines(nom: str, lignes: Sequence[Mapping[str, Any]], dossier: str | Path | None, d: Path,
+                     maintenant: Any) -> dict[str, Any]:
+    from brvm_alpha import fichiers
+
     p = d / "semaines.csv"
     v = verifier_semaines(nom, dossier)
     t = pd.Timestamp(maintenant) if maintenant is not None else pd.Timestamp.now(tz="UTC")
@@ -285,11 +295,13 @@ def ecrire_semaines(nom: str, lignes: Sequence[Mapping[str, Any]], dossier: str 
         nouvelles.append(txt)
         existants[cle] = txt
     if not p.exists():
-        p.write_text(",".join(COLONNES) + "\n", encoding="utf-8")
+        fichiers.ecrire_atomique(p, ",".join(COLONNES) + "\n")
     if nouvelles:
         with p.open("a", encoding="utf-8") as fh:
             for txt in nouvelles:
                 fh.write(txt + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
         chaine = v["derniere_chaine"]
         emp = []
         n0 = v["n"]

@@ -24,6 +24,10 @@ import pandas as pd
 from brvm_alpha import paths
 
 SECTIONS_AVEC_SOUS_BLOC = ("bandeau", "ordre", "revenus", "distribution", "risques", "methode")
+#: Libellés des types d'articles de la déclaration (en clair, avec les accents).
+TYPES_ARTICLES = {"reference": "référence (témoin)", "essai": "essai sur papier", "ecart_execution": "écart d'exécution",
+                  "regle_papier": "règle sur papier", "decision_humaine": "décision humaine", "derogation": "dérogation",
+                  "retrait": "retrait", "remplace": "remplace"}
 
 
 def _ok(b: Any) -> bool:
@@ -53,7 +57,9 @@ def _bulletin_temoin(ctx: Any, RH: Any) -> str:
     jour = pd.Timestamp(ctx.now).tz_convert("UTC").tz_localize(None).normalize() if getattr(ctx, "now", None) is not None \
         else None
     b = BU.depuis_journal("REF-S2", paths.DATA_DIR / "suivi", aujourd_hui=jour)
-    texte = BU.rendre(b, "md")
+    import re
+
+    texte = re.sub(r"^#{1,6}\s*", "", BU.rendre(b, "md"), flags=re.M)  # titres Markdown : texte simple dans <pre>
     return str(RH._card(RH.H("<h3>Bulletin de la semaine : le panier de référence (suivi sur papier)</h3>"),
                         RH.H(f'<pre class="small wrap">{RH.esc(texte)}</pre>'),
                         RH._p("Lignes à revoir : une revue, jamais une vente.", "muted small")))
@@ -70,7 +76,8 @@ def _declaration(ctx: Any, RH: Any) -> str:
     ev = DE.en_vigueur(jour, dossier)
     rows = []
     for k, a in sorted((ev.get("articles") or {}).items()):
-        rows.append([k, str(a.get("type") or ""), str(a.get("reponse") or a.get("proposition") or ""),
+        ty = str(a.get("type") or "")
+        rows.append([k, TYPES_ARTICLES.get(ty, ty), str(a.get("reponse") or a.get("proposition") or ""),
                      str(a.get("effet_a_partir_du") or "définition du test"),
                      RH.H(f"<span class='small wrap'>{RH.esc(str(a.get('phrase') or ''))}</span>")])
     etat = (f"{v['n_lignes']} ligne(s) signée(s), chaîne {'intacte' if v['chaine_ok'] else 'rompue'}" if v["existe"]
@@ -78,7 +85,7 @@ def _declaration(ctx: Any, RH: Any) -> str:
     from brvm_alpha.rendement.reglages import PH_ESSAI
 
     return str(RH._card(RH.H("<h3>Suivi sur papier : ce qui est déclaré</h3>"),
-                        RH._p(f"Déclaration ({RH._rel(dossier)}) : {etat}.", "small"),
+                        RH._p(f"Déclaration ({RH._rel(dossier)}) : {etat.rstrip('. ')}.", "small"),
                         RH._table(["Article", "Type", "Réponse", "En vigueur à partir du", "Règle"], rows,
                                   left=(0, 1, 2, 3, 4)) if rows else "",
                         RH._p(PH_ESSAI, "muted small")))
@@ -113,4 +120,4 @@ def sous_bloc(ctx: Any, section: str) -> str:
     return f'<div class="rn-sous-bloc" id="rn-{RH.esc(section)}">\n{html}</div>\n'
 
 
-__all__ = ["SECTIONS_AVEC_SOUS_BLOC", "sous_bloc"]
+__all__ = ["SECTIONS_AVEC_SOUS_BLOC", "TYPES_ARTICLES", "sous_bloc"]

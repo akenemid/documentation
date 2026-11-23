@@ -121,9 +121,23 @@ def executer(carnet: _cn.Carnet, panels: Mapping[str, Any], jusqu_a: Any, *, mod
     """Exécute sur papier les ordres en attente du carnet, séance par séance, jusqu'à ``jusqu_a`` ; ajoute au carnet les
     mouvements ``execution``, ``expiration``, ``ordre`` (ressaisie), ``dividende``, ``division`` et ``frais``. Idempotent :
     les séances déjà traitées (``papier.json`` du portefeuille) ne sont jamais rejouées. Rend les mouvements ajoutés et
-    les mesures (:func:`mesures`). Aucune vente n'est créée : seuls les ordres du carnet sont exécutés."""
+    les mesures (:func:`mesures`). Aucune vente n'est créée : seuls les ordres du carnet sont exécutés. Tout le passage
+    (état lu, séances rejouées, mouvements et état écrits) se fait sous le verrou d'écriture du portefeuille : deux
+    exécutions simultanées ne rejouent jamais deux fois la même séance (code 4 si le verrou reste tenu)."""
     if mode not in MODES:
         raise ValueError(f"mode : {', '.join(MODES)}")
+    _s.refuser_s1(jusqu_a, "l'exécution sur papier")
+    if not carnet.fichier.exists():  # aucun carnet : rien à exécuter ni à écrire (aucun dossier créé)
+        return _executer(carnet, panels, jusqu_a, mode=mode, grille=grille, costs=costs, maintenant=maintenant,
+                         reglages=reglages)
+    with _s.verrou_ecriture(carnet.dossier, quoi=f"exécution sur papier de {carnet.nom}"):
+        return _executer(carnet, panels, jusqu_a, mode=mode, grille=grille, costs=costs, maintenant=maintenant,
+                         reglages=reglages)
+
+
+def _executer(carnet: _cn.Carnet, panels: Mapping[str, Any], jusqu_a: Any, *, mode: str, grille: Any, costs: Any,
+              maintenant: Any, reglages: Mapping[str, Any] | None) -> dict[str, Any]:
+    from brvm_alpha import fichiers
     from brvm_alpha.portfolio import recommend as R
     from brvm_alpha.quant import macro
 
@@ -278,7 +292,7 @@ def executer(carnet: _cn.Carnet, panels: Mapping[str, Any], jusqu_a: Any, *, mod
                              "montant": float(montant), "jours": int(jours), "source": "papier",
                              "hypothese": "prélèvement en fin de trimestre civil (date réelle inconnue)"}])
         st = {"jusqu_au": d.date().isoformat(), "mode": mode}
-        etat_p.write_text(json.dumps(st, ensure_ascii=False) + "\n", encoding="utf-8")
+        fichiers.ecrire_atomique(etat_p, json.dumps(st, ensure_ascii=False) + "\n")
     return {"ajoutes": ajoutes, "mesures": mesures(carnet), "jusqu_au": st.get("jusqu_au"), "mode": mode}
 
 

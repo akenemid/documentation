@@ -153,7 +153,10 @@ def alertes_fuite(ordre: Any, rendement_net: Mapping[str, Any] | None = None, gr
     if float(aqd.get("D_hors_regle") or 0) >= seuil:
         causes = [c for c in aqd.get("causes") or [] if not c.get("prevu")]
         cause = max(causes, key=lambda c: c["montant"])["cause"] if causes else "inconnue"
-        out.append(_a("W4", "orange", FUITE, f"Argent qui dort hors de la règle testée : {_rg.fcfa(aqd['D_hors_regle'])} "
+        # Cause inconnue : on ne sait pas si cet argent est hors de la règle testée ; on dit seulement qu'il est sans
+        # cause mesurée (aucun écart à la règle n'est suggéré).
+        quoi = "sans cause mesurée" if cause == "inconnue" else "hors de la règle testée"
+        out.append(_a("W4", "orange", FUITE, f"Argent qui dort {quoi} : {_rg.fcfa(aqd['D_hors_regle'])} "
                       f"(cause : {cause}).", cause, D=aqd["D"], D_hors_regle=aqd["D_hors_regle"]))
     elif float(aqd.get("D") or 0) >= seuil:
         prev = [c for c in aqd.get("causes") or [] if c.get("prevu")]

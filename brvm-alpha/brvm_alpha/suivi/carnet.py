@@ -120,6 +120,14 @@ class Carnet:
 
     def ajouter_plusieurs(self, mouvements: Sequence[Mapping[str, Any]], *, maintenant: Any = None,
                           autoriser_double: bool = False) -> list[dict[str, Any]]:
+        """Comme :meth:`ajouter`, pour plusieurs mouvements écrits ensemble. La vérification de la chaîne et l'ajout se
+        font sous le verrou d'écriture du portefeuille (:func:`brvm_alpha.suivi.verrou_ecriture` ; code 4 s'il reste
+        tenu par une autre opération)."""
+        with _s.verrou_ecriture(self.dossier, quoi=f"carnet {self.nom}"):
+            return self._ajouter_plusieurs(mouvements, maintenant=maintenant, autoriser_double=autoriser_double)
+
+    def _ajouter_plusieurs(self, mouvements: Sequence[Mapping[str, Any]], *, maintenant: Any,
+                           autoriser_double: bool) -> list[dict[str, Any]]:
         v = self.verifier()
         if not v["chaine_ok"]:
             raise ValueError("carnet à la chaîne rompue : aucun mouvement ne peut être ajouté avant une décision écrite ("

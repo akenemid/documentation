@@ -577,7 +577,9 @@ def arrondi_restes(ordre: Any, costs: Any = None, grille: _gr.GrilleSGI | None =
     quantité."""
     o = _rg.en_dict(ordre)
     if appliquer and _gr.statut_global(grille) == _gr.SUPPOSE and not forcer:
-        raise ValueError("arrondi « plus forts restes » refusé : la grille du courtier est supposée (option --forcer pour "
+        from brvm_alpha.erreurs import SaisieInvalide  # refus d'une saisie (code 2), classe fille de ValueError
+
+        raise SaisieInvalide("arrondi « plus forts restes » refusé : la grille du courtier est supposée (option --forcer pour "
                          "un emploi sur papier)")
     cm = _gr.cost_model_de(o, costs)
     forfait = float((o.get("couts") or {}).get("forfait_compte_annuel") or 0.0)

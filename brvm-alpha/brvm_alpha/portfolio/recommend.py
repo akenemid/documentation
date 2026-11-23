@@ -2953,15 +2953,22 @@ def recommend(
     perte_toleree, taux_reserve, plan_enregistre, suivi
         Ce que l'utilisateur accepte de risquer sur 12 mois (FCFA ou « 10 % ») : l'ordre rendu est
         celui du montant en actions vérifié (§F4) ; taux de la réserve ; ``plan.json`` ; état du
-        suivi (feux). Sans eux : table de choix, ordre du capital total.
+        suivi (feux). Sans eux : table de choix, ordre du capital total. La vérification reprend
+        le mode de l'appel (notes, grille, arrondi, continuité) mais ni ``memoire``, ni ``apport``,
+        ni ``completer``, ni ``reinvestir`` (ils décrivent le portefeuille réel), ni la comparaison
+        des variantes ; l'évaluation des indices (même date, mêmes notes) est reprise de l'ordre
+        du capital total. Ordre du montant en actions non obtenu : l'ordre du capital total est
+        rendu, avec un avertissement en fin de liste.
     rendement
         ``True`` (défaut) : clé ``rendement_net`` (§4.5), calculée après l'ordre, sans changer
         aucune quantité, aucun prix, aucun frais ; une erreur du module donne ``{}``, jamais une
         exception. ``False`` : ordre seul (vérification du §F4).
     """
     t0 = time.time()
+    from brvm_alpha.erreurs import SaisieInvalide as _Refus  # refus de saisie : code 2 (classe fille de ValueError)
+
     if arrondi not in ("bas", "restes"):
-        raise ValueError(f"arrondi inconnu {arrondi!r} : « bas » (défaut) ou « restes »")
+        raise _Refus(f"arrondi inconnu {arrondi!r} : « bas » (défaut) ou « restes »")
     if memoire:
         # Option --suivi (§F13 a) : titres et liquidités réelles du carnet, sauf s'ils sont donnés.
         if holdings is None:
@@ -2970,11 +2977,11 @@ def recommend(
             cash = float(memoire["liquidites"])
     if apport is not None:
         if float(apport) <= 0:
-            raise ValueError("apport : un montant positif est attendu")
+            raise _Refus("apport : un montant positif est attendu")
         if cash is None:
-            raise ValueError("apport : liquidités réelles nécessaires (--cash, qui comprend l'apport, ou --suivi)")
+            raise _Refus("apport : liquidités réelles nécessaires (--cash, qui comprend l'apport, ou --suivi)")
         if float(cash) + 1.0 < float(apport):
-            raise ValueError(f"apport ({_fcfa(apport)}) supérieur aux liquidités réelles ({_fcfa(cash)}) : "
+            raise _Refus(f"apport ({_fcfa(apport)}) supérieur aux liquidités réelles ({_fcfa(cash)}) : "
                              "--cash doit comprendre l'apport")
     if capital is None or float(capital) <= 0:
         raise ValueError("capital doit être > 0")
@@ -3330,17 +3337,34 @@ def recommend(
             rn = _rn.construire(ordre, capital=capital, perte_toleree=perte_toleree, verifier=verifier,
                                 memo=memo, **kw_rn)
             o_aff = ordre
+            sans_poche: list[str] = []
             if perte_toleree is not None and memo.get("ordre_poche") is not None:
                 o_aff = memo["ordre_poche"]  # ordre affiché : celui de la poche (§F4)
                 rn = _rn.pour_ordre_poche(rn, o_aff, **kw_rn)  # bilan, provision, alertes recalculés sur O_A
+                if index_evaluation:  # indices : même date, mêmes notes que l'ordre du capital total
+                    o_aff.declencheurs = {**(o_aff.declencheurs or {}),
+                                          "indices": (ordre.declencheurs or {}).get("indices") or [],
+                                          "indices_message": (ordre.declencheurs or {}).get("indices_message", "")}
+            elif perte_toleree is not None:
+                ch_p = (rn.get("perte") or {}).get("choix") if isinstance(rn.get("perte"), Mapping) else None
+                if float((ch_p or {}).get("en_actions") or 0) < math.floor(float(capital)):
+                    motif = (ch_p or {}).get("message") or (rn.get("perte") or {}).get("erreur") or rn.get("erreur")
+                    sans_poche = [AVERT_SANS_POCHE + (f" ({motif})" if motif else "")]
             av = list(o_aff.avertissements) + [
-                a for a in (rn.get("avertissements_a_ajouter") or []) if a not in o_aff.avertissements]
+                a for a in (rn.get("avertissements_a_ajouter") or []) if a not in o_aff.avertissements] + sans_poche
             o_aff.rendement_net = rn
             o_aff.avertissements = av
             ordre = o_aff
         except Exception:  # noqa: BLE001 - le module ne fait jamais tomber l'ordre
             ordre.rendement_net = {}
+            if perte_toleree is not None:
+                ordre.avertissements = list(ordre.avertissements) + [AVERT_SANS_POCHE]
     return ordre
+
+
+#: Avertissement de fin de liste quand ``perte_toleree`` est donnée mais que l'ordre du montant en
+#: actions n'a pas été obtenu (module en échec, vérification arrêtée, aucune poche possible).
+AVERT_SANS_POCHE = "ordre du montant en actions non calculé : ordre du capital total affiché"
 
 
 def replace_costs(costs: CostModel, **changes: Any) -> CostModel:

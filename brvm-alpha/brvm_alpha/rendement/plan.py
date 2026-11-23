@@ -194,9 +194,13 @@ def _bloc_risque(L: list, rn: Mapping[str, Any]) -> None:
     rq = rn.get("risque") if _ok(rn.get("risque")) else {}
     synth = (rq.get("synthese") or {}).get("phrase") if isinstance(rq, Mapping) else None
     choix = p.get("choix") if _ok(p) else None
+    tout_r = next((r for r in p.get("table") or [] if r.get("tout")), None) if _ok(p) else None
+    # Capital trop petit : même « tout en actions » n'achète aucun titre ; aucune ligne de la table n'a de sens.
+    trop_petit = (tout_r is not None and not choix and tout_r.get("investi") is not None
+                  and float(tout_r["investi"]) <= 0)
     _titre(L, "risque", "2. CE QUE J'ACCEPTE DE RISQUER SUR 12 MOIS",
            "montant en actions à confirmer" if (choix and choix.get("a_confirmer")) else
-           "montants estimés" if choix else "à choisir ; montants estimés")
+           "montants estimés" if choix else "rien à choisir" if trop_petit else "à choisir ; montants estimés")
     if not _ok(p):
         _L(L, "risque", "   Table de choix : non calculé.")
         return
@@ -281,6 +285,12 @@ def _bloc_risque(L: list, rn: Mapping[str, Any]) -> None:
         return
     if choix and choix.get("message"):
         _paragraphe(L, "risque", choix["message"], retrait="   ")
+    if trop_petit:
+        K = (rn.get("contexte") or {}).get("capital") or tout_r.get("en_actions")
+        _paragraphe(L, "risque", f"Avec {fcfa(K)}, l'ordre n'achète aucun titre : ce capital ne paie aucun lot des "
+                                 "lignes de la règle. Rien ne serait en actions, et aucun montant n'est à choisir.",
+                    retrait="   ", montant=K, ecran=fcfa(K), statut="compté")
+        return
     entete = ["Je risque", "En actions", "En réserve", "Année comme 2018", "Année ordinaire (prudente)"]
     _L(L, "risque", "", type_="entete_table", cellules=entete, cellules_detail=entete + ["Année ordinaire (flatteuse)"])
     for r in p.get("table") or []:
@@ -289,7 +299,9 @@ def _bloc_risque(L: list, rn: Mapping[str, Any]) -> None:
                cellules=[_ecr(r["perte_toleree"]).lstrip("+"), "0", _ecr(r["reserve"]).lstrip("+"), "—", "—"],
                cellules_detail=[fcfa(r["perte_toleree"], unite=False), "0", fcfa(r["reserve"], unite=False), "—", "—", "—"],
                montant=0, ecran="0", statut="estimé")
-            _L(L, "risque", "      " + str(r.get("message") or ""), type_="sous_ligne")
+            # Ligne proposée, pas choisie : « ce montant », jamais « ce que vous acceptez ».
+            _L(L, "risque", "      " + str(r.get("message") or "").replace("ce que vous acceptez", "ce montant"),
+               type_="sous_ligne")
             continue
         cells, sous = _cellules_ligne(r, detail=False)
         cd, sous_d = _cellules_ligne(r, detail=True)
@@ -456,6 +468,46 @@ def construire_plan(rendement_net: Mapping[str, Any], plan_enregistre: Mapping[s
     _blanc(L, "recevoir")
     fx = _bloc_feux(L, rn, suivi)
     return {"lignes": L, "une_chose": une, "une_chose_code": code, "feux": fx, "aujourd_hui":
+            (_rg._date(aujourd_hui).isoformat() if aujourd_hui is not None else _dt.date.today().isoformat())}
+
+
+def rafraichir_plan(plan: Mapping[str, Any], rendement_net: Mapping[str, Any] | None = None,
+                    plan_enregistre: Mapping[str, Any] | None = None, suivi: Mapping[str, Any] | None = None,
+                    aujourd_hui: Any = None) -> dict[str, Any]:
+    """Écran « Mon plan » déjà calculé (``plan_cache.json``), remis au jour de l'affichage.
+
+    Seuls changent la phrase de la séance (règle 2 : dates et temps du verbe calculés à l'affichage), la ligne « si
+    vous ne faites qu'une chose » (choix enregistrés depuis) et les trois feux. Tous les montants restent ceux de
+    l'écran calculé : ils décrivent le capital total, même quand l'ordre affiché est celui du montant en actions
+    (``--perte-toleree`` : ``rendement_net`` porte alors la facture de cet ordre, pas celle du capital total)."""
+    rn = rendement_net or {}
+    etude: list[dict[str, Any]] = []
+    _paragraphe(etude, "etude", " ".join([_rg.PH_ETUDE, _rg.phrase_seance(aujourd_hui)]))
+    code, une = (_une_chose(rn, plan_enregistre) if rn
+                 else (plan.get("une_chose_code"), plan.get("une_chose")))
+    feux: list[dict[str, Any]] = []
+    fx = _bloc_feux(feux, rn, suivi)
+    out: list[dict[str, Any]] = []
+    vu_etude = vu_feux = False
+    for l0 in plan.get("lignes") or []:
+        bloc, type_ = l0.get("bloc"), l0.get("type")
+        if bloc == "etude" and type_ != "blanc":
+            if not vu_etude:
+                out.extend(etude)
+                vu_etude = True
+            continue
+        if bloc == "feux":
+            if not vu_feux:
+                out.extend(feux)
+                vu_feux = True
+            continue
+        l = dict(l0)
+        if bloc == "une_chose" and type_ == "titre" and une:
+            l["texte"] = l["texte_detail"] = f"SI VOUS NE FAITES QU'UNE CHOSE CETTE SEMAINE : {une}"
+        out.append(l)
+    if not vu_feux:
+        out.extend(feux)
+    return {**dict(plan), "lignes": out, "une_chose": une, "une_chose_code": code, "feux": fx, "aujourd_hui":
             (_rg._date(aujourd_hui).isoformat() if aujourd_hui is not None else _dt.date.today().isoformat())}
 
 

@@ -85,6 +85,18 @@ def parse_taux(value: Any) -> float:
     return x / 100.0
 
 
+def parse_taux_reserve(value: Any) -> float:
+    """Taux net de la réserve, en pourcentage : comme :func:`parse_taux`, dans la plage des réglages (``reserve.taux_max``,
+    15 % par défaut). Au-delà : refus (``ValueError``), jamais un taux ignoré puis affiché « taux inconnu »."""
+    from brvm_alpha.rendement import reglages as RG
+
+    x = parse_taux(value)
+    tmax = float(RG.lire(None, "reserve.taux_max", 0.15))
+    if x > tmax + 1e-12:
+        raise ValueError(f"taux de la réserve : {RG.pct(x, 2)} est hors de la plage acceptée (de 0 à {RG.pct(tmax, 0)})")
+    return x
+
+
 def parse_montant(value: Any) -> float:
     """Montant en FCFA, zéro compris (« 0 », « 5000 », « 2,5k ») ; ``ValueError`` sinon."""
     s = str(value or "").strip()
@@ -106,6 +118,15 @@ def parse_perte(value: Any) -> float | str:
     if x < 1:
         raise ValueError("montant de la perte acceptée : au moins 1 FCFA (ou une part : « 10 % »)")
     return x
+
+
+def controler_perte(perte: Any, capital: Any) -> None:
+    """Même règle que le formulaire de l'interface : ce que j'accepte de risquer ne dépasse pas le capital total
+    (``SaisieInvalide``, code 2). Une part (« 10 % ») est toujours dans le capital."""
+    if isinstance(perte, (int, float)) and capital and float(perte) > float(capital) + 0.5:
+        raise SaisieInvalide(f"refusé : ce que j'accepte de risquer ({_cli().fr_num(perte, 0)} FCFA) dépasse le capital "
+                             f"total ({_cli().fr_num(capital, 0)} FCFA) ; sans --perte-toleree, la table de choix "
+                             "montre aussi « tout en actions »")
 
 
 def _type(fn: Any) -> Any:
@@ -130,6 +151,7 @@ def _mois(value: str) -> int:
 
 
 _taux_arg = _type(parse_taux)
+_taux_reserve_arg = _type(parse_taux_reserve)
 _montant_arg = _type(parse_montant)
 _perte_arg = _type(parse_perte)
 _mois_arg = _type(_mois)
@@ -275,7 +297,7 @@ def ajouter_options(p: argparse.ArgumentParser, commande: str) -> None:
     g.add_argument("--perte-toleree", dest="perte_toleree", type=_perte_arg, default=None, metavar="MONTANT|P%",
                    help="ce que j'accepte de risquer sur 12 mois (FCFA, ou « 10 %% » du capital) : l'ordre est celui du "
                         "montant en actions calculé pour une année comme 2018 ; ce n'est pas une limite")
-    g.add_argument("--taux-reserve", dest="taux_reserve", type=_taux_arg, default=None, metavar="T",
+    g.add_argument("--taux-reserve", dest="taux_reserve", type=_taux_reserve_arg, default=None, metavar="T",
                    help="taux net de la réserve, en %% par an (« 3 » ou « 3,5 ») : affiché à part, jamais déduit de la "
                         "perte estimée")
     g.add_argument("--sans-rendement", dest="sans_rendement", action="store_true",
@@ -321,6 +343,7 @@ def options_recommend(args: argparse.Namespace, commande: str = "recommend") -> 
     if getattr(args, "grille", None) not in (None, ""):
         kw["grille"] = _grille_option(args.grille)
     if getattr(args, "perte_toleree", None) is not None:
+        controler_perte(args.perte_toleree, getattr(args, "capital", None))
         kw["perte_toleree"] = args.perte_toleree
     if getattr(args, "taux_reserve", None) is not None:
         kw["taux_reserve"] = args.taux_reserve
@@ -348,6 +371,15 @@ def options_recommend(args: argparse.Namespace, commande: str = "recommend") -> 
     for cle in ("completer", "reinvestir", "continuite"):
         if getattr(args, cle, False):
             kw[cle] = True
+    if kw.get("arrondi") == "restes" and not kw.get("forcer"):
+        # Refus avant le calcul (l'ordre prend plusieurs secondes) : même règle que liquidites.arrondi_restes.
+        from brvm_alpha.rendement import grille as G
+
+        with _saisie("--grille"):
+            gr = G.resoudre(kw.get("grille"))
+        if G.statut_global(gr) == G.SUPPOSE:
+            raise SaisieInvalide("refusé : --arrondi restes : la grille du courtier est supposée (grille absente, tarif "
+                                 "central ou statut « supposé ») ; option --forcer pour un emploi sur papier")
     if getattr(args, "suivi", None):
         kw.update(_options_suivi(str(args.suivi), getattr(args, "panel_dir", None)))
     return kw
@@ -443,7 +475,7 @@ def ajouter_parseurs(sub: Any) -> None:
                     help="capital total en FCFA (défaut : celui du plan enregistré, sinon 10 000 000)")
     pl.add_argument("--perte-toleree", dest="perte_toleree", type=_perte_arg, default=None, metavar="MONTANT|P%",
                     help="ce que j'accepte de risquer sur 12 mois (FCFA ou « 10 %% ») ; absent : table de choix")
-    pl.add_argument("--taux-reserve", dest="taux_reserve", type=_taux_arg, default=None, metavar="T",
+    pl.add_argument("--taux-reserve", dest="taux_reserve", type=_taux_reserve_arg, default=None, metavar="T",
                     help="taux net de la réserve, en %% par an (supposé tant qu'il n'est pas relevé)")
     pl.add_argument("--besoin-dans", dest="besoin_dans", type=_mois_arg, default=None, metavar="MOIS",
                     help="dans combien de mois vous aurez besoin de cet argent (gardé dans le plan ; durée non "
@@ -656,6 +688,7 @@ def _plan_ecran(args: argparse.Namespace) -> int:
     hist = cli.check_history(args, "l'écran « Mon plan »", refuse=True)  # avant toute écriture
     pe = lire_plan()
     capital = float(args.capital or pe.get("capital") or CAPITAL_DEFAUT)
+    controler_perte(args.perte_toleree, capital)
     opt_g = args.grille if args.grille not in (None, "") else (pe.get("grille") if pe.get("grille") in ("ma_sgi",)
                                                                 else None)
     if opt_g is None and G.enregistree():
@@ -959,16 +992,21 @@ def _maj_carnet(nom: str, P: Mapping[str, Any], D: Path, jour: pd.Timestamp) -> 
     if debut > derniere:
         return {"nom": nom, "ok": True, "ecrit": False, "semaine_0": True,
                 "mention": f"semaine 0 : aucune séance du panel depuis le départ du {debut:%d/%m/%Y}"}
-    ex = PA.executer(c, P, derniere, mode=mode, grille=g)
-    cm, _forfait = _cost_model(g)
-    titres = {k: int(v["titres"]) for k, v in c.positions().items()}
-    try:
-        proj = LQ.projection_detenus(titres, P, derniere, c.liquidites(), costs=cm, grille=g)
-        prevu = BU.prevu_depuis_projection(proj)
-    except Exception:  # noqa: BLE001 - projection impossible : condition (b) du feu « Fuites » « non calculé »
-        prevu = None
-    lignes = BU.lignes_semaines(c.operations(), P, debut=debut, ordres=c.ordres(), jusqu_au=jour, prevu=prevu)
-    res = BU.ecrire_semaines(nom, lignes, D)
+    from brvm_alpha import suivi as S
+
+    # Exécution sur papier, puis semaines calculées sur le carnet ainsi complété : un seul passage sous le verrou du
+    # portefeuille (une saisie lancée en même temps attend, ou sort en code 4 au-delà du délai).
+    with S.verrou_ecriture(c.dossier, quoi=f"suivi maj de {nom}"):
+        ex = PA.executer(c, P, derniere, mode=mode, grille=g)
+        cm, _forfait = _cost_model(g)
+        titres = {k: int(v["titres"]) for k, v in c.positions().items()}
+        try:
+            proj = LQ.projection_detenus(titres, P, derniere, c.liquidites(), costs=cm, grille=g)
+            prevu = BU.prevu_depuis_projection(proj)
+        except Exception:  # noqa: BLE001 - projection impossible : condition (b) du feu « Fuites » « non calculé »
+            prevu = None
+        lignes = BU.lignes_semaines(c.operations(), P, debut=debut, ordres=c.ordres(), jusqu_au=jour, prevu=prevu)
+        res = BU.ecrire_semaines(nom, lignes, D)
     return {"nom": nom, "ok": True, "ecrit": bool(res["ajoutees"]), "mode": mode,
             "mouvements_ajoutes": len(ex.get("ajoutes") or []), "ajoutees": int(res["ajoutees"]),
             "identiques": int(res["identiques"]), "passe_a_change": bool(res["passe_a_change"]),
@@ -1275,6 +1313,17 @@ def _suivi_declarer(args: argparse.Namespace) -> int:
             print(texte, end="")
         return 0
     dossier = dossier_declaration()
+    if args.registre:
+        # Contrôles de l'inscription AVANT toute signature : une commande refusée n'écrit jamais de ligne signée.
+        if args.confirmer != DE.CONFIRMATION_REGISTRE:
+            raise SaisieInvalide(f"refusé : inscription au registre : recopiez exactement « {DE.CONFIRMATION_REGISTRE} » "
+                                 "après --confirmer ; rien n'est signé ni inscrit")
+        if not registre_des_essais().exists():
+            raise SaisieInvalide(f"refusé : registre des essais introuvable ({registre_des_essais()}) ; rien n'est signé "
+                                 "ni inscrit")
+        if not args.fichier and not (dossier / DE.FICHIER).is_file():
+            raise SaisieInvalide("refusé : inscription au registre : aucune déclaration signée (signer d'abord avec "
+                                 "--fichier F --signer INITIALES)")
     chemin = None
     inscrits: list[str] = []
     try:
@@ -1285,14 +1334,16 @@ def _suivi_declarer(args: argparse.Namespace) -> int:
                 raise ValueError("articles : une liste JSON est attendue (sortie de --modele, réponses remplies)")
             chemin = DE.signer(arts, args.signer, dossier)
         if args.registre:
-            if args.confirmer != DE.CONFIRMATION_REGISTRE:
-                raise PermissionError(f"inscription refusée : recopiez exactement « {DE.CONFIRMATION_REGISTRE} » "
-                                      "après --confirmer")
             inscrits = DE.inscrire_au_registre(dossier, registre_des_essais(), confirmer=args.confirmer)
     except (DE.SignatureInvalide, DE.HorsDepot, ValueError, PermissionError) as exc:
         msg = str(exc)
-        raise SaisieInvalide(msg if msg.lower().startswith(("refusé", "inscription refusée")) else "refusé : " + msg) \
-            from exc
+        if msg.lower().startswith("inscription refusée : "):
+            msg = "inscription au registre : " + msg[len("inscription refusée : "):]
+        if chemin is not None:  # signée, mais l'inscription a échoué : le dire, la signature est définitive
+            msg += f" (la déclaration est signée : {chemin} ; relancer seulement --registre --confirmer)"
+        elif args.registre and msg.startswith("déjà signés"):
+            msg += f" ; pour l'inscription seule : suivi declarer --registre --confirmer \"{DE.CONFIRMATION_REGISTRE}\""
+        raise SaisieInvalide(msg if msg.lower().startswith("refusé") else "refusé : " + msg) from exc
     v = DE.verifier(dossier, registre=_registre_si_present())
     txt = []
     if chemin:
@@ -1371,6 +1422,13 @@ def _suivi_exporter(args: argparse.Namespace) -> int:
         haut = Path(dossier) == D
         return [n for n in noms if (haut and n in exclus) or n.endswith((".part", ".lock", ".tmp"))]
 
+    def copie(f: Path) -> bool:
+        r = f.relative_to(D).parts
+        return f.is_file() and r[0] not in exclus and not any(x.endswith((".part", ".lock", ".tmp")) for x in r)
+
+    if not any(copie(f) for f in D.rglob("*")):  # rien à copier après les exclusions : aucun dossier créé
+        raise DonneesAbsentes(f"échec : rien à copier ({D})" + (f" : seul {', '.join(exclus)} (privé) est présent ; "
+                                                                "--avec-moi pour le copier" if exclus else ""))
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.parent / f".{dest.name}.{os.getpid()}.part"
     if tmp.exists():
@@ -1395,4 +1453,4 @@ ecrire_json = _ecrire_json
 __all__ = ["BANNER", "CAPITAL_DEFAUT", "NOMS_MOTEUR", "ajouter_options", "ajouter_parseurs", "bulletin_portefeuille",
            "cache_du_plan", "cmd_plan", "cmd_suivi", "dossier_declaration", "dossier_profil", "dossier_suivi",
            "ecrire_json", "lire_avis", "lire_avis_texte", "lire_plan", "options_recommend", "parse_montant",
-           "parse_perte", "parse_taux", "registre_des_essais", "saisir_avis_au_carnet"]
+           "parse_perte", "parse_taux", "parse_taux_reserve", "registre_des_essais", "saisir_avis_au_carnet"]

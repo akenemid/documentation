@@ -96,6 +96,19 @@ def dossier_portefeuille(nom: str, dossier: str | Path | None = None, *, creer: 
     return p
 
 
+def verrou_ecriture(dossier: str | Path, quoi: str = "journal du suivi") -> Any:
+    """Verrou exclusif d'écriture d'un dossier du suivi, à tenir autour de la lecture de la chaîne et de l'ajout : deux
+    écritures simultanées (une saisie pendant « suivi maj », deux commandes lancées au même instant) ne rompent jamais
+    la chaîne. Le verrou porte sur le dossier lui-même (``flock``) : aucun fichier n'est ajouté au dossier (créé au
+    besoin, puisqu'une écriture suit). Réentrant dans un même fil d'exécution ; tenu par une autre opération au-delà du
+    délai d'attente (``BRVM_ALPHA_ATTENTE_VERROU``, 10 s par défaut) : ``VerrouOccupe``, code de sortie 4."""
+    from brvm_alpha import fichiers
+
+    d = _paths.verifier_ecriture(Path(dossier))
+    d.mkdir(parents=True, exist_ok=True)
+    return fichiers.verrou(d, quoi=quoi, creer=False)
+
+
 # ---------------------------------------------------------------------------
 # Empreintes et fichiers en ajout seul
 # ---------------------------------------------------------------------------

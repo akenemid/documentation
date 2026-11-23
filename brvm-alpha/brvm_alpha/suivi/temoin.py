@@ -28,6 +28,7 @@ import functools
 import io
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -294,8 +295,10 @@ def _ecrire_csv_ajout(p: Path, df: pd.DataFrame, cle_date: str, jusqu_a: pd.Time
     df[cle_date] = pd.to_datetime(df[cle_date]).dt.strftime("%Y-%m-%d")
     j = list(df.columns).index(cle_date)
     textes = [(str(rec[j]), _texte_csv([_fmt_csv(v) for v in rec])) for rec in df.itertuples(index=False)]
+    from brvm_alpha import fichiers
+
     if not p.exists():
-        p.write_text(",".join(df.columns) + "\n", encoding="utf-8")
+        fichiers.ecrire_atomique(p, ",".join(df.columns) + "\n")
     deja = p.read_text(encoding="utf-8").splitlines()[1:]
     derniere = max((next(csv.reader([x]))[j] for x in deja), default="")
     anciens = sorted(t for d, t in textes if d <= derniere)
@@ -304,6 +307,8 @@ def _ecrire_csv_ajout(p: Path, df: pd.DataFrame, cle_date: str, jusqu_a: pd.Time
         with p.open("a", encoding="utf-8") as fh:
             for t in nouveaux:
                 fh.write(t + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
     return {"ajoutees": len(nouveaux), "passe_a_change": anciens != sorted(deja)}
 
 
@@ -343,6 +348,17 @@ def maj(nom: str, panels: Mapping[str, Any], dossier: str | Path | None = None, 
     lignes = _bu.lignes_semaines(ops, panels, debut=d0, fin=d1, jusqu_au=jusqu_au, ordres=conv["ordres"],
                                  detaches=conv["detaches"], prevu=lambda _t, l: l["argent_qui_dort"], reglages=reglages)
     d.mkdir(parents=True, exist_ok=True)
+    with _s.verrou_ecriture(d, quoi=f"journal de {nom}"):  # le calcul du moteur, long, reste hors du verrou
+        return _ecrire_journal(nom, d, dossier, d0, d1, run, conv, lignes, panels, maintenant)
+
+
+def _ecrire_journal(nom: str, d: Path, dossier: Any, d0: pd.Timestamp, d1: pd.Timestamp, run: Mapping[str, Any],
+                    conv: Mapping[str, Any], lignes: list[dict[str, Any]], panels: Mapping[str, Any],
+                    maintenant: Any) -> dict[str, Any]:
+    """Phase d'écriture de :func:`maj` (sous le verrou du portefeuille) : semaines, opérations, positions, contrôles."""
+    from brvm_alpha import fichiers
+
+    ops = conv["operations"]
     res = _bu.ecrire_semaines(nom, lignes, dossier, maintenant=maintenant)
     der = pd.Timestamp(lignes[-1]["date"]) if lignes else d0
     px = _et.prix_valorisation(panels)
@@ -369,8 +385,8 @@ def maj(nom: str, panels: Mapping[str, Any], dossier: str | Path | None = None, 
                  "mode_decision": (run.get("meta") or {}).get("mode_decision"), "bandeau": _s.BANNER,
                  "mention": ("Valeur du journal + dividendes à recevoir comparée à la valeur liquidative du moteur ; "
                              "titres demandés non publiés par le moteur (taux de service global seulement).")}
-    (d / "controles.json").write_text(json.dumps(_s._jsonable(controles), ensure_ascii=False, indent=1) + "\n",
-                                      encoding="utf-8")
+    fichiers.ecrire_atomique(d / "controles.json", json.dumps(_s._jsonable(controles), ensure_ascii=False, indent=1)
+                             + "\n")
     return {"nom": nom, "ok": True, "ecrit": True, "lignes": lignes, "semaines": res, "operations": o_res,
             "positions": p_res, "controles": controles, "run": run, "conversion": conv,
             "passe_a_change": bool(res["passe_a_change"] or o_res["passe_a_change"] or p_res["passe_a_change"])}

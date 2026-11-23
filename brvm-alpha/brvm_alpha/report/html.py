@@ -2142,7 +2142,7 @@ def _sec_distribution(ctx: _Ctx) -> H:
              f"({fmt_pct(d.get('frais_deduits'), 2)})", "estimation"),
             ("P10 / P90", f"{fmt_pct(d.get('p10'), 1, True)} / {fmt_pct(d.get('p90'), 1, True)}",
              "1 tirage sur 10 sous P10, 1 sur 10 au-dessus de P90", "estimation"),
-            ("P(battre le TR)", fmt_pct(d.get("p_battre_tr"), 0),
+            (_libelle_p_battre_tr(), fmt_pct(d.get("p_battre_tr"), 0),
              (f"fréquence historique aux poids actuels ; {(d.get('resultat_s1') or {}).get('court')}"
               if (d.get("resultat_s1") or {}).get("court") else f"médiane du TR {fmt_pct(d.get('tr_mediane'), 1, True)}"),
              "estimation"),
@@ -2164,7 +2164,8 @@ def _sec_distribution(ctx: _Ctx) -> H:
             parts.append(_box("warn", f"Biais rétrospectif ({span}, poids actuels).",
                               re.sub(r"^Biais rétrospectif\s*:\s*", "", str(d["biais_retrospectif"]))))
         if (d.get("resultat_s1") or {}).get("texte"):
-            parts.append(_box("warn", "Résultat du test S1 à lire avec P(battre le TR)", d["resultat_s1"]["texte"]))
+            parts.append(_box("warn", "Résultat du test S1 à lire avec la fréquence passée au-dessus du marché",
+                              d["resultat_s1"]["texte"]))
         draws = ctx.try_get("draws", "tirages du bootstrap", ctx.draws)
         cap = (f"{fmt_int(d.get('n_boot'))} tirages du bootstrap stationnaire (blocs moyens de "
                f"{fmt_num(d.get('bloc_moyen_semaines'), 0)} semaines, graine {d.get('graine')}) sur "
@@ -3075,6 +3076,18 @@ _JS = r"""
   });
 })();
 """
+
+
+def _libelle_p_battre_tr() -> str:
+    """Libellé réécrit de « P(battre le TR) » dans la distribution (cahier du rendement net, §F6 point 7)."""
+    try:
+        from brvm_alpha.rendement.risque import LIBELLE_P_BATTRE_TR
+
+        return LIBELLE_P_BATTRE_TR
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
+    except Exception:  # noqa: BLE001 - module illisible : libellé prudent, jamais l'ancien
+        return "Fréquence passée au-dessus du marché (flatteuse)"
 
 
 def _rn_sous_bloc(ctx: _Ctx, section: str) -> H:

@@ -501,8 +501,11 @@ def signer(articles: Sequence[Mapping[str, Any]], signe_par: str | None = None, 
 
     Refus, sans rien écrire : hors du dépôt de développement (:class:`HorsDepot`, code 2, message
     :data:`MESSAGE_HORS_DEPOT`) ; signature invalide ; réponse manquante ; chaîne existante rompue (« aucune ligne ne
-    peut être ajoutée avant une décision humaine écrite »). Une ligne écrite après le début du suivi ne vaut que pour
-    l'avenir (``effet_a_partir_du`` = prochaine séance)."""
+    peut être ajoutée avant une décision humaine écrite ») ; article identique à la dernière ligne signée pour le même
+    identifiant (:class:`SignatureInvalide` : une deuxième signature du même texte, par les mêmes initiales ou par
+    d'autres, ajouterait des lignes définitives en double). Une ligne écrite après le début du suivi ne vaut que pour
+    l'avenir (``effet_a_partir_du`` = prochaine séance). Lecture de la chaîne et ajout sous le verrou d'écriture du
+    dossier (code 4 s'il reste tenu par une autre opération)."""
     if dossier is None:
         raise ValueError("dossier de la déclaration obligatoire (aucun chemin par défaut)")
     r = Path(racine) if racine is not None else _paths.REPO_ROOT
@@ -523,10 +526,43 @@ def signer(articles: Sequence[Mapping[str, Any]], signe_par: str | None = None, 
     if not a_ecrire:
         raise ValueError("aucun article à signer")
     d = Path(dossier)
+    with _s.verrou_ecriture(d, quoi="déclaration du suivi"):
+        return _signer(a_ecrire, sig, d, r, maintenant=maintenant, reglages=reglages, strategie=strategie,
+                       reglages_chemin=reglages_chemin, cahier_chemin=cahier_chemin)
+
+
+def _contenu_signe(a: Mapping[str, Any]) -> str:
+    """Contenu d'un article ou d'une ligne signée (hors date, effet, empreintes du code, signature et chaîne), avec les
+    valeurs par défaut de la ligne écrite par :func:`signer`."""
+    return _s.canonique({
+        "type": a.get("type"), "id": a.get("id"), "phrase": a.get("phrase", ""), "regle": a.get("regle", {}),
+        "parametres": a.get("parametres", {}), "mesure": a.get("mesure", []), "duree_min": a.get("duree_min", ""),
+        "decision_ecrite": a.get("decision_ecrite", ""), "source_spec": a.get("source_spec", ""),
+        "reponse": a.get("reponse"), "proposition": a.get("proposition"), "registre": a.get("registre"),
+        "hypotheses_de_travail": a.get("hypotheses_de_travail", []), "remplace_n": a.get("remplace_n")})
+
+
+def deja_signes(a_ecrire: Sequence[Mapping[str, Any]], existantes: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Identifiants des articles ``a_ecrire`` (sortie de :func:`preparer`) identiques à la dernière ligne signée du même
+    identifiant dans ``existantes`` (lignes de la déclaration)."""
+    dernieres: dict[str, str] = {}
+    for l in existantes:
+        dernieres[str(l.get("id"))] = _contenu_signe(l)
+    return [str(a.get("id")) for a in a_ecrire if dernieres.get(str(a.get("id"))) == _contenu_signe(a)]
+
+
+def _signer(a_ecrire: list[dict[str, Any]], sig: Mapping[str, str], d: Path, r: Path, *, maintenant: Any,
+            reglages: Mapping[str, Any] | None, strategie: Mapping[str, Any] | None, reglages_chemin: Any,
+            cahier_chemin: Any) -> Path:
     v = verifier(d)
     if not v["chaine_ok"]:
         raise ValueError("chaîne de la déclaration rompue : aucune ligne ne peut être ajoutée avant une décision humaine "
                          "écrite (" + " ; ".join(v["anomalies"][:3]) + ")")
+    doubles = deja_signes(a_ecrire, lignes(d) if v["existe"] else [])
+    if doubles:
+        raise SignatureInvalide("déjà signés à l'identique : " + ", ".join(doubles) + " ; aucune ligne n'est ajoutée "
+                                "(une ligne signée est définitive ; pour changer un article, signez une ligne « remplace » "
+                                "ou « retrait »)")
     t = pd.Timestamp(maintenant) if maintenant is not None else pd.Timestamp.now(tz="UTC")
     if t.tzinfo is None:
         t = t.tz_localize("UTC")
@@ -637,20 +673,27 @@ def inscrire_au_registre(dossier: str | Path, registre: str | Path, *, confirmer
     lignes, empreinte de la dernière) : :func:`verifier` avec le registre détecte ensuite une troncature.
     Les lignes existantes ne sont ni modifiées ni réordonnées (empreinte vérifiée sur une copie avant de remplacer le
     fichier) ; une seconde inscription n'ajoute aucune ligne en double. C'est la seule écriture du module dans ce
-    fichier."""
-    from brvm_alpha import settings
-    from brvm_alpha.backtest.walkforward import REGISTRY_COLUMNS, STATUT_PREENREGISTRE, TrialRegistry
-
+    fichier. Lecture de la déclaration et du registre, puis remplacement du registre, sous le verrou d'écriture du
+    dossier de la déclaration (code 4 s'il reste tenu par une autre opération)."""
     if registre is None or not str(registre).strip():
         raise ValueError("registre des essais : chemin obligatoire, passé explicitement")
     if confirmer != CONFIRMATION_REGISTRE:
         raise PermissionError(f"inscription refusée : recopiez exactement « {CONFIRMATION_REGISTRE} »")
     d = Path(dossier)
     base = _base_source(d, source_base)
+    if not d.is_dir():
+        raise ValueError("inscription refusée : déclaration absente (aucune ligne signée)")
+    with _s.verrou_ecriture(d, quoi="déclaration du suivi et registre des essais"):
+        return _inscrire(d, Path(registre), base)
+
+
+def _inscrire(d: Path, p: Path, base: str) -> list[str]:
+    from brvm_alpha import settings
+    from brvm_alpha.backtest.walkforward import REGISTRY_COLUMNS, STATUT_PREENREGISTRE, TrialRegistry
+
     v = verifier(d)
     if not v["existe"] or not v["chaine_ok"]:
         raise ValueError("inscription refusée : déclaration absente ou chaîne rompue (" + " ; ".join(v["anomalies"][:3]) + ")")
-    p = Path(registre)
     if not p.exists():
         raise FileNotFoundError(f"registre introuvable : {p} (il n'est jamais créé ici)")
     avant = pd.read_parquet(p)

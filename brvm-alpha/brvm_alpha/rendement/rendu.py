@@ -98,8 +98,8 @@ def bloc_essentiel(rn: Mapping[str, Any]) -> list[Bloc]:
     items.append(f"{_rg.PH_PASSE} {_rg.PH_DESCRIPTIF}")
     r = rn.get("reserve")
     if _ok(r):
-        items.append(f"Réserve {fcfa(r['montant'])} : un point d'intérêt vaut {fcfa(r['valeur_d_un_point'])} par an. "
-                     f"{_rg.PH_INTERETS}")
+        items.append(f"Réserve {fcfa(r['montant'])} : un point d'intérêt vaut {fcfa(r['valeur_d_un_point'])} par an "
+                     f"[compté]. {_rg.PH_INTERETS}")
     fx = ((rn.get("suivi") or {}).get("feux") if isinstance(rn.get("suivi"), Mapping) else None) or {}
     if fx.get("suivi_commence"):
         items.append(f"Trois feux : perte {fx['perte']['affichage']} ; fuites {fx['fuites']['affichage']} ; données "
@@ -115,10 +115,27 @@ def ligne_ne_pas_transmettre() -> Bloc:
     return ("strong", _rg.PH_NE_PAS_TRANSMETTRE)
 
 
+def _grille_supposee(rn: Mapping[str, Any]) -> bool:
+    gr = rn.get("grille") if _ok(rn.get("grille")) else {}
+    return str(gr.get("statut_global") or "supposé") == "supposé"
+
+
+def _texte_provision(rn: Mapping[str, Any], pv: Mapping[str, Any]) -> str:
+    """Provision d'entrée (§F7 e) : provision du pire cas, part investie maximale, marge, même marge avec un courtage
+    plus cher de 0,2 point ; sur un tarif supposé, la mention « provision calculée sur un tarif supposé »."""
+    t = str(pv.get("texte") or "")
+    sup = _grille_supposee(rn)
+    if pv.get("marge") is not None:
+        pt = f"{100 * float(pv.get('surcout_courtage_test') or 0.002):.1f}".replace(".", ",")
+        t += (f" Marge : {fcfa(pv['marge'], signe=True)} ; avec un courtage plus cher de {pt} point : "
+              f"{_s(pv.get('marge_courtage_plus_cher'))}")
+    return t + (" [supposé] ; provision calculée sur un tarif supposé." if sup else " [estimé].")
+
+
 def ligne_execution(rn: Mapping[str, Any]) -> str | None:
-    """Ligne ajoutée à la section « Exécution » : provision à avoir avant l'ordre, part investie maximale."""
+    """Ligne ajoutée à la section « Exécution » : provision à avoir avant l'ordre, part investie maximale, marges."""
     pv = ((rn.get("liquidites") or {}).get("provision")) if isinstance(rn.get("liquidites"), Mapping) else None
-    return pv.get("texte") if _ok(pv) else None
+    return _texte_provision(rn, pv) if _ok(pv) else None
 
 
 def _bilan_table(b: Mapping[str, Any]) -> list[Bloc]:
@@ -234,7 +251,7 @@ def blocs_section(rn: Mapping[str, Any]) -> list[Bloc]:
         conc = rq.get("concentration") if isinstance(rq, Mapping) else None
         if _ok(conc):
             B.append(("ul", [f"Un titre en moins (choc de {pct(conc['choc'], 0)}) : {x['nom']} {fcfa(x['perte_choc'])} "
-                             f"({pct(x['pct_capital'], 1)} du capital)" for x in conc["lignes"]]
+                             f"({pct(x['pct_capital'], 1)} du capital) [estimé]" for x in conc["lignes"]]
                       + [f"Poids des deux premières lignes : {pct(conc['poids_deux_premieres'], 1)} ; lignes effectives "
                          f"{(conc['lignes_effectives'] or 0):.1f}".replace(".", ",")]))
     else:
@@ -254,8 +271,11 @@ def blocs_section(rn: Mapping[str, Any]) -> list[Bloc]:
     items = []
     for cle in ("decomposition", "argent_qui_dort", "reserve_fonctionnement", "provision", "arrondi_possible"):
         x = lq.get(cle)
-        if _ok(x) and x.get("texte"):
-            items.append(x["texte"])
+        if _ok(x) and cle == "provision":
+            items.append(_texte_provision(rn, x))
+        elif _ok(x) and x.get("texte"):
+            # Statut en un mot sur chaque ligne de montant (règle 9).
+            items.append(f"{x['texte']} [{_rg.mot_statut(x.get('statut') or _rg.ESTIMATION)}]")
         elif not _ok(x):
             items.append(f"{cle.replace('_', ' ')} : {_err(x)}")
     pr = lq.get("projection")
@@ -292,10 +312,12 @@ def blocs_section(rn: Mapping[str, Any]) -> list[Bloc]:
     # Détail ligne par ligne et projection par mois
     if _ok(b) and b.get("lignes_petites"):
         B.append(("h3", "Détail ligne par ligne : frais annuels contre dividende attendu"))
+        st_f = "supposé" if _grille_supposee(rn) else "compté"
         rows = [[x["symbole"], fcfa(x["frais_annuels"]), fcfa(x["dividende_net"]),
-                 pct(x["rapport"], 0) if x["rapport"] is not None else "sans dividende", x["niveau"] or "—"]
+                 pct(x["rapport"], 0) if x["rapport"] is not None else "sans dividende", x["niveau"] or "—",
+                 f"frais {st_f} ; dividende estimé"]
                 for x in b["lignes_petites"]]
-        B.append(("table", (["Titre", "Frais annuels", "Dividende net attendu", "Rapport", "Niveau"], rows)))
+        B.append(("table", (["Titre", "Frais annuels", "Dividende net attendu", "Rapport", "Niveau", "Statut"], rows)))
     if _ok(pr) and pr.get("fins_de_mois"):
         B.append(("h3", "Projection des liquidités par mois (cours constants, estimation)"))
         B.append(("table", (["Mois", "Liquidités en fin de mois", "Dividendes du mois"],
@@ -351,9 +373,9 @@ def sous_blocs_rapport(rn: Mapping[str, Any]) -> dict[str, list[Bloc]]:
         from brvm_alpha.rendement import plan as _plan
 
         carte = _plan.vers_blocs(rn["plan"]) if _ok(rn.get("plan")) else [("p", f"Carte « Mon plan » : {_err(rn.get('plan'))}.")]
-        carte = [b for b in carte if b != ("banner", BANNER)]
     except Exception as exc:  # noqa: BLE001 - la section « bandeau » reste « ok » même si la carte échoue (§F1-11)
         carte = [("p", f"Carte « Mon plan » : {NON_CALCULE} ({exc.__class__.__name__}).")]
+    # La carte garde son bandeau en tête, avant PH_ETUDE (§F1) ; le sous-bloc finit aussi par le bandeau (§7.2).
     out = {
         "bandeau": [("h3", "Mon plan")] + carte + banner,
         "ordre": part(SOUS_PARTIES[5], SOUS_PARTIES[6]) + part(SOUS_PARTIES[7], SOUS_PARTIES[8]) + banner,
