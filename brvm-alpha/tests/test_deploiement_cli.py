@@ -80,8 +80,8 @@ def test_etat_exits_zero_when_nothing_is_ready_and_creates_nothing(tmp_path, cap
                               "seances_manquantes": 0, "seances_en_retard": 0, "retard": None,
                               "premiere_seance": None, "lisible": False, "erreur": None}
     assert state["bulletins"]["en_cache"] == 0 and state["bulletins"]["dernier"] is None
-    assert state["notes"] == {"dossier": str(tmp_path / "notes"), "journal_present": False, "au_journal": 0,
-                              "en_vigueur": 0}
+    assert state["notes"] == {"dossier": str(tmp_path / "notes"), "journal_present": False, "lisible": True,
+                              "erreur": None, "lignes_illisibles": 0, "au_journal": 0, "en_vigueur": 0}
     assert list(tmp_path.iterdir()) == []  # lecture seule : aucun dossier n'est créé
 
 
@@ -107,7 +107,9 @@ def test_etat_on_a_tiny_installation(tiny, tmp_path, capsys, no_network):
         "dossier": str(tiny / "boc_text"), "en_cache": 7, "sans_bulletin": 1, "dernier": "2026-10-29",
         "jours_a_telecharger": 0, "premier_jour_cherche": "2017-01-02", "jours_a_telecharger_depuis_2017": 0,
         "premier": "2025-12-31", "sans_bulletin_definitif": 1, "a_reessayer": 0, "jours_manquants": 0,
-        "historique_complet": False}
+        "historique_complet": False, "sans_fichier": state["bulletins"]["sans_fichier"], "sans_bulletin_lisible": 0,
+        "prochaine_relance": None}
+    assert state["bulletins"]["sans_fichier"] == state["bulletins"]["jours_manquants"] > 2000
     assert state["notes"]["au_journal"] == 1 and state["notes"]["en_vigueur"] == 1
     assert state["notes"]["journal_present"] is True
     assert cli.main(argv) == 0
@@ -179,8 +181,10 @@ def test_etat_reports_a_blocked_site_last_report_and_data_size(tmp_path):
     state = etat.collect_state(panel_dir=tmp_path / "p", boc_dir=tmp_path / "b", notes_root=notes, reports_dir=reports,
                                data_dir=data)
     assert state["site"] == {"bloque": True, "depuis": "2026-11-20T08:00:00+00:00", "code_http": 403}
-    assert state["rapport"] == {"dossier": str(reports), "nom": "rapport_2026-11-20.html", "date": "2027-01-15T07:58:20Z"}
-    assert state["donnees"] == {"dossier": str(data), "taille_octets": 1500 + 3 * 1024 * 1024, "taille": "3 Mo"}
+    assert state["rapport"] == {"dossier": str(reports), "nom": "rapport_2026-11-20.html", "date": "2027-01-15T07:58:20Z",
+                                "inscriptible": True}
+    assert state["donnees"] == {"dossier": str(data), "taille_octets": 1500 + 3 * 1024 * 1024, "taille": "3 Mo",
+                                "inscriptible": True}
     text = etat.format_text(state)
     assert "Site www.brvm.org : bloqué depuis le 2026-11-20T08:00:00+00:00 (HTTP 403)" in text
     assert "Dernier rapport écrit : rapport_2026-11-20.html, le 15/01/2027 07:58 UTC." in text

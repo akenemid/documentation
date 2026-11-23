@@ -8,24 +8,26 @@ Codes (toutes les commandes, en mode normal comme embarqué) :
 
 == =====================================================================================
 0  succès
-1  données absentes ou historique non prêt
-2  saisie invalide (erreurs d'argparse comprises)
+1  données absentes, historique non prêt, panel ou journal des notes illisible
+2  saisie invalide : :class:`SaisieInvalide` et erreurs d'argparse **seulement**
 4  verrou occupé (une autre opération tient le même fichier)
 5  accès refusé ou réseau (HTTP 403 ou 429, refus de la liste blanche, délai dépassé…)
-6  mémoire insuffisante (``MemoryError``)
-7  erreur interne (exception non prévue)
-8  configuration manquante ou invalide (mode embarqué sans dossiers, extracteur PDF absent…)
-130 interruption (Ctrl+C)
+6  mémoire insuffisante (``MemoryError``, bibliothèque impossible à charger faute de mémoire)
+7  erreur interne : toute exception non prévue (``ValueError`` et ``KeyError`` d'une bibliothèque comprises)
+8  configuration manquante ou invalide (mode embarqué sans dossiers, extracteur PDF absent, paquet
+   manquant, dossier de données non inscriptible…)
+130 interruption (Ctrl+C, signal TERM)
 == =====================================================================================
 
 Le code 3 n'est **jamais** rendu : dans le conteneur Odoo, le processus 1 (le maître Odoo) s'arrête
-s'il récolte un enfant sorti avec ce code.
+s'il récolte un enfant sorti avec ce code. Tout code hors de la table est ramené à 7 (:func:`code_sur`).
 
 Ce module n'importe rien de lourd : il est lu au démarrage, avant pandas.
 """
 
 from __future__ import annotations
 
+import errno
 from typing import Any
 
 OK = 0
@@ -80,6 +82,18 @@ class SaisieInvalide(ErreurMoteur, ValueError):
     code_sortie = SAISIE_INVALIDE
 
 
+class CleInconnue(SaisieInvalide, KeyError):
+    """Identifiant, symbole ou indice inconnu donné par l'utilisateur (code 2 ; aussi une ``KeyError``)."""
+
+
+class JournalIllisible(DonneesAbsentes):
+    """Le journal des notes existe mais ne se lit pas (dossier à sa place, droits…) : code 1.
+
+    Un journal **absent** n'est pas une erreur (aucune note) ; un journal illisible l'est : sans lui, un veto
+    ou un achat bloqué par une note serait ignoré sans alerte.
+    """
+
+
 class VerrouOccupe(ErreurMoteur):
     """Un verrou est tenu par une autre opération au-delà du délai d'attente (code 4)."""
 
@@ -98,24 +112,144 @@ class ConfigurationError(ErreurMoteur):
     code_sortie = CONFIGURATION
 
 
+#: Codes de la table : tout autre code (3, 259, -253, 515…) est ramené à :data:`INTERNE` (le statut d'un
+#: processus est le code modulo 256 : 259 sortirait en 3).
+CODES = frozenset({OK, DONNEES_ABSENTES, SAISIE_INVALIDE, VERROU_OCCUPE, ACCES_REFUSE, MEMOIRE, INTERNE,
+                   CONFIGURATION, INTERRUPTION})
+
+#: Motifs d'une erreur de chargement ou d'allocation due à la mémoire (``dlopen``, ``mmap``, OpenBLAS…).
+_MOTIFS_MEMOIRE = ("failed to map segment", "cannot allocate memory", "out of memory", "unable to allocate",
+                   "memory allocation failed", "cannot map zero-fill pages")
+#: Erreurs d'écriture d'un dossier configuré qui relèvent de la configuration (volume en lecture seule, droits,
+#: disque plein) : code 8.
+_ERRNO_CONFIGURATION = frozenset({errno.EROFS, errno.EACCES, errno.EPERM, errno.ENOSPC,
+                                  getattr(errno, "EDQUOT", errno.ENOSPC)})
+
+
+class ArretDemande(KeyboardInterrupt):
+    """Signal TERM reçu (Odoo, superviseur, script) : la commande s'arrête comme sur Ctrl+C (code 130)."""
+
+
+def code_sur(code: Any) -> int:
+    """Code de sortie admis : un code de la table (:data:`CODES`), sinon :data:`INTERNE` ; jamais 3."""
+    if isinstance(code, bool):
+        code = int(code)
+    if not isinstance(code, int):
+        try:
+            code = int(code)
+        except (TypeError, ValueError, OverflowError):
+            return INTERNE
+    return code if code in CODES else INTERNE
+
+
+def limite_memoire() -> int | None:
+    """Limite douce de mémoire virtuelle du processus (``RLIMIT_AS``, octets), ou ``None`` sans limite."""
+    try:
+        import resource
+
+        soft, _hard = resource.getrlimit(resource.RLIMIT_AS)
+    except (ImportError, OSError, ValueError, AttributeError):  # pragma: no cover - plate-forme sans RLIMIT_AS
+        return None
+    return None if soft == resource.RLIM_INFINITY or soft < 0 else int(soft)
+
+
+def _chaine(exc: BaseException | None):
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        yield exc
+        exc = exc.__cause__ if exc.__cause__ is not None else exc.__context__
+
+
+def est_memoire(exc: BaseException | None) -> bool:
+    """Vrai si ``exc`` (ou sa cause) vient d'un manque de mémoire.
+
+    ``MemoryError`` ; ``ImportError`` ou ``OSError`` dont le message dit « failed to map segment », « cannot
+    allocate memory »… (bibliothèque partagée impossible à charger sous une limite de mémoire virtuelle) ou de
+    code ``ENOMEM`` ; ``BrokenProcessPool`` (processus de travail mort) quand une limite de mémoire virtuelle est
+    posée. Un manque de place pour les variables de fil (« static TLS ») n'est pas un manque de mémoire.
+    """
+    for e in _chaine(exc):
+        if isinstance(e, MemoryError):
+            return True
+        if isinstance(e, (ImportError, OSError)):
+            if getattr(e, "errno", None) == errno.ENOMEM:
+                return True
+            msg = str(e).lower()
+            if "static tls" not in msg and any(m in msg for m in _MOTIFS_MEMOIRE):
+                return True
+        if type(e).__name__ == "BrokenProcessPool" and limite_memoire() is not None:
+            return True
+    return False
+
+
+def est_panel_illisible(exc: BaseException | None) -> bool:
+    """Vrai si ``exc`` vient de la lecture d'un fichier ``.parquet`` abîmé (``ArrowInvalid``, ``OSError``…)."""
+    for e in _chaine(exc):
+        if isinstance(e, FileNotFoundError):
+            return False
+        if (type(e).__module__ or "").startswith("pyarrow") or isinstance(e, OSError):
+            if "parquet" in f"{e} {getattr(e, 'filename', '') or ''}".lower():
+                return True
+    return False
+
+
+def _dossier_configure(chemin: Any) -> bool:
+    if not chemin:
+        return False
+    try:
+        import os
+
+        from brvm_alpha import paths
+
+        p = os.path.abspath(os.fspath(chemin))
+        for base in (paths.DATA_DIR, paths.REPORTS_DIR):
+            b = os.path.abspath(base)
+            if p == b or p.startswith(b.rstrip(os.sep) + os.sep):
+                return True
+    except Exception:  # pragma: no cover - chemin illisible : pas une erreur de configuration  # noqa: BLE001
+        return False
+    return False
+
+
+def est_configuration(exc: BaseException | None) -> bool:
+    """Vrai si ``exc`` relève de la configuration (code 8) sans être une :class:`ConfigurationError` :
+
+    paquet tiers manquant (``ModuleNotFoundError`` hors de ``brvm_alpha``) ; écriture refusée dans un dossier
+    configuré (``BRVM_ALPHA_DONNEES``, ``BRVM_ALPHA_RAPPORTS``) : volume en lecture seule, droits, disque plein.
+    """
+    if isinstance(exc, ModuleNotFoundError):
+        name = str(getattr(exc, "name", "") or "")
+        return bool(name) and not name.split(".")[0] == "brvm_alpha"
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in _ERRNO_CONFIGURATION:
+        return _dossier_configure(getattr(exc, "filename", None)) or _dossier_configure(getattr(exc, "filename2", None))
+    return False
+
+
 def code_retour(exc: BaseException) -> int:
-    """Code de sortie d'une commande arrêtée par ``exc`` ; jamais 3."""
+    """Code de sortie d'une commande arrêtée par ``exc`` ; toujours un code de la table, jamais 3.
+
+    Seules les saisies (:class:`SaisieInvalide`, erreurs d'argparse) donnent 2 : une ``ValueError`` ou une
+    ``KeyError`` venue d'ailleurs (bibliothèque, défaut du moteur) est une erreur interne (7). Un panel illisible
+    (``.parquet`` abîmé) donne 1, un manque de mémoire 6 (:func:`est_memoire`), un paquet manquant ou un dossier
+    configuré non inscriptible 8 (:func:`est_configuration`).
+    """
     if isinstance(exc, KeyboardInterrupt):
         code = INTERRUPTION
-    elif isinstance(exc, MemoryError):
-        code = MEMOIRE
     elif isinstance(exc, SystemExit):  # argparse : 2 pour une saisie invalide, 0 pour --help
         raw = exc.code
-        code = OK if raw in (None, 0) else (raw if isinstance(raw, int) else SAISIE_INVALIDE)
+        code = OK if raw is None else (raw if isinstance(raw, int) else SAISIE_INVALIDE)
     elif isinstance(exc, ErreurMoteur):
         code = int(getattr(exc, "code_sortie", INTERNE))
-    elif isinstance(exc, (ValueError, KeyError)):
-        code = SAISIE_INVALIDE
-    elif isinstance(exc, FileNotFoundError):
+    elif est_memoire(exc):
+        code = MEMOIRE
+    elif est_configuration(exc):
+        code = CONFIGURATION
+    elif isinstance(exc, FileNotFoundError) or est_panel_illisible(exc):
         code = DONNEES_ABSENTES
     else:
         code = INTERNE
-    return INTERNE if code == CODE_INTERDIT else code
+    return code_sur(code)
 
 
 def type_erreur(exc: BaseException) -> str:
@@ -135,7 +269,21 @@ def message_erreur(exc: BaseException) -> str:
     if isinstance(exc, MemoryError):
         return "mémoire insuffisante : la commande a été arrêtée (aucun résultat partiel n'est donné)."
     if isinstance(exc, KeyboardInterrupt):
-        return "commande interrompue."
+        return str(exc.args[0]) if isinstance(exc, ArretDemande) and exc.args else "commande interrompue."
+    if not isinstance(exc, ErreurMoteur):
+        if est_memoire(exc):
+            return ("mémoire insuffisante : une bibliothèque n'a pas pu être chargée ou un processus de travail est "
+                    f"mort ({type(exc).__name__} : {str(exc)[:200]}). Relever la limite de mémoire virtuelle "
+                    "(3 Go conseillés).")
+        if isinstance(exc, ModuleNotFoundError) and est_configuration(exc):
+            return (f"paquet Python manquant : {exc.name} (installer le jeu de paquets du moteur, "
+                    "deploiement/requirements-moteur-py311.txt).")
+        if isinstance(exc, OSError) and est_configuration(exc):
+            return (f"dossier configuré inutilisable : {exc.strerror or exc} ({exc.filename}). Vérifier que "
+                    "BRVM_ALPHA_DONNEES et BRVM_ALPHA_RAPPORTS sont inscriptibles et que le disque n'est pas plein.")
+        if est_panel_illisible(exc):
+            return (f"panel illisible ({type(exc).__name__} : {str(exc)[:200]}) : reconstruire le panel "
+                    "(python -m brvm_alpha panel --force).")
     text = str(exc).strip()
     if isinstance(exc, KeyError) and text.startswith(("'", '"')) and text.endswith(("'", '"')):
         text = text[1:-1]
@@ -150,5 +298,6 @@ def erreur_json(exc: BaseException, bandeau: str) -> dict[str, Any]:
 
 __all__ = ["OK", "DONNEES_ABSENTES", "SAISIE_INVALIDE", "VERROU_OCCUPE", "ACCES_REFUSE", "MEMOIRE", "INTERNE",
            "CONFIGURATION", "INTERRUPTION", "CODE_INTERDIT", "TYPES", "ErreurMoteur", "DonneesAbsentes",
-           "HistoriqueIncomplet", "SaisieInvalide", "VerrouOccupe", "AccesRefuse", "ConfigurationError", "code_retour",
-           "type_erreur", "message_erreur", "erreur_json"]
+           "HistoriqueIncomplet", "SaisieInvalide", "CleInconnue", "JournalIllisible", "VerrouOccupe", "AccesRefuse",
+           "ConfigurationError", "ArretDemande", "CODES", "code_sur", "limite_memoire", "est_memoire",
+           "est_panel_illisible", "est_configuration", "code_retour", "type_erreur", "message_erreur", "erreur_json"]

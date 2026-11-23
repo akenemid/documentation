@@ -513,7 +513,8 @@ def test_state_json_is_read_only_and_follows_the_prefix(serve, tmp_path, tiny_pa
     assert status == 200 and h["content-type"].startswith("application/json") and h["cache-control"] == "no-store"
     state = json.loads(body)
     assert list(state) == ["bandeau", "pret", "raison", "historique_complet", "version", "releve_le", "panel",
-                           "bulletins", "site", "notes", "rapport", "donnees", "extracteur_pdf", "embarque"]
+                           "bulletins", "site", "notes", "rapport", "donnees", "extracteur_pdf", "limite_memoire",
+                           "embarque", "avertissements"]
     # sept BOC des fixtures : panel lisible, historique incomplet depuis 2017, donc pas « prêt »
     assert state["bandeau"] == pages.BANNER and state["pret"] is False and state["releve_le"] == "2026-10-30T12:00:00Z"
     assert state["raison"].startswith("historique incomplet") and state["historique_complet"] is False
@@ -526,7 +527,7 @@ def test_state_json_is_read_only_and_follows_the_prefix(serve, tmp_path, tiny_pa
     assert state["site"] == {"bloque": False, "depuis": None, "code_http": None}
     assert state["notes"]["au_journal"] == 0 and state["notes"]["journal_present"] is False
     assert state["rapport"]["nom"] == "rapport_2026-10-29.html" and state["rapport"]["date"].endswith("Z")
-    assert state["donnees"] == {"dossier": str(data), "taille_octets": 2048, "taille": "2 Ko"}
+    assert state["donnees"] == {"dossier": str(data), "taille_octets": 2048, "taille": "2 Ko", "inscriptible": True}
     assert re.fullmatch(r"[0-9a-f]{7}|inconnue|[A-Za-z0-9._-]{1,40}", state["version"])
     # lecture seule : rien n'est créé, et l'adresse n'existe que sous le préfixe, en GET
     assert sorted(str(p) for p in tmp_path.rglob("*")) == before
@@ -546,8 +547,8 @@ def test_state_json_counts_notes_and_is_cached_for_a_few_seconds(serve, tmp_path
     assert json.loads(call(srv, "GET", "/etat.json")[2])["notes"]["au_journal"] == 0  # relevé gardé quelques secondes
     monkeypatch.setattr(S, "STATE_TTL_S", 0.0)
     again = json.loads(call(srv, "GET", "/etat.json")[2])
-    assert again["notes"] == {"dossier": str(tmp_path / "notes"), "journal_present": True, "au_journal": 1,
-                              "en_vigueur": 1}
+    assert again["notes"] == {"dossier": str(tmp_path / "notes"), "journal_present": True, "lisible": True,
+                              "erreur": None, "lignes_illisibles": 0, "au_journal": 1, "en_vigueur": 1}
 
 
 def test_state_json_reports_not_ready_without_panel(serve):

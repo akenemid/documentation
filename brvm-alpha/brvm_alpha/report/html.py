@@ -285,6 +285,8 @@ def _fr_txt(texte: Any) -> str:
     module est illisible (le rapport reste autonome, chaque section isolée)."""
     try:
         from brvm_alpha.portfolio.recommend import fr_texte
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - affichage seulement
         return str(texte)
     return fr_texte(texte)
@@ -662,6 +664,8 @@ def _read_json(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         return None, None
     try:
         return json.loads(path.read_text(encoding="utf-8")), None
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - rapporté
         return None, f"{path.name} illisible ({exc.__class__.__name__} : {exc})"
 
@@ -877,6 +881,8 @@ class _Ctx:
                 return None
             try:
                 from brvm_alpha.notes.store import JOURNAL_NAME, NoteStore
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:  # noqa: BLE001 - module absent : encadré « indisponible »
                 raise Unavailable(f"module des notes indisponible ({exc.__class__.__name__} : {exc})") from exc
             if not (self.notes_root / JOURNAL_NAME).exists():
@@ -902,6 +908,8 @@ class _Ctx:
                 import importlib
 
                 mod = importlib.import_module(_RECOMMEND_MODULE)
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:  # noqa: BLE001 - module absent : encadré « indisponible »
                 raise Unavailable(f"module {_RECOMMEND_MODULE} indisponible ({exc.__class__.__name__} : "
                                   f"{exc})") from exc
@@ -973,6 +981,8 @@ class _Ctx:
         def compute() -> pd.DataFrame:
             try:
                 from brvm_alpha.notes import index_eval
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:
                 raise Unavailable(f"module brvm_alpha.notes.index_eval indisponible ({exc.__class__.__name__})") from exc
             source: Any = None
@@ -1165,6 +1175,8 @@ def _sec_bandeau(ctx: _Ctx) -> H:
 
         if t is not None and t >= pd.Timestamp(ctx.asof_req).normalize():
             late = stale_panel_message(t, ctx.now, orders=True)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         late = None
     if late:
@@ -1204,6 +1216,8 @@ def _gaps_summary(ctx: _Ctx) -> str | None:
             return f"{fmt_int(len(miss))} séance(s) sans BOC"
         y, n = int(by_year.idxmax()), int(by_year.max())
         return f"{fmt_int(len(miss))} séances sans BOC, dont {fmt_int(n)} en {y}"
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # le bandeau ne tombe jamais pour un calendrier illisible
         return None
 
@@ -1256,6 +1270,8 @@ def _market_snapshot(ctx: _Ctx) -> dict[str, Any]:
                 from brvm_alpha.quant import macro
 
                 out["rf"] = float(macro.ref_govt_rate(m.reset_index(), asof=t))
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:  # noqa: BLE001 - repli sans ref_govt_rate
                 out["rf_err"] = f"{exc.__class__.__name__} : {exc}"
     if "BRVM COMPOSITE TOTAL RETURN" not in out:
@@ -1344,6 +1360,8 @@ def _variant_desc() -> dict[str, str]:
         from brvm_alpha.strategy import VARIANT_SPECS
 
         return {k: str(v.description) for k, v in VARIANT_SPECS.items()}
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - descriptions facultatives
         return {}
 
@@ -1765,6 +1783,8 @@ def _aes_lambda_load(lines: Sequence[Mapping[str, Any]]) -> float | None:
             lam = ref.economic_exposure(str(r.get("symbole")))
             total += float(r.get("poids_cible") or 0.0) * sum(float(v) for c, v in lam.items() if c in AES)
         return total
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # table d'exposition indisponible : la ligne affiche « n.d. », jamais un chiffre faux
         return None
 
@@ -2010,6 +2030,8 @@ def _sec_ordre(ctx: _Ctx) -> H:
     parts.append(grid)
     try:
         frag = o.to_html_fragment() if hasattr(o, "to_html_fragment") else ""
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - export facultatif
         frag = ""
         parts.append(_box("info", "Export HTML du module indisponible", f"{exc.__class__.__name__} : {exc}"))
@@ -2526,6 +2548,8 @@ def _sec_notes(ctx: _Ctx) -> H:
             reasons = list(ov.get("reasons") or [])
             parts.append(_card(H("<h3>Vetos et inclinaisons actifs</h3>"),
                                _ul(reasons) if reasons else _box("empty", "Aucun veto ni inclinaison en vigueur.")))
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:  # noqa: BLE001 - surcouches facultatives
             parts.append(_box("info", "Surcouches de l'analyste non calculées", f"{exc.__class__.__name__} : {exc}"))
     return _join(parts)
@@ -2593,6 +2617,8 @@ def _sec_risques(ctx: _Ctx) -> H:
                                   H(f"<span class='wrap w2'>{esc(getattr(r, 'label', ''))}</span>"),
                                   str(getattr(r, "confidence", "")),
                                   H(f"<span class='muted small wrap'>{esc(getattr(r, 'source', ''))}</span>")])
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - tableau facultatif, motif affiché
         ptxt = (ptxt or "") + f" (chronologie des événements pays illisible : {exc.__class__.__name__})"
     parts.append(_card(H("<h3>Règles pays (§4.3)</h3>"), _p(ptxt or "Règles pays : ordre de bataille indisponible."),
@@ -3094,7 +3120,7 @@ def render_report(asof: Any, capital: float, *, panels: Mapping[str, Any] | None
     (``brvm_alpha.cli.history_state`` : ``complet``, ``raison``, ``avertissement``) ; incomplet, un
     avertissement fort est placé en tête du rapport."""
     if capital is None or not _ok(capital) or float(capital) <= 0:
-        raise ValueError("capital doit être un nombre > 0 (FCFA)")
+        raise _erreurs.SaisieInvalide("capital doit être un nombre > 0 (FCFA)")
     now_ts = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
     if now_ts.tzinfo is None:
         now_ts = now_ts.tz_localize("UTC")

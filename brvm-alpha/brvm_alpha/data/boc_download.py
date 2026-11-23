@@ -47,6 +47,7 @@ import gzip
 import io
 import json
 import logging
+import math
 import os
 import tempfile
 import time
@@ -59,7 +60,7 @@ from urllib.parse import urlparse
 
 from brvm_alpha import fichiers, net, paths
 from brvm_alpha import pdf as _pdf
-from brvm_alpha.erreurs import ACCES_REFUSE, DONNEES_ABSENTES, ConfigurationError, ErreurMoteur
+from brvm_alpha.erreurs import ACCES_REFUSE, DONNEES_ABSENTES, ConfigurationError, ErreurMoteur, SaisieInvalide
 
 BASE_URL = "https://www.brvm.org/sites/default/files/boc_{date}{suffix}.pdf"
 ROBOTS_URL = "https://www.brvm.org/robots.txt"
@@ -80,6 +81,8 @@ RECENT_DAYS = 3
 MAX_RETRIES = 3
 #: Tentatives « 404 partout » (espacées d'au moins un jour) qui rendent un marqueur définitif.
 TENTATIVES_404 = 3
+#: Écart minimal (heures) entre deux tentatives « 404 partout » d'un même jour.
+INTERVALLE_404_H = 20
 #: Intervalle maximal entre deux relances d'un jour au marqueur non définitif (jours).
 RELANCE_MAX_JOURS = 30
 #: Verrou du téléchargement (dans le dossier des BOC).
@@ -158,6 +161,21 @@ STATUTS = ("introuvable", "pas_un_pdf", "redirection", "extraction_ratee", "trop
 _PRIORITE = ("extraction_ratee", "pas_un_pdf", "trop_gros", "redirection", "reseau", "autre")
 
 
+def delai_poli(value: Any) -> float:
+    """Délai entre deux requêtes vers brvm.org : un nombre **fini**, jamais moins de :data:`MIN_DELAY_S` secondes.
+
+    ``max(nan, 10)`` vaut ``nan`` en Python (et ``min(0, nan)`` vaut 0 plus loin) : un délai non fini supprimait
+    toute attente. Il est refusé (:class:`~brvm_alpha.erreurs.SaisieInvalide`, code 2).
+    """
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        raise SaisieInvalide(f"délai invalide : {value!r} (nombre de secondes attendu)") from None
+    if not math.isfinite(x):
+        raise SaisieInvalide(f"délai refusé : {value!r} (nombre fini de secondes attendu)")
+    return max(x, MIN_DELAY_S)
+
+
 def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
@@ -184,15 +202,58 @@ class Marqueur:
         except ValueError:
             return None
 
-    def a_relancer(self, today: dt.date) -> bool:
-        """Vrai si le jour doit être cherché de nouveau aujourd'hui (marqueur non définitif, délai écoulé)."""
+    def instant(self) -> dt.datetime | None:
+        """Instant (UTC) de la dernière tentative."""
+        try:
+            t = dt.datetime.fromisoformat(str(self.date)) if self.date else None
+        except ValueError:
+            return None
+        if t is not None and t.tzinfo is None:
+            t = t.replace(tzinfo=dt.timezone.utc)
+        return t
+
+    def _attente_jours(self) -> int:
+        return 1 if self.statut == "introuvable" else min(2 ** max(self.tentatives - 1, 0), RELANCE_MAX_JOURS)
+
+    def prochaine_relance(self) -> dt.date | None:
+        """Premier jour où le jour sera cherché de nouveau (``None`` : marqueur définitif)."""
+        if self.definitif:
+            return None
+        last = self.jour()
+        if last is None:
+            return None
+        day = last + dt.timedelta(days=self._attente_jours())
+        t = self.instant()
+        if self.statut == "introuvable" and t is not None:
+            day = max(day, (t + dt.timedelta(hours=INTERVALLE_404_H)).date())
+        return day
+
+    def a_relancer(self, today: dt.date, now: dt.datetime | None = None) -> bool:
+        """Vrai si le jour doit être cherché de nouveau aujourd'hui (marqueur non définitif, délai écoulé).
+
+        « introuvable » (404 partout) : un jour de calendrier **et** :data:`INTERVALLE_404_H` heures au moins depuis
+        la tentative précédente (deux essais à dix minutes d'écart, de part et d'autre de minuit, ne comptent que
+        pour un). ``now`` : instant présent (défaut : l'heure réelle si ``today`` est aujourd'hui, sinon la fin de
+        la journée ``today``).
+        """
         if self.definitif:
             return False
         last = self.jour()
         if last is None:
             return True
-        wait = 1 if self.statut == "introuvable" else min(2 ** max(self.tentatives - 1, 0), RELANCE_MAX_JOURS)
-        return (today - last).days >= wait
+        if (today - last).days < self._attente_jours():
+            return False
+        if self.statut != "introuvable":
+            return True
+        t = self.instant()
+        if t is None:
+            return True
+        if now is None:
+            real = _utcnow()
+            now = real if today >= real.date() else dt.datetime.combine(today, dt.time(23, 59, 59), dt.timezone.utc)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=dt.timezone.utc)
+        return now - t >= dt.timedelta(hours=INTERVALLE_404_H)
 
     def to_json(self) -> str:
         d = asdict(self)
@@ -315,7 +376,7 @@ class PoliteFetcher:
                  sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
                  max_requests: int | None = None, timeout: float = 60.0, user_agent: str = USER_AGENT) -> None:
         self.session = session
-        self.delay = max(float(pause), MIN_DELAY_S)
+        self.delay = delai_poli(pause)
         self.sleep = sleep
         self.clock = clock
         self.max_requests = max_requests
@@ -376,6 +437,8 @@ class PoliteFetcher:
             except net.RefusPolitique as exc:  # liste blanche, adresse locale : arrêt, sans nouvel essai
                 self._last = self.clock()
                 raise self._stop(f"requête refusée : {exc}", "politique") from exc
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:  # réseau instable (délai dépassé compris) : nouvel essai après une attente
                 last_exc = exc
                 self._last = self.clock()
@@ -415,6 +478,8 @@ class PoliteFetcher:
             self._robots = rp
             try:
                 cd = rp.crawl_delay(self.user_agent)
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # pragma: no cover - robots.txt atypique
                 cd = None
             if cd:
@@ -462,7 +527,7 @@ def client_brvm(max_requests: int = 200, delay_s: float = DEFAULT_PAUSE_S, cache
             return None
 
     cdir = Path(cache_dir) if cache_dir is not None else rs.DEFAULT_NOTES_DIR / "cache"
-    sess = _NoCacheSession(delay_s=max(float(delay_s), MIN_DELAY_S), max_requests=max_requests,
+    sess = _NoCacheSession(delay_s=delai_poli(delay_s), max_requests=max_requests,
                            cache_dir=cdir, log_path=cdir.parent / "fetch_log.jsonl", max_retries=2,
                            user_agent=USER_AGENT)
 
@@ -544,7 +609,7 @@ def fetch_one(fetcher: Any, day: dt.date, out_dir: Path, pause: float | None = N
     if target.exists():
         return target.name
     old = lire_marqueur(marker_path(out_dir, day))
-    if old is not None and not old.a_relancer(today):
+    if old is not None and not old.a_relancer(today, now):
         return None
     if not callable(fetcher):  # ancien appel : fetch_one(requests.Session(), ...)
         fetcher = PoliteFetcher(fetcher, DEFAULT_PAUSE_S if pause is None else pause)
@@ -603,6 +668,12 @@ class EtatDossier:
     sans_fichier: list[dt.date] = field(default_factory=list)
     #: Jours au marqueur non définitif.
     non_definitifs: list[dt.date] = field(default_factory=list)
+    #: Jours au marqueur non définitif **sans bulletin lisible** : réponse qui n'est pas un PDF, trop grosse,
+    #: redirection, extraction ratée, réseau… (tout statut sauf « introuvable »). Ils comptent comme manquants
+    #: pour l'historique : un site en maintenance qui répond HTML 200 ne rend pas un historique « complet ».
+    douteux: list[dt.date] = field(default_factory=list)
+    #: Prochaine relance d'un jour douteux (le plus tôt).
+    prochaine_relance: dt.date | None = None
 
 
 def etat_dossier(out_dir: str | Path, start: dt.date = HISTORY_START, end: dt.date | None = None,
@@ -628,6 +699,11 @@ def etat_dossier(out_dir: str | Path, start: dt.date = HISTORY_START, end: dt.da
                 continue
             out.marques_non_definitifs += 1
             out.non_definitifs.append(day)
+            if m is None or m.statut != "introuvable":
+                out.douteux.append(day)
+                nxt = m.prochaine_relance() if m is not None else today
+                if nxt is not None and (out.prochaine_relance is None or nxt < out.prochaine_relance):
+                    out.prochaine_relance = nxt
             if m is None or m.a_relancer(today):
                 out.a_chercher.append(day)
             continue
@@ -678,7 +754,9 @@ def download_range(start: dt.date, end: dt.date, out_dir: Path, pause: float = D
     count = 0
     with fichiers.verrou(out_dir / LOCK_NAME, attente=lock_timeout_s, quoi="téléchargement des BOC"):
         fichiers.purger_temporaires(out_dir)
-        fetch = fetcher if fetcher is not None else PoliteFetcher(pause=pause)
+        # Sans client fourni : le client poli commun (quota de 200 requêtes, délai et blocage 403/429 partagés avec
+        # « update » dans politeness.json), jamais un PoliteFetcher sans quota dont l'arrêt resterait en mémoire.
+        fetch = fetcher if fetcher is not None else client_brvm(max_requests=200, delay_s=pause)
         for day in pending_days(start, end, out_dir, today):
             name = fetch_one(fetch, day, out_dir, pause, mark_missing=day < recent, today=today)
             if name:
@@ -774,11 +852,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", default="data/boc_text")
     parser.add_argument("--pause", type=float, default=DEFAULT_PAUSE_S,
                         help="secondes entre requêtes (au moins 10 s vers brvm.org)")
+    parser.add_argument("--max-requetes", type=int, default=200, help="quota de requêtes (défaut : 200)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     try:
         n = download_range(
-            dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end), Path(args.out), args.pause
+            dt.date.fromisoformat(args.start), dt.date.fromisoformat(args.end), Path(args.out), args.pause,
+            fetcher=client_brvm(max_requests=max(1, int(args.max_requetes)), delay_s=args.pause),
         )
     except DownloadStopped as exc:
         log.error("Arrêt : %s", exc)

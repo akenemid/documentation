@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import math
 import os
 import secrets
+import stat
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -44,12 +46,14 @@ _SUFFIXE_TEMP = ".part"
 def delai_verrou(attente: float | None = None) -> float:
     """Délai d'attente effectif : ``attente`` s'il est donné, sinon ``BRVM_ALPHA_ATTENTE_VERROU``, sinon 10 s."""
     if attente is not None:
-        return max(0.0, float(attente))
+        x = float(attente)
+        return max(0.0, x) if math.isfinite(x) else DELAI_VERROU_S
     raw = str(os.environ.get(ENV_ATTENTE, "") or "").strip()
     try:
-        return max(0.0, float(raw)) if raw else DELAI_VERROU_S
+        x = float(raw) if raw else DELAI_VERROU_S
     except ValueError:
         return DELAI_VERROU_S
+    return max(0.0, x) if math.isfinite(x) else DELAI_VERROU_S  # « nan », « inf » : défaut
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +80,41 @@ def chemin_temporaire(path: str | Path) -> Path:
     return p.with_name(f".{p.name}.{os.getpid()}.{secrets.token_hex(4)}{_SUFFIXE_TEMP}")
 
 
+def cible_ecriture(path: str | Path) -> tuple[Path, bool]:
+    """``(chemin réel, écriture directe ?)`` d'une écriture vers ``path``.
+
+    Un lien symbolique est **suivi** : le fichier temporaire est créé à côté de sa cible, qui est remplacée (le lien
+    reste un lien ; avant, il était remplacé par un fichier ordinaire). Une cible existante qui n'est ni un fichier
+    ordinaire ni un dossier (``/dev/null``, ``/dev/stdout``, tube nommé) est écrite **directement**, sans fichier
+    temporaire ni renommage. Le contrôle du mode embarqué (:func:`brvm_alpha.paths.verifier_ecriture`) porte sur le
+    chemin donné **et** sur le chemin réel.
+    """
+    p = paths.verifier_ecriture(path)
+    real = Path(os.path.realpath(p)) if p.is_symlink() else p
+    if real != p:
+        paths.verifier_ecriture(real)
+    try:
+        st = os.stat(real)
+    except FileNotFoundError:
+        return real, False
+    except OSError:
+        return real, False
+    return real, not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode))
+
+
 @contextmanager
 def fichier_atomique(path: str | Path, mode: str = "wb", *, encoding: str | None = None) -> Iterator[IO[Any]]:
-    """Fichier ouvert en écriture, publié sous ``path`` seulement si le bloc se termine sans erreur."""
+    """Fichier ouvert en écriture, publié sous ``path`` seulement si le bloc se termine sans erreur.
+
+    Lien symbolique suivi, périphérique ou tube nommé écrit directement (:func:`cible_ecriture`).
+    """
     if "w" not in mode or "+" in mode or "a" in mode:
         raise ValueError("fichier_atomique : mode d'écriture « w » ou « wb » attendu")
-    p = paths.verifier_ecriture(path)
+    p, direct = cible_ecriture(path)
+    if direct:
+        with open(p, mode, encoding=encoding if "b" not in mode else None) as fh:
+            yield fh
+        return
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = chemin_temporaire(p)
     fh = open(tmp, mode, encoding=encoding if "b" not in mode else None)  # noqa: SIM115 - fermé ci-dessous
@@ -112,9 +145,13 @@ def ecrire_atomique(path: str | Path, data: bytes | str, *, encoding: str = "utf
 def ecrire_atomique_avec(path: str | Path, ecrire: Callable[[Path], Any]) -> Path:
     """Publie atomiquement le fichier qu'``ecrire(chemin_temporaire)`` produit (parquet, CSV, gzip…).
 
-    ``ecrire`` reçoit un chemin temporaire du même dossier et doit y écrire le fichier complet.
+    ``ecrire`` reçoit un chemin temporaire du même dossier et doit y écrire le fichier complet (ou, pour un
+    périphérique ou un tube nommé, la cible elle-même : :func:`cible_ecriture`).
     """
-    p = paths.verifier_ecriture(path)
+    p, direct = cible_ecriture(path)
+    if direct:
+        ecrire(p)
+        return Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = chemin_temporaire(p)
     try:
@@ -132,7 +169,7 @@ def ecrire_atomique_avec(path: str | Path, ecrire: Callable[[Path], Any]) -> Pat
         except OSError:
             pass
         raise
-    return p
+    return Path(path)
 
 
 def purger_temporaires(folder: str | Path, age_min_s: float = 3600.0) -> int:
@@ -317,6 +354,7 @@ def verrou(path: str | Path, *, attente: float | None = None, partage: bool = Fa
         os.close(fd)
 
 
-__all__ = ["DELAI_VERROU_S", "ENV_ATTENTE", "VerrouOccupe", "delai_verrou", "chemin_temporaire", "fichier_atomique",
+__all__ = ["DELAI_VERROU_S", "ENV_ATTENTE", "VerrouOccupe", "delai_verrou", "chemin_temporaire", "cible_ecriture",
+           "fichier_atomique",
            "ecrire_atomique", "ecrire_atomique_avec", "purger_temporaires", "echanger_dossiers", "remplacer_dossier",
            "recuperer_dossier", "detenteur", "verrou"]

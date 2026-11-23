@@ -1,6 +1,7 @@
 """Extraction du texte des PDF : ``pdftotext`` (poppler), repli ``pdfplumber`` hors mode embarqué.
 
-- ``pdftotext`` tourne en sous-processus avec un délai (:data:`DELAI_PDFTOTEXT_S`) ;
+- ``pdftotext`` tourne en sous-processus **borné** (:func:`lancer_outil`) : délai (:data:`DELAI_PDFTOTEXT_S`),
+  mémoire virtuelle (:data:`MEMOIRE_OUTIL`) et taille de la sortie (:data:`SORTIE_MAX`) ;
 - ``pdfplumber`` (repli pur Python, plus lent) tourne lui aussi dans un **sous-processus** borné en
   durée (:data:`DELAI_PDFPLUMBER_S`) : un PDF pathologique ne fige ni ne gonfle le processus du moteur ;
 - en **mode embarqué** (:func:`brvm_alpha.paths.est_embarque`), ``pdftotext`` est obligatoire :
@@ -25,8 +26,13 @@ from pathlib import Path
 from brvm_alpha import paths
 from brvm_alpha.erreurs import ConfigurationError
 
-#: Délai d'une extraction par pdftotext (s).
-DELAI_PDFTOTEXT_S = 120.0
+#: Délai d'une extraction par pdftotext (s) : un BOC se convertit en moins de 2 s.
+DELAI_PDFTOTEXT_S = 60.0
+#: Mémoire virtuelle d'un outil de poppler (pdftotext, pdfinfo, pdffonts, pdfimages) : ``RLIMIT_AS`` de l'enfant.
+MEMOIRE_OUTIL = 512 * 2 ** 20
+#: Sortie maximale d'un outil (octets) : écrite dans un fichier temporaire borné (``RLIMIT_FSIZE``), jamais gardée
+#: entière en mémoire.
+SORTIE_MAX = 32 * 2 ** 20
 #: Délai d'une extraction par pdfplumber (s), dans un sous-processus.
 DELAI_PDFPLUMBER_S = 180.0
 #: Taille maximale d'un PDF à convertir (octets).
@@ -44,6 +50,59 @@ _PLUMBER_CODE = (
 
 class ExtractionRatee(RuntimeError):
     """Le texte d'un PDF n'a pas pu être extrait (fichier illisible, trop gros, délai dépassé)."""
+
+
+def _limites_outil(memoire: int, sortie: int):
+    def poser() -> None:  # dans l'enfant, avant exec : rien d'autre que des appels système
+        import resource
+
+        for lim, val in ((resource.RLIMIT_AS, memoire), (resource.RLIMIT_FSIZE, sortie), (resource.RLIMIT_CORE, 0)):
+            try:
+                _soft, hard = resource.getrlimit(lim)
+                v = val if hard == resource.RLIM_INFINITY else min(val, hard)
+                resource.setrlimit(lim, (v, hard))
+            except (ValueError, OSError):
+                pass
+    return poser
+
+
+def lancer_outil(cmd: list[str], *, delai: float, memoire: int = MEMOIRE_OUTIL,
+                 sortie: int = SORTIE_MAX) -> tuple[int, bytes, bytes]:
+    """``(code, sortie, erreurs)`` d'un outil de poppler, **borné** : durée (``delai``), mémoire virtuelle
+    (``memoire``, ``RLIMIT_AS``) et taille de la sortie (``sortie`` : fichier temporaire limité par
+    ``RLIMIT_FSIZE``, l'outil est arrêté au-delà). Un PDF piégé ne peut ni figer le moteur, ni lui faire garder des
+    dizaines de mégaoctets en mémoire, ni monter à plus de ``memoire`` octets. :class:`ExtractionRatee` si l'outil
+    est arrêté (délai, mémoire, sortie trop grosse) ; ``OSError`` s'il ne peut pas être lancé.
+    """
+    import signal
+    import tempfile
+
+    name = Path(cmd[0]).name
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                preexec_fn=_limites_outil(int(memoire), int(sortie)), close_fds=True)
+        try:
+            code = proc.wait(timeout=delai)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise ExtractionRatee(f"{name} : délai de {delai:.0f} s dépassé.") from None
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        if code == -signal.SIGXFSZ:
+            raise ExtractionRatee(f"{name} : sortie de plus de {sortie // 2 ** 20} Mo, outil arrêté.")
+        if code in (-signal.SIGSEGV, -signal.SIGABRT, -signal.SIGKILL, -signal.SIGBUS):
+            raise ExtractionRatee(f"{name} : arrêté par le signal {-code} (mémoire de {memoire // 2 ** 20} Mo "
+                                  "dépassée ou PDF piégé).")
+        out.seek(0)
+        data = out.read(int(sortie) + 1)
+        err.seek(0)
+        errors = err.read(64 * 1024)
+    if len(data) > sortie:  # pragma: no cover - RLIMIT_FSIZE l'aurait arrêté
+        raise ExtractionRatee(f"{name} : sortie de plus de {sortie // 2 ** 20} Mo.")
+    return code, data, errors
 
 
 def pdftotext_disponible() -> bool:
@@ -84,6 +143,8 @@ def version_pdfplumber() -> str | None:
         from importlib.metadata import version
 
         return version("pdfplumber")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # noqa: BLE001 - paquet absent
         return None
 
@@ -120,12 +181,12 @@ def par_pdftotext(path: str | Path, *, layout: bool = True, delai: float = DELAI
         raise ConfigurationError("pdftotext absent : installer poppler-utils.")
     cmd = [exe, *(["-layout"] if layout else []), str(p), "-"]
     try:
-        out = subprocess.run(cmd, capture_output=True, timeout=delai)
-    except subprocess.TimeoutExpired as exc:
-        raise ExtractionRatee(f"pdftotext : délai de {delai:.0f} s dépassé ({p.name}).") from exc
+        _code, out, _err = lancer_outil(cmd, delai=delai)
+    except ExtractionRatee as exc:
+        raise ExtractionRatee(f"{exc} ({p.name})") from exc
     except OSError as exc:
         raise ExtractionRatee(f"pdftotext : {exc}") from exc
-    return out.stdout.decode("utf-8", errors="replace")
+    return out.decode("utf-8", errors="replace")
 
 
 def par_pdfplumber(path: str | Path, *, layout: bool = True, delai: float = DELAI_PDFPLUMBER_S) -> str:
@@ -136,10 +197,15 @@ def par_pdfplumber(path: str | Path, *, layout: bool = True, delai: float = DELA
         raise ConfigurationError("mode embarqué : pdfplumber n'est pas utilisé (pdftotext obligatoire).")
     if not _pdfplumber_present():
         raise ConfigurationError("pdfplumber n'est pas installé.")
-    cmd = [sys.executable, "-c", _PLUMBER_CODE, str(p.resolve()), "1" if layout else "0"]
+    # « -I » : ni PYTHONPATH ni dossier courant dans sys.path ; dossier courant : le dossier temporaire du système
+    # (pas celui du PDF, où un fichier pdfplumber.py posé à côté serait importé) ; environnement réduit.
+    import tempfile
+
+    cmd = [sys.executable, "-I", "-c", _PLUMBER_CODE, str(p.resolve()), "1" if layout else "0"]
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "LC_ALL", "HOME", "TMPDIR", "SYSTEMROOT") if k in os.environ}
+    env.update({"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "PYTHONIOENCODING": "utf-8"})
     try:
-        out = subprocess.run(cmd, capture_output=True, timeout=delai, cwd=str(p.resolve().parent),
-                             env={**os.environ, "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1"})
+        out = subprocess.run(cmd, capture_output=True, timeout=delai, cwd=tempfile.gettempdir(), env=env)
     except subprocess.TimeoutExpired as exc:
         raise ExtractionRatee(f"pdfplumber : délai de {delai:.0f} s dépassé ({p.name}).") from exc
     except OSError as exc:
@@ -166,6 +232,7 @@ def extraire_texte(path: str | Path, *, layout: bool = True, embarque: bool | No
     return text, "pdfplumber", version_pdfplumber()
 
 
-__all__ = ["DELAI_PDFTOTEXT_S", "DELAI_PDFPLUMBER_S", "TAILLE_MAX", "ExtractionRatee", "pdftotext_disponible",
+__all__ = ["DELAI_PDFTOTEXT_S", "DELAI_PDFPLUMBER_S", "TAILLE_MAX", "MEMOIRE_OUTIL", "SORTIE_MAX", "ExtractionRatee",
+           "lancer_outil", "pdftotext_disponible",
            "version_pdftotext", "version_pdfplumber", "extracteur", "par_pdftotext", "par_pdfplumber",
            "extraire_texte"]

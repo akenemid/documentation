@@ -89,8 +89,17 @@ def test_embedded_mode_requires_absolute_data_and_reports_folders_outside_the_co
         paths.resolve_dirs({**emb, paths.ENV_DATA: str(tmp_path / "d")})
     with pytest.raises(erreurs.ConfigurationError, match="dossier du code"):
         paths.resolve_dirs({**emb, paths.ENV_DATA: str(paths.REPO_ROOT / "data"), paths.ENV_REPORTS: str(tmp_path)})
-    assert paths.resolve_dirs({**emb, paths.ENV_DATA: str(tmp_path / "d"), paths.ENV_REPORTS: str(tmp_path / "r")}) == (
-        tmp_path / "d", tmp_path / "r")
+    # Constat de recette : un dossier inexistant était accepté (écritures et collecte au mauvais endroit).
+    both = {**emb, paths.ENV_DATA: str(tmp_path / "d"), paths.ENV_REPORTS: str(tmp_path / "r")}
+    with pytest.raises(erreurs.ConfigurationError, match="BRVM_ALPHA_DONNEES .*n'existe pas"):
+        paths.resolve_dirs(both)
+    (tmp_path / "d").mkdir()
+    (tmp_path / "r").write_text("pas un dossier", encoding="utf-8")
+    with pytest.raises(erreurs.ConfigurationError, match="BRVM_ALPHA_RAPPORTS .*n'est pas un dossier"):
+        paths.resolve_dirs(both)
+    (tmp_path / "r").unlink()
+    (tmp_path / "r").mkdir()
+    assert paths.resolve_dirs(both) == (tmp_path / "d", tmp_path / "r")
     assert paths.resolve_dirs({}) == (paths.REPO_ROOT / "data", paths.REPO_ROOT / "reports")  # usage normal inchangé
     assert erreurs.code_retour(erreurs.ConfigurationError("x")) == 8
 
@@ -144,6 +153,8 @@ print(json.dumps({"data": str(paths.DATA_DIR), "ecrit": p.read_text(), "code_tre
                   "rapport": str(paths.resoudre_chemin_option("r.html", base="rapports")),
                   "absolu": str(paths.resoudre_chemin_option("/x/y")), "version": etat.code_version()}))
 """
+    (tmp_path / "d").mkdir()
+    (tmp_path / "r").mkdir()
     env = {paths.ENV_EMBARQUE: "1", paths.ENV_DATA: str(tmp_path / "d"), paths.ENV_REPORTS: str(tmp_path / "r")}
     r = run_py(code, env=env)
     assert r.returncode == 0, r.stderr[-2000:]
@@ -174,7 +185,9 @@ def test_option_paths_outside_embedded_mode_are_unchanged(monkeypatch):
 
 @pytest.mark.parametrize("exc,code,kind", [
     (KeyboardInterrupt(), 130, "interruption"), (MemoryError(), 6, "memoire"), (SystemExit(2), 2, "saisie_invalide"),
-    (SystemExit(3), 7, "interne"), (ValueError("x"), 2, "saisie_invalide"), (KeyError("x"), 2, "saisie_invalide"),
+    (SystemExit(3), 7, "interne"), (erreurs.SaisieInvalide("x"), 2, "saisie_invalide"),
+    (erreurs.CleInconnue("x"), 2, "saisie_invalide"), (ValueError("x"), 7, "interne"), (KeyError("x"), 7, "interne"),
+    (SystemExit(259), 7, "interne"), (SystemExit(515), 7, "interne"), (SystemExit(-253), 7, "interne"),
     (FileNotFoundError("x"), 1, "donnees_absentes"), (RuntimeError("x"), 7, "interne"),
     (erreurs.VerrouOccupe("x"), 4, "verrou_occupe"), (erreurs.AccesRefuse("x"), 5, "acces_refuse"),
     (erreurs.ConfigurationError("x"), 8, "configuration"), (bd.DownloadStopped("x", raison="quota"), 1, "donnees_absentes"),
@@ -475,13 +488,15 @@ def test_pdf_extraction_is_time_bounded_and_size_bounded(tmp_path, monkeypatch):
 
     f = tmp_path / "x.pdf"
     f.write_bytes(b"%PDF-1.4")
-    if pdf.pdftotext_disponible():
-        def slow(*a, **k):
-            raise subprocess.TimeoutExpired(cmd="pdftotext", timeout=k.get("timeout"))
-
-        monkeypatch.setattr(pdf.subprocess, "run", slow)
-        with pytest.raises(pdf.ExtractionRatee, match="délai"):
-            pdf.par_pdftotext(f)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "pdftotext").write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    (fake / "pdftotext").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake}{os.pathsep}{os.environ.get('PATH', '')}")
+    t0 = time.monotonic()
+    with pytest.raises(pdf.ExtractionRatee, match="délai"):
+        pdf.par_pdftotext(f, delai=0.5)
+    assert time.monotonic() - t0 < 5
     monkeypatch.setattr(pdf, "TAILLE_MAX", 4)
     with pytest.raises(pdf.ExtractionRatee, match="plafond"):
         pdf.par_pdftotext(f)

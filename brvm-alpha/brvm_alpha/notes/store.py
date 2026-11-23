@@ -5,7 +5,7 @@ Principes :
   aucune ligne n'est jamais réécrite ni supprimée (historique complet, auditable) ;
 - écriture sous **verrou** (``fcntl.flock`` sur ``notes.jsonl.lock``, libéré par le système à la mort
   du processus ; :class:`StoreLockError`, une :class:`~brvm_alpha.erreurs.VerrouOccupe`, au-delà de
-  ``lock_timeout_s``) et ``fsync`` après chaque ajout ;
+  ``lock_timeout_s``, à défaut ``BRVM_ALPHA_ATTENTE_VERROU``, 10 s par défaut) et ``fsync`` après chaque ajout ;
 - :meth:`NoteStore.add_unique` : recherche du doublon et ajout **sous le même verrou** (deux saisies
   simultanées de la même note n'en écrivent qu'une) ;
 - une ligne illisible est ignorée à la lecture et signalée dans ``errors`` : écriture
@@ -38,7 +38,7 @@ import pandas as pd
 
 from brvm_alpha import fichiers as _fichiers
 from brvm_alpha import paths as _paths
-from brvm_alpha.erreurs import VerrouOccupe
+from brvm_alpha.erreurs import CleInconnue, JournalIllisible, SaisieInvalide, VerrouOccupe
 
 from .model import (
     AUTHORS,
@@ -98,7 +98,7 @@ def _norm_text(value: Any) -> str:
     return re.sub(r"\s+", " ", fold(str(value or ""))).strip()
 
 
-class NoteConflictError(ValueError):
+class NoteConflictError(SaisieInvalide):
     """Un identifiant existe déjà dans le journal avec un contenu différent (utiliser ``update``)."""
 
 
@@ -188,7 +188,7 @@ class NoteStore:
         root: str | Path = DEFAULT_ROOT,
         calendar: Any = None,
         filename: str = JOURNAL_NAME,
-        lock_timeout_s: float = 10.0,
+        lock_timeout_s: float | None = None,
         stale_after_s: float = 120.0,
     ):
         root = Path(root)
@@ -214,11 +214,14 @@ class NoteStore:
         """Verrou d'écriture : fil d'exécution (``RLock``) puis processus (``fcntl.flock``), réentrant."""
         _paths.verifier_ecriture(self.path)
         self.root.mkdir(parents=True, exist_ok=True)
-        if not self._tlock.acquire(timeout=max(self.lock_timeout_s, 0.0)):
+        # Attente : ``lock_timeout_s`` s'il est donné, sinon BRVM_ALPHA_ATTENTE_VERROU (10 s par défaut), comme
+        # tous les verrous du moteur.
+        attente = _fichiers.delai_verrou(self.lock_timeout_s)
+        if not self._tlock.acquire(timeout=attente):
             raise StoreLockError(f"verrou occupé : {self.lock_path} (autre écriture en cours dans ce processus)")
         try:
             try:
-                ctx = _fichiers.verrou(self.lock_path, attente=self.lock_timeout_s, quoi="journal des notes")
+                ctx = _fichiers.verrou(self.lock_path, attente=attente, quoi="journal des notes")
                 ctx.__enter__()
             except VerrouOccupe as exc:
                 raise StoreLockError(str(exc)) from None
@@ -232,18 +235,28 @@ class NoteStore:
     def _read(self) -> list[dict[str, Any]]:
         """Toutes les lignes valides du journal (cache invalidé par taille et date)."""
         with self._tlock:
-            if not self.path.exists():
+            try:
+                st = self.path.stat()
+            except FileNotFoundError:  # journal absent : aucune note (ce n'est pas une erreur)
                 self._records, self._cache_key = [], None
                 return []
-            st = self.path.stat()
+            except OSError as exc:
+                raise self._illisible(exc) from exc
             key = (st.st_mtime_ns, st.st_size)
             if key == self._cache_key:
                 return self._records
             recs: list[dict[str, Any]] = []
             errors: list[str] = []
+            try:
+                fh = self.path.open("rb")
+            except FileNotFoundError:  # retiré entre-temps
+                self._records, self._cache_key = [], None
+                return []
+            except OSError as exc:  # dossier à la place du fichier, droits…
+                raise self._illisible(exc) from exc
             # Lecture binaire, décodage ligne par ligne : une coupure au milieu d'un
             # caractère multi-octet ou une ligne en Windows-1252 n'invalide qu'elle-même.
-            with self.path.open("rb") as fh:
+            with fh:
                 for i, raw in enumerate(fh, start=1):
                     try:
                         line = raw.decode("utf-8").strip()
@@ -267,6 +280,20 @@ class NoteStore:
                     recs.append(d)
             self._records, self._cache_key, self.errors = recs, key, errors
             return recs
+
+    def _illisible(self, exc: OSError) -> JournalIllisible:
+        return JournalIllisible(
+            f"journal des notes illisible : {self.path} ({type(exc).__name__} : {exc.strerror or exc}). Sans lui, "
+            "les vetos et les achats bloqués par une note seraient ignorés : la commande s'arrête. Rétablir le fichier "
+            "(ou le retirer s'il n'y a aucune note).")
+
+    def lisible(self) -> tuple[bool, str | None]:
+        """``(True, None)`` si le journal se lit (ou n'existe pas), sinon ``(False, motif)`` ; ne lève jamais."""
+        try:
+            self._read()
+        except JournalIllisible as exc:
+            return False, str(exc)
+        return True, None
 
     def _append(self, record: dict[str, Any]) -> None:
         line = json.dumps(record, ensure_ascii=False)
@@ -506,14 +533,14 @@ class NoteStore:
         """
         bad = PROTECTED_FIELDS & set(changes)
         if bad:
-            raise ValueError(f"champs non modifiables : {', '.join(sorted(bad))}")
+            raise SaisieInvalide(f"champs non modifiables : {', '.join(sorted(bad))}")
         if not changes:
-            raise ValueError("aucune modification demandée")
+            raise SaisieInvalide("aucune modification demandée")
         for _attempt in range(5):
             self._cache_key = None
             versions = self._versions_raw(note_id)
             if not versions:
-                raise KeyError(note_id)
+                raise CleInconnue(note_id)
             base = Note.from_dict(versions[-1])
             d = base.to_dict()
             if "tags" not in changes:
@@ -566,13 +593,13 @@ class NoteStore:
         """Dernière version de la note (ou ``version`` donnée) ; ``KeyError`` si absente."""
         versions = self._versions_raw(note_id)
         if not versions:
-            raise KeyError(note_id)
+            raise CleInconnue(note_id)
         if version is None:
             return Note.from_dict(versions[-1])
         for r in versions:
             if int(r.get("version") or 1) == int(version):
                 return Note.from_dict(r)
-        raise KeyError(f"{note_id} v{version}")
+        raise CleInconnue(f"{note_id} v{version}")
 
     def versions(self, note_id: str) -> list[Note]:
         """Toutes les versions d'une note, de la plus ancienne à la plus récente."""

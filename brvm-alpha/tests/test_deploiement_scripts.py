@@ -423,6 +423,12 @@ def test_installer_refuses_any_mismatch_before_extracting_anything(tmp_path):
     r = run(prefix, src, moteur)
     assert r.returncode == 1 and "pas exactement les 16 roues" in r.stderr
     (src / "roues" / "intrus-1.0-py3-none-any.whl").unlink()
+    # Constat de recette : tout fichier de plus est refusé, pas seulement un *.whl (sdist, sitecustomize.py, caché)
+    for intrus in ("evil-1.0.tar.gz", "sitecustomize.py", ".cache"):
+        (src / "roues" / intrus).write_bytes(b"x")
+        r = run(prefix, src, moteur)
+        assert r.returncode == 1 and "et rien d'autre" in r.stderr, intrus
+        (src / "roues" / intrus).unlink()
     (src / "roues" / "paquet0-1.0-py3-none-any.whl").unlink()
     assert run(prefix, src, moteur).returncode == 1
     (src / "roues" / "paquet0-1.0-py3-none-any.whl").write_bytes(b"roue 0")

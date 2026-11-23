@@ -36,6 +36,7 @@ from typing import Any, Mapping
 import pandas as pd
 import yaml
 
+from . import erreurs as _err
 from .config import Constraints, CostModel, ExecutionModel, PlatformConfig, TaxModel, UniverseFilter
 
 __all__ = [
@@ -110,7 +111,7 @@ _SCENARIO_ALIASES = {
 _MISSING = object()
 
 
-class StrategyConfigError(ValueError):
+class StrategyConfigError(_err.ConfigurationError, ValueError):
     """Fichier de paramètres invalide (clé manquante, valeur non numérique, incohérence)."""
 
 
@@ -544,7 +545,7 @@ def config_fingerprint(cfg: Mapping[str, Any]) -> str:
 def _scenario_name(name: str) -> str:
     key = str(name).strip().lower()
     if key not in _SCENARIO_ALIASES:
-        raise KeyError(f"scénario de coûts inconnu : {name!r} (choix : {', '.join(COST_SCENARIOS)})")
+        raise _err.CleInconnue(f"scénario de coûts inconnu : {name!r} (choix : {', '.join(COST_SCENARIOS)})")
     return _SCENARIO_ALIASES[key]
 
 

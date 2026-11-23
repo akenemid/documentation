@@ -222,6 +222,8 @@ def theme_exposures(code: str) -> list[tuple[str, int]]:
                 if t:
                     out.append((str(t), int(e.get("sign", 0) or 0)))
             return out
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - module en cours de modification
         pass
     return list(THEME_EXPOSURE.get(key, ()))

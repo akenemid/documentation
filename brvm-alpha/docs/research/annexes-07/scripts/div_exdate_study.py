@@ -1,4 +1,6 @@
-import sys; sys.path.insert(0,'/tmp/claude-0/-home-user-documentation/b095b722-74b3-5e89-8589-8e6133bd6c39/scratchpad/scripts')
+# Étude (annexe 07) : ETUDE_DOSSIER désigne le dossier de travail de l'étude (pages/ et fichiers lus) ;
+# les modules voisins (parse_views, names, evlib) sont lus dans le dossier de ce script.
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np, pandas as pd, evlib
 a=evlib.load()
 dv=pd.read_parquet(evlib.P+'dividends.parquet')

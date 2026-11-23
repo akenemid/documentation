@@ -197,8 +197,15 @@ def test_notes_add_rejects_bad_input(tmp_path, capsys):
 
 def test_notes_unknown_target_is_kept_apart(tmp_path, capsys):
     root = str(tmp_path / "notes")
-    assert cli.main(["notes", "add", "--racine", root, "--cible", "XXXXQ", "--titre", "Cible inconnue"]) == 0
+    assert cli.main(["notes", "add", "--racine", root, "--cible", "SNTS", "--cible", "XXXXQ", "--titre",
+                     "Cible inconnue"]) == 0
     assert "Cibles non reconnues" in capsys.readouterr().out
+    # Recette du moteur embarqué : une note dont AUCUNE cible n'est reconnue (ou une cible vide) n'aurait aucun
+    # effet ; elle est refusée (code 2) au lieu d'être enregistrée sans avertissement.
+    assert cli.main(["notes", "add", "--racine", root, "--cible", "XXXXQ", "--titre", "Cible inconnue"]) == 2
+    assert "cible inconnue : XXXXQ" in capsys.readouterr().err
+    assert cli.main(["notes", "add", "--racine", root, "--cible", "", "--titre", "Cible vide"]) == 2
+    assert "cible vide" in capsys.readouterr().err
 
 
 def test_notes_analyze_does_not_write(tmp_path, capsys, monkeypatch):

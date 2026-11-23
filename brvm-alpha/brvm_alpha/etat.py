@@ -6,12 +6,17 @@ système n'est lancée (le commit git est lu dans le dossier ``.git``). Le relev
 
 Contenu (mêmes clés en texte et en JSON) :
 
-- ``pret`` : vrai seulement si le panel est **lisible** (calendrier et table des actions) **et**
-  l'historique **complet** (``historique_complet``) ; sinon ``raison`` dit pourquoi, en une phrase
-  (« historique incomplet : N jours à télécharger… », « panel illisible : … ») ;
-- ``historique_complet`` : aucun jour ouvré sans fichier depuis le 02/01/2017 (hors jours récents, dont
-  le BOC n'est peut-être pas encore publié ; un jour marqué sans bulletin compte comme connu), et panel
-  qui couvre les bulletins (du premier au dernier) ;
+- ``pret`` : vrai seulement si le panel est **lisible** (calendrier et table des actions), l'historique
+  **complet** (``historique_complet``) et le journal des notes lisible (ou absent) ; sinon ``raison`` dit
+  pourquoi, en une phrase (« historique incomplet : N jours à télécharger… », « panel illisible : … »,
+  « journal des notes illisible : … ») ;
+- ``historique_complet`` : aucun jour ouvré sans bulletin lisible depuis le 02/01/2017 (hors jours
+  récents, dont le BOC n'est peut-être pas encore publié). Un jour marqué « introuvable » (404 partout)
+  compte comme connu ; un jour au marqueur **à réessayer** (réponse qui n'est pas un PDF, trop grosse,
+  extraction ratée…) compte comme manquant. Le panel doit aussi couvrir les bulletins (du premier au
+  dernier) ;
+- ``avertissements`` : points qui n'empêchent pas ``pret`` (pdftotext absent, lignes illisibles du
+  journal, dossier non inscriptible, jours à réessayer, limite de mémoire trop basse) ;
 - ``version`` : en mode embarqué, la version écrite dans ``VERSION`` ; sinon le commit git court du
   code, à défaut la variable ``BRVM_ALPHA_VERSION``, à défaut « inconnue » ;
 - ``panel`` : dernière séance, séances présentes et manquantes, retard éventuel
@@ -22,7 +27,7 @@ Contenu (mêmes clés en texte et en JSON) :
 - ``extracteur_pdf`` : présence de ``pdftotext`` (paquet poppler-utils), obligatoire en mode embarqué
   (``manquant`` vrai : ``update``, ``notes research --pdf N`` et ``notes lire`` sortiront en code 8) ;
 - ``site`` : blocage éventuel de www.brvm.org (refus HTTP 403 ou 429 enregistré) ;
-- ``notes`` : notes au journal et notes en vigueur ;
+- ``notes`` : notes au journal et notes en vigueur, ``lisible``, ``lignes_illisibles`` ;
 - ``rapport`` : dernier rapport écrit (nom, date) ;
 - ``donnees`` : dossier de données et sa taille.
 
@@ -206,12 +211,16 @@ def panel_state(panel_dir: Path, now: pd.Timestamp) -> dict[str, Any]:
                 if not sess_p.exists():
                     out["seances_presentes"] = int(d.nunique())
                     out["premiere_seance"] = _iso_day(d.min()) if len(d) else None
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:  # panel illisible : rendu comme vide, avec le motif
                 out["seances_presentes"] = out["seances_manquantes"] = 0
                 out["premiere_seance"] = None
                 out["erreur"] = f"{what} : {type(exc).__name__}: {str(exc)[:200]}"
                 return out
             last = cli.last_session(panel_dir) if out["seances_presentes"] else None
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # verrou occupé au-delà de 5 s (bascule bloquée) : relevé sans le panel
         out["erreur"] = f"lecture impossible : {exc}"
         return out
@@ -226,6 +235,8 @@ def panel_state(panel_dir: Path, now: pd.Timestamp) -> dict[str, Any]:
         stale, _closed, _day = rec.panel_staleness(last, now)
         out["seances_en_retard"] = len(stale)
         out["retard"] = rec.stale_panel_message(last, now, orders=False)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # le contrôle du retard ne fait jamais échouer le relevé
         pass
     return out
@@ -264,7 +275,8 @@ def bulletins_state(boc_dir: Path, today: dt.date) -> dict[str, Any]:
     out: dict[str, Any] = {"dossier": str(boc_dir), "en_cache": n_boc, "sans_bulletin": n_missing,
                            "dernier": _iso_day(last), "premier": _iso_day(first), "jours_a_telecharger": 0,
                            "premier_jour_cherche": None, "jours_a_telecharger_depuis_2017": 0,
-                           "sans_bulletin_definitif": 0, "a_reessayer": 0, "jours_manquants": None,
+                           "sans_bulletin_definitif": 0, "a_reessayer": 0, "sans_fichier": None,
+                           "sans_bulletin_lisible": 0, "prochaine_relance": None, "jours_manquants": None,
                            "historique_complet": False}
     try:
         start, _end, days = cli.update_window(boc_dir, today=today)
@@ -272,6 +284,8 @@ def bulletins_state(boc_dir: Path, today: dt.date) -> dict[str, Any]:
         out["premier_jour_cherche"] = _iso_day(start)
         out["jours_a_telecharger_depuis_2017"] = (len(days) if start == cli.HISTORY_START else
                                                   len(cli.update_window(boc_dir, start=cli.HISTORY_START, today=today)[2]))
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - dossier illisible
         pass
     try:
@@ -280,8 +294,15 @@ def bulletins_state(boc_dir: Path, today: dt.date) -> dict[str, Any]:
         st = boc_download.etat_dossier(boc_dir, boc_download.HISTORY_START, today, today)
         out["sans_bulletin_definitif"] = st.marques_definitifs
         out["a_reessayer"] = st.marques_non_definitifs
-        out["jours_manquants"] = len(st.sans_fichier)
-        out["historique_complet"] = bool(n_boc) and not st.sans_fichier
+        # Jours manquants : sans aucun fichier, ou au marqueur non définitif sans bulletin lisible (réponse qui
+        # n'est pas un PDF, trop grosse, extraction ratée…). Seul « introuvable » (404) compte comme connu.
+        out["sans_fichier"] = len(st.sans_fichier)
+        out["sans_bulletin_lisible"] = len(st.douteux)
+        out["prochaine_relance"] = _iso_day(st.prochaine_relance)
+        out["jours_manquants"] = len(st.sans_fichier) + len(st.douteux)
+        out["historique_complet"] = bool(n_boc) and not st.sans_fichier and not st.douteux
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - dossier illisible : historique réputé incomplet
         pass
     return out
@@ -307,7 +328,13 @@ def site_state(notes_root: Path) -> dict[str, Any]:
     try:
         from brvm_alpha.notes import research as rs
 
+        try:  # état de politesse illisible : aucune requête ne partira (code 8) ; signalé ici
+            rs._state_load(rs._state_path(notes_root / "cache"), strict=True)
+        except rs.EtatPolitesseIllisible as exc:
+            out["etat_illisible"] = str(exc)
         blocked = rs.blocked_hosts(notes_root / "cache").get("www.brvm.org")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         blocked = None
     if blocked:
@@ -316,14 +343,30 @@ def site_state(notes_root: Path) -> dict[str, Any]:
 
 
 def notes_state(store: Any, panel_dir: Path, last: Any, now: pd.Timestamp, status: Any = None) -> dict[str, Any]:
-    """Notes au journal et notes en vigueur à la séance d'application (mode direct, comme les pages)."""
-    out: dict[str, Any] = {"dossier": str(getattr(store, "root", "")), "journal_present": False, "au_journal": 0,
-                           "en_vigueur": 0}
+    """Notes au journal et notes en vigueur à la séance d'application (mode direct, comme les pages).
+
+    ``lisible`` : faux si le journal existe mais ne se lit pas (dossier à sa place, droits…) : ``erreur`` dit
+    pourquoi, et ``pret`` devient faux (``recommend``, ``report``, ``indices`` et ``explain`` refusent alors en
+    code 1). ``lignes_illisibles`` : lignes ignorées à la lecture (écriture interrompue, ligne abîmée).
+    """
+    out: dict[str, Any] = {"dossier": str(getattr(store, "root", "")), "journal_present": False, "lisible": True,
+                           "erreur": None, "lignes_illisibles": 0, "au_journal": 0, "en_vigueur": 0}
     try:
-        if store is None or not Path(store.path).exists():
+        if store is None:
             return out
+        try:
+            Path(store.path).stat()
+        except FileNotFoundError:
+            return out
+        except OSError:
+            pass  # présent mais inaccessible : la lecture le dira
         out["journal_present"] = True
+        ok, why = store.lisible() if hasattr(store, "lisible") else (True, None)
+        if not ok:
+            out.update(lisible=False, erreur=why)
+            return out
         out["au_journal"] = len(store)
+        out["lignes_illisibles"] = len(getattr(store, "errors", None) or [])
         if status is None and last is not None and out["au_journal"]:
             cal = pd.read_parquet(panel_dir / "sessions.parquet") if (panel_dir / "sessions.parquet").exists() else None
             eq = str(panel_dir) if (panel_dir / "equities.parquet").exists() else None
@@ -331,14 +374,63 @@ def notes_state(store: Any, panel_dir: Path, last: Any, now: pd.Timestamp, statu
             status = cli.notes_status(store, pd.Timestamp(last), known, calendar=cal, equities=eq)
         if status and not status.get("erreur"):
             out["en_vigueur"] = int(status.get("n_in_force") or 0)
-    except Exception:  # journal illisible : compte nul, jamais d'échec
-        pass
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
+    except Exception as exc:  # journal illisible : compte nul, signalé
+        if out["journal_present"] and not out["au_journal"]:
+            out.update(lisible=False, erreur=f"journal des notes illisible ({type(exc).__name__} : {str(exc)[:200]})")
+    return out
+
+
+def inscriptible(folder: str | Path) -> bool:
+    """Le dossier (ou, s'il n'existe pas encore, son plus proche parent existant) est-il inscriptible ?
+    ``os.access`` : droits et volume en lecture seule compris ; rien n'est écrit."""
+    p = Path(folder)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        return p.is_dir() and os.access(p, os.W_OK | os.X_OK)
+    except OSError:  # pragma: no cover
+        return False
+
+
+def avertissements(state: dict[str, Any]) -> list[str]:
+    """Points à corriger qui n'empêchent pas l'ordre de bataille (``pret`` peut rester vrai)."""
+    out: list[str] = []
+    x = state.get("extracteur_pdf") or {}
+    if x.get("manquant"):
+        out.append("pdftotext absent : installer poppler-utils (update, notes research --pdf N et notes lire "
+                   "sortiront en code 8).")
+    n = state.get("notes") or {}
+    if n.get("lignes_illisibles"):
+        out.append(f"journal des notes : {cli.fr_num(n['lignes_illisibles'], 0)} ligne(s) illisible(s), ignorée(s) "
+                   "(écriture interrompue ou ligne abîmée ; voir notes list).")
+    d = state.get("donnees") or {}
+    if d.get("inscriptible") is False:
+        out.append(f"dossier des données non inscriptible : {d.get('dossier')} (update, panel, notes add et notes "
+                   "research sortiront en code 8).")
+    r = state.get("rapport") or {}
+    if r.get("inscriptible") is False:
+        out.append(f"dossier des rapports non inscriptible : {r.get('dossier')} (report sortira en code 8).")
+    b = state.get("bulletins") or {}
+    if b.get("a_reessayer"):
+        nxt = b.get("prochaine_relance")
+        out.append(f"{cli.fr_num(b['a_reessayer'], 0)} jour(s) à réessayer (réponse sans PDF lisible)"
+                   + (f", prochaine relance le {cli.fr_date(nxt)}" if nxt else "") + ".")
+    site = state.get("site") or {}
+    if site.get("etat_illisible"):
+        out.append(f"{site['etat_illisible']} (update, notes research et live sortiront en code 8).")
+    lim = state.get("limite_memoire")
+    if lim and lim.get("trop_basse"):
+        out.append(f"limite de mémoire virtuelle trop basse : {lim['mo']} Mo (au moins {lim['seuil_mo']} Mo ; "
+                   "3 Go conseillés).")
     return out
 
 
 def report_state(reports_dir: Path) -> dict[str, Any]:
     """Dernier rapport écrit ``rapport_AAAA-MM-JJ.html`` (le plus récemment modifié) : nom et date."""
-    out: dict[str, Any] = {"dossier": str(reports_dir), "nom": None, "date": None}
+    out: dict[str, Any] = {"dossier": str(reports_dir), "nom": None, "date": None,
+                           "inscriptible": inscriptible(reports_dir)}
     best: tuple[float, str] | None = None
     try:
         for entry in os.scandir(reports_dir):
@@ -377,14 +469,19 @@ def collect_state(*, panel_dir: str | Path | None = None, boc_dir: str | Path | 
     if store is None:
         try:
             store = cli._notes_store(notes_root)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:
             store = None
     nroot = Path(getattr(store, "root", notes_root or paths.NOTES_DIR))
     panel = panel_state(pdir, t)
     bulletins = bulletins_state(bdir, t.date())
     complete, reason = readiness(panel, bulletins)
+    notes = notes_state(store, pdir, panel["derniere_seance"], t, notes_status)
+    if reason is None and not notes.get("lisible", True):
+        reason = notes.get("erreur") or "journal des notes illisible"
     size = dir_size(ddir)
-    return {
+    state = {
         "bandeau": cli.BANNER,
         "pret": reason is None,
         "raison": reason,
@@ -394,12 +491,26 @@ def collect_state(*, panel_dir: str | Path | None = None, boc_dir: str | Path | 
         "panel": panel,
         "bulletins": bulletins,
         "site": site_state(nroot),
-        "notes": notes_state(store, pdir, panel["derniere_seance"], t, notes_status),
+        "notes": notes,
         "rapport": report_state(rdir),
-        "donnees": {"dossier": str(ddir), "taille_octets": size, "taille": human_size(size)},
+        "donnees": {"dossier": str(ddir), "taille_octets": size, "taille": human_size(size),
+                    "inscriptible": inscriptible(ddir)},
         "extracteur_pdf": pdf_state(),
+        "limite_memoire": memory_state(),
         "embarque": paths.est_embarque(),
     }
+    state["avertissements"] = avertissements(state)
+    return state
+
+
+def memory_state() -> dict[str, Any]:
+    """Limite de mémoire virtuelle du processus (``RLIMIT_AS``) et seuil du démarrage (:mod:`brvm_alpha.demarrage`)."""
+    from brvm_alpha import demarrage, erreurs
+
+    lim = erreurs.limite_memoire()
+    seuil = demarrage.seuil_memoire()
+    return {"mo": None if lim is None else lim // 1024 ** 2, "seuil_mo": seuil,
+            "trop_basse": lim is not None and 0 < seuil and lim < seuil * 1024 ** 2}
 
 
 #: Commande à relancer tant que l'historique est incomplet.
@@ -431,8 +542,14 @@ def readiness(panel: dict[str, Any], bulletins: dict[str, Any]) -> tuple[bool, s
         return complete, "panel absent ou vide"
     if not hist_ok:
         n = n_missing if n_missing is not None else bulletins.get("jours_a_telecharger_depuis_2017", 0)
-        return complete, (f"historique incomplet : {cli.fr_num(n, 0)} jour(s) à télécharger depuis le 02/01/2017 "
-                          f"(panel de {cli.fr_num(panel.get('seances_presentes', 0), 0)} séance(s))")
+        douteux = int(bulletins.get("sans_bulletin_lisible") or 0)
+        detail = ""
+        if douteux:
+            nxt = bulletins.get("prochaine_relance")
+            detail = (f", dont {cli.fr_num(douteux, 0)} sans bulletin lisible à réessayer"
+                      + (f" (prochaine relance le {cli.fr_date(nxt)})" if nxt else ""))
+        return complete, (f"historique incomplet : {cli.fr_num(n, 0)} jour(s) à télécharger depuis le 02/01/2017"
+                          f"{detail} (panel de {cli.fr_num(panel.get('seances_presentes', 0), 0)} séance(s))")
     if not covers:
         return complete, cover_reason
     return complete, None
@@ -461,8 +578,8 @@ def format_text(state: dict[str, Any]) -> str:
         lines.append(f"Prêt : non ({reason or 'panel absent ou vide'}). " + cli.PANEL_HINT[0].upper()
                      + cli.PANEL_HINT[1:] + ".")
     lines.append("Historique : complet depuis le 02/01/2017." if state.get("historique_complet") else
-                 f"Historique : incomplet ({cli.fr_num(b.get('jours_manquants') or 0, 0)} jour(s) sans bulletin ni "
-                 "marqueur depuis le 02/01/2017).")
+                 f"Historique : incomplet ({cli.fr_num(b.get('jours_manquants') or 0, 0)} jour(s) sans bulletin lisible "
+                 "depuis le 02/01/2017).")
     if p["derniere_seance"]:
         lines.append(f"Panel : dernière séance le {_fr_day(p['derniere_seance'])} ; "
                      f"{cli.fr_num(p['seances_presentes'], 0)} séance(s) présente(s), "
@@ -494,9 +611,15 @@ def format_text(state: dict[str, Any]) -> str:
     elif x:
         lines.append("Extracteur PDF : pdftotext présent." if x.get("pdftotext") else
                      "Extracteur PDF : pdftotext absent (repli pdfplumber, plus lent ; installer poppler-utils).")
+    n_ok = state.get("notes") or {}
+    if n_ok.get("lisible") is False:
+        lines.append(f"Journal des notes : illisible ({n_ok.get('erreur')}).")
+    for a in state.get("avertissements") or []:
+        lines.append(f"Attention : {a}")
     lines.append(state.get("bandeau") or cli.BANNER)
     return "\n".join(lines)
 
 
 __all__ = ["ENV_VERSION", "UNKNOWN_VERSION", "HISTORY_HINT", "code_version", "dir_size", "human_size", "panel_state",
-           "bulletins_state", "readiness", "pdf_state", "site_state", "notes_state", "report_state", "collect_state", "format_text"]
+           "bulletins_state", "readiness", "pdf_state", "site_state", "notes_state", "report_state", "collect_state",
+           "format_text", "inscriptible", "avertissements", "memory_state"]

@@ -24,7 +24,8 @@ Le moteur est **embarqué** (copié dans un module Odoo, par exemple) quand la v
 (:func:`est_embarque`, seule fonction de détection). Alors :
 
 - ``BRVM_ALPHA_DONNEES`` et ``BRVM_ALPHA_RAPPORTS`` sont **obligatoires**, en chemins absolus, hors
-  de l'arbre du code : sinon :func:`resolve_dirs` lève :class:`ConfigurationError` (code de sortie 8).
+  de l'arbre du code, vers des **dossiers existants** : sinon :func:`resolve_dirs` lève
+  :class:`ConfigurationError` (code de sortie 8).
   Au démarrage, l'erreur est gardée dans :data:`ERREUR_CONFIGURATION` (l'import ne lève jamais) ;
   :func:`verifier_configuration` la relève ;
 - aucune écriture dans l'arbre du code : :func:`verifier_ecriture` refuse tout chemin qui s'y trouve
@@ -116,8 +117,8 @@ def dans_le_code(path: str | Path, root: str | Path | None = None) -> bool:
 def resolve_dirs(environ: Mapping[str, str] | None = None, root: str | Path | None = None) -> tuple[Path, Path]:
     """``(dossier de données, dossier des rapports écrits)`` pour un environnement donné.
 
-    Mode embarqué (:func:`est_embarque`) : les deux variables sont obligatoires, absolues et hors de
-    l'arbre du code ; sinon :class:`ConfigurationError`.
+    Mode embarqué (:func:`est_embarque`) : les deux variables sont obligatoires, absolues, hors de
+    l'arbre du code et désignent des dossiers existants ; sinon :class:`ConfigurationError`.
     """
     env = _env(environ)
     code_root = Path(root) if root is not None else REPO_ROOT
@@ -138,6 +139,12 @@ def resolve_dirs(environ: Mapping[str, str] | None = None, root: str | Path | No
                 f"mode embarqué : {name} ({p}) est dans le dossier du code ({code_root}) ; aucune écriture n'y est "
                 "permise.")
         out.append(p)
+    for name, p in zip((ENV_DATA, ENV_REPORTS), out):
+        if not p.is_dir():
+            raise ConfigurationError(
+                f"mode embarqué : {name} ({p}) n'existe pas ou n'est pas un dossier ; le module Odoo crée les "
+                "dossiers de données et de rapports à l'installation (le moteur ne les crée jamais : une faute de "
+                "frappe enverrait la collecte et le journal des notes au mauvais endroit).")
     return out[0], out[1]
 
 

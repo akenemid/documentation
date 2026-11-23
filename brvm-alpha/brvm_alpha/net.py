@@ -17,8 +17,12 @@ restent celles de ``brvm_alpha.notes.research.PoliteSession`` et de
   résolution DNS** (sauf passage par un mandataire, qui résout lui-même) ;
 - **plafond de taille** lu en flux, par nature de réponse (:data:`PLAFONDS` : page, robots.txt, PDF),
   décompression comprise (gzip, deflate) : lecture arrêtée au-delà du plafond ;
-- **délai total** par requête (connexion + lecture, :data:`DELAIS_TOTAUX`), en plus du délai par
-  opération ;
+- **délai total** par requête (connexion, en-têtes et corps, :data:`DELAIS_TOTAUX`), en plus du délai par
+  opération : un minuteur coupe la connexion au-delà (des en-têtes envoyés goutte à goutte ne font plus
+  durer la requête sans limite) ;
+- **adresse réellement jointe** contrôlée juste après la connexion TCP, avant TLS et avant l'envoi de la
+  requête (un nom qui change de réponse entre la résolution de contrôle et la connexion, « rebinding » DNS,
+  ne mène pas à une adresse locale ou privée) ;
 - mode embarqué (:func:`brvm_alpha.paths.est_embarque`) : la session ne fait **pas** confiance à
   l'environnement (``trust_env=False`` : ni ``HTTPS_PROXY``, ni ``.netrc``, ni ``REQUESTS_CA_BUNDLE``) ;
   un mandataire n'est utilisé que s'il est donné par ``BRVM_ALPHA_PROXY``. Hors mode embarqué, le
@@ -61,6 +65,11 @@ SOURCES_FACULTATIVES: Mapping[str, tuple[str, ...]] = MappingProxyType({
 PLAFONDS: Mapping[str, int] = MappingProxyType({"page": 8 * 2 ** 20, "robots": 512 * 2 ** 10, "pdf": 64 * 2 ** 20})
 #: Délai total par requête (s) : connexion, en-têtes et corps compris.
 DELAIS_TOTAUX: Mapping[str, float] = MappingProxyType({"page": 90.0, "robots": 30.0, "pdf": 300.0})
+#: PDF : débit minimal supposé (octets/s) et délai total maximal (s). Le délai total d'un PDF de taille annoncée
+#: est ``DELAIS_TOTAUX["pdf"] + taille / DEBIT_MIN_PDF``, borné par ``DELAI_PDF_MAX`` (un gros rapport annuel sur un
+#: lien lent n'est pas coupé à 300 s quelle que soit sa taille).
+DEBIT_MIN_PDF = 8 * 1024
+DELAI_PDF_MAX = 1800.0
 #: Délais par opération (s) : connexion, et attente entre deux octets reçus.
 DELAI_CONNEXION_S = 15.0
 DELAI_LECTURE_S = 60.0
@@ -256,9 +265,139 @@ def creer_session(user_agent: str = USER_AGENT, environ: Mapping[str, str] | Non
         sess.proxies = {"http": proxy, "https": proxy}
     sess.headers["User-Agent"] = user_agent
     sess.max_redirects = MAX_REDIRECTIONS
+    adapter = _adaptateur_garde(HTTPAdapter)
     for prefix in ("https://", "http://"):
-        sess.mount(prefix, HTTPAdapter(max_retries=0, pool_connections=2, pool_maxsize=4))
+        sess.mount(prefix, adapter(max_retries=0, pool_connections=2, pool_maxsize=4))
     return sess
+
+
+# ---------------------------------------------------------------------------
+# Garde de connexion : adresse réellement jointe, délai total tenu jusqu'aux en-têtes
+# ---------------------------------------------------------------------------
+
+
+class _Requete:
+    """Requête en cours dans un fil : sockets utilisées (coupées au-delà du délai total) et contrôle du pair."""
+
+    def __init__(self, verifier_pair: bool) -> None:
+        self.verifier_pair = verifier_pair
+        self.sockets: list[Any] = []
+        self.coupee = False
+        self._lock = threading.Lock()
+        self._minuteur: threading.Timer | None = None
+
+    def armer(self, delai_s: float) -> None:
+        """(Ré)arme le minuteur : la connexion est coupée dans ``delai_s`` secondes."""
+        with self._lock:
+            if self._minuteur is not None:
+                self._minuteur.cancel()
+            self._minuteur = threading.Timer(max(0.0, float(delai_s)), self.couper)
+            self._minuteur.daemon = True
+            self._minuteur.start()
+
+    def desarmer(self) -> None:
+        with self._lock:
+            if self._minuteur is not None:
+                self._minuteur.cancel()
+                self._minuteur = None
+
+    def enregistrer(self, sock: Any) -> None:
+        with self._lock:
+            if self.coupee:
+                raise DelaiDepasse("délai total dépassé avant la connexion.")
+            if sock is not None and sock not in self.sockets:
+                self.sockets.append(sock)
+
+    def couper(self) -> None:
+        """Minuteur : délai total dépassé. Les sockets sont fermées : une lecture bloquée (en-têtes envoyés
+        goutte à goutte compris) s'arrête aussitôt."""
+        with self._lock:
+            self.coupee = True
+            for sock in self.sockets:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+
+_GARDE = threading.local()
+
+
+def _controler_pair(sock: Any) -> None:
+    """Juste après la connexion TCP (avant TLS et avant d'envoyer la requête) : l'adresse **réellement jointe**
+    est contrôlée, pas seulement celle de la résolution de contrôle (un nom qui change de réponse entre les deux
+    résolutions, « rebinding » DNS, ne mène pas à une adresse locale ou privée)."""
+    req = getattr(_GARDE, "requete", None)
+    if req is None:
+        return
+    req.enregistrer(sock)
+    if not req.verifier_pair:
+        return
+    try:
+        peer = str(sock.getpeername()[0])
+    except (OSError, IndexError, TypeError):
+        return
+    if adresse_interdite(peer):
+        try:
+            sock.close()
+        except OSError:
+            pass
+        raise AdresseInterdite(f"connexion vers une adresse interdite ({peer}) : aucune requête n'est envoyée.")
+
+
+def _classes_garde() -> tuple[type, type]:
+    """Pools ``urllib3`` dont les connexions passent par :func:`_controler_pair` (créées une seule fois)."""
+    cached = getattr(_classes_garde, "_cache", None)
+    if cached is not None:
+        return cached
+    import urllib3
+    from urllib3.connection import HTTPConnection, HTTPSConnection
+
+    class _Garde:
+        def _new_conn(self):  # noqa: D401 - surcharge
+            sock = super()._new_conn()
+            _controler_pair(sock)
+            return sock
+
+        def request(self, *args: Any, **kwargs: Any):  # connexion réutilisée : sa socket est suivie aussi
+            req = getattr(_GARDE, "requete", None)
+            if req is not None and getattr(self, "sock", None) is not None:
+                req.enregistrer(self.sock)
+            return super().request(*args, **kwargs)
+
+    class ConnHttp(_Garde, HTTPConnection):
+        pass
+
+    class ConnHttps(_Garde, HTTPSConnection):
+        pass
+
+    class PoolHttp(urllib3.HTTPConnectionPool):
+        ConnectionCls = ConnHttp
+
+    class PoolHttps(urllib3.HTTPSConnectionPool):
+        ConnectionCls = ConnHttps
+
+    _classes_garde._cache = (PoolHttp, PoolHttps)  # type: ignore[attr-defined]
+    return PoolHttp, PoolHttps
+
+
+def _adaptateur_garde(base: type) -> type:
+    """Adaptateur ``requests`` dont les pools (directs ou par mandataire) utilisent les connexions gardées."""
+
+    class AdaptateurGarde(base):  # type: ignore[misc, valid-type]
+        def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+            super().init_poolmanager(*args, **kwargs)
+            http, https = _classes_garde()
+            self.poolmanager.pool_classes_by_scheme = {"http": http, "https": https}
+
+        def proxy_manager_for(self, proxy: str, **kwargs: Any) -> Any:
+            manager = super().proxy_manager_for(proxy, **kwargs)
+            if hasattr(manager, "pool_classes_by_scheme"):
+                http, https = _classes_garde()
+                manager.pool_classes_by_scheme = {"http": http, "https": https}
+            return manager
+
+    return AdaptateurGarde
 
 
 _SESSION: Any = None
@@ -281,6 +420,8 @@ def reinitialiser_session() -> None:
         if _SESSION is not None:
             try:
                 _SESSION.close()
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # pragma: no cover
                 pass
         _SESSION = None
@@ -390,8 +531,6 @@ class ClientHttp:
         raise TropDeRedirections(f"{url} : trop de redirections.")  # pragma: no cover
 
     def _requete(self, url: str, en_tetes: Mapping[str, str], nature: str, delai_lecture: float | None) -> Reponse:
-        import requests
-
         pol = self.politique
         total = pol.delai_total(nature)
         cap = pol.plafond(nature)
@@ -399,27 +538,69 @@ class ClientHttp:
         deadline = start + total
         read_to = min(float(delai_lecture or pol.delai_lecture), total)
         headers = {"User-Agent": self.user_agent, "Accept-Encoding": "gzip, deflate", **dict(en_tetes)}
+        # Garde de la requête : adresse réellement jointe contrôlée (sauf mandataire ou adresses locales permises),
+        # et minuteur qui coupe la connexion au-delà du délai total, en-têtes compris (avant : seul le corps était
+        # borné ; des en-têtes envoyés goutte à goutte faisaient durer la requête sans limite pratique).
+        req = _Requete(verifier_pair=not (pol.adresses_locales or via_mandataire(url, self.session)))
+        precedente = getattr(_GARDE, "requete", None)
+        _GARDE.requete = req
+        req.armer(total)
+        try:
+            return self._requete_gardee(url, headers, pol, total, cap, deadline, read_to, nature, req, start)
+        finally:
+            req.desarmer()
+            _GARDE.requete = precedente
+
+    def _requete_gardee(self, url: str, headers: Mapping[str, str], pol: Politique, total: float, cap: int,
+                        deadline: float, read_to: float, nature: str, req: _Requete, start: float) -> Reponse:
+        import requests
+
         try:
             resp = self.session.get(url, headers=headers, timeout=(min(pol.delai_connexion, total), read_to),
                                     allow_redirects=False, stream=True)
         except requests.exceptions.Timeout as exc:
             raise DelaiDepasse(f"{url} : délai dépassé ({exc.__class__.__name__}).") from exc
         except requests.exceptions.RequestException as exc:
+            if req.coupee:
+                raise DelaiDepasse(f"{url} : délai total de {total:.0f} s dépassé avant la fin des en-têtes "
+                                   f"({nature}).") from exc
+            quoi = ("mandataire injoignable ou qui refuse la connexion"
+                    if isinstance(exc, requests.exceptions.ProxyError) else
+                    "connexion TLS impossible (certificat ou protocole)" if isinstance(exc, requests.exceptions.SSLError)
+                    else "connexion impossible")
+            raise ConnexionImpossible(f"{url} : {quoi} (détail : {exc.__class__.__name__} : {str(exc)[:200]})") from exc
+        except OSError as exc:  # coupure par le minuteur hors de requests
+            if req.coupee:
+                raise DelaiDepasse(f"{url} : délai total de {total:.0f} s dépassé ({nature}).") from exc
             raise ConnexionImpossible(f"{url} : {exc.__class__.__name__}: {exc}") from exc
         try:
             rheaders = {str(k): str(v) for k, v in dict(resp.headers or {}).items()}
             length = rheaders.get("Content-Length") or rheaders.get("content-length")
             if length and length.strip().isdigit() and int(length) > cap:
                 raise ReponseTropGrosse(f"{url} : {int(length)} octets annoncés, plafond {cap} ({nature}).")
-            body = self._lire(resp, url, cap, deadline, nature, rheaders)
+            if nature == "pdf" and length and length.strip().isdigit():
+                # Délai total selon la taille annoncée (débit minimal DEBIT_MIN_PDF), borné par DELAI_PDF_MAX.
+                longer = min(max(total, total + int(length) / DEBIT_MIN_PDF), max(total, DELAI_PDF_MAX))
+                if longer > total:
+                    total, deadline = longer, start + longer
+                    req.armer(max(0.0, deadline - self.horloge()))
+            try:
+                body = self._lire(resp, url, cap, deadline, nature, rheaders)
+            except ConnexionImpossible as exc:
+                if req.coupee:
+                    raise DelaiDepasse(f"{url} : délai total de {total:.0f} s dépassé pendant la lecture "
+                                       f"({nature}).") from exc
+                raise
             status = int(resp.status_code)
             final = str(getattr(resp, "url", None) or url)
         finally:
             try:
                 resp.close()
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # pragma: no cover
                 pass
-        if self.horloge() > deadline:
+        if self.horloge() > deadline or req.coupee:
             raise DelaiDepasse(f"{url} : délai total de {total:.0f} s dépassé ({nature}).")
         return Reponse(status_code=status, content=body, headers=rheaders, url=final)
 
@@ -487,7 +668,8 @@ def transport_http(user_agent: str = USER_AGENT, politique: Politique | None = N
 
 
 __all__ = ["USER_AGENT", "ENV_PROXY", "HOTES_BRVM", "SOURCES_FACULTATIVES", "PLAFONDS", "DELAIS_TOTAUX",
-           "DELAI_CONNEXION_S", "DELAI_LECTURE_S", "MAX_REDIRECTIONS", "STATUTS_REDIRECTION", "ErreurReseau",
+           "DELAI_CONNEXION_S", "DELAI_LECTURE_S",
+           "DEBIT_MIN_PDF", "DELAI_PDF_MAX", "MAX_REDIRECTIONS", "STATUTS_REDIRECTION", "ErreurReseau",
            "DelaiDepasse", "ConnexionImpossible", "RefusPolitique", "HoteNonAutorise", "RedirectionRefusee",
            "TropDeRedirections", "AdresseInterdite", "ReponseTropGrosse", "EncodageRefuse", "Politique",
            "domaines_des_sources", "politique_par_defaut", "adresse_interdite", "mandataire_explicite",

@@ -42,6 +42,7 @@ import numpy as np
 import pandas as pd
 
 from brvm_alpha import paths as _paths
+from brvm_alpha import erreurs as _err
 from brvm_alpha.reference import COUNTRY_NAMES, SYMBOLS_2026
 
 # ---------------------------------------------------------------------------
@@ -196,6 +197,8 @@ def panel_symbols() -> frozenset[str]:
         return frozenset()
     try:
         col = pd.read_parquet(path, columns=["symbol"])["symbol"]
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - panel illisible
         return frozenset()
     return frozenset(str(s).strip().upper() for s in col.dropna().unique() if str(s).strip())
@@ -428,7 +431,7 @@ def normalize_target(value: Any, strict: bool = False) -> str | None:
             if th:
                 return th
         if strict:
-            raise ValueError(f"cible inconnue : {value!r}")
+            raise _err.SaisieInvalide(f"cible inconnue : {value!r}")
         return None
 
     if k in ("marche", "market", "le marche", "brvm", "marche brvm", "bourse", "la bourse", "ensemble du marche"):
@@ -453,7 +456,7 @@ def normalize_target(value: Any, strict: bool = False) -> str | None:
     if code:
         return code
     if strict:
-        raise ValueError(f"cible inconnue : {value!r}")
+        raise _err.SaisieInvalide(f"cible inconnue : {value!r}")
     return None
 
 
@@ -473,10 +476,14 @@ def _entity_lookup(text: str, kinds: tuple[str, ...] | None = None) -> str | Non
     """Résolution par la table d'alias de :mod:`brvm_alpha.notes.entities` (import tardif)."""
     try:
         from brvm_alpha.notes import entities
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - module absent ou en cours d'écriture
         return None
     try:
         return entities.resolve_alias(text, kinds=kinds)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover
         return None
 
@@ -630,7 +637,7 @@ def to_utc(value: Any) -> pd.Timestamp | None:
     try:
         ts = pd.Timestamp(value)
     except (ValueError, TypeError) as exc:
-        raise ValueError(f"date illisible : {value!r}") from exc
+        raise _err.SaisieInvalide(f"date illisible : {value!r}") from exc
     if ts is pd.NaT or pd.isna(ts):
         return None
     if ts.tzinfo is None:
@@ -832,6 +839,8 @@ def _load_default_calendar() -> SessionCalendar:
         return SessionCalendar(None)
     try:
         df = pd.read_parquet(path)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - fichier illisible : jours ouvrés
         return SessionCalendar(None)
     return SessionCalendar(df)
@@ -1019,7 +1028,7 @@ def normalize_stance(value: Any) -> str | None:
     k = re.sub(r"[^a-z0-9+\-]+", " ", fold(s)).strip()
     if k in _STANCE_MAP:
         return _STANCE_MAP[k]
-    raise ValueError(f"stance inconnue : {value!r} (attendu : haussier, baissier, neutre)")
+    raise _err.SaisieInvalide(f"stance inconnue : {value!r} (attendu : haussier, baissier, neutre)")
 
 
 def stance_sign(stance: str | None) -> int:
@@ -1162,18 +1171,18 @@ class Note:
         # Auteur, source, statut.
         self.author = (self.author or "analyste").strip().lower()
         if self.author not in AUTHORS:
-            raise ValueError(f"author invalide : {self.author!r} (attendu : {', '.join(AUTHORS)})")
+            raise _err.SaisieInvalide(f"author invalide : {self.author!r} (attendu : {', '.join(AUTHORS)})")
         self.source = (self.source or "manual").strip().lower()
         if self.source not in SOURCES:
-            raise ValueError(f"source invalide : {self.source!r} (attendu : {', '.join(SOURCES)})")
+            raise _err.SaisieInvalide(f"source invalide : {self.source!r} (attendu : {', '.join(SOURCES)})")
         self.status = (self.status or "active").strip().lower()
         if self.status not in STATUSES:
-            raise ValueError(f"status invalide : {self.status!r} (attendu : active, archived)")
+            raise _err.SaisieInvalide(f"status invalide : {self.status!r} (attendu : active, archived)")
         self.url = (self.url or "").strip()
         self.title = str(self.title or "").strip()
         self.text = str(self.text or "")
         if not self.title and not self.text.strip():
-            raise ValueError("une note doit avoir un titre ou un texte")
+            raise _err.SaisieInvalide("une note doit avoir un titre ou un texte")
         # Horodatages.
         created = to_utc(self.created_at)
         if created is None:
@@ -1181,7 +1190,7 @@ class Note:
         self.created_at = created
         raw_pub = self.published_at if self.published_at not in (None, "") else None
         if self.published_precision not in (None, "date", "datetime"):
-            raise ValueError("published_precision : 'date' ou 'datetime'")
+            raise _err.SaisieInvalide("published_precision : 'date' ou 'datetime'")
         if raw_pub is None:
             self.published_at = created
             if self.published_precision is None:
@@ -1210,13 +1219,13 @@ class Note:
         if self.conviction is not None and not (isinstance(self.conviction, float) and np.isnan(self.conviction)):
             c = int(round(float(self.conviction)))
             if not 1 <= c <= 5:
-                raise ValueError("conviction : entier de 1 à 5")
+                raise _err.SaisieInvalide("conviction : entier de 1 à 5")
             self.conviction = c
         else:
             self.conviction = None
         self.horizon_days = int(self.horizon_days if self.horizon_days not in (None, "") else DEFAULT_HORIZON_DAYS)
         if self.horizon_days <= 0:
-            raise ValueError("horizon_days doit être > 0")
+            raise _err.SaisieInvalide("horizon_days doit être > 0")
         self.tags = [str(t).strip() for t in _as_list(self.tags) if str(t).strip()]
         self.version = int(self.version or 1)
         if self.analysis is not None and isinstance(self.analysis, NoteAnalysis):

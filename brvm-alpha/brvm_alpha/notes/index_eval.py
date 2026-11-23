@@ -98,6 +98,7 @@ import numpy as np
 import pandas as pd
 
 from brvm_alpha import reference as ref
+from brvm_alpha import erreurs as _err
 
 from .model import (
     SECTOR_INDEX_NAMES,
@@ -294,7 +295,7 @@ class _Ctx:
         eq = _long(P.get("equities"), ("date", "symbol"))
         ix = _long(P.get("indices"), ("date", "index"))
         if eq is None or ix is None:
-            raise ValueError("panels : 'equities' et 'indices' sont nécessaires")
+            raise _err.DonneesAbsentes("panels : 'equities' et 'indices' sont nécessaires")
         mk = _long(P.get("market"))
         last = max(eq["date"].max(), ix["date"].max())
         if asof is None:
@@ -315,7 +316,7 @@ class _Ctx:
         self.calendar = calendar
         self.store = store
         if not len(self.eq):
-            raise ValueError(f"aucune donnée d'actions avant le {_date(day)}")
+            raise _err.SaisieInvalide(f"aucune donnée d'actions avant le {_date(day)}")
         self.date = pd.Timestamp(self.eq["date"].max())
         # Deux instants : date des cours (self.date) et instant de connaissance des notes. Mode
         # direct si ``notes_known_at`` est donné (notes appliquées à la séance qui suit le dernier
@@ -368,6 +369,8 @@ class _Ctx:
         try:
             n = shares_outstanding_panel(equities=snap[["date", "symbol"]], corporate_actions=ca, listed_only=False)
             out = n.iloc[-1] if len(n) else pd.Series(dtype=float)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # pragma: no cover - référence absente
             out = pd.Series({s: ref.shares_outstanding(s, d) for s in snap["symbol"]}, dtype=float)
         out = out.astype(float)
@@ -422,6 +425,8 @@ def _composition_from_store(store: Any, code: str, day: pd.Timestamp) -> tuple[l
         return None
     try:
         df = sg.notes_asof(store, day)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return None
     if not len(df):
@@ -566,6 +571,8 @@ def _tr_returns(ctx: _Ctx) -> pd.Series:
             pairs = dv.rename(columns={"ex_date": "date"})[["date", "symbol"]]
             try:
                 n = shares_outstanding_panel(equities=pairs, corporate_actions=ca, listed_only=False)
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # pragma: no cover
                 n = None
             if n is not None:
@@ -823,6 +830,8 @@ def _announced_dividends(ctx: _Ctx, t: pd.Timestamp, horizon: pd.Timestamp) -> d
         return {}
     try:
         df = ctx.notes_frame(t)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return {}
     out: dict[str, dict[str, Any]] = {}
@@ -1310,7 +1319,7 @@ def _codes(indices: Iterable[str] | None) -> list[str]:
     for i in indices:
         c = normalize_target(i) or str(i).upper()
         if not c.startswith("IDX:"):
-            raise ValueError(f"indice inconnu : {i!r}")
+            raise _err.CleInconnue(f"indice inconnu : {i!r}")
         out.append(c)
     return out
 
@@ -1373,7 +1382,7 @@ def evaluate_indices(
     w = dict(COMPONENT_WEIGHTS if weights is None else weights)
     unknown = set(w) - set(COMPONENT_WEIGHTS)
     if unknown:
-        raise ValueError(f"composantes inconnues : {', '.join(sorted(unknown))}")
+        raise _err.SaisieInvalide(f"composantes inconnues : {', '.join(sorted(unknown))}")
     ctx, con = _prepare(panels, store, asof, calendar, half_life, propagation, notes_known_at)
     comp_s, _ = level_series("IDX:BRVM-C", ctx)
     rows = []
@@ -1528,6 +1537,8 @@ def _calendar(ctx: _Ctx, code: str, members: list[str], div_table: pd.DataFrame,
     if ctx.store is not None:
         try:
             df = ctx.notes_frame(t)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:
             df = pd.DataFrame()
         for r in df.to_dict("records") if len(df) else []:
@@ -1592,14 +1603,14 @@ def index_dossier(
     ``reasons``.
     """
     code = normalize_target(index) or str(index).upper()
-    if not code.startswith("IDX:"):
-        raise ValueError(f"indice inconnu : {index!r}")
+    if not code.startswith("IDX:") or code not in INDEX_CODES:
+        raise _err.CleInconnue(f"indice inconnu : {index!r} (indices connus : {', '.join(INDEX_CODES)})")
     w = dict(COMPONENT_WEIGHTS if weights is None else weights)
     ctx, con = _prepare(panels, store, asof, calendar, half_life, propagation, notes_known_at)
     comp_s, _ = level_series("IDX:BRVM-C", ctx)
     ev = _evaluate_one(code, ctx, con, w, history_years, window_days, brvm30_method, comp_s)
     if ev is None:
-        raise ValueError(f"{code} : aucune donnée au {_date(ctx.asof)} (indice non publié à cette date)")
+        raise _err.SaisieInvalide(f"{code} : aucune donnée au {_date(ctx.asof)} (indice non publié à cette date)")
     row, members, s = ev.row, ev.members, ev.series
     t = pd.Timestamp(row["date"])
     capw = ev.extras["cap_weights"]

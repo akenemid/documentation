@@ -630,6 +630,8 @@ def panel_names(panel_dir: str | Path | None = None) -> dict[str, tuple[str, ...
         return dict(PANEL_NAMES_FALLBACK)
     try:
         df = pd.read_parquet(path, columns=["symbol", "name"])
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - fichier illisible
         return dict(PANEL_NAMES_FALLBACK)
     df = df.dropna()

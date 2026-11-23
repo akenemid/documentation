@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 
 from brvm_alpha import reference
+from brvm_alpha import erreurs as _err
 
 __all__ = ["BANNER", "STRESS_DEFAULTS", "portfolio_beta", "stress_tests"]
 
@@ -210,6 +211,8 @@ def _split_guard(panels: Mapping[str, Any], asof: pd.Timestamp, symbol: str, ret
     try:
         from brvm_alpha.backtest import engine
         from brvm_alpha.strategy import BrvmAlpha
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001 - stratégie indisponible : contrôle non vérifiable
         return None, f"stratégie indisponible ({exc.__class__.__name__})"
     view = engine.truncate_asof(dict(panels), asof)
@@ -226,6 +229,8 @@ def _split_guard(panels: Mapping[str, Any], asof: pd.Timestamp, symbol: str, ret
         return None, f"{symbol} absent du panel"
     try:
         rf = BrvmAlpha(notes=None, country_events=False).risk_flags(asof, mod, notes=None)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # noqa: BLE001
         return None, f"contrôle non évaluable ({exc.__class__.__name__} : {exc})"
     if "data_guard" not in rf.columns or symbol not in rf.index:
@@ -265,7 +270,7 @@ def stress_tests(weights: pd.Series | Mapping[str, float], panels: Mapping[str, 
     t = pd.Timestamp(asof)
     K = float(capital)
     if not K > 0:
-        raise ValueError("capital doit être > 0")
+        raise _err.SaisieInvalide("capital doit être > 0")
     w = pd.Series(weights, dtype=float).fillna(0.0)
     w.index = w.index.astype(str)
     w = w[w > 1e-12]

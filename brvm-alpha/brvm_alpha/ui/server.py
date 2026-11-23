@@ -65,6 +65,7 @@ from urllib.parse import parse_qs, urlsplit
 import pandas as pd
 
 from brvm_alpha import cli
+from brvm_alpha.erreurs import VerrouOccupe
 from brvm_alpha.ui import pages as P
 
 MAX_BODY_BYTES = 256 * 1024
@@ -1276,8 +1277,10 @@ def post_note_add(h: Handler, form: Mapping[str, list[str]]) -> None:
         store = h.server.services.notes_store()
         # Même note envoyée deux fois (double clic, retour arrière, envoi répété) : refusée, sinon elle
         # compterait double dans l'inclinaison et dans la composante « notes » des indices.
-        dup = note.note_id if note.note_id in store else store.find_duplicate(note)
-        if dup and v["forcer"] != "oui":
+        # Recherche du doublon et ajout sous le même verrou (deux envois simultanés n'écrivent qu'une note).
+        saved, cree, dup = store.add_unique(note, analyze=True, force=v["forcer"] == "oui")
+        if not cree:
+            dup = dup or saved.note_id
             _render_notes(h, 409, _note_filters({}), form_values={**v, "doublon": dup},
                           form_error=P.Safe(
                               f"note déjà enregistrée (identifiant {P.esc(dup[:12])} : mêmes cibles, titre, texte, avis "
@@ -1285,9 +1288,14 @@ def post_note_add(h: Handler, form: Mapping[str, list[str]]) -> None:
                               ". Pour l'enregistrer une seconde fois (elle comptera double), cocher « Enregistrer "
                               "quand même » puis renvoyer."))
             return
-        nid = store.add(note, analyze=True)
+        nid = saved.note_id
     except NoteConflictError as exc:
         _render_notes(h, 409, _note_filters({}), form_values=v, form_error=str(exc))
+        return
+    except VerrouOccupe as exc:  # une autre écriture tient le journal au-delà du délai
+        _render_notes(h, 503, _note_filters({}), form_values=v,
+                      form_error=f"journal des notes occupé par une autre écriture ({exc}) ; rien n'est ajouté, "
+                                 "renvoyer dans un instant.")
         return
     except ValueError as exc:
         _render_notes(h, 400, _note_filters({}), form_values=v, form_error=str(exc))

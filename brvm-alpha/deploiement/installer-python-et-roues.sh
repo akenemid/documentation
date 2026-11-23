@@ -12,14 +12,15 @@
 # Chemins absolus seulement.
 #
 # Étapes : (1) vérifie taille et sha256 de l'archive (deploiement/python-autonome.txt) et de chaque roue
-# (deploiement/roues-py311-x86_64.tsv), exactement les 16 roues, AVANT toute extraction ; (2) extrait
+# (deploiement/roues-py311-x86_64.tsv), exactement les 16 roues et rien d'autre, AVANT toute extraction ; (2) extrait
 # l'archive dans PREFIXE/python ; (3) installe les roues avec pip --no-index --find-links --require-hashes
 # --no-deps --target PREFIXE/lib (mandataire réseau volontairement invalide : tout accès réseau échouerait) ;
 # (4) écrit dans le site-packages de l'interpréteur le fichier rz_brvm_alpha.pth, qui liste PREFIXE/lib et
 # CODE (avec « python3 -I », PYTHONPATH est ignoré : c'est ce fichier qui rend brvm_alpha importable) ;
 # (5) contrôle final, qui fait échouer l'installation s'il ne répond pas : imports des paquets, puis
 # « PREFIXE/python/bin/python3.11 -I -B -m brvm_alpha etat --format json » en mode embarqué avec des
-# dossiers de données et de rapports temporaires : code 0 ou 1 ET un objet JSON portant la clé « bandeau ».
+# dossiers de données et de rapports temporaires (créés avant) : code 0 ou 1 ET un objet JSON portant la clé
+# « bandeau ».
 #
 # Codes de sortie (jamais 3) : 0 installé et vérifié ; 1 échec ; 2 mauvaise utilisation.
 # Performance passée ≠ garantie. Aucun gain n'est garanti.
@@ -74,10 +75,15 @@ fi
 ROUES=$DOSSIER/roues
 [ -d "$ROUES" ] || ROUES=$DOSSIER
 attendues=$(grep -v '^#' "$REF_ROUES" | cut -f 1 | sort)
-presentes=$(cd "$ROUES" && ls -1 -- *.whl 2>/dev/null | sort || true)
+# Tout ce que contient le dossier des roues (fichiers cachés compris), pas seulement les *.whl : un fichier de
+# plus (sdist, sitecustomize.py…) est refusé, même s'il serait sans effet (--only-binary, --require-hashes).
+if [ "$ROUES" = "$DOSSIER" ]; then
+    attendues=$(printf '%s\n%s\n' "$attendues" "$ARCHIVE" | sort)
+fi
+presentes=$(cd "$ROUES" && ls -1A | sort)
 if [ "$attendues" != "$presentes" ]; then
-    printf 'Roues attendues :\n%s\nRoues présentes :\n%s\n' "$attendues" "$presentes" >&2
-    echec "$ROUES ne contient pas exactement les 16 roues de la liste de référence."
+    printf 'Fichiers attendus :\n%s\nFichiers présents :\n%s\n' "$attendues" "$presentes" >&2
+    echec "$ROUES ne contient pas exactement les 16 roues de la liste de référence (et rien d'autre)."
 fi
 TMPREQ=$(mktemp)
 CONTROLE=""
@@ -128,6 +134,8 @@ printf 'Fichier %s/rz_brvm_alpha.pth : %s et %s.\n' "$SITE" "$LIB" "$CODE"
 "$PY" -I -B -c "import pandas, numpy, scipy, pyarrow, yaml, requests, bs4, lxml, dateutil, certifi, idna, urllib3, \
 charset_normalizer, soupsieve, typing_extensions, tzdata, brvm_alpha" || echec "un paquet ne s'importe pas."
 CONTROLE=$(mktemp -d)
+# Le moteur ne crée jamais ses dossiers en mode embarqué (code 8 s'ils manquent) : le module Odoo les crée.
+mkdir "$CONTROLE/donnees" "$CONTROLE/rapports"
 code=0
 env -i PATH="$PATH" HOME="$CONTROLE" LANG=C.UTF-8 BRVM_ALPHA_EMBARQUE=1 BRVM_ALPHA_DONNEES="$CONTROLE/donnees" \
     BRVM_ALPHA_RAPPORTS="$CONTROLE/rapports" "$PY" -I -B -m brvm_alpha etat --format json \

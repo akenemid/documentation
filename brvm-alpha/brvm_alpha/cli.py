@@ -47,10 +47,12 @@ des estimations sous hypothèses (coûts, exécution) : **Performance passée �
 n'est garanti.**
 
 Codes de sortie (toutes les commandes, :mod:`brvm_alpha.erreurs` ; le code 3 n'est **jamais** rendu) :
-0 succès ; 1 données absentes, historique non prêt ou quota de requêtes atteint ; 2 saisie invalide ou refus
-(erreurs d'arguments comprises) ; 4 verrou occupé ; 5 accès refusé ou réseau (HTTP 403 ou 429, liste blanche,
-délai dépassé) ; 6 mémoire insuffisante ; 7 erreur interne ; 8 configuration manquante ou invalide (mode
-embarqué sans dossiers, pdftotext absent) ; 130 interruption (Ctrl+C).
+0 succès ; 1 données absentes ou illisibles (panel abîmé, journal des notes illisible), historique non prêt ou
+quota de requêtes atteint ; 2 saisie invalide ou refus (erreurs d'arguments comprises ; seulement les saisies) ;
+4 verrou occupé ; 5 accès refusé ou réseau (HTTP 403 ou 429, liste blanche, délai dépassé) ; 6 mémoire
+insuffisante ; 7 erreur interne ; 8 configuration manquante ou invalide (mode embarqué sans dossiers existants,
+pdftotext absent, paquet manquant, dossier non inscriptible) ; 130 interruption (Ctrl+C, signal TERM). Le
+démarrage (:mod:`brvm_alpha.demarrage`) tient la même table avant l'import de pandas.
 
 Sortie JSON (``--format json``) : la sortie standard porte **exactement un objet JSON**, erreur comprise :
 ``{"ok": true, …, "bandeau": …}`` ou ``{"ok": false, "code": N, "erreur": "<type>", "message": "…",
@@ -58,7 +60,7 @@ Sortie JSON (``--format json``) : la sortie standard porte **exactement un objet
 
 Mode embarqué (:func:`brvm_alpha.paths.est_embarque`) : ``BRVM_ALPHA_DONNEES`` et ``BRVM_ALPHA_RAPPORTS``
 obligatoires et absolus (code 8 sinon, avant toute écriture) ; chemins relatifs des options résolus depuis
-ces dossiers ; ``validate`` et ``backtest`` refusés (code 8) ; ``recommend`` et ``report`` refusés sur un
+ces dossiers ; ``validate``, ``backtest`` et ``serve`` refusés (code 8) ; ``recommend`` et ``report`` refusés sur un
 historique incomplet (code 1) sauf ``--accepter-historique-incomplet``.
 """
 
@@ -82,7 +84,7 @@ from typing import Any
 
 import pandas as pd
 
-from brvm_alpha import erreurs, paths
+from brvm_alpha import demarrage, erreurs, paths
 from brvm_alpha.erreurs import ConfigurationError, DonneesAbsentes, HistoriqueIncomplet, SaisieInvalide
 
 BANNER = "Performance passée ≠ garantie. Aucun gain n'est garanti."
@@ -160,28 +162,35 @@ class FrArgumentParser(argparse.ArgumentParser):
         text = _fr_error(message)
         if _FORMAT_DEMANDE.get() == "json":
             sys.stderr.write(f"{self.prog} : erreur : {text}\n")
-            sys.stdout.write(json.dumps({"ok": False, "code": erreurs.SAISIE_INVALIDE, "erreur": "saisie_invalide",
-                                         "message": f"erreur : {text}", "bandeau": BANNER}, ensure_ascii=False,
-                                        indent=1) + "\n")
-            sys.stdout.flush()
+            if not demarrage.json_emis():
+                sys.stdout.write(json.dumps({"ok": False, "code": erreurs.SAISIE_INVALIDE, "erreur": "saisie_invalide",
+                                             "message": f"erreur : {text}", "bandeau": BANNER}, ensure_ascii=False,
+                                            indent=1) + "\n")
+                sys.stdout.flush()
+                demarrage.marquer_json_emis()
             raise SystemExit(erreurs.SAISIE_INVALIDE)
         self.exit(erreurs.SAISIE_INVALIDE, f"{self.prog} : erreur : {text}\n")
+
+    def print_help(self, file: Any = None) -> None:
+        """Aide ; avec ``--format json`` : le texte sur la sortie d'erreur et ``{"ok": true, "aide": …, "bandeau"}``
+        sur la sortie standard (toujours exactement un objet JSON)."""
+        if _FORMAT_DEMANDE.get() != "json" or file is not None:
+            super().print_help(file)
+            return
+        text = self.format_help()
+        sys.stderr.write(text)
+        if not demarrage.json_emis():
+            sys.stdout.write(json.dumps({"ok": True, "aide": text, "bandeau": BANNER}, ensure_ascii=False, indent=1)
+                             + "\n")
+            sys.stdout.flush()
+            demarrage.marquer_json_emis()
 
 
 #: Format demandé sur la ligne de commande, relevé AVANT l'analyse des arguments (erreurs d'argparse en JSON).
 _FORMAT_DEMANDE: contextvars.ContextVar[str | None] = contextvars.ContextVar("brvm_alpha_format", default=None)
 
 
-def json_demande(argv: Sequence[str]) -> bool:
-    """``--format json`` (ou ``--format=json``, abréviation comprise) figure-t-il dans ``argv`` ?"""
-    toks = [str(a) for a in argv]
-    for i, tok in enumerate(toks):
-        name, eq, val = tok.partition("=")
-        if not (len(name) >= 4 and "--format".startswith(name)):
-            continue
-        if (eq and val == "json") or (not eq and i + 1 < len(toks) and toks[i + 1] == "json"):
-            return True
-    return False
+json_demande = demarrage.json_demande
 
 
 class _SortieJson:
@@ -212,8 +221,8 @@ def parse_date(value: Any) -> pd.Timestamp:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
             return pd.Timestamp(s)
     except ValueError as exc:
-        raise ValueError(f"date invalide : {s!r}") from exc
-    raise ValueError(f"date invalide : {s!r} (attendu AAAA-MM-JJ ou JJ/MM/AAAA)")
+        raise SaisieInvalide(f"date invalide : {s!r}") from exc
+    raise SaisieInvalide(f"date invalide : {s!r} (attendu AAAA-MM-JJ ou JJ/MM/AAAA)")
 
 
 def parse_instant(value: Any) -> pd.Timestamp:
@@ -226,10 +235,10 @@ def parse_instant(value: Any) -> pd.Timestamp:
 
     s = str(value or "").strip()
     if not s:
-        raise ValueError("instant vide (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)")
+        raise SaisieInvalide("instant vide (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)")
     if not re.fullmatch(r"(\d{4}-\d{2}-\d{2}|\d{1,2}[/.]\d{1,2}[/.]\d{4})([T ]+\d{1,2}[:h]\d{2}(:\d{2})?)?\s*(Z|UTC)?", s,
                         re.I):
-        raise ValueError(f"instant invalide : {s!r} (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)")
+        raise SaisieInvalide(f"instant invalide : {s!r} (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)")
     txt = re.sub(r"\s*(Z|UTC)$", "", s, flags=re.I)
     m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})[T ]+(\d{1,2})[:h](\d{2})(?::(\d{2}))?", txt)
     try:
@@ -237,9 +246,9 @@ def parse_instant(value: Any) -> pd.Timestamp:
             return pd.Timestamp(f"{m.group(1)} {int(m.group(2)):02d}:{m.group(3)}:{m.group(4) or '00'}", tz="UTC")
         ts = asof_utc(txt.replace("T", " "))
     except (ValueError, TypeError) as exc:
-        raise ValueError(f"instant invalide : {s!r} (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)") from exc
+        raise SaisieInvalide(f"instant invalide : {s!r} (attendu AAAA-MM-JJ ou AAAA-MM-JJTHH:MM, en UTC)") from exc
     if ts is None:
-        raise ValueError(f"instant invalide : {s!r}")
+        raise SaisieInvalide(f"instant invalide : {s!r}")
     return ts
 
 
@@ -266,7 +275,7 @@ def notes_instant(date: Any, notes_au: Any = None, panel_dir: str | Path | None 
             # seule (fin de la journée) donnée pour aujourd'hui vaut « maintenant ».
             if t_given.normalize() == real.normalize() and t_given.time() >= dt.time(23, 59):
                 return real
-            raise ValueError(f"--notes-au {t_given:%d/%m/%Y %H:%M} UTC est dans le futur (il est {real:%d/%m/%Y %H:%M} "
+            raise SaisieInvalide(f"--notes-au {t_given:%d/%m/%Y %H:%M} UTC est dans le futur (il est {real:%d/%m/%Y %H:%M} "
                              "UTC) : l'instant de connaissance des notes ne peut pas dépasser l'heure réelle")
         return t_given
     last_s = pd.Timestamp(last).normalize() if last is not None else last_session(panel_dir)
@@ -284,14 +293,14 @@ def parse_capital(value: Any) -> float:
     s = s.replace("fcfa", "").replace("xof", "")
     m = re.fullmatch(r"(\d+(?:[.,]\d+)?)(k|m|md|mds|mrd|g)?", s)
     if not m:
-        raise ValueError(f"montant invalide : {value!r} (exemples : 10000000, 10M, 1,5Md)")
+        raise SaisieInvalide(f"montant invalide : {value!r} (exemples : 10000000, 10M, 1,5Md)")
     x = float(m.group(1).replace(",", "."))
     mult = {None: 1.0, "k": 1e3, "m": 1e6, "md": 1e9, "mds": 1e9, "mrd": 1e9, "g": 1e9}[m.group(2)]
     x *= mult
     if not math.isfinite(x) or x <= 0:
-        raise ValueError("le montant doit être strictement positif")
+        raise SaisieInvalide("le montant doit être strictement positif")
     if x > 1e13:
-        raise ValueError("montant hors de portée (plus de 10 000 milliards de FCFA)")
+        raise SaisieInvalide("montant hors de portée (plus de 10 000 milliards de FCFA)")
     return x
 
 
@@ -312,7 +321,7 @@ def parse_holdings(text: str) -> dict[str, int]:
             continue
         parts = [p.strip() for p in re.split(r"[;,\t]", s) if p.strip()]
         if len(parts) < 2:
-            raise ValueError(f"ligne {i} : « symbole,titres » attendu, lu {s[:40]!r}")
+            raise SaisieInvalide(f"ligne {i} : « symbole,titres » attendu, lu {s[:40]!r}")
         sym = parts[0].upper()
         qty_s = re.sub(r"[\s\u202f\xa0]", "", parts[1])
         if not seen_data and parts[0].strip().lower() in _HOLDINGS_HEADER:
@@ -320,16 +329,28 @@ def parse_holdings(text: str) -> dict[str, int]:
             continue  # en-tête « symbole,titres »
         seen_data = True
         if not re.fullmatch(r"[A-Z0-9]{2,8}", sym):
-            raise ValueError(f"ligne {i} : symbole invalide {parts[0][:20]!r}")
+            raise SaisieInvalide(f"ligne {i} : symbole invalide {parts[0][:20]!r}")
         if not re.fullmatch(r"\d+", qty_s):
-            raise ValueError(f"ligne {i} : nombre de titres invalide {parts[1][:20]!r} (entier positif attendu)")
+            raise SaisieInvalide(f"ligne {i} : nombre de titres invalide {parts[1][:20]!r} (entier positif attendu)")
         out[sym] = out.get(sym, 0) + int(qty_s)
     return {k: v for k, v in out.items() if v > 0}
 
 
+def _lire_fichier_saisi(path: str | Path, what: str) -> str:
+    """Texte d'un fichier donné par l'utilisateur ; illisible (absent, dossier, droits, pas de l'UTF-8) :
+    :class:`SaisieInvalide` (code 2), jamais une erreur interne."""
+    p = Path(path)
+    try:
+        return p.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        raise SaisieInvalide(f"{what} illisible : {p} n'est pas un texte UTF-8") from None
+    except OSError as exc:
+        raise SaisieInvalide(f"{what} illisible : {p} ({exc.strerror or exc})") from None
+
+
 def read_holdings(path: str | Path) -> dict[str, int]:
     """Lit un fichier CSV « symbole,titres » (voir :func:`parse_holdings`)."""
-    return parse_holdings(Path(path).read_text(encoding="utf-8-sig"))
+    return parse_holdings(_lire_fichier_saisi(path, "portefeuille"))
 
 
 def _date_arg(value: str) -> pd.Timestamp:
@@ -371,6 +392,41 @@ def _positive_int(value: str) -> int:
     if n <= 0:
         raise argparse.ArgumentTypeError("entier strictement positif attendu")
     return n
+
+
+def _periode_arg(value: str) -> tuple[dt.date, dt.date]:
+    """``AAAA-MM-JJ`` ou ``AAAA-MM-JJ..AAAA-MM-JJ`` (``update --rouvrir``) : ``(premier jour, dernier jour)``."""
+    raw = str(value or "").strip()
+    a, sep, b = raw.partition("..")
+    try:
+        first = dt.date.fromisoformat(a.strip())
+        last = dt.date.fromisoformat(b.strip()) if sep else first
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"période invalide : {value!r} (AAAA-MM-JJ ou AAAA-MM-JJ..AAAA-MM-JJ)") from None
+    if last < first:
+        raise argparse.ArgumentTypeError(f"période invalide : {value!r} (la fin précède le début)")
+    if (last - first).days > 3700:
+        raise argparse.ArgumentTypeError(f"période trop longue : {value!r} (dix ans au plus)")
+    return first, last
+
+
+#: Bornes de ``update --delai`` (secondes) : le ``Crawl-delay: 10`` de www.brvm.org, une heure au plus.
+DELAI_MIN_S, DELAI_MAX_S = 10.0, 3600.0
+
+
+def _delai_arg(value: str) -> float:
+    """``--delai`` : nombre **fini** de :data:`DELAI_MIN_S` à :data:`DELAI_MAX_S` secondes (``nan`` et ``inf`` refusés :
+    ``max(nan, 10)`` vaut ``nan`` et supprimait toute attente entre deux requêtes)."""
+    try:
+        x = float(str(value).strip().replace(",", "."))
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"délai invalide : {value!r} (nombre de secondes attendu, par exemple 10)") from None
+    if not math.isfinite(x) or not DELAI_MIN_S <= x <= DELAI_MAX_S:
+        raise argparse.ArgumentTypeError(
+            f"délai refusé : {value!r} (nombre fini de {DELAI_MIN_S:.0f} à {DELAI_MAX_S:.0f} secondes ; www.brvm.org "
+            "demande 10 s au moins entre deux requêtes)")
+    return x
 
 
 def _nonneg_int(value: str) -> int:
@@ -428,7 +484,7 @@ def parse_prefix(value: Any) -> str:
     bad = (len(s) > 200 or not _PREFIX_RE.fullmatch(s) or ".." in s
            or any(seg == "." for seg in s.split("/")))
     if bad:
-        raise ValueError(f"préfixe d'adresse invalide : {s[:60]!r} (attendu un chemin comme /rz_brvm_alpha/ui : il "
+        raise SaisieInvalide(f"préfixe d'adresse invalide : {s[:60]!r} (attendu un chemin comme /rz_brvm_alpha/ui : il "
                          "commence par /, ne finit pas par /, sans //, sans .., sans ? ni # ; lettres non accentuées, "
                          "chiffres, - _ . ~ seulement ; pour aucun préfixe, laisser vide)")
     return s
@@ -535,6 +591,7 @@ def emit_json(obj: dict[str, Any], *, ok: bool | None = True) -> None:
     st.out.write(text + "\n")
     st.out.flush()
     st.emis = True
+    demarrage.marquer_json_emis()
 
 
 def emit_echec(code: int, message: str, *, erreur: str | None = None, **extra: Any) -> int:
@@ -557,12 +614,9 @@ def _json(args: argparse.Namespace) -> bool:
 
 
 def _code_sur(code: Any) -> int:
-    """Code de sortie admis : un entier, jamais 3 (il arrête le maître Odoo) ; sinon 7 (erreur interne)."""
-    try:
-        c = int(code)
-    except (TypeError, ValueError):
-        return erreurs.INTERNE
-    return erreurs.INTERNE if c == erreurs.CODE_INTERDIT else c
+    """Code de sortie admis : un code de la table, jamais 3 ni un code congru à 3 modulo 256 ; sinon 7
+    (:func:`brvm_alpha.erreurs.code_sur`)."""
+    return erreurs.code_sur(code)
 
 
 def _table(rows: list[list[str]], headers: list[str]) -> str:
@@ -600,7 +654,7 @@ def notes_root_arg(root: Any) -> Any:
     if root in (None, ""):
         return root
     if not Path(root).is_dir():
-        raise ValueError(f"journal des notes introuvable : {root} (dossier inexistant ; vérifier --racine. Un "
+        raise SaisieInvalide(f"journal des notes introuvable : {root} (dossier inexistant ; vérifier --racine. Un "
                          "nouveau journal se crée avec « notes add --racine … » ou « notes research --racine … »)")
     return root
 
@@ -618,6 +672,8 @@ def panel_warning(panel_dir: str | Path | None, date: Any = None, *, now: Any = 
         if last is None or (date is not None and pd.Timestamp(date).normalize() < last):
             return None
         return rec.stale_panel_message(last, now_utc() if now is None else now, orders=orders)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # un contrôle d'affichage ne fait jamais échouer une commande
         return None
 
@@ -651,6 +707,8 @@ def history_state(panel_dir: Any = None, boc_dir: Any = None, now: Any = None) -
         panel = etat.panel_state(pdir, t)
         bulletins = etat.bulletins_state(_boc_dir_for(panel_dir, boc_dir), t.date())
         complete, reason = etat.readiness(panel, bulletins)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # relevé illisible : réputé incomplet
         complete, reason, bulletins = False, f"état de l'historique illisible ({type(exc).__name__} : {exc})", {}
     out["complet"] = bool(complete)
@@ -659,8 +717,13 @@ def history_state(panel_dir: Any = None, boc_dir: Any = None, now: Any = None) -
         return out
     if not bulletins.get("historique_complet"):
         n = bulletins.get("jours_manquants")
-        detail = (f"{fr_num(n, 0)} jour(s) ouvré(s) sans bulletin ni marqueur depuis le 02/01/2017" if n is not None
+        douteux = int(bulletins.get("sans_bulletin_lisible") or 0)
+        detail = (f"{fr_num(n, 0)} jour(s) ouvré(s) sans bulletin lisible depuis le 02/01/2017" if n is not None
                   else "bulletins depuis le 02/01/2017 illisibles ou absents")
+        if n is not None and douteux:
+            nxt = bulletins.get("prochaine_relance")
+            detail += (f", dont {fr_num(douteux, 0)} au marqueur à réessayer (réponse sans PDF lisible"
+                       + (f", prochaine relance le {fr_date(nxt)}" if nxt else "") + ")")
     else:
         detail = reason or "le panel ne couvre pas les bulletins"
     out["raison"] = detail
@@ -711,6 +774,8 @@ def last_session(panel_dir: str | Path | None = None) -> pd.Timestamp | None:
             d = pd.read_parquet(pdir / "equities.parquet", columns=["date"])["date"]
             if len(d):
                 return pd.Timestamp(d.max()).normalize()
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # panel illisible : la commande le signalera
         return None
     return None
@@ -747,12 +812,12 @@ def resolve_note_id(store: Any, prefix: str) -> str:
     """Identifiant complet à partir d'un préfixe unique (``KeyError`` sinon)."""
     p = str(prefix or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{4,64}", p):
-        raise KeyError(f"identifiant invalide : {prefix!r} (au moins 4 caractères hexadécimaux)")
+        raise erreurs.CleInconnue(f"identifiant invalide : {prefix!r} (au moins 4 caractères hexadécimaux)")
     hits = [i for i in store.ids() if str(i).lower().startswith(p)]
     if not hits:
-        raise KeyError(f"aucune note d'identifiant {prefix!r}")
+        raise erreurs.CleInconnue(f"aucune note d'identifiant {prefix!r}")
     if len(hits) > 1:
-        raise KeyError(f"identifiant ambigu {prefix!r} : {len(hits)} notes ; donner plus de caractères")
+        raise erreurs.CleInconnue(f"identifiant ambigu {prefix!r} : {len(hits)} notes ; donner plus de caractères")
     return hits[0]
 
 
@@ -830,11 +895,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="premier jour cherché (défaut : 02/01/2017, début de l'historique)")
     up.add_argument("--jusqu-au", dest="end", type=_date_arg, default=None, metavar="AAAA-MM-JJ",
                     help="dernier jour cherché (défaut : aujourd'hui)")
-    up.add_argument("--delai", type=float, default=10.0, metavar="S",
-                    help="secondes entre deux requêtes (défaut et minimum : 10)")
+    up.add_argument("--delai", type=_delai_arg, default=10.0, metavar="S",
+                    help="secondes entre deux requêtes : nombre de 10 (défaut et minimum) à 3600")
     up.add_argument("--max-requetes", type=_positive_int, default=200, metavar="N",
                     help="quota de requêtes de la session (défaut : 200)")
     up.add_argument("--simulation", action="store_true", help="liste les jours à chercher, sans aucune requête")
+    up.add_argument("--rouvrir", type=_periode_arg, default=None, metavar="AAAA-MM-JJ[..AAAA-MM-JJ]",
+                    help="décision explicite : retire les marqueurs « sans bulletin » (même définitifs) de ce jour ou "
+                         "de cette période, qui sera cherchée de nouveau (avec --simulation : les compte seulement)")
     up.add_argument("--sans-panel", action="store_true",
                     help="ne reconstruit pas le panel, même si de nouveaux bulletins arrivent (« panel » à part)")
     up.add_argument("--workers", type=_positive_int, default=None, metavar="N",
@@ -1243,8 +1311,20 @@ def _cmd_update(args: argparse.Namespace) -> int:
     today = dt.date.today()
     first = args.start.date() if args.start is not None else None
     last = args.end.date() if args.end is not None else None
+    rouverts: list[str] = []
+    if getattr(args, "rouvrir", None):
+        r0, r1 = args.rouvrir
+        days_r = sorted(d for d in boc_download.weekdays(r0, r1) if boc_download.marker_path(boc_dir, d).exists())
+        if args.simulation:
+            rouverts = [d.isoformat() for d in days_r]
+            print(f"Simulation : {len(days_r)} marqueur(s) « sans bulletin » seraient retirés du {r0:%d/%m/%Y} au "
+                  f"{r1:%d/%m/%Y}.")
+        else:
+            rouverts = [d.isoformat() for d in days_r if boc_download.reouvrir(boc_dir, d)]
+            print(f"{len(rouverts)} marqueur(s) « sans bulletin » retiré(s) du {r0:%d/%m/%Y} au {r1:%d/%m/%Y} : ces "
+                  "jours seront cherchés de nouveau.")
     start, end, days = update_window(boc_dir, first, last, today)
-    delay = max(float(args.delai), boc_download.MIN_DELAY_S)
+    delay = boc_download.delai_poli(args.delai)
     print(f"BOC manquants du {start:%d/%m/%Y} au {end:%d/%m/%Y} : {len(days)} jour(s) ouvré(s) à chercher "
           f"(dossier {boc_dir}).")
     print(f"Politesse : robots.txt respecté, {delay:.0f} s au moins entre deux requêtes, arrêt au premier HTTP "
@@ -1260,7 +1340,8 @@ def _cmd_update(args: argparse.Namespace) -> int:
         print("Simulation : aucune requête envoyée.")
         if _json(args):
             emit_json({"simulation": True, "debut": start, "fin": end, "jours_a_chercher": len(days),
-                       "jours": sorted(days), "dossier": str(boc_dir), "quota": int(args.max_requetes)})
+                       "jours": sorted(days), "dossier": str(boc_dir), "quota": int(args.max_requetes),
+                       "marqueurs_rouverts": rouverts})
         return 0
     cache_dir = rs.DEFAULT_NOTES_DIR / "cache"
     blocked = rs.blocked_hosts(cache_dir).get("www.brvm.org")
@@ -1291,11 +1372,13 @@ def _cmd_update(args: argparse.Namespace) -> int:
     elif not args.sans_panel:
         print("Aucun nouveau BOC : panel inchangé (python -m brvm_alpha panel pour le reconstruire).")
     if _json(args):
-        out = {"simulation": False, **bilan.to_dict(), "dossier": str(boc_dir)}
+        out = {"simulation": False, **bilan.to_dict(), "dossier": str(boc_dir), "marqueurs_rouverts": rouverts}
         try:  # marqueurs « sans bulletin » de la fenêtre, après le téléchargement (lecture du disque seule)
             st = boc_download.etat_dossier(boc_dir, bilan.debut, bilan.fin, today)
             out["marqueurs"] = {"definitifs": st.marques_definitifs, "a_reessayer": st.marques_non_definitifs,
                                 "bulletins_en_cache": st.en_cache}
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # information seulement
             out["marqueurs"] = None
         if code:
@@ -1322,8 +1405,15 @@ def _cmd_live(args: argparse.Namespace) -> int:
     try:
         res = sess.get(live.LIVE_URL, max_age_s=60)
     except rs.ResearchError as exc:
-        _say(f"échec : {exc}")
-        return 1
+        # Code de la table : 5 pour un site bloqué, un refus ou un réseau en défaut ; 1 pour le quota ou une page
+        # absente du cache hors ligne (avant : toujours 1, « données absentes »).
+        code = erreurs.code_retour(exc) if isinstance(exc, erreurs.ErreurMoteur) else erreurs.DONNEES_ABSENTES
+        prefix = "arrêt" if code == erreurs.ACCES_REFUSE else "échec"
+        if args.format == "json":
+            _say(f"{prefix} : {exc}")
+            return emit_echec(code, f"{prefix} : {exc}")
+        _say(f"{prefix} : {exc}")
+        return code
     if res.status != 200:
         _say(f"échec : HTTP {res.status} sur {live.LIVE_URL}")
         return 1
@@ -1380,6 +1470,8 @@ def notes_status(store: Any, asof: Any, known_at: Any = None, *, calendar: Any =
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             return sg.notes_in_force(store, asof, known_at=known_at, calendar=calendar, equities=equities)
+    except (MemoryError, erreurs.JournalIllisible):  # mémoire (6) ; journal présent mais illisible (1)
+        raise
     except Exception as exc:  # la synthèse ne doit jamais faire échouer une commande
         return {"line": f"Notes de l'analyste : synthèse indisponible ({exc.__class__.__name__} : {exc}).",
                 "erreur": str(exc)}
@@ -1504,6 +1596,8 @@ def run_enrich(store: Any, *, max_docs: int, targets: Sequence[str] | None = Non
     if isinstance(rep, dict) and not rep.get("n_candidates"):
         try:  # « tout est déjà lu » et « il n'y a rien à lire » ne sont pas le même constat
             rep = {**rep, "journal_vide": len(store) == 0}
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:
             pass
     return (rep if isinstance(rep, dict) else None), format_enrich_report(rep)
@@ -1512,10 +1606,10 @@ def run_enrich(store: Any, *, max_docs: int, targets: Sequence[str] | None = Non
 def _read_text_file(path: str) -> str:
     p = Path(path)
     if not p.is_file():
-        raise ValueError(f"fichier introuvable : {path}")
+        raise SaisieInvalide(f"fichier introuvable : {path}")
     if p.stat().st_size > 2_000_000:
-        raise ValueError("fichier trop volumineux (plus de 2 Mo)")
-    return p.read_text(encoding="utf-8-sig")
+        raise SaisieInvalide("fichier trop volumineux (plus de 2 Mo)")
+    return _lire_fichier_saisi(p, "fichier")
 
 
 def _split_targets(values: Sequence[str] | None) -> list[str]:
@@ -1546,18 +1640,29 @@ def make_manual_note(*, targets: Sequence[str] | None = None, title: str = "", t
     title = " ".join(str(title or "").split())
     text = str(text or "")
     if not title and not text.strip():
-        raise ValueError("une note doit avoir un titre ou un texte")
+        raise SaisieInvalide("une note doit avoir un titre ou un texte")
     if len(title) > 500:
-        raise ValueError("titre trop long (500 caractères au plus)")
+        raise SaisieInvalide("titre trop long (500 caractères au plus)")
+    given = _split_targets(targets)
+    if targets is not None and any(str(t).strip() == "" for t in targets) and not given:
+        raise SaisieInvalide("cible vide : donner un titre de la cote (SNTS), un indice (IDX:BRVM-30), un pays "
+                             "(PAYS:CI), un secteur ou MARCHE")
+    from brvm_alpha.notes.model import normalize_target
+
+    unknown = [t for t in given if normalize_target(t) is None]
+    if given and len(unknown) == len(given):  # aucune cible reconnue : la note n'aurait aucun effet
+        raise SaisieInvalide(f"cible inconnue : {', '.join(unknown)} (attendu : titre de la cote comme SNTS, indice "
+                             "comme IDX:BRVM-30, pays comme PAYS:CI, secteur, thème ou MARCHE) ; la note n'aurait "
+                             "aucun effet")
     url = str(url or "").strip()
     if url and not re.match(r"^https?://[^\s<>\"']+$", url, re.I):
-        raise ValueError("adresse invalide : http:// ou https:// attendu")
+        raise SaisieInvalide("adresse invalide : http:// ou https:// attendu")
     src = "manual"
     tag_list = [str(t).strip() for t in (tags or []) if str(t).strip()]
     if veto and not any(t.lower() == "veto" for t in tag_list):
         tag_list.append("veto")
     if any(t.lower() == "veto" for t in tag_list) and not _split_targets(targets):
-        raise ValueError("veto : donner au moins une cible (le titre à exclure), par exemple --cible ORAC")
+        raise SaisieInvalide("veto : donner au moins une cible (le titre à exclure), par exemple --cible ORAC")
     s = str(source or "").strip()
     if s:
         if s.lower() in SOURCES:
@@ -1573,16 +1678,16 @@ def make_manual_note(*, targets: Sequence[str] | None = None, title: str = "", t
             try:
                 ts = pd.Timestamp(p.replace("h", ":"))
             except (TypeError, ValueError) as exc:
-                raise ValueError(f"date de publication invalide : {p!r}") from exc
+                raise SaisieInvalide(f"date de publication invalide : {p!r}") from exc
             pub = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
         pub_ts = pd.Timestamp(pub)
         pub_naive = pub_ts.tz_convert("UTC").tz_localize(None) if pub_ts.tzinfo is not None else pub_ts
         if pub_naive > pd.Timestamp.now(tz="UTC").tz_localize(None) + pd.Timedelta(days=1):
-            raise ValueError("date de publication dans le futur : une note n'agit qu'une fois publiée")
+            raise SaisieInvalide("date de publication dans le futur : une note n'agit qu'une fois publiée")
     if conviction is not None and not 1 <= int(conviction) <= 5:
-        raise ValueError("conviction : entier de 1 à 5")
+        raise SaisieInvalide("conviction : entier de 1 à 5")
     if horizon is not None and int(horizon) <= 0:
-        raise ValueError("horizon : nombre de séances > 0")
+        raise SaisieInvalide("horizon : nombre de séances > 0")
     kw: dict[str, Any] = dict(author="analyste", source=src, url=url, title=title, text=text,
                               targets=_split_targets(targets), event_type=event_type or None, stance=stance or None,
                               conviction=conviction, tags=tag_list, published_at=pub)
@@ -1695,6 +1800,8 @@ def note_effect(note: Any, panel_dir: Any = None) -> dict[str, Any]:
                        ligne=(f"Prise en compte : à partir de la séance du {fr_date(fts)} (première séance négociable "
                               f"de la note) ; la décision en direct porte aujourd'hui sur la séance du "
                               f"{fr_date(m.session)}."))
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # information seulement
         out["ligne"] = f"Prise en compte : non calculée ({exc.__class__.__name__})."
     return out
@@ -1755,8 +1862,11 @@ def _cmd_notes(args: argparse.Namespace) -> int:
             _say(duplicate_message(dup) + " Pour l'enregistrer quand même : --forcer.")
         an = saved.analysis or {}
         if _json(args):
-            emit_json({"bandeau": BANNER, "note_id": saved.note_id, "cree": bool(created),
-                       "doublon_id": None if created else dup, "deja_enregistree": not created,
+            # note_id : la note AU JOURNAL (créée, ou déjà là) ; note_id_saisie : l'identifiant de la saisie ;
+            # meme_identifiant : vrai si les deux sont égaux pour un doublon (même contenu ET même date de
+            # publication), faux pour un doublon de contenu publié à une autre date.
+            emit_json({"bandeau": BANNER, "note_id": saved.note_id, "note_id_saisie": note.note_id,
+                       "cree": bool(created), "doublon_id": None if created else dup, "deja_enregistree": not created,
                        "meme_identifiant": bool(same_id), "score": an.get("score"),
                        "filtres": list(an.get("risk_flags") or []), "veto": is_veto_note(saved),
                        "premiere_seance_negociable": saved.first_tradable_session,
@@ -1857,9 +1967,12 @@ def _cmd_notes(args: argparse.Namespace) -> int:
                 print(f"  … et {len(res) - 20} autre(s) (python -m brvm_alpha notes list).")
             rep: dict[str, Any] | None = None
             lines: list[str] = []
-            if n_pdf > 0 and res.report.stopped and not args.hors_ligne:
-                lines = ["Lecture du contenu des documents : non lancée (la collecte a été arrêtée ; aucune autre "
-                         "requête)."]
+            bilan = res.report.to_dict()
+            if n_pdf > 0 and bilan["arret"] and not args.hors_ligne:
+                # Arrêt de la collecte (refus, serveur, politique ou quota atteint) : aucune requête de plus, pas
+                # même pour lire les documents (avant : 25 requêtes de quota, puis 4 de lecture).
+                lines = [f"Lecture du contenu des documents : non lancée (collecte arrêtée : {bilan['motif_arret']} ; "
+                         "aucune autre requête)."]
             elif n_pdf > 0:
                 print(f"Lecture du contenu d'au plus {n_pdf} document(s) récent(s)"
                       f"{' (hors ligne : cache seulement)' if args.hors_ligne else ''}…", flush=True)
@@ -2106,10 +2219,10 @@ def explain_symbol(symbol: str, asof: Any, *, variant: str | None = None, capita
     from brvm_alpha.strategy import BrvmAlpha, build_panels
 
     if in_s1(asof):
-        raise ValueError(s1_refusal(asof, "l'explication"))
+        raise SaisieInvalide(s1_refusal(asof, "l'explication"))
     sym = str(symbol or "").upper().strip()
     if not re.fullmatch(r"[A-Z0-9]{2,8}", sym):
-        raise ValueError(f"symbole invalide : {symbol!r}")
+        raise SaisieInvalide(f"symbole invalide : {symbol!r}")
     choice = None
     if variant is None:
         choice = rec.choose_variant()
@@ -2466,15 +2579,28 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
 #: (:func:`brvm_alpha.paths.resoudre_chemin_option`) ; ``sortie`` est une écriture, contrôlée dès le départ.
 _PATH_OPTIONS = (("panel_dir", "donnees"), ("boc_dir", "donnees"), ("racine", "donnees"), ("portefeuille", "donnees"),
                  ("fichier", "donnees"), ("sortie", "rapports"))
-#: Commandes non livrées dans le module Odoo : refusées en mode embarqué (code 8).
-EMBEDDED_REFUSED = ("validate", "backtest")
+#: Commandes non livrées dans le module Odoo : refusées en mode embarqué (code 8). ``serve`` : aucun serveur web du
+#: moteur en production (docs/DEPLOIEMENT.md § A.16).
+EMBEDDED_REFUSED = ("validate", "backtest", "serve")
+
+
+def _embedded_refusal(command: str) -> ConfigurationError:
+    if command == "serve":
+        return ConfigurationError(
+            "mode embarqué : la commande « serve » n'est pas utilisée en production (aucun serveur web du moteur : Odoo "
+            "appelle la ligne de commande).")
+    return ConfigurationError(
+        f"mode embarqué : la commande « {command} » n'est pas livrée dans Odoo (la validation est faite une fois pour "
+        "toutes, ses résultats sont livrés avec le code dans reports/validation_S1).")
 
 
 def _resolve_path_options(args: argparse.Namespace) -> None:
     """Chemins des options rendus absolus : depuis le dossier courant hors mode embarqué, depuis
     ``BRVM_ALPHA_DONNEES`` (ou ``BRVM_ALPHA_RAPPORTS`` pour ``--sortie``) en mode embarqué. Un même chemin
     relatif désigne ainsi le même dossier dans toutes les fonctions appelées (avant : deux résolutions dans
-    ``report``)."""
+    ``report``). ``--sortie`` vers un dossier existant est refusé (code 2). Mode embarqué : ``--sortie`` reste dans
+    les rapports ou le dossier temporaire, hors des fichiers du moteur ; ``--fichier`` et ``--portefeuille`` ne
+    lisent que dans les dossiers de données, de rapports ou temporaire (code 2 sinon)."""
     if args.command in EMBEDDED_REFUSED:
         return  # validation : comportement inchangé
     for attr, base in _PATH_OPTIONS:
@@ -2483,32 +2609,62 @@ def _resolve_path_options(args: argparse.Namespace) -> None:
             continue
         resolved = Path(os.path.abspath(paths.resoudre_chemin_option(value, base=base)))
         if attr == "sortie":
+            if resolved.is_dir():
+                raise SaisieInvalide(f"refusé : --sortie {resolved} est un dossier (donner un nom de fichier, par "
+                                     "exemple rapport.html).")
             paths.verifier_ecriture(resolved)  # mode embarqué : jamais dans l'arbre du code (code 8)
             if paths.est_embarque():
                 _check_embedded_output(resolved)
+        elif attr in _READ_OPTIONS and paths.est_embarque():
+            _check_embedded_input(resolved, attr)
         setattr(args, attr, str(resolved))
 
 
+#: Options qui désignent un fichier LU (contrôlé en mode embarqué).
+_READ_OPTIONS = ("portefeuille", "fichier")
+#: Sous-dossiers des données réservés au moteur : jamais la cible de ``--sortie`` (journal des notes, panel, BOC).
+_ENGINE_DIRS = ("notes", "panel", "boc_text")
+
+
+def _sous(path: Path, base: Path) -> bool:
+    """``path`` est-il dans ``base`` (chemins tels quels, puis liens symboliques résolus) ?"""
+    for p, b in ((Path(os.path.abspath(path)), Path(os.path.abspath(base))),
+                 (Path(os.path.realpath(path)), Path(os.path.realpath(base)))):
+        try:
+            p.relative_to(b)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _check_embedded_output(path: Path) -> None:
-    """Mode embarqué : ``--sortie`` seulement dans les dossiers de données, de rapports ou des fichiers temporaires
-    du système (un chemin relayé ne peut pas écraser un autre fichier du compte) ; :class:`SaisieInvalide` sinon."""
+    """Mode embarqué : ``--sortie`` seulement dans le dossier des rapports ou celui des fichiers temporaires du
+    système, jamais sur un fichier du moteur (``notes/``, ``panel/``, ``boc_text/`` des données) : un chemin relayé ne
+    peut ni écraser le journal des notes ni un autre fichier du compte. :class:`SaisieInvalide` sinon."""
     import tempfile
 
-    allowed = [paths.DATA_DIR, paths.REPORTS_DIR, Path(tempfile.gettempdir())]
-    real = Path(os.path.realpath(path.parent)) / path.name
-    for base in allowed:
-        for p in (path, real):
-            try:
-                p.relative_to(os.path.realpath(base))
-                return
-            except ValueError:
-                try:
-                    p.relative_to(os.path.abspath(base))
-                    return
-                except ValueError:
-                    continue
+    for sub in _ENGINE_DIRS:
+        if _sous(path, paths.DATA_DIR / sub):
+            raise SaisieInvalide(f"refusé : --sortie {path} désigne un fichier du moteur ({paths.DATA_DIR / sub}) ; "
+                                 f"écrire dans le dossier des rapports ({paths.REPORTS_DIR}).")
+    if any(_sous(path, base) for base in (paths.REPORTS_DIR, Path(tempfile.gettempdir()))):
+        return
     raise SaisieInvalide(f"refusé : --sortie {path} est hors des dossiers permis en mode embarqué (rapports "
-                         f"{paths.REPORTS_DIR}, données {paths.DATA_DIR}, fichiers temporaires {tempfile.gettempdir()}).")
+                         f"{paths.REPORTS_DIR}, fichiers temporaires {tempfile.gettempdir()}).")
+
+
+def _check_embedded_input(path: Path, attr: str) -> None:
+    """Mode embarqué : ``--fichier`` et ``--portefeuille`` ne lisent que dans les dossiers de données, de rapports ou
+    des fichiers temporaires (un chemin relayé ne peut pas faire lire, puis recopier dans le journal, un fichier de
+    configuration du serveur). :class:`SaisieInvalide` sinon."""
+    import tempfile
+
+    if any(_sous(path, base) for base in (paths.DATA_DIR, paths.REPORTS_DIR, Path(tempfile.gettempdir()))):
+        return
+    raise SaisieInvalide(f"refusé : --{attr} {path} est hors des dossiers permis en mode embarqué (données "
+                         f"{paths.DATA_DIR}, rapports {paths.REPORTS_DIR}, fichiers temporaires "
+                         f"{tempfile.gettempdir()}).")
 
 
 def startup_checks(args: argparse.Namespace) -> None:
@@ -2521,9 +2677,7 @@ def startup_checks(args: argparse.Namespace) -> None:
     if paths.est_embarque():
         paths.verifier_configuration()
         if args.command in EMBEDDED_REFUSED:
-            raise ConfigurationError(
-                f"mode embarqué : la commande « {args.command} » n'est pas livrée dans Odoo (la validation est faite "
-                "une fois pour toutes, ses résultats sont livrés avec le code dans reports/validation_S1).")
+            raise _embedded_refusal(args.command)
     _resolve_path_options(args)
 
 
@@ -2580,12 +2734,8 @@ def _silence_stdout(stream: Any) -> None:
         pass
 
 
-class ArretDemande(KeyboardInterrupt):
-    """Signal TERM reçu (Odoo, superviseur, script) : la commande s'arrête comme sur Ctrl+C (code 130)."""
-
-
-def _on_term(signum: int, frame: Any) -> None:  # noqa: ARG001 - signature imposée par signal
-    raise ArretDemande("arrêt demandé (signal TERM) : la commande a été arrêtée proprement.")
+ArretDemande = erreurs.ArretDemande
+_on_term = demarrage._on_term
 
 
 @contextlib.contextmanager
@@ -2641,7 +2791,8 @@ def run(args: argparse.Namespace) -> int:
         except BrokenPipeError:
             _silence_stdout(st.out if st is not None else saved)
             return erreurs.DONNEES_ABSENTES if st is not None else erreurs.OK
-        except (KeyboardInterrupt, SystemExit, Exception) as exc:  # noqa: BLE001 - table des codes de sortie
+        # Table des codes de sortie (6 pour la mémoire, 130 pour une interruption…).
+        except (KeyboardInterrupt, SystemExit, MemoryError, Exception) as exc:  # noqa: BLE001
             return _report_error(exc, st)
     finally:
         sys.stdout = saved
@@ -2658,6 +2809,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     130 interruption.
     """
     raw = list(sys.argv[1:] if argv is None else argv)
+    demarrage.reinitialiser()
+    if paths.est_embarque():
+        # Commande refusée en mode embarqué : code 8 avant l'analyse des arguments (« validate --format json »
+        # sortait en 2, option inconnue, avant le refus).
+        command = next((a for a in raw if not a.startswith("-")), None)
+        if command in EMBEDDED_REFUSED and not any(a in ("-h", "--help") for a in raw):
+            st = _SortieJson(sys.stdout) if json_demande(raw) else None
+            tok = _SORTIE_JSON.set(st)
+            try:
+                return _report_error(_embedded_refusal(command), st)
+            finally:
+                _SORTIE_JSON.reset(tok)
     token = _FORMAT_DEMANDE.set("json" if json_demande(raw) else None)
     try:
         args = build_parser().parse_args(raw)

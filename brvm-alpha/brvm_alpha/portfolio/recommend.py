@@ -69,6 +69,7 @@ import numpy as np
 import pandas as pd
 
 from brvm_alpha import paths as _paths
+from brvm_alpha import erreurs as _err
 from brvm_alpha import reference, settings
 from brvm_alpha.config import CostModel, TaxModel
 from brvm_alpha.quant import macro
@@ -615,6 +616,8 @@ def s1_executed(registry_path: str | Path | None = None) -> tuple[bool, str]:
         from brvm_alpha.backtest.walkforward import TrialRegistry
 
         ex = TrialRegistry.load(path).executed("S1")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # registre illisible : prudence, S1 réputé non exécuté
         return False, f"registre illisible ({exc.__class__.__name__} : {exc}) : S1 réputé non exécuté"
     n = int(len(ex))
@@ -657,6 +660,8 @@ def choose_variant(variant: str | None = None, validation_dir: str | Path | None
     if path.exists():
         try:
             m = json.loads(path.read_text(encoding="utf-8"))
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:
             out["avertissements"].append(f"metrics.json illisible ({exc.__class__.__name__}) : test S1 réputé non exécuté")
             m = None
@@ -748,7 +753,7 @@ def _decision_date(panels: Mapping[str, Any], asof: Any) -> pd.Timestamp:
         raise ValueError("panels : cours de clôture absents (close_raw / close)")
     idx = close.index[close.index <= pd.Timestamp(asof).normalize()]
     if not len(idx):
-        raise ValueError(f"aucune séance au plus tard le {pd.Timestamp(asof).date()}")
+        raise _err.SaisieInvalide(f"aucune séance au plus tard le {pd.Timestamp(asof).date()}")
     return pd.Timestamp(idx[-1])
 
 
@@ -834,6 +839,8 @@ def _boc_dividend_remark(panels: Mapping[str, Any], sym: str, t: pd.Timestamp, a
             return ""
         return (f" ; BOC du {_d(boc_day)} : dernier dividende {_num(boc)} FCFA ; montant retenu {_num(retained)} FCFA, "
                 f"lu sur la ligne (d) du détachement du {_d(ex_last)} (règle du §3.1 de la spécification)")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # remarque d'affichage : jamais bloquante
         return ""
 
@@ -1090,6 +1097,8 @@ def return_distribution(weekly: pd.DataFrame, weights: Mapping[str, float], *, h
 def _lambda(symbol: str, countries: Iterable[str]) -> float:
     try:
         lam = reference.economic_exposure(symbol)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         lam = {reference.country_of(symbol): 1.0}
     cs = set(countries)
@@ -1159,6 +1168,8 @@ def _external_stress(positions: Mapping[str, float], weights: Mapping[str, float
         mod = importlib.import_module("brvm_alpha.portfolio.stress")
     except ImportError:
         return None, "module brvm_alpha.portfolio.stress absent : chocs du §9.3 de ce module"
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # pragma: no cover - module en cours d'écriture
         return None, f"module de stress inutilisable ({exc.__class__.__name__}) : chocs du §9.3 de ce module"
     candidates = ("stress_tests", "run_stress_tests", "apply_stress_tests", "portfolio_stress", "stress_report")
@@ -1177,6 +1188,8 @@ def _external_stress(positions: Mapping[str, float], weights: Mapping[str, float
             if required:
                 continue
             res = fn(**kwargs)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:
             return None, f"brvm_alpha.portfolio.stress.{name} en échec ({exc.__class__.__name__}) : chocs de ce module"
         if isinstance(res, pd.DataFrame):
@@ -2224,6 +2237,8 @@ def _publication_events(store: Any, t: pd.Timestamp, symbols: Sequence[str], end
             frame = store.asof(k)
         else:
             frame = pd.DataFrame(store)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return rows
     if not isinstance(frame, pd.DataFrame) or not len(frame) or "event_type" not in frame.columns:
@@ -2283,6 +2298,8 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
     try:
         to_buy = [str(r.symbole) for r in L.itertuples(index=False)
                   if r.sens == "achat" and int(r.quantite) > 0 and str(r.symbole) not in held]
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # tableau des lignes inattendu : la revue des lignes détenues reste calculée
         to_buy = []
     if (held or to_buy) and isinstance(tr, pd.DataFrame) and mtr is not None and len(tr) > 63:
@@ -2425,6 +2442,8 @@ def _notes_state(plan: _Plan, t: pd.Timestamp, store: Any, calendar_dates: Any) 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             return ns.notes_in_force(store, t, known_at=known, calendar=cal, overlays=ov)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # l'ordre de bataille ne dépend pas de cette synthèse
         return {"erreur": f"{exc.__class__.__name__} : {exc}"}
 
@@ -2448,6 +2467,8 @@ def _notes_effect(plan: _Plan, variant: str, t: pd.Timestamp, panels: Mapping[st
             warnings.simplefilter("ignore")
             base = BrvmAlpha(variant=variant, capital=nav, notes=None).decide(
                 t, panels, plan.held_w if len(plan.held_w) else None)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # pragma: no cover - comparaison facultative
         return {"texte": f"Effet des notes sur les poids non calculé ({exc.__class__.__name__} : {exc}).", "lignes": []}
     w1 = plan.decision.weights.astype(float).fillna(0.0)
@@ -2601,6 +2622,8 @@ def _index_evaluation(t: pd.Timestamp, panel_dir: Path | None, panels_given: boo
             warnings.simplefilter("ignore")
             res = index_eval.evaluate_indices(str(panel_dir) if panel_dir is not None else None, store, t,
                                               notes_known_at=notes_known_at)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:
         return [], f"Évaluation des indices indisponible ({exc.__class__.__name__} : {exc})."
     rows = []
@@ -2696,6 +2719,8 @@ def _explanations(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], n_rej
         for s in names:
             try:
                 e = _explain_one(model, dec, t, panels, s, held)
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:  # pragma: no cover - explication indisponible
                 out.append({"symbole": s, "statut": status, "rang": rank_of.get(s), "poids": float(w.get(s, 0.0)),
                             "texte_court": f"explication indisponible ({exc.__class__.__name__})", "texte": ""})
@@ -2752,6 +2777,8 @@ def _names(panel_dir: Path | None, panels: Mapping[str, Any]) -> dict[str, str]:
     try:
         eq = pd.read_parquet(panel_dir / "equities.parquet", columns=["date", "symbol", "name"])
         return eq.sort_values("date").groupby("symbol")["name"].last().astype(str).to_dict()
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return {}
 
@@ -2838,7 +2865,7 @@ def recommend(
     """
     t0 = time.time()
     if capital is None or float(capital) <= 0:
-        raise ValueError("capital doit être > 0")
+        raise _err.SaisieInvalide("capital doit être > 0")
     pdir = Path(panel_dir) if panel_dir is not None else (DEFAULT_PANEL_DIR if panels is None else None)
     panels_given = panels is not None
     if panels is None:
@@ -2866,14 +2893,14 @@ def recommend(
     blocked_off_boc: dict[str, dict[str, Any]] = {}
     for s, q in hold.items():
         if q < 0:
-            raise ValueError(f"{s} : nombre de titres négatif (vente à découvert interdite, art. 1123)")
+            raise _err.SaisieInvalide(f"{s} : nombre de titres négatif (vente à découvert interdite, art. 1123)")
         if s not in close.index or not np.isfinite(close.get(s, np.nan)):
             # Titre connu du panel mais absent du BOC à t (suspendu de longue date, radié) : dernier cours
             # connu − 10 % (§7.1.7), ligne bloquée « hors BOC » ; seuls les symboles jamais vus sont refusés.
             hist = close_df[s].dropna() if s in close_df.columns else pd.Series(dtype=float)
             hist = hist[np.isfinite(hist) & (hist > 0)]
             if not len(hist):
-                raise ValueError(f"{s} : titre inconnu ou sans cours au {_d(t)}")
+                raise _err.SaisieInvalide(f"{s} : titre inconnu ou sans cours au {_d(t)}")
             last_px, last_dt = float(hist.iloc[-1]), pd.Timestamp(hist.index[-1])
             val_px = floor_to_tick(last_px * 0.90) or last_px
             close = close.copy()
@@ -2891,13 +2918,13 @@ def recommend(
     else:
         cash_v = float(cash)
         if cash_v < 0:
-            raise ValueError("cash doit être >= 0 (pas de découvert)")
+            raise _err.SaisieInvalide("cash doit être >= 0 (pas de découvert)")
         if abs(held_value + cash_v - float(capital)) > 1.0:
             warn.append(f"capital ({_fcfa(capital)}) différent de titres + liquidités "
                         f"({_fcfa(held_value + cash_v)}) : la valeur du portefeuille retenue est titres + liquidités")
     nav = held_value + cash_v
     if nav <= 0:
-        raise ValueError("valeur du portefeuille nulle")
+        raise _err.SaisieInvalide("valeur du portefeuille nulle")
     if t != t_req:
         warn.append(f"{_d(t_req)} n'est pas une séance du panel : décision à la clôture du {_d(t)}")
     # Fraîcheur du panel : le dernier BOC attendu avant aujourd'hui est-il présent ?
@@ -2926,6 +2953,8 @@ def recommend(
             if moment.direct and moment.session is not None:
                 floor_exec = pd.Timestamp(moment.session).normalize() - pd.Timedelta(days=1)
                 exec_after = floor_exec if exec_after is None else max(exec_after, floor_exec)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # module des notes absent ou calendrier illisible : l'exécution reste datée du panel
             pass
     choice = choose_variant(variant, validation_dir, registry_path)
@@ -2933,7 +2962,7 @@ def recommend(
     from brvm_alpha.strategy import VARIANT_SPECS
 
     if choice["variante"] not in VARIANT_SPECS:
-        raise ValueError(f"variante inconnue {choice['variante']!r}")
+        raise _err.SaisieInvalide(f"variante inconnue {choice['variante']!r}")
     choice["description"] = VARIANT_SPECS[choice["variante"]].description
     window = estimation_window(t, bool(choice["s1_execute"]))
     notes_arg = "auto" if notes_store is None else (None if notes_store is False else notes_store)
@@ -2943,6 +2972,8 @@ def recommend(
             from brvm_alpha.notes.store import NoteStore
 
             store_for_events = NoteStore()
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:
             store_for_events = None
     elif notes_store is not False:
@@ -2960,6 +2991,8 @@ def recommend(
     if pdir is not None and (pdir / "sessions.parquet").exists():
         try:
             notes_cal = pd.read_parquet(pdir / "sessions.parquet")
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:
             notes_cal = None
     notes_state = _notes_state(plan, t, store_for_events, notes_cal if notes_cal is not None else close_df.index)
@@ -3005,6 +3038,8 @@ def recommend(
             sev = settings.cost_scenario("severe", cfg)
             p7 = _build_plan(variant=choice["variante"], **{**common, "costs": sev}, prebuilt=pre)
             extra["ST7"] = max(int(_cost_summary(p7.lines, nav, cash_v, sev, "sévère")["total"]) - csum["total"], 0)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:  # pragma: no cover - surcoût non calculable
             stress_src += f" (surcoûts ST6/ST7 non calculés : {exc.__class__.__name__})"
         guard = bool(plan.decision.risk["data_guard"].any()) if "data_guard" in plan.decision.risk.columns else None

@@ -72,10 +72,12 @@ d'installation : on lance les commandes depuis la racine `brvm-alpha/`.
 ## Commandes (CLI)
 
 Toutes les commandes s'écrivent `python -m brvm_alpha COMMANDE` ; `-h` affiche l'aide en français.
-Codes de sortie (toutes les commandes ; **jamais 3**) : 0 succès ; 1 données absentes, historique non prêt
-ou quota atteint ; 2 saisie invalide ou refus ; 4 verrou occupé ; 5 accès refusé ou réseau (403, 429) ;
-6 mémoire insuffisante ; 7 erreur interne ; 8 configuration (mode embarqué sans dossiers, pdftotext
-absent) ; 130 interruption (Ctrl+C ou TERM). Avec `--format json`, la sortie standard porte exactement un
+Codes de sortie (toutes les commandes ; **jamais 3**) : 0 succès ; 1 données absentes ou illisibles (panel
+abîmé, journal des notes illisible), historique non prêt ou quota atteint ; 2 saisie invalide ou refus
+(saisies seulement) ; 4 verrou occupé ; 5 accès refusé ou réseau (403, 429) ; 6 mémoire insuffisante (limite
+de mémoire virtuelle sous 1 Go comprise) ; 7 erreur interne ; 8 configuration (mode embarqué sans dossiers
+existants, pdftotext ou paquet absent, dossier non inscriptible) ; 130 interruption (Ctrl+C ou TERM). Avec
+`--format json`, la sortie standard porte exactement un
 objet JSON, erreur comprise (`{"ok": false, "code", "erreur", "message", "bandeau"}`). **Toute date de
 décision dans S1 (au plus tard le 16/11/2022) est refusée**, sauf par la commande `validate`, verrouillée.
 
@@ -444,6 +446,7 @@ est dans [reports/ordre_de_bataille_2026-11-20.md](reports/ordre_de_bataille_202
 ```
 brvm_alpha/
   cli.py, __main__.py        ligne de commande (codes de sortie, JSON, mode embarqué)
+  demarrage.py               garde du démarrage, avant pandas (mémoire, paquet manquant, TERM, JSON)
   erreurs.py, fichiers.py    codes de retour ; écritures atomiques et verrous flock
   net.py, pdf.py             réseau poli (liste blanche, plafonds) ; extraction PDF bornée
   ressources.py              processeurs, fils de calcul, réservation de mémoire

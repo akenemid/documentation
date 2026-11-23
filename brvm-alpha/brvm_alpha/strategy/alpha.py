@@ -67,6 +67,7 @@ import numpy as np
 import pandas as pd
 
 from brvm_alpha import paths as _paths
+from brvm_alpha import erreurs as _err
 from brvm_alpha import reference, settings
 from brvm_alpha.backtest import engine
 from brvm_alpha.config import PlatformConfig
@@ -203,6 +204,8 @@ def notes_available() -> tuple[bool, str]:
         importlib.import_module("brvm_alpha.notes.signals")
     except ImportError as exc:  # module absent ou en cours d'écriture
         return False, f"module des notes indisponible ({exc.__class__.__name__} : {exc})"
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # pragma: no cover - erreur à l'import d'un module tiers
         return False, f"module des notes inutilisable ({exc.__class__.__name__} : {exc})"
     return True, ""
@@ -268,6 +271,8 @@ def build_panels(
             det["ex_date"] = pd.to_datetime(det["ex_date"])
             div = div.assign(ex_date=pd.to_datetime(div["ex_date"])).merge(det, on=["symbol", "ex_date"],
                                                                              how="left")
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:  # pragma: no cover - panel incomplet
             warnings.warn(f"montants de dividendes point-in-time non recalculés : {exc}", stacklevel=2)
         for col, fill in (("amount_first", div["amount"]), ("revised_seen", pd.NaT)):
@@ -291,16 +296,22 @@ def build_panels(
         P["ex_div"] = _pivot(eqd, "ex_div").astype("boolean").fillna(False).astype(bool)
     try:
         P["stats_usable"] = store.stats_mask(d)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # pragma: no cover - panel incomplet
         warnings.warn(f"stats_mask indisponible : {exc}", stacklevel=2)
     if shares:
         try:
             P["shares"] = store.shares_outstanding_panel(d)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:  # pragma: no cover
             warnings.warn(f"nombre de titres indisponible : {exc}", stacklevel=2)
     if market_tr:
         try:
             P["market_tr"] = store.composite_tr_reconstructed(d).astype(float)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:  # pragma: no cover
             warnings.warn(f"Composite TR indisponible : {exc}", stacklevel=2)
     mk = store.load_market(d)
@@ -585,7 +596,7 @@ class BrvmAlpha:
                 raise TypeError("cfg doit être un PlatformConfig, un dictionnaire de paramètres ou None")
         code = str(variant).upper().strip()
         if code not in VARIANT_SPECS:
-            raise ValueError(f"variante inconnue {variant!r} ; choix : {', '.join(VARIANTS)}")
+            raise _err.SaisieInvalide(f"variante inconnue {variant!r} ; choix : {', '.join(VARIANTS)}")
         self.validation_s1 = bool(validation_s1)
         if self.validation_s1:
             notes = None  # additif v1.1, D11 : aucune note de l'analyste sur S1
@@ -598,7 +609,7 @@ class BrvmAlpha:
             cap_default = float(config.capital_fcfa)
         self.capital = float(capital) if capital is not None else cap_default
         if self.capital <= 0:
-            raise ValueError("capital doit être > 0")
+            raise _err.SaisieInvalide("capital doit être > 0")
         self.notes_source = notes
         #: instant de connaissance des notes (mode direct) ; None : mode historique (règle stricte)
         self.notes_known_at: Any = None if self.validation_s1 else notes_known_at
@@ -763,7 +774,7 @@ class BrvmAlpha:
         close_raw = close_raw.astype(float).sort_index()
         index = pd.DatetimeIndex(close_raw.index)
         if not len(index):
-            raise ValueError(f"aucune séance avant le {t_req.date()}")
+            raise _err.SaisieInvalide(f"aucune séance avant le {t_req.date()}")
         symbols = pd.Index(sorted(map(str, close_raw.columns)))
         wide: dict[str, pd.DataFrame] = {}
 
@@ -1214,6 +1225,8 @@ class BrvmAlpha:
             vs = F.vol_scaling(spread, history_start=hs, params=comp.get("momentum_vol_scaling"), sess=sess_s,
                                obs_floor=floor)
             out["vol_scaling"] = float(vs.iloc[-1]) if len(vs) else 1.0
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:  # garde-fou : modulateur neutre, signalé
             out["vol_scaling_error"] = f"{exc.__class__.__name__} : {exc}"
         if d.market_tr is not None and len(d.market_tr) > 2:
@@ -1223,6 +1236,8 @@ class BrvmAlpha:
                                     obs_floor=floor)
                 val = cf.reindex(cf.index.union([d.t])).ffill().get(d.t)
                 out["crash_filter"] = float(val) if val is not None and np.isfinite(val) else 1.0
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:
                 out["crash_filter_error"] = f"{exc.__class__.__name__} : {exc}"
         else:
@@ -1290,6 +1305,8 @@ class BrvmAlpha:
                     from brvm_alpha.notes.store import NoteStore
 
                     self._store_cache = NoteStore()
+                except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                    raise
                 except Exception as exc:
                     return None, f"journal des notes inaccessible ({exc.__class__.__name__} : {exc})"
             return self._store_cache, ""
@@ -1317,11 +1334,17 @@ class BrvmAlpha:
                 moment = ns.notes_moment(d.t, self.notes_known_at, cal)
                 if moment.known_at is not None and moment.known_at.tz_localize(None) >= d.t:
                     kw = {"known_at": moment}
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception as exc:
                 out["message"] = f"instant de connaissance des notes illisible ({exc.__class__.__name__} : {exc})"
                 return out
         try:
             ov = ns.manual_overlays(store, d.t, calendar=cal, **kw)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
+        except _err.JournalIllisible:  # journal présent mais illisible : jamais d'ordre sans ses vetos (code 1)
+            raise
         except Exception as exc:
             out["message"] = f"surcouches des notes non calculées ({exc.__class__.__name__} : {exc})"
             return out
@@ -1340,11 +1363,15 @@ class BrvmAlpha:
         try:
             sc = ns.note_scores(store, d.t, calendar=cal, **kw)
             out["scores"] = sc
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:
             out["reasons"] = list(out["reasons"]) + [f"scores des notes non calculés ({exc.__class__.__name__})"]
         try:
             frame = ns.notes_asof(store, d.t, calendar=cal, **kw) if kw else ns.notes_asof(store, d.t)
             out["country_events"], out["dividend_calendar"] = self._events_from_notes(frame, d, ns)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:
             out["reasons"] = list(out["reasons"]) + [f"règles pays des notes non lues ({exc.__class__.__name__})"]
         n_tilt = int((pd.Series(out["tilt"], dtype=float) != 0).sum()) if out["tilt"] is not None else 0
@@ -1383,6 +1410,8 @@ class BrvmAlpha:
             if et == "DIV_NOTICE":
                 try:
                     an = ns.note_analysis(rec, list(d.index))
+                except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                    raise
                 except Exception:
                     an = rec.get("analysis") or {}
                 ex = (an.get("extracted") or {}) if isinstance(an, Mapping) else {}
@@ -2230,6 +2259,8 @@ class BrvmAlpha:
             from brvm_alpha.quant import regime as rg
 
             probs = rg.hmm_filtered_probabilities(r, n_states=2, refit_every=4, train_window=None, min_train=52)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:
             out["message"] = f"variante F : régime non estimé ({exc.__class__.__name__} : {exc})"
             return out
@@ -2528,6 +2559,8 @@ class BrvmAlpha:
             cov = construct.weekly_covariance(tr / tr.shift(1) - 1.0, d.t,
                                               usable=d.wide["stats_usable"].astype("boolean").fillna(False).astype(bool)
                                               if d.w("stats_usable") is not None else None)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:
             return {"te": None, "error": f"{exc.__class__.__name__} : {exc}"}
         names = [s for s in names if s in cov.index]
@@ -3031,7 +3064,7 @@ class BrvmAlpha:
         sym = str(symbol).upper().strip()
         dec = self.decide(asof, panels, held)
         if sym not in dec.universe.index:
-            raise KeyError(f"{sym} absent des panels à la date {dec.asof.date()}")
+            raise _err.CleInconnue(f"{sym} absent des panels à la date {dec.asof.date()}")
         uni = dec.universe.loc[sym]
         st = dec.score.loc[sym] if sym in dec.score.index else pd.Series(dtype=float)
         sinfo = dec.diagnostics.get("score", {})
@@ -3111,6 +3144,8 @@ class BrvmAlpha:
         if d.market is not None and {"avg_per", "risk_premium"} <= set(d.market.columns) and len(d.market):
             try:
                 rf = float(macro.ref_govt_rate(d.market, asof=d.t))
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:
                 rf = float("nan")
         if not np.isfinite(rf):
@@ -3128,6 +3163,8 @@ class BrvmAlpha:
                 if d.w("stats_usable") is not None:
                     a = a.where(d.wide["stats_usable"][sym].iloc[-505:].astype("boolean").fillna(False).astype(bool))
                 beta = float(qs.dimson_beta(a, b, lags=2))
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:
                 beta = float("nan")
         beta_note = ""

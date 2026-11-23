@@ -85,10 +85,10 @@ import hashlib
 import html as html_lib
 import json
 import logging
+import math
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import time
 import unicodedata
@@ -403,6 +403,11 @@ class OfflineCacheMiss(ResearchError, _err.DonneesAbsentes):
     """Mode hors ligne : la page n'est pas dans le cache (code de sortie 1)."""
 
 
+class DocumentTropLent(ResearchError, _err.AccesRefuse):
+    """Un document (PDF) n'a pas pu être lu dans le délai total (lien lent) : il est mis de côté, la session n'est
+    pas arrêtée (aucun nouvel essai immédiat : le lien ne sera pas plus rapide)."""
+
+
 class TooManyRedirects(ResearchError, _err.AccesRefuse):
     """Plus de :data:`MAX_REDIRECTS` redirections : la page n'est pas lue (code de sortie 5)."""
 
@@ -517,6 +522,8 @@ def parse_date_fr(text: str | None) -> dt.date | None:
         from brvm_alpha.data.boc_parser import parse_french_date
 
         return parse_french_date(s)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - repli défensif
         return None
 
@@ -657,6 +664,65 @@ def _url_origin(url: str) -> str:
     return f"{scheme}://{host}" + (f":{port}" if port and port != default else "")
 
 
+#: Un document trop lent pour le lien (délai total dépassé) passe son tour pendant ce nombre de jours.
+DOC_LENT_JOURS = 7
+
+#: Noms d'hôte d'un même site : une seule clé de politesse (délai, réservation, blocage). Une redirection de
+#: www.brvm.org vers brvm.org ne double pas le rythme des requêtes.
+SITES_POLITESSE: Mapping[str, str] = {"brvm.org": "www.brvm.org", "www.brvm.org": "www.brvm.org"}
+
+
+def cle_politesse(host: str) -> str:
+    """Clé de politesse d'un hôte : le site (``brvm.org`` et ``www.brvm.org`` → ``www.brvm.org``), sinon l'hôte."""
+    h = str(host or "").strip().lower().rstrip(".")
+    return SITES_POLITESSE.get(h, h)
+
+
+#: Taille au-delà de laquelle ``fetch_log.jsonl`` est mis de côté (``fetch_log.1.jsonl``, une seule génération).
+JOURNAL_MAX_OCTETS = 10 * 2 ** 20
+
+
+def tourner_journal(path: str | Path, max_octets: int = JOURNAL_MAX_OCTETS) -> bool:
+    """Rotation du journal des requêtes : au-delà de ``max_octets``, il devient ``<nom>.1.jsonl`` (l'ancienne copie est
+    remplacée) et un journal neuf commence ; ``True`` si la rotation a eu lieu. Jamais d'exception."""
+    p = Path(path)
+    try:
+        if p.stat().st_size <= max_octets:
+            return False
+        os.replace(p, p.with_name(p.stem + ".1" + p.suffix))
+        return True
+    except OSError:
+        return False
+
+
+def purger_pdf_du_cache_http(cache_dir: str | Path) -> int:
+    """Retire du cache HTTP (``cache/http``) les corps qui sont des PDF **déjà rangés** dans ``cache/docs`` (même
+    adresse) : ils y étaient en double (constat 27). Les métadonnées ``.json`` restent. Idempotent ; rend le nombre
+    de corps retirés ; jamais d'exception."""
+    root = Path(cache_dir)
+    n = 0
+    try:
+        metas = list((root / "http").glob("*/*.json"))
+    except OSError:
+        return 0
+    for meta_p in metas:
+        body_p = meta_p.with_name(meta_p.name[: -len(".json")] + ".body.gz")
+        try:
+            if not body_p.is_file():
+                continue
+            with gzip.open(body_p, "rb") as fh:
+                head = fh.read(5)
+            if not head.startswith(b"%PDF"):
+                continue
+            url = json.loads(meta_p.read_text(encoding="utf-8")).get("url")
+            if url and (root / "docs" / f"{url_hash(url)}.pdf").is_file():
+                _paths.verifier_ecriture(body_p).unlink()
+                n += 1
+        except (OSError, ValueError, EOFError, zlib.error, _err.ConfigurationError):
+            continue
+    return n
+
+
 def _state_path(cache_dir: str | Path) -> Path:
     return Path(cache_dir) / POLITENESS_STATE
 
@@ -681,15 +747,28 @@ def _state_locked(cache_dir: str | Path, timeout_s: float = STATE_LOCK_TIMEOUT_S
         yield path
 
 
-def _state_load(path: Path) -> dict[str, Any]:
+class EtatPolitesseIllisible(_err.ConfigurationError):
+    """``politeness.json`` existe mais ne se lit pas : aucune requête n'est envoyée et le fichier n'est **pas**
+    réécrit (un blocage 403/429 qu'il porterait serait sinon oublié). Code 8 : à réparer ou retirer à la main,
+    après vérification."""
+
+
+def _state_load(path: Path, strict: bool = False) -> dict[str, Any]:
+    """État de politesse. Illisible : ``strict`` lève :class:`EtatPolitesseIllisible` (avant toute requête ou
+    écriture) ; sinon (simple lecture, ``etat``), rendu vide avec un avertissement dans le journal."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not isinstance(data.get("hosts"), dict):
+            raise ValueError("objet {\"hosts\": {…}} attendu")
     except FileNotFoundError:
         return {"hosts": {}}
-    except (OSError, ValueError):
-        log.warning("état de politesse illisible : %s", path)
-        return {"hosts": {}}
-    if not isinstance(data, dict) or not isinstance(data.get("hosts"), dict):
+    except (OSError, ValueError) as exc:
+        log.warning("état de politesse illisible : %s (%s)", path, exc)
+        if strict:
+            raise EtatPolitesseIllisible(
+                f"état de politesse illisible : {path} ({type(exc).__name__} : {exc}). Par prudence, aucune requête "
+                "n'est envoyée et le fichier n'est pas réécrit (un refus 403/429 du site pourrait y être noté) : le "
+                "vérifier, puis le réparer ou le retirer à la main.") from exc
         return {"hosts": {}}
     return data
 
@@ -712,14 +791,17 @@ def clear_block(host: str, cache_dir: str | Path | None = None) -> bool:
     """
     h = url_host(host) if "://" in str(host) else str(host or "").strip().lower().rstrip(".")
     cdir = cache_dir if cache_dir is not None else DEFAULT_NOTES_DIR / "cache"
+    done = False
     with _state_locked(cdir) as path:
-        data = _state_load(path)
-        entry = data["hosts"].get(h)
-        if not isinstance(entry, dict) or not entry.get("blocked"):
-            return False
-        entry["unblocked"] = {"ts": utcnow().isoformat(timespec="seconds"), "previous": entry.pop("blocked")}
-        _state_save(path, data)
-    return True
+        data = _state_load(path, strict=True)
+        for key in dict.fromkeys((cle_politesse(h), h)):
+            entry = data["hosts"].get(key)
+            if isinstance(entry, dict) and entry.get("blocked"):
+                entry["unblocked"] = {"ts": utcnow().isoformat(timespec="seconds"), "previous": entry.pop("blocked")}
+                done = True
+        if done:
+            _state_save(path, data)
+    return done
 
 
 class PoliteSession:
@@ -776,6 +858,8 @@ class PoliteSession:
     ) -> None:
         self.user_agent = user_agent
         self.delay_s = float(delay_s)
+        if not math.isfinite(self.delay_s) or self.delay_s < 0:  # nan supprimait toute attente (min(0, nan) == 0)
+            raise _err.SaisieInvalide(f"délai refusé : {delay_s!r} (nombre fini de secondes, positif ou nul)")
         self.max_requests = int(max_requests)
         self.offline = bool(offline)
         self.cache_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_NOTES_DIR / "cache"
@@ -822,6 +906,7 @@ class PoliteSession:
         try:
             _paths.verifier_ecriture(self.log_path)
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            tourner_journal(self.log_path)
             with self.log_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
         except (OSError, _err.ConfigurationError) as exc:  # le journal ne doit jamais bloquer la collecte
@@ -868,8 +953,8 @@ class PoliteSession:
                       timeout_s: float = STATE_LOCK_TIMEOUT_S) -> Any:
         """Applique ``fn`` à l'entrée de ``host`` de l'état partagé, sous verrou ; renvoie son résultat."""
         with _state_locked(self.cache_dir, timeout_s) as path:
-            data = _state_load(path)
-            entry = data["hosts"].setdefault(host, {})
+            data = _state_load(path, strict=True)
+            entry = data["hosts"].setdefault(cle_politesse(host), {})
             out = fn(entry)
             _state_save(path, data)
         return out
@@ -877,9 +962,11 @@ class PoliteSession:
     def persistent_block(self, url_or_host: str) -> dict[str, Any] | None:
         """Blocage enregistré pour ce site (403/429 d'une session antérieure), ou ``None``."""
         host = url_host(url_or_host) if "://" in str(url_or_host) else str(url_or_host).lower().rstrip(".")
-        entry = _state_load(_state_path(self.cache_dir)).get("hosts", {}).get(host)
-        if isinstance(entry, dict) and entry.get("blocked"):
-            return dict(entry["blocked"])
+        hosts = _state_load(_state_path(self.cache_dir), strict=True).get("hosts", {})
+        for key in dict.fromkeys((cle_politesse(host), host)):  # clé du site, puis ancienne clé par hôte
+            entry = hosts.get(key)
+            if isinstance(entry, dict) and entry.get("blocked"):
+                return dict(entry["blocked"])
         return None
 
     def _check_source(self, url: str, allow_disabled: bool | None = None) -> None:
@@ -959,7 +1046,12 @@ class PoliteSession:
                 raise ServerUnavailable(
                     f"robots.txt de {origin} inaccessible ({exc}) : par prudence, aucune page n'est lue."
                 ) from exc
-            except PolicyRefused as exc:  # robots.txt trop gros, adresse refusée : tout interdit
+            except PolicyRefused as exc:
+                if isinstance(exc.__cause__, (_net.AdresseInterdite, _net.HoteNonAutorise)):
+                    # Le site lui-même est refusé (nom résolu en adresse interdite, hôte hors liste blanche) :
+                    # l'erreur remonte telle quelle (« politique »), ce n'est pas un problème de robots.txt.
+                    raise
+                # robots.txt trop gros ou illisible : tout interdit
                 self._log(event="robots_refused", url=robots_url, reason=str(exc))
                 res = FetchResult(url=robots_url, status=403, content=b"", final_url=robots_url)
             if res.status == 200 and not _robots_unreadable(res):
@@ -995,6 +1087,8 @@ class PoliteSession:
         if rp is not None:
             try:
                 cd = rp.crawl_delay(self.user_agent)
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # pragma: no cover
                 cd = None
             if cd:
@@ -1016,7 +1110,7 @@ class PoliteSession:
         host = url_host(url)
         delay = self.crawl_delay(url)
         wait = 0.0
-        last = self._last_request.get(host)
+        last = self._last_request.get(cle_politesse(host))
         if last is not None:
             wait = max(0.0, last + delay - self.clock())
         now = to_utc(self.now())
@@ -1149,15 +1243,31 @@ class PoliteSession:
             except (_err.ConfigurationError, _err.VerrouOccupe):
                 raise
             except _net.RefusPolitique as exc:  # refus définitif : aucun nouvel essai
-                self._last_request[host] = self.clock()
-                self._record_done(host)
                 self._log(event="policy_refused", url=url, reason=str(exc), attempt=attempt)
                 if isinstance(exc, (_net.AdresseInterdite, _net.HoteNonAutorise)):
+                    # Refusée avant l'envoi (nom résolu en adresse interdite, hôte hors liste) : aucune requête
+                    # n'est partie, elle n'est pas comptée.
+                    self.n_requests -= 1
                     self._stop("politique", f"adresse refusée : {exc}")
+                else:
+                    self._last_request[cle_politesse(host)] = self.clock()
+                    self._record_done(host)
                 raise PolicyRefused(f"Requête refusée : {exc}") from exc
-            except Exception as exc:  # erreur réseau (délai dépassé compris) : traitée comme un 5xx
+            except _net.DelaiDepasse as exc:
+                if nature != "pdf":  # page, robots.txt : traité comme un 5xx (nouvel essai, puis arrêt)
+                    status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
+                else:  # PDF trop lent pour le lien : mis de côté, sans nouvel essai ni arrêt de la session
+                    self._last_request[cle_politesse(host)] = self.clock()
+                    self._record_done(host)
+                    self._log(event=purpose, url=url, status=0, attempt=attempt, error=f"DelaiDepasse: {exc}",
+                              elapsed_s=round(self.clock() - t0, 3))
+                    raise DocumentTropLent(f"{url} : délai total dépassé ({exc}) : document mis de côté, à "
+                                           "reprendre plus tard.") from exc
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
+            except Exception as exc:  # erreur réseau : traitée comme un 5xx
                 status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
-            self._last_request[host] = self.clock()
+            self._last_request[cle_politesse(host)] = self.clock()
             self._record_done(host)
             self._log(event=purpose, url=url, status=status, bytes=len(content), attempt=attempt,
                       elapsed_s=round(self.clock() - t0, 3), final_url=final_url, error=error)
@@ -1311,6 +1421,8 @@ class IssuerResolver:
         if equities is None and panel_dir is not None:
             try:
                 equities = pd.read_parquet(Path(panel_dir) / "equities.parquet", columns=["symbol", "name"])
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:  # panel absent : alias intégrés seulement
                 equities = None
         self.symbols: set[str] = set(ISSUER_ALIASES)
@@ -1330,6 +1442,8 @@ class IssuerResolver:
                 from brvm_alpha.notes import entities as _ent  # type: ignore
 
                 self._entities = _ent
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:
                 self._entities = None
 
@@ -1381,6 +1495,8 @@ class IssuerResolver:
         if callable(fn):
             try:
                 links = fn(text, kinds=("symbol",))
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:
                 return None
             syms = [c for c in getattr(links, "targets", []) or [] if isinstance(c, str) and c in self.symbols]
@@ -1389,6 +1505,8 @@ class IssuerResolver:
         if callable(fn):
             try:
                 out = fn(text, kinds=("symbol",))
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:
                 return None
             return out if isinstance(out, str) and out in self.symbols else None
@@ -1839,6 +1957,8 @@ def filename_issuer_symbol(doc_url: str | None, resolver: "IssuerResolver | None
         return None
     try:
         return (resolver or default_resolver()).exact(seg)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return None
 
@@ -1997,7 +2117,7 @@ def collect_issuer_reports(session: PoliteSession, symbol: str | None = None, sl
     """
     if slug is None:
         if not symbol or symbol not in ISSUER_SLUGS:
-            raise ValueError(f"Aucune page « rapports » connue pour {symbol!r}.")
+            raise _err.SaisieInvalide(f"Aucune page « rapports » connue pour {symbol!r}.")
         slug = ISSUER_SLUGS[symbol][0]
     since_d = _as_date(since)
     known = {normalize_url(u) for u in known_urls if u}
@@ -2430,12 +2550,14 @@ def pdf_text_layer_is_ocr(path: str | Path) -> bool | None:
     Critère : au moins une police, aucune incorporée, et une image d'au moins 1 000 × 1 000
     points d'image sur 80 % des pages au moins (``pdffonts`` et ``pdfimages -list``).
     """
+    from brvm_alpha import pdf as _pdf
+
     if not (shutil.which("pdffonts") and shutil.which("pdfimages")):
         return None
-    try:
-        fonts = subprocess.run(["pdffonts", str(path)], capture_output=True, timeout=60).stdout.decode("utf-8", "replace")
-        images = subprocess.run(["pdfimages", "-list", str(path)], capture_output=True, timeout=60).stdout.decode("utf-8", "replace")
-    except (OSError, subprocess.SubprocessError):
+    try:  # outils bornés (durée, mémoire, taille de sortie) : brvm_alpha.pdf.lancer_outil
+        fonts = _pdf.lancer_outil([shutil.which("pdffonts"), str(path)], delai=60)[1].decode("utf-8", "replace")
+        images = _pdf.lancer_outil([shutil.which("pdfimages"), "-list", str(path)], delai=60)[1].decode("utf-8", "replace")
+    except (OSError, _pdf.ExtractionRatee):
         return None
     flines = fonts.splitlines()
     if len(flines) < 3 or "emb" not in flines[0]:
@@ -2456,10 +2578,11 @@ def pdf_text_layer_is_ocr(path: str | Path) -> bool | None:
         if width >= 1000 and height >= 1000:
             pages.add(page)
     try:
-        info = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=60).stdout.decode("utf-8", "replace")
+        exe = shutil.which("pdfinfo")
+        info = _pdf.lancer_outil([exe, str(path)], delai=60)[1].decode("utf-8", "replace") if exe else ""
         m = re.search(r"^Pages:\s+(\d+)", info, re.MULTILINE)
         n_pages = int(m.group(1)) if m else n_pages
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, _pdf.ExtractionRatee):
         pass
     return bool(pages) and len(pages) >= 0.8 * max(n_pages, 1)
 
@@ -2487,10 +2610,10 @@ def extract_pdf_text(path: str | Path, min_chars_per_page: int = OCR_MIN_CHARS_P
                 "method_version": None, "error": str(exc)}
     if method == "pdftotext" and shutil.which("pdfinfo"):
         try:
-            info = subprocess.run(["pdfinfo", str(path)], capture_output=True, timeout=60)
-            m = re.search(r"^Pages:\s+(\d+)", info.stdout.decode("utf-8", "replace"), re.MULTILINE)
+            info = _pdf.lancer_outil([shutil.which("pdfinfo"), str(path)], delai=60)[1]
+            m = re.search(r"^Pages:\s+(\d+)", info.decode("utf-8", "replace"), re.MULTILINE)
             n_pages = int(m.group(1)) if m else 0
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, _pdf.ExtractionRatee):
             n_pages = 0
     if not n_pages:
         n_pages = max(1, text.count("\f") + (0 if text.endswith("\f") else 1)) if text else 1
@@ -2576,6 +2699,8 @@ def parse_page_date(value: Any) -> tuple[dt.datetime | None, str | None]:
         return None, None
     try:
         from brvm_alpha.notes.model import is_date_only, to_utc as model_to_utc
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover
         return None, None
     try:
@@ -2704,6 +2829,8 @@ def _latest_cross_section(panels: Mapping[str, Any] | None, panel_dir: str | Pat
         try:
             eq = pd.read_parquet(Path(panel_dir) / "equities.parquet",
                                  columns=["date", "symbol", "sector", "compartment"])
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:
             eq = None
     if eq is None or not {"date", "symbol"} <= set(eq.columns):
@@ -2716,6 +2843,8 @@ def _index_constituents(code: str) -> list[str] | None:
     """Constituants d'un indice via ``notes.entities`` s'il les fournit."""
     try:
         from brvm_alpha.notes import entities as ent  # type: ignore
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return None
     for fname in ("index_constituents", "constituents", "index_members"):
@@ -2723,6 +2852,8 @@ def _index_constituents(code: str) -> list[str] | None:
         if callable(fn):
             try:
                 out = fn(code)
+            except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+                raise
             except Exception:
                 return None
             if out:
@@ -2783,7 +2914,7 @@ def expand_targets(targets: Iterable[str] | None, panels: Mapping[str, Any] | No
         elif re.fullmatch(r"[A-Z]{3,6}", up):
             scope.symbols.add(up)
         else:
-            raise ValueError(f"Code de cible non reconnu : {code!r}")
+            raise _err.SaisieInvalide(f"Code de cible non reconnu : {code!r}")
     return scope
 
 
@@ -2799,6 +2930,8 @@ def load_calendar(panel_dir: str | Path | None = DEFAULT_PANEL_DIR) -> pd.Dateti
 
         s = load_sessions(panel_dir)
         return pd.DatetimeIndex(pd.to_datetime(s["date"]).dt.normalize().unique()).sort_values()
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return pd.DatetimeIndex([])
 
@@ -2809,6 +2942,8 @@ def _sessions_for(panel_dir: str | Path | None) -> pd.DataFrame | None:
         return None
     try:
         return pd.read_parquet(Path(panel_dir) / "sessions.parquet")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return None
 
@@ -2850,6 +2985,8 @@ def _next_session_day(d: dt.date, calendar: Any = None) -> dt.date:
         cal = calendar if isinstance(calendar, SessionCalendar) else (
             SessionCalendar(calendar) if calendar is not None else default_calendar())
         return cal.next_session(pd.Timestamp(d)).date()
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         nxt = d + dt.timedelta(days=1)
         while nxt.weekday() >= 5:
@@ -2992,6 +3129,8 @@ def note_id_for(item: Mapping[str, Any]) -> str:
         from brvm_alpha.notes.model import make_note_id
 
         return make_note_id("auto", url=basis)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return hashlib.sha1(("auto|" + basis + "|").encode("utf-8")).hexdigest()
 
@@ -3105,6 +3244,8 @@ def _tradable(published_at: Any, calendar: Any = None, precision: str = "datetim
     fériés fixes), sinon la règle locale :func:`first_tradable_session`."""
     try:
         from brvm_alpha.notes.model import first_tradable_session as model_fts
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         model_fts = None
     if model_fts is not None:
@@ -3122,10 +3263,14 @@ def _index_targets(title: str) -> list[str]:
     """Indices nommés dans un titre (``notes.entities``), sinon liste vide."""
     try:
         from brvm_alpha.notes.entities import link_entities
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover - module de liaison absent
         return []
     try:
         return list(link_entities("", title, kinds=("index",)).targets)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover
         return []
 
@@ -3231,6 +3376,8 @@ def _store_frame(store: Any) -> pd.DataFrame:
                 return df
         except TypeError:
             continue
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:
             break
     return pd.DataFrame()
@@ -3243,6 +3390,8 @@ def _store_has(store: Any, note_id: str, known_ids: set[str]) -> bool:
         return store.get(note_id) is not None
     except (KeyError, LookupError, FileNotFoundError):
         return False
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         return False
 
@@ -3275,6 +3424,8 @@ def _journal_doc_date(r: Mapping[str, Any]) -> dt.date | None:
     """
     try:
         url = r.get("url")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         url = None
     return date_from_filename(str(url) if isinstance(url, str) else None) or _as_date(r.get("published_at"))
@@ -3403,6 +3554,8 @@ def _dividends_for(panel_dir: str | Path | None) -> pd.DataFrame | None:
     try:
         path = Path(panel_dir) / "dividends.parquet"
         return pd.read_parquet(path) if path.exists() else None
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # panel illisible : la présomption reste
         return None
 
@@ -3519,7 +3672,8 @@ class ResearchReport:
             "quota_restant": int(self.remaining),
             "arret": bool(self.stopped or self.stop_kind),
             "raison_arret": self.stop_kind,
-            "motif_arret": self.stopped,
+            "motif_arret": self.stopped or (f"quota de {self.max_requests} requêtes atteint" if self.stop_kind == "quota"
+                                            else None),
             "blocage": dict(self.blocked) if self.blocked else None,
             "elements_lus": int(self.n_items),
             "nouvelles_notes": int(self.n_new),
@@ -3571,6 +3725,8 @@ def _is_backdated(now: dt.datetime) -> bool:
     """``now`` est-il antérieur à l'heure réelle (reprise d'historique) ? (``model.is_backdated``)."""
     try:
         from brvm_alpha.notes.model import is_backdated
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:  # pragma: no cover
         return False
     return bool(is_backdated(now))
@@ -3874,7 +4030,7 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
     """
     p = urlparse(url)
     if p.scheme not in ("http", "https") or not url_host(url):
-        raise ValueError(f"URL invalide : {url!r} (http ou https attendu).")
+        raise _err.SaisieInvalide(f"URL invalide : {url!r} (http ou https attendu).")
     why = _disabled_domain(url)
     if why and not allow_disabled:
         raise SourceDisabled(
@@ -3894,7 +4050,11 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
     if res.status != 200:
         raise ResearchError(f"La page {url} a répondu HTTP {res.status} : aucune note créée.")
     tags = ["url"]
-    is_pdf = res.content.startswith(b"%PDF") or "pdf" in res.content_type
+    # Voie PDF seulement si le contenu EST un PDF (« %PDF » en tête) : un Content-Type PDF sur une page HTML
+    # (page d'erreur, page d'attente) créait une note vide ; il est traité comme une page.
+    is_pdf = res.content.lstrip()[:5].startswith(b"%PDF")
+    if not is_pdf and "pdf" in res.content_type and not res.content.strip():
+        raise ResearchError(f"{url} : document annoncé comme PDF mais vide : aucune note créée.")
     if is_pdf:
         with tempfile.TemporaryDirectory() as tmp:
             pdf = Path(tmp) / "doc.pdf"
@@ -3911,6 +4071,8 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
     else:
         try:
             content = extract_html_content(res.content, url)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception as exc:  # page malformée : erreur explicite, jamais une exception brute
             raise ResearchError(f"La page {url} est illisible ({type(exc).__name__}: {exc}) : aucune note créée.") from exc
         text = content["text"]
@@ -3947,6 +4109,8 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
         from brvm_alpha.notes.model import make_note_id
 
         note_id = make_note_id("url", url=normalize_url(url))
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         note_id = hashlib.sha1(("url|" + normalize_url(url) + "|").encode("utf-8")).hexdigest()
     note = _make_note(
@@ -3963,6 +4127,8 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
     existing = None
     try:
         existing = store.get(note_id)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception:
         existing = None
     if existing is not None:
@@ -3976,6 +4142,8 @@ def fetch_url_note(url: str, store: Any, targets: Iterable[str] | None = None, *
             store.update(note_id, **changes)
         try:
             return store.get(note_id)
+        except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+            raise
         except Exception:  # pragma: no cover
             return note
     _store_add(store, note, now if explicit_now else None)
@@ -4242,10 +4410,24 @@ def enrich_documents(store: Any, *, max_docs: int = 20, targets: Iterable[str] |
         return ((docs_dir / f"{h}.json").exists() or (docs_dir / f"{h}.pdf").exists()
                 or sess.cache_get(url) is not None)
 
+    if not dry_run and not sess.offline:
+        purger_pdf_du_cache_http(sess.cache_dir)  # PDF en double dans le cache HTTP (anciennes versions)
+
+    def set_aside(url: str) -> bool:
+        """Document mis de côté (trop lent pour le lien) depuis moins de DOC_LENT_JOURS jours : il passe son tour."""
+        try:
+            d = json.loads((docs_dir / f"{url_hash(url)}.lent.json").read_text(encoding="utf-8"))
+            return (now_utc - to_utc(d["date"])).total_seconds() < DOC_LENT_JOURS * 86_400
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+
     for cand in candidates:
         if out["n_selected"] >= int(max_docs):
             break
         url = cand["url"]
+        if not cand["already_read"] and set_aside(url):
+            out["n_skipped"] += 1  # trop lent au dernier essai : les suivants passent avant lui
+            continue
         detail: dict[str, Any] = {"note_id": cand["note_id"], "symbol": cand["symbol"], "title": cand["title"],
                                   "url": url, "status": "erreur", "score_before": None, "score_after": None,
                                   "extracted": {}, "event_type": cand["event_type"], "reason": None,
@@ -4284,6 +4466,18 @@ def enrich_documents(store: Any, *, max_docs: int = 20, targets: Iterable[str] |
             except OfflineCacheMiss:
                 out["n_skipped"] += 1
                 out["n_selected"] -= 1
+                continue
+            except DocumentTropLent as exc:  # lien lent : mis de côté (daté), on passe au document suivant
+                detail["status"], detail["reason"] = "a_reessayer", str(exc)
+                out["details"].append(detail)
+                out["n_failed"] += 1
+                if not dry_run:
+                    try:
+                        _fichiers.ecrire_atomique(docs_dir / f"{url_hash(url)}.lent.json", json.dumps(
+                            {"url": url, "date": now_utc.isoformat(timespec="seconds"), "motif": str(exc)},
+                            ensure_ascii=False))
+                    except OSError:
+                        pass
                 continue
             note = store.get(cand["note_id"])
             old_an = dict(_note_get(note, "analysis") or {})
@@ -4385,7 +4579,7 @@ def enrich_documents(store: Any, *, max_docs: int = 20, targets: Iterable[str] |
 
 __all__ = [
     "BASE_URL", "USER_AGENT", "BRVM_LISTS", "ISSUER_SLUGS", "ISSUER_ALIASES", "BRVM30_T4_2026",
-    "ResearchError", "RobotsDisallowed", "AccessBlocked", "QuotaExceeded", "ServerUnavailable",
+    "ResearchError", "RobotsDisallowed", "AccessBlocked", "QuotaExceeded", "ServerUnavailable", "DocumentTropLent",
     "OfflineCacheMiss", "SourceDisabled", "FetchResult", "PoliteSession", "IssuerResolver",
     "parse_views_table", "parse_list_page", "parse_issuers_index", "parse_issuer_reports",
     "collect_list", "collect_issuers_index", "collect_issuer_reports", "parse_boc_events",

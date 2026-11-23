@@ -35,6 +35,8 @@ from typing import Iterable, Mapping
 
 import pandas as pd
 
+from brvm_alpha import erreurs as _err
+
 COUNTRY_NAMES = {
     "CI": "Côte d'Ivoire",
     "SN": "Sénégal",
@@ -355,7 +357,7 @@ NON_UEMOA_ZONES = ("GN", "SL", "PANAFRICAIN")
 def economic_exposure(symbol: str, variant: str = "detention") -> dict[str, float]:
     """Vecteur λ d'un titre (somme = 1)."""
     if variant not in ECONOMIC_EXPOSURE:
-        raise ValueError(f"variante inconnue : {variant!r} ({', '.join(ECONOMIC_EXPOSURE)})")
+        raise _err.SaisieInvalide(f"variante inconnue : {variant!r} ({', '.join(ECONOMIC_EXPOSURE)})")
     symbol = symbol.upper().strip()
     lam = ECONOMIC_EXPOSURE[variant].get(symbol)
     return dict(lam) if lam is not None else {country_of(symbol): 1.0}

@@ -24,6 +24,9 @@ brvm-alpha/
                            # mode embarqué (est_embarque), contrôle des écritures hors de l'arbre du code
     etat.py                # état de l'installation : commande etat et adresse /etat.json (lecture seule)
     erreurs.py             # erreurs prévues et codes de retour (0, 1, 2, 4, 5, 6, 7, 8, 130 ; jamais 3)
+    demarrage.py           # garde de « python -m brvm_alpha », avant pandas : TERM, mémoire trop basse (6),
+                           # paquet manquant (8), toujours un objet JSON ; lien_parent.py : serveur de processus
+                           # du panel lié au processus principal
     fichiers.py            # écritures atomiques (fsync + rename), verrous fcntl.flock, bascule de dossier
     net.py                 # session HTTP unique, liste blanche, plafonds de taille, délai total, adresses refusées
     pdf.py                 # extraction PDF bornée (pdftotext obligatoire en mode embarqué)
@@ -473,7 +476,7 @@ Modèle v1 + additif v1.1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §8.4, §9
 - **Point d'entrée** : `main(argv)` analyse les arguments (`FrArgumentParser` ; une erreur d'arguments lève
   `SystemExit(2)` après le message et, si `--format json` figure dans `argv` (`json_demande`), l'objet JSON
   d'erreur), puis `run(args)` : `startup_checks` (mode embarqué : `paths.verifier_configuration()`, refus de
-  `validate` et `backtest` en code 8 ; chemins des options rendus absolus par `paths.resoudre_chemin_option`,
+  `validate`, `backtest` et `serve` en code 8 ; chemins des options rendus absolus par `paths.resoudre_chemin_option`,
   `--sortie` contrôlé avant tout calcul), commande, puis table des codes de `brvm_alpha.erreurs`
   (`erreurs.code_retour` : 0, 1, 2, 4, 5, 6, 7, 8, 130 ; **jamais 3**, un code 3 devient 7 ;
   `BrokenPipeError` : sortie silencieuse). Le signal TERM devient une interruption (code 130). Avec
@@ -585,9 +588,13 @@ d'emploi complet et le **contrat du relais** sont dans [DEPLOIEMENT.md](DEPLOIEM
   `paths.resoudre_chemin_option(valeur, base="donnees"|"rapports")` résout un chemin relatif d'option,
   `paths.version_livree()` lit `VERSION`. `brvm_alpha/__init__.py` pose alors un fil BLAS, le pool mémoire
   « system » d'Arrow et deux arènes de malloc (`ressources.regler_processus_embarque`).
-- **Codes** : `erreurs.code_retour(exc)`, `type_erreur(exc)`, `erreur_json(exc, bandeau)` ; classes
-  `DonneesAbsentes` (1), `SaisieInvalide` (2), `VerrouOccupe` (4), `AccesRefuse` (5), `ConfigurationError` (8) ;
-  `MemoryError` → 6, exception imprévue → 7, Ctrl+C → 130 ; jamais 3.
+- **Codes** : `erreurs.code_retour(exc)`, `type_erreur(exc)`, `erreur_json(exc, bandeau)`, `code_sur(code)` (tout
+  code hors table → 7) ; classes `DonneesAbsentes` (1, dont `JournalIllisible`), `SaisieInvalide` (2, dont
+  `CleInconnue`), `VerrouOccupe` (4), `AccesRefuse` (5), `ConfigurationError` (8) ; `MemoryError` et
+  bibliothèque impossible à charger faute de mémoire (`est_memoire`) → 6 ; panel `.parquet` illisible → 1 ;
+  paquet manquant ou dossier configuré non inscriptible (`est_configuration`) → 8 ; toute autre exception,
+  `ValueError` et `KeyError` d'une bibliothèque comprises → 7 ; Ctrl+C et TERM → 130 ; jamais 3. Chaque
+  `except Exception` du moteur laisse passer `MemoryError` (test `test_no_broad_handler_swallows_memory_errors`).
 - **Fichiers** : `fichiers.ecrire_atomique(chemin, données)`, `ecrire_atomique_avec(chemin, écrire)`,
   `fichier_atomique(chemin)`, `remplacer_dossier(nouveau, cible)`, `verrou(chemin, *, attente, partage, creer)`
   (`fcntl.flock`, libéré à la mort du processus ; `BRVM_ALPHA_ATTENTE_VERROU`).
@@ -940,7 +947,7 @@ changements ne touche `backtest/`, `validation/`, `strategy/`, `configs/` ni les
   (`FOREIGN_CURRENCY`, motif dans `doc_rejected`).
 - `store.NoteStore.find_duplicate(note, max_age_days=30)` : note de l'analyste active et récente de même
   contenu (cibles, titre et texte normalisés, avis, conviction, adresse) ; la ligne de commande refuse le
-  doublon (code 2, `--forcer`), l'interface répond 409 (case « Enregistrer quand même »).
+  doublon (code 0, `cree: false`, `--forcer` pour l'écrire quand même), l'interface répond 409 (case « Enregistrer quand même »).
 - `research` : `_journal_doc_date` (la même date — celle du document — est comparée des deux côtés du
   rapprochement : une relance hors ligne n'ajoute plus de note) ; `_merge_publication` ne date jamais un
   document avant son propre fichier (« Annule et remplace ») ; `reconcile_dividends_with_panel` (dividende

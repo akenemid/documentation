@@ -41,6 +41,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 from contextlib import contextmanager
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -120,6 +121,8 @@ def _parse_one(path: str) -> dict[str, Any]:
     name = os.path.basename(path)
     try:
         day = parse_boc_file(path)
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
     except Exception as exc:  # un fichier corrompu ne doit pas bloquer le panel
         return {"file": name, "error": f"{type(exc).__name__}: {exc}", "warnings": []}
     eq = day.equities.copy()
@@ -314,19 +317,42 @@ def _parse_all(todo: list[Path], workers: int | None) -> list[dict[str, Any]]:
     # « fork » est déconseillé depuis un processus multi-threadé (pyarrow...).
     methods = multiprocessing.get_all_start_methods()
     ctx = multiprocessing.get_context("forkserver" if "forkserver" in methods else "spawn")
+    if ctx.get_start_method() == "forkserver":
+        # Le serveur de processus meurt avec ce processus (brvm_alpha.lien_parent), ses travailleurs avec lui.
+        ctx.set_forkserver_preload(["__main__", "brvm_alpha.lien_parent"])
     # Fils BLAS à 1 dans les processus de travail : variables posées avant leur import de numpy.
     saved = {k: os.environ.get(k) for k in ressources.VARIABLES_FILS}
     ressources.limiter_fils()
+    old_hook = threading.excepthook
+    threading.excepthook = _sans_etat_invalide(old_hook)
     try:
         with ProcessPoolExecutor(max_workers=min(n_workers, len(todo)), mp_context=ctx,
                                  initializer=ressources.initialiser_travailleur) as pool:
-            return list(pool.map(_parse_one, [str(p) for p in todo], chunksize=8))
+            try:
+                return list(pool.map(_parse_one, [str(p) for p in todo], chunksize=8))
+            except BaseException:  # interruption (TERM, Ctrl+C), mémoire : travaux en attente annulés
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
     finally:
+        threading.excepthook = old_hook
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+def _sans_etat_invalide(hook: Any) -> Any:
+    """Fil de gestion du pool : l'``InvalidStateError`` d'un travail déjà annulé (arrêt par TERM, défaut de
+    ``concurrent.futures``) n'est pas une erreur du moteur ; elle n'écrit plus de trace sur la sortie d'erreur."""
+    from concurrent.futures import InvalidStateError
+
+    def excepthook(args: Any) -> None:
+        if isinstance(args.exc_value, InvalidStateError):
+            return
+        hook(args)
+
+    return excepthook
 
 
 def _build_panel_into(boc_dir: Path, old_dir: Path, out_dir: Path, *, workers: int | None,

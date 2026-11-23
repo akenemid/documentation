@@ -1,7 +1,9 @@
-import sys, glob, re, html
-sys.path.insert(0,'/tmp/claude-0/-home-user-documentation/b095b722-74b3-5e89-8589-8e6133bd6c39/scratchpad/scripts')
+# Étude (annexe 07) : ETUDE_DOSSIER désigne le dossier de travail de l'étude (pages/ et fichiers lus) ;
+# les modules voisins (parse_views, names, evlib) sont lus dans le dossier de ce script.
+import os, sys, glob, re, html
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np, pandas as pd, evlib, names
-S='/tmp/claude-0/-home-user-documentation/b095b722-74b3-5e89-8589-8e6133bd6c39/scratchpad/'
+S=os.path.join(os.environ.get('ETUDE_DOSSIER', '.'), '')
 slug2name={l.strip().split('/')[-1]:None for l in open(S+'issuer_eq.txt')}
 SLUGSYM={'air-liquide-ci':'SIVC','bank-africa-bf':'BOABF','bank-africa-bn':'BOAB','bank-africa-ci':'BOAC','bank-africa-ml':'BOAM','bank-africa-ng':'BOAN','bank-africa-sn':'BOAS','bbgci':'BBGC','bernabe-ci':'BNBC','bici-ci':'BICC','biic':'BICB','bollore-transport-logistics':'SDSC','cfao-motors-ci':'CFAC','cie-ci':'CIEC','coris-bank-international':'CBIBF','crown-siem-ci':'SEMC','ecobank-ci':'ECOC','ecobank-tg':'ETIT','filtisac-ci':'FTSC','lnb':'LNBB','movis-ci':'SVOC','nei-ceda-ci':'NEIC','nestle-ci':'NTLC','nsbc':'NSBC','onatel-bf':'ONTBF','oragroup':'ORGT','orange-ci':'ORAC','palm-ci':'PALC','safca-ci':'SAFC','saph-ci':'SPHC','servair-abidjan-ci':'ABJC','setao-ci':'STAC','sgb-ci':'SGBC','sib':'SIBC','sicable':'CABC','sicor':'SICC','sitab':'STBC','smb':'SMBC','sodeci':'SDCC','sogb':'SOGC','solibra':'SLBC','sonatel':'SNTS','sucrivoire':'SCRC','total':'TTLC','total-senegal-sa':'TTLS','totalenergies-marketing-sn':'TTLS','tractafric-ci':'PRSC','unilever-ci':'UNLC','uniwax-ci':'UNXC','vivo-energy-ci':'SHEC'}
 rows=[]

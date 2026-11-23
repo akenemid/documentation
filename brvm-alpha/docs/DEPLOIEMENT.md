@@ -35,14 +35,18 @@ se trouve à la racine du code (dossier parent du paquet `brvm_alpha`, écrit pa
 fonction le décide : `brvm_alpha.paths.est_embarque()`. Alors :
 
 - `BRVM_ALPHA_DONNEES` et `BRVM_ALPHA_RAPPORTS` sont **obligatoires**, en chemins **absolus**, hors du
-  dossier du code. Sinon, **toute** commande (sauf `--help`) sort en code 8 avant la moindre écriture ;
+  dossier du code, et désignent des **dossiers existants** : le module Odoo les crée à l'installation, le
+  moteur ne les crée jamais (une faute de frappe enverrait sinon la collecte et le journal des notes au
+  mauvais endroit). Sinon, **toute** commande (sauf `--help`) sort en code 8 avant la moindre écriture ;
 - **aucune écriture dans l'arbre du code** : journal des notes, bulletins, panel, rapports, exports,
   verrous et fichiers temporaires vont dans les dossiers de données et de rapports, ou dans le dossier
   temporaire du système ; les fichiers `.pyc` ne sont pas écrits (`-B`, et `sys.dont_write_bytecode`) ;
 - un chemin **relatif** donné en option (`--panel-dir`, `--boc-dir`, `--racine`, `--portefeuille`,
   `--fichier`) s'entend depuis `BRVM_ALPHA_DONNEES` (un `data/` de tête est retiré) ; `--sortie` depuis
-  `BRVM_ALPHA_RAPPORTS` ; « .. » est refusé (code 2). `--sortie` doit rester dans les dossiers de données,
-  de rapports ou des fichiers temporaires du système (code 2 sinon) ;
+  `BRVM_ALPHA_RAPPORTS` ; « .. » est refusé (code 2). `--sortie` doit rester dans le dossier des rapports ou
+  celui des fichiers temporaires du système, et jamais sur un fichier du moteur (`notes/`, `panel/`,
+  `boc_text/` des données) ; `--fichier` et `--portefeuille` ne lisent que dans les dossiers de données, de
+  rapports ou temporaire (code 2 sinon). Côté Odoo, la règle reste : chemins fabriqués par le module seul ;
 - `pdftotext` (paquet système **poppler-utils**) est **obligatoire** : sans lui, `update`, `notes
   research --pdf N` (N > 0) et `notes lire` sortent en code 8 avec le message « pdftotext absent :
   installer poppler-utils » ; `etat` le signale (clé `extracteur_pdf.manquant`) ;
@@ -51,7 +55,8 @@ fonction le décide : `brvm_alpha.paths.est_embarque()`. Alors :
 - un fil de calcul (BLAS, Arrow), le pool mémoire « system » d'Arrow et deux arènes de malloc :
   réservation de mémoire virtuelle divisée par 2 à 3 (§ A.10) ;
 - la version est lue dans `VERSION` (clé `version` de `etat`) ;
-- `validate` et `backtest` sont **refusés** (code 8) : ils ne sont pas livrés dans Odoo ;
+- `validate`, `backtest` et `serve` sont **refusés** (code 8, avant même l'analyse des arguments) : la
+  validation n'est pas livrée dans Odoo, et aucun serveur web du moteur ne tourne en production (§ A.16) ;
 - `recommend` et `report` **refusent un historique incomplet** (code 1, § A.11), sauf
   `--accepter-historique-incomplet`.
 
@@ -66,7 +71,8 @@ au § A.15.
 | `BRVM_ALPHA_DONNEES` | dossier des données : `boc_text/`, `panel/`, `notes/` (journal, cache, verrous) | **obligatoire**, absolu |
 | `BRVM_ALPHA_RAPPORTS` | rapports écrits (`rapport_AAAA-MM-JJ.html`, exports, `--sortie`) | **obligatoire**, absolu |
 | `BRVM_ALPHA_PROXY` | mandataire HTTPS explicite pour www.brvm.org | facultatif |
-| `BRVM_ALPHA_ATTENTE_VERROU` | attente maximale d'un verrou, en secondes (défaut 10) | facultatif |
+| `BRVM_ALPHA_ATTENTE_VERROU` | attente maximale d'un verrou, en secondes (défaut 10) ; vaut pour **tous** les verrous, journal des notes compris | facultatif |
+| `BRVM_ALPHA_MEMOIRE_MIN` | limite de mémoire virtuelle minimale, en Mo (défaut 1024 ; `0` : aucun contrôle) ; en dessous, code 6 sans rien charger (§ A.10) | facultatif |
 | `TMPDIR` | dossier des fichiers temporaires (défaut `/tmp`) | facultatif |
 
 Avec `python3 -I`, les variables `PYTHON…` (dont `PYTHONPATH` et `PYTHONDONTWRITEBYTECODE`) sont
@@ -122,7 +128,9 @@ manylinux2014_x86_64 --python-version 3.11.15 --implementation cp --abi cp311 --
 fautif est retiré, code 1). N'installe rien. Refuse un dossier relatif ou situé dans le dépôt (code 2) :
 l'archive et les roues vont dans le dépôt **privé** de l'ERP, jamais ici (`.gitignore` écarte `*.whl` et
 `cpython-*.tar.gz`). `BRVM_DEPUIS=/dossier` reprend des fichiers déjà téléchargés au lieu de les
-télécharger (ils sont vérifiés de la même façon). Mesuré ici : 8 s.
+télécharger (ils sont vérifiés de la même façon). `BRVM_PIP_PYTHON` (défaut `python3`) : interpréteur qui lance
+`pip download` sur la machine de préparation (il n'a pas besoin d'être en 3.11 : les options `--platform` et
+`--python-version` fixent les roues). Mesuré ici : 8 s.
 
 **Installation** (dans un `RUN` du Dockerfile de l'image Odoo, sans réseau) :
 
@@ -131,8 +139,8 @@ sh deploiement/installer-python-et-roues.sh /opt/rz-brvm-alpha /chemin/paquets /
 # PREFIXE vaut /opt/rz-brvm-alpha s'il est omis : sh installer-python-et-roues.sh DOSSIER CODE
 ```
 
-1. vérifie taille et sha256 de l'archive et des 16 roues, **et rien d'autre dans le dossier**, avant toute
-   extraction ;
+1. vérifie taille et sha256 de l'archive et des 16 roues, **et rien d'autre dans le dossier des roues** (tout
+   fichier de plus est refusé, `*.whl` ou non, fichiers cachés compris), avant toute extraction ;
 2. extrait l'archive dans `PREFIXE/python` (dossier temporaire voisin, puis renommage) et contrôle que
    c'est CPython 3.11.15 ;
 3. installe les roues **hors ligne** :
@@ -143,10 +151,12 @@ sh deploiement/installer-python-et-roues.sh /opt/rz-brvm-alpha /chemin/paquets /
    dossier du code (le code reste dans le module Odoo) ;
 5. **contrôle final** : import des 16 paquets et de `brvm_alpha`, puis `PREFIXE/python/bin/python3.11 -I -B -m
    brvm_alpha etat --format json` en mode embarqué, avec des dossiers de données et de rapports
-   temporaires : code 0 ou 1 **et** un objet JSON portant la clé `bandeau`, sinon échec.
+   temporaires (créés d'abord : le moteur ne les crée pas) : code 0 ou 1 **et** un objet JSON portant la clé
+   `bandeau`, sinon échec.
 
 Codes : 0 installé et vérifié ; 1 échec ; 2 mauvaise utilisation ; jamais 3. Refuse un `PREFIXE/python`
-déjà présent ou un `PREFIXE/lib` non vide. Mesuré ici : 15 s. Paquet système à ajouter à l'image :
+déjà présent ou un `PREFIXE/lib` non vide. `BRVM_LIB` (défaut `PREFIXE/lib`, chemin absolu exigé) : dossier où
+les roues sont installées (`pip --target`), listé dans le `.pth`. Mesuré ici : 15 s. Paquet système à ajouter à l'image :
 **poppler-utils** (`apt-get install -y --no-install-recommends poppler-utils`, puis `pdftotext -v` pour
 faire échouer la construction s'il manque). Le script le signale s'il est absent, sans échouer.
 
@@ -170,8 +180,15 @@ Règles du lanceur :
 - **mémoire** : Odoo ne pose que la limite **douce** de `RLIMIT_AS` (`limit_memory_hard`), dont hérite le
   sous-processus ; le lanceur la **relève à 3 Go** (sans dépasser la limite dure). Toutes les commandes
   embarquées tiennent sous 0,9 Go de mémoire virtuelle, enfants compris (§ A.10) ;
+- **dossiers** : le module crée `BRVM_ALPHA_DONNEES` et `BRVM_ALPHA_RAPPORTS` à l'installation (code 8 s'ils
+  manquent) ;
 - **groupe de processus** : nouveau groupe (`start_new_session=True`) ; au-delà du délai, `TERM` au
-  **groupe** (le moteur s'arrête proprement : code 130), puis `KILL` au groupe après 15 s ;
+  **groupe** (le moteur s'arrête proprement : code 130, dès le démarrage, chargement de pandas compris), puis
+  `KILL` au groupe après 15 s. Le `KILL` au groupe est **obligatoire** : un processus figé dans une
+  bibliothèque compilée (OpenBLAS, Arrow) sous une mémoire trop basse ne traite plus `TERM`. Toujours tuer le
+  **groupe**, jamais le seul PID : les processus de travail du panel et leur serveur de processus meurent avec
+  le processus principal (`PR_SET_PDEATHSIG`), mais seul un `KILL` au groupe nettoie tout à coup sûr (cas du
+  tueur de mémoire du noyau) ;
 - **sorties** : sortie standard et sortie d'erreur redirigées vers des **fichiers** (jamais un tube non
   lu, qui figerait le moteur) ; lire l'objet JSON dans le fichier de sortie standard ;
 - **une seule opération longue à la fois** côté Odoo (§ A.12 : verrous du moteur).
@@ -208,7 +225,7 @@ def lancer(args, delai_s, sortie, erreurs, donnees, rapports):
     try:
         with open(sortie, encoding="utf-8") as fh:
             resultat = json.load(fh)  # un objet : {"ok": …, "bandeau": …}, erreur comprise
-    except ValueError:  # seulement si le processus a été tué par KILL : rien n'a pu être écrit
+    except ValueError:  # aucun objet : tué par KILL (ou par le chargeur, § A.7) avant d'avoir pu répondre
         resultat = {"ok": False, "code": 7, "erreur": "interne", "message": "moteur arrêté sans réponse"}
     return code, resultat
 ```
@@ -226,17 +243,24 @@ bibliothèque devient 7.
 | Code | `erreur` (JSON) | Sens | Exemples |
 |---|---|---|---|
 | 0 | — | succès | |
-| 1 | `donnees_absentes`, `historique_incomplet` | données absentes, historique non prêt, quota de requêtes atteint | panel introuvable ; `recommend` sur un historique incomplet (mode embarqué) ; `update` arrêté au quota |
-| 2 | `saisie_invalide` | saisie invalide ou refusée, erreurs d'arguments comprises | option inconnue, `--couts inconnu`, date dans S1, URL invalide, `--racine` inexistant |
+| 1 | `donnees_absentes`, `historique_incomplet` | données absentes ou illisibles, historique non prêt, quota de requêtes atteint | panel introuvable ou abîmé (`.parquet` illisible : « panel illisible ») ; journal des notes présent mais illisible ; `recommend` sur un historique incomplet (mode embarqué) ; `update` arrêté au quota |
+| 2 | `saisie_invalide` | saisie invalide ou refusée, erreurs d'arguments comprises ; **seulement** les saisies | option inconnue, `--couts inconnu`, `--delai nan`, date dans S1, URL invalide, `--racine` inexistant, cible inconnue, `--sortie` vers un dossier |
 | 4 | `verrou_occupe` | verrou tenu par une autre opération au-delà du délai | deux `panel`, deux `update`, deux `notes research` à la fois |
 | 5 | `acces_refuse` | accès refusé ou réseau | HTTP 403 ou 429, site bloqué, liste blanche, délai dépassé |
-| 6 | `memoire` | mémoire insuffisante (`MemoryError`) | limite de mémoire virtuelle trop basse |
-| 7 | `interne` | erreur interne (exception non prévue) ; trace sur la sortie d'erreur | défaut du moteur |
-| 8 | `configuration` | configuration manquante ou invalide | dossiers absents ou relatifs en mode embarqué, pdftotext absent, `validate` ou `backtest` en mode embarqué |
+| 6 | `memoire` | mémoire insuffisante | `MemoryError` (jamais avalée : aucun résultat dégradé en code 0) ; bibliothèque compilée impossible à charger faute de mémoire (« failed to map segment ») ; processus de travail du panel mort sous une limite de mémoire ; limite `RLIMIT_AS` sous 1 Go (refus au démarrage) |
+| 7 | `interne` | erreur interne (exception non prévue) ; trace sur la sortie d'erreur | défaut du moteur ; `ValueError` ou `KeyError` d'une bibliothèque |
+| 8 | `configuration` | configuration manquante ou invalide | dossiers absents, relatifs ou inexistants en mode embarqué, pdftotext absent, paquet Python manquant, dossier de données ou de rapports non inscriptible (lecture seule, droits, disque plein), état de politesse illisible, `validate`, `backtest` ou `serve` en mode embarqué |
 | 130 | `interruption` | interruption : Ctrl+C ou signal TERM | délai du lanceur dépassé |
 
-Un code hors table vient de l'interpréteur, pas du moteur : 120 (sortie standard impossible à vider), ou
-une valeur négative côté Python (tué par un signal, par exemple −9 pour `KILL`). Le traiter comme 7.
+Le moteur ramène tout autre code à 7 (un `SystemExit(259)` sortirait sinon en 3, car le statut d'un
+processus est le code modulo 256). Un code hors table vient de l'interpréteur ou du chargeur, pas du moteur :
+120 (sortie standard impossible à vider), 127 (« cannot allocate memory for thread-local data » : le chargeur
+dynamique n'a pas pu démarrer l'interpréteur), 1 sans objet JSON (OpenBLAS ou l'interpréteur avant le
+moteur), ou une valeur négative côté Python (tué par un signal : −9 pour `KILL`, −11 pour une erreur de
+segmentation sous une mémoire trop basse, −15 pour un `TERM` reçu dans les toutes premières millisecondes,
+avant que la garde du démarrage ne soit posée). Sous la limite du § A.6 (3 Go), aucun de ces cas n'a été observé.
+Les traiter comme 7. Avec `--format json`, une sortie standard fermée par le lecteur donne 1 (l'objet n'a pas
+pu être lu).
 
 ### A.8 Sortie JSON
 
@@ -244,7 +268,9 @@ Avec `--format json`, la sortie standard porte **exactement un objet JSON**, err
 avertissements et progression vont sur la sortie d'erreur. Succès : `{"ok": true, …, "bandeau": "…"}`.
 Erreur : `{"ok": false, "code": N, "erreur": "<type>", "message": "<texte français>", "bandeau": "…"}`,
 parfois avec un bilan en plus (`update`, `notes research`, `report`). Une erreur d'arguments donne aussi
-cet objet (code 2). Exemple réel :
+cet objet (code 2), comme un échec au démarrage (mémoire trop basse : 6 ; paquet manquant : 8 ; TERM : 130).
+`--help` avec `--format json` : l'aide sur la sortie d'erreur et `{"ok": true, "aide": "…", "bandeau": "…"}`
+sur la sortie standard (code 0). Exemple réel :
 
 ```json
 {
@@ -278,8 +304,8 @@ détaché.
 | `indices dossier IDX:BRVM-30` | 3,8 s | court | rien | — |
 | `explain SNTS` | 6,8 s | court | rien | — |
 | `recommend --capital 10000000 [--portefeuille f.csv] [--cash] [--couts central]` | 14,6 s | court | rien, ou `--sortie` (écriture atomique) | — |
-| `report --capital 10000000 [--sortie nom.html]` | 18,7 s | long | `<rapports>/rapport_AAAA-MM-JJ.html` ou `--sortie` (atomique) | — |
-| `update --sans-panel [--max-requetes 200]` | minutes | long | `boc_text/boc_*.txt.gz`, `.meta.json`, `.missing`, `.bad` ; `notes/cache/politeness.json`, `notes/fetch_log.jsonl` | `boc_text/.telechargement.lock`, `notes/cache/politeness.json.lock` |
+| `report --capital 10000000 --sortie nom.html` | 18,7 s | long | `--sortie` (atomique) ; sans `--sortie`, `<rapports>/rapport_AAAA-MM-JJ.html`, **même nom pour tout capital** : Odoo passe toujours `--sortie` | — |
+| `update --sans-panel [--max-requetes 200] [--delai 10] [--rouvrir AAAA-MM-JJ[..AAAA-MM-JJ]]` | minutes | long | `boc_text/boc_*.txt.gz`, `.meta.json`, `.missing`, `.bad` ; `notes/cache/politeness.json`, `notes/fetch_log.jsonl` | `boc_text/.telechargement.lock`, `notes/cache/politeness.json.lock` |
 | `update --simulation` | 0,6 s | court | rien | — |
 | `panel` (rien de nouveau) | 5,8 s | long | `panel/` (construction à côté, puis bascule) | `.panel.construction.lock`, attend `.panel.lecture.lock` |
 | `panel --force` (tout l'historique) | 50 s | long | `panel/` | idem |
@@ -288,7 +314,10 @@ détaché.
 | `notes lire [--max 20] [--hors-ligne]` | 10 s hors ligne ; ≈ 10 s par document en ligne | long | `notes/notes.jsonl`, `notes/cache/docs/` | `notes/.recherche.lock`, `notes/notes.jsonl.lock` |
 
 Les verrous sont des `flock` : jamais supprimés, rendus par le système à la mort du processus ; au-delà
-de `BRVM_ALPHA_ATTENTE_VERROU` secondes (10 par défaut), code 4. Les chemins s'entendent dans
+de `BRVM_ALPHA_ATTENTE_VERROU` secondes (10 par défaut, pour tous les verrous, journal des notes compris),
+code 4. Les commandes de **lecture** (`recommend`, `report`, `indices`, `explain`) ne prennent **pas** le verrou
+de lecture du panel (seul `etat` le prend) : lancées pendant un `panel`, elles pourraient lire deux versions
+du panel ; Odoo enchaîne donc ses travaux (§ A.12). Les chemins s'entendent dans
 `BRVM_ALPHA_DONNEES` (`<rapports>` : `BRVM_ALPHA_RAPPORTS`). Les fichiers temporaires d'une écriture
 atomique (`.<nom>.<pid>.<jeton>.part`, même dossier) disparaissent au renommage ; les processus de travail
 du panel ouvrent un socket dans le dossier temporaire du système (un `TMPDIR` de plus de 70 caractères est
@@ -303,7 +332,13 @@ remplacé, le temps du panel, par `/tmp`).
   `a_reessayer`, `jours_manquants`, `historique_complet`, `premier_jour_cherche`, `dossier`}, `site`
   {`bloque`, `depuis`, `code_http`}, `notes` {`journal_present`, `au_journal`, `en_vigueur`}, `rapport`
   {`nom`, `date`}, `donnees` {`taille_octets`, `taille`}, `extracteur_pdf` {`pdftotext`, `chemin`,
-  `obligatoire`, `manquant`}, `embarque`. Code 0 même si rien n'est prêt (8 sans dossiers en mode embarqué).
+  `obligatoire`, `manquant`}, `limite_memoire` {`mo`, `seuil_mo`, `trop_basse`}, `embarque`, `avertissements`
+  (phrases : pdftotext absent, lignes illisibles du journal, dossier non inscriptible, jours à réessayer, limite
+  de mémoire trop basse, état de politesse illisible). `bulletins` porte aussi `sans_fichier`,
+  `sans_bulletin_lisible` (marqueurs à réessayer, comptés comme manquants) et `prochaine_relance` ; `notes` porte
+  `lisible`, `erreur` et `lignes_illisibles` (journal présent mais illisible : `pret` faux) ; `donnees` et
+  `rapport` portent `inscriptible` ; `site` porte `etat_illisible` si `politeness.json` ne se lit pas. Code 0
+  même si rien n'est prêt (8 sans dossiers en mode embarqué).
 
   ```json
   {"ok": true, "pret": true, "raison": null, "historique_complet": true, "version": "a3defe0+modifie",
@@ -318,13 +353,17 @@ remplacé, le temps du panel, par `/tmp`).
    "embarque": true, "bandeau": "Performance passée ≠ garantie. Aucun gain n'est garanti."}
   ```
 
-- `notes add` : `note_id`, `cree` (faux : rien n'a été écrit), `doublon_id` (note existante : même
-  identifiant, ou même contenu actif depuis moins de 30 jours), `meme_identifiant`, `deja_enregistree`,
+- `notes add` : `note_id` (la note **au journal** : créée, ou déjà là), `note_id_saisie` (identifiant de la
+  saisie), `cree` (faux : rien n'a été écrit), `doublon_id` (note existante : même identifiant, ou même
+  contenu actif depuis moins de 30 jours), `meme_identifiant` (vrai si la saisie a exactement l'identifiant de
+  la note existante : même contenu **et** même date de publication ; faux pour un doublon de contenu publié à
+  une autre date), `deja_enregistree`,
   `score`, `filtres` (filtres de risque déclenchés), `veto`, `premiere_seance_negociable`,
   `seance_application` (première séance où la note compte en mode direct), `des_maintenant`,
   `notes_connues` (ligne « Notes connues au … »), `prise_en_compte`, `note` (fiche complète). Un doublon
   sort en code 0 avec `cree: false` (`--forcer` l'enregistre quand même). `--publie-le` est gardé tel
-  quel. Saisie invalide : code 2.
+  quel. Saisie invalide : code 2, y compris une note dont **aucune** cible n'est reconnue (`--cible ZZZZ`,
+  `--cible ""` : elle n'aurait aucun effet) ou sans titre ni texte.
 
   ```json
   {"ok": true, "note_id": "a23383a04d2d12c10c0fe6328f2b2009a457d0c3", "cree": true, "doublon_id": null,
@@ -374,6 +413,10 @@ remplacé, le temps du panel, par `/tmp`).
   Par défaut, **tout jour manquant depuis le 02/01/2017** est cherché, du plus récent au plus ancien :
   une collecte interrompue reprend sans `--from`. `--sans-panel` : jamais de reconstruction du panel ;
   `--workers N` : processus du panel. Avec `--simulation` : `jours_a_chercher`, `jours`, `quota`.
+  `--delai S` : nombre **fini** de 10 à 3600 (sinon code 2, aucune requête). `--rouvrir AAAA-MM-JJ[..AAAA-MM-JJ]` :
+  décision explicite, retire les marqueurs « sans bulletin » (même définitifs, anciens marqueurs vides
+  compris) de la période, cherchée de nouveau dans ce lancement (clé `marqueurs_rouverts` ; avec
+  `--simulation`, compte seulement).
 - `panel` : `panel` {`fichiers`, `analyses`, `en_cache`, `erreurs`, `seances`, `premiere_seance`,
   `derniere_seance`, `symboles`, `lignes_actions`, `seances_sans_boc`, `trous`, `dossier`}. `--workers`
   vaut par défaut `min(2, processeurs disponibles)` (quota du cgroup compris).
@@ -381,7 +424,11 @@ remplacé, le temps du panel, par `/tmp`).
   `requetes`, `quota`, `quota_restant`, `arret`, `raison_arret`, `motif_arret`, `blocage`, `elements_lus`,
   `nouvelles_notes`, `doublons`, `ecartes`, `incidents`, `listes`, `non_resolus`, `reconstitution`},
   `notes` [{`note_id`, `publiee_le`, `cibles`, `titre`}], `lecture_documents` (bilan de la lecture des PDF),
-  `lignes_lecture`. Refus du site : code 5 (le bilan est dans l'objet d'erreur).
+  `lignes_lecture`. Refus du site : code 5 (le bilan est dans l'objet d'erreur). Quota atteint : code 0,
+  `raison_arret: "quota"`, `motif_arret` rempli, et **aucune** lecture de documents (aucune requête au-delà
+  du quota). Un document trop lent pour le lien (délai total dépassé, qui croît avec la taille annoncée : 300 s
+  plus 1 s par 8 Ko, 30 min au plus) est mis de côté sept jours (`status: "a_reessayer"`) ; la lecture passe
+  au suivant.
 - `notes lire` : `lecture_documents` {`n_candidates`, `n_read`, `n_enriched`, `n_scanned`, `n_failed`,
   `n_skipped`, `n_written`, `n_requests`, `stopped`, `details`…}, `lignes`. Arrêt au quota : 1 ; refus : 5.
 
@@ -411,10 +458,22 @@ Avant les réglages du mode embarqué (un fil, pool « system » d'Arrow, deux a
 étaient de 1,9 Go (`etat`) à 2,3 Go (`recommend`, `report`), et 1,5 Go par enfant du panel : trop près des
 2,5 Go par défaut d'Odoo. La limite est **par processus** : chaque enfant du panel a la sienne.
 
+**Limite trop basse.** Sous **1 Go** (`BRVM_ALPHA_MEMOIRE_MIN`, en Mo), la commande sort aussitôt en **6**
+(objet JSON « memoire »), sans rien charger : en dessous, le chargement de numpy, OpenBLAS ou Arrow échouait
+sans objet JSON (codes 1, 127, −11) ou se figeait sans répondre à `TERM`. Au-dessus, une `MemoryError` n'est
+jamais avalée : essayé sur les données réelles avec le contrôle désactivé, `recommend` sous 650, 550 et 450 Mo
+sort en 6 à chaque fois (avant : code 0 avec un ordre de bataille dégradé, ou −11). Hors mode embarqué, la
+réservation est de 2,3 Go : une limite de 1 à 3 Go peut encore figer OpenBLAS ; y préférer 3 Go ou le mode
+embarqué. Un processus de **pdftotext** (et `pdfinfo`, `pdffonts`, `pdfimages`) a sa propre limite : 512 Mo de
+mémoire virtuelle, 32 Mo de sortie (fichier temporaire, jamais en mémoire), 60 s pour un bulletin.
+
 ### A.11 Historique incomplet
 
-`etat` dit `historique_complet: false` tant qu'il reste un jour ouvré sans bulletin ni marqueur depuis le
-02/01/2017 (jours récents exceptés) ou que le panel ne couvre pas les bulletins ; `pret` est alors faux.
+`etat` dit `historique_complet: false` tant qu'il reste un jour ouvré sans bulletin lisible depuis le
+02/01/2017 (jours récents exceptés) ou que le panel ne couvre pas les bulletins ; `pret` est alors faux. Un jour
+marqué « introuvable » (404 partout) compte comme connu ; un jour au marqueur **à réessayer** (réponse HTML
+d'un site en maintenance, PDF trop gros, extraction ratée, réseau) compte comme **manquant**, avec la date de
+la prochaine relance dans `raison`.
 Dans ce cas :
 
 - `recommend`, `report`, `indices` et `explain` portent un **avertissement fort** (« HISTORIQUE
@@ -440,8 +499,10 @@ l'autre**, en travaux détachés, à basse priorité :
    au plus, puis 20 documents) ;
 4. `etat --format json`, puis, seulement si `pret` est vrai : `report --capital … --format json`.
 
-Ne jamais lancer deux de ces commandes à la fois (les verrous du moteur le refusent en code 4, mais
-mieux vaut l'éviter). Délais conseillés : 2 h pour `update`, 10 min pour `panel`, 1 h pour `notes
+Ne jamais lancer deux de ces commandes à la fois : les verrous du moteur refusent en code 4 deux
+**écritures** concurrentes (deux `update`, deux `panel`, deux `notes research`), mais pas une lecture
+pendant une écriture (un `recommend` lancé pendant le `panel` de nuit peut lire deux versions du panel) :
+Odoo enchaîne ses travaux et évite les appels de l'utilisateur pendant `panel`. Délais conseillés : 2 h pour `update`, 10 min pour `panel`, 1 h pour `notes
 research`, 5 min pour `report`. `deploiement/quotidien.sh` fait la même chose pour une installation hors
 Odoo (il n'est pas exporté).
 
@@ -458,7 +519,10 @@ n'avance plus. Puis `panel` (1 minute), `notes research --pdf 20`, et `report` q
 **Reprise** : la collecte peut être arrêtée à tout moment (TERM, panne) et relancée : les bulletins déjà
 écrits restent (écriture atomique), `update` cherche de lui-même tout jour manquant depuis 2017, du plus
 récent au plus ancien. Un jour sans bulletin (404 partout) n'est marqué définitif qu'après trois passages
-espacés d'un jour ; une réponse illisible laisse un marqueur à réessayer. `deploiement/collecte-initiale.sh`
+espacés d'un jour **et** d'au moins 20 heures (deux passages à dix minutes d'écart de part et d'autre de minuit
+comptent pour un) ; une réponse illisible laisse un marqueur à réessayer. Les anciens marqueurs vides
+(avant le 22/11/2026, 246 sur l'historique réel) restent définitifs : `update --rouvrir AAAA-MM-JJ..AAAA-MM-JJ`
+les retire, sur décision explicite. `deploiement/collecte-initiale.sh`
 fait la même boucle hors Odoo.
 
 ### A.14 Ce qui reste non vérifié
@@ -472,24 +536,81 @@ fait la même boucle hors Odoo.
 - aucun téléchargement réel depuis www.brvm.org (aucune requête vers l'extérieur n'était permise) : les
   essais réseau ont tourné contre des serveurs locaux et des doublures ;
 - la reprise d'une collecte de 11 heures n'a été essayée que par morceaux (doublures, quota, arrêt) ;
-- les durées viennent d'une machine à 4 processeurs, pas du serveur.
+- les durées viennent d'une machine à 4 processeurs, pas du serveur ;
+- les blocages ne sont gardés que dans `politeness.json` (pas de copie à part en ajout seul) : s'il devient
+  illisible, plus rien n'est envoyé (code 8) jusqu'à sa réparation à la main ; le cache HTTP n'a ni plafond
+  de taille ni âge maximal (seuls les PDF en double sont retirés) ;
+- `etat` ne cite pas, dans `raison`, les séances que le panel sait manquantes sous un ancien marqueur vide
+  (129 sur l'historique réel) : `update --rouvrir` permet de les relancer sur décision.
 
 ### A.15 Changements visibles hors mode embarqué
 
+Chaque point avec le constat ou la demande qui l'a amené. Les sorties chiffrées (ordre de bataille, panel,
+distribution) sont inchangées.
+
 - `update` sans `--from` cherche désormais **tout jour manquant depuis le 02/01/2017** (avant : à partir
-  du lendemain du dernier fichier local, ce qui laissait des trous jamais comblés) ;
+  du lendemain du dernier fichier local, ce qui laissait des trous jamais comblés) ; `--delai` : nombre fini
+  de 10 à 3600 (avant : `nan` supprimait toute attente, une valeur sous 10 était relevée à 10 sans le dire) ;
+  nouvelle option `--rouvrir` ;
 - codes de sortie de la table du § A.7 (avant : 0, 1, 2) ; un doublon de `notes add` sort en 0
-  (`cree: false`) au lieu de 2 ; `recommend --couts` n'accepte que `optimistic`, `central`, `stress`,
-  `severe` (alias français gardés) ;
-- `--format json` : objet `{"ok": …}` toujours, erreurs comprises ; nouvelles options `--format` pour
-  `update`, `panel`, `report`, `notes archive`, `notes research`, `notes lire` ; `update --workers` ;
+  (`cree: false`) au lieu de 2 (choix du contrat de la ligne de commande : rien n'est écrit, ce n'est pas une
+  erreur) ; **le code 2 est réservé aux saisies** : une `ValueError` ou une `KeyError` venue d'une bibliothèque
+  sort en 7, un panel abîmé en 1 (avant : 2, « saisie invalide ») ; `recommend --couts` n'accepte que
+  `optimistic`, `central`, `stress`, `severe` (alias français gardés) ;
+- **journal des notes présent mais illisible** (dossier à sa place, droits) : `recommend`, `report`,
+  `indices`, `explain`, `notes list` et `notes add` sortent en 1 (avant : code 0 **sans aucune note**, vetos et
+  achats bloqués ignorés ; ou 7) ; un journal absent reste sans effet ;
+- **`MemoryError` jamais avalée** (avant : un `except Exception` en faisait un résultat dégradé en code 0) ;
+  limite de mémoire virtuelle sous 1 Go : code 6 au démarrage ;
+- `notes add` refuse une note dont aucune cible n'est reconnue, ou une cible vide (code 2 ; avant : note
+  enregistrée sans effet, sans avertissement) ; nouvelle clé `note_id_saisie` ;
+- `--format json` : objet `{"ok": …}` toujours, erreurs comprises (échec au démarrage et `--help` compris) ;
+  nouvelles options `--format` pour `update`, `panel`, `report`, `notes archive`, `notes research`,
+  `notes lire` ; `update --workers` ; une sortie fermée par le lecteur (`| head`) donne 1 en JSON (avant : 0) ;
+- `etat` : `pret` exige maintenant un historique complet **et** un journal des notes lisible ;
+  `bulletins.premier_jour_cherche` vaut `2017-01-02` ; nouvelles clés `raison`, `historique_complet`,
+  `extracteur_pdf`, `limite_memoire`, `embarque`, `avertissements`, `panel.{premiere_seance, lisible, erreur}`,
+  `bulletins.{premier, sans_bulletin_definitif, a_reessayer, sans_fichier, sans_bulletin_lisible,
+  prochaine_relance, jours_manquants, historique_complet}`, `notes.{lisible, erreur, lignes_illisibles}`,
+  `donnees.inscriptible`, `rapport.inscriptible` (relecture de l'état « prêt » strict) ;
+- `explain --format json` : la clé `banner` devient `bandeau` ; nouvelles clés `decomposition` et `notes` ;
+- `report` sort avec un code non nul si la section « ordre » échoue (avant : 0) ; `--sortie` vers un dossier :
+  code 2 (avant : 7) ;
 - avertissement « HISTORIQUE INCOMPLET » sur `recommend`, `report`, `indices`, `explain` ;
-- écritures atomiques du rapport et de `recommend --sortie` ; chemins relatifs des options rendus
-  absolus depuis le dossier courant dès le départ (avant : deux résolutions différentes dans `report`) ;
-- le signal TERM arrête une commande proprement (code 130) ;
+- `panel` : `--workers` vaut par défaut `min(2, processeurs)` (avant : `os.cpu_count()`), un fil BLAS par
+  processus de travail, construction à côté puis bascule ; les processus de travail meurent avec le processus
+  principal ;
+- marqueurs `.missing` en JSON : définitifs seulement après 3 passages espacés d'un jour et de 20 heures (un
+  jour férié coûte donc 15 requêtes au lieu de 5) ; nouveaux fichiers `boc_*.meta.json` ;
+- fichiers de verrou qui restent dans les données (`flock`, jamais supprimés) : `.panel.construction.lock`,
+  `.panel.lecture.lock`, `boc_text/.telechargement.lock`, `notes/.recherche.lock`, `notes/notes.jsonl.lock`,
+  `notes/cache/politeness.json.lock` ; **ne jamais faire tourner deux versions du moteur sur le même dossier de
+  données** : l'ancien code (avant le 22/11/2026) prend un `notes.jsonl.lock` laissé en place pour un verrou
+  tenu (attente de 10 s, puis échec), et les deux protocoles ne s'excluent pas. Pour revenir à une ancienne
+  version : arrêter toute commande, puis supprimer les `*.lock` des données ;
+- `validate` ou `backtest` sans statsmodels : code 8 au lieu du repli CSS silencieux (choix des couches
+  internes : un résultat de validation ne doit pas changer de méthode sans le dire) ;
+- écritures atomiques du rapport, de `recommend --sortie` et de `notes export --sortie` ; un **lien
+  symbolique** est suivi (sa cible est remplacée, le lien reste) et un périphérique ou un tube nommé
+  (`/dev/null`, `/dev/stdout`) est écrit directement (avant le 23/11/2026 : le lien était remplacé par un
+  fichier ordinaire, `/dev/stdout` refusé hors root) ; chemins relatifs des options rendus absolus depuis le
+  dossier courant dès le départ ;
+- le signal TERM arrête une commande proprement (code 130), dès le démarrage ;
+- réseau : délai, réservation et blocage comptés **par site** (`www.brvm.org` et `brvm.org` partagent une
+  même clé) ; un nom résolu en adresse interdite est signalé comme refus de politique (code 5, `politique`),
+  plus comme « robots.txt interdit », et n'est plus compté comme requête ; adresse réellement jointe contrôlée
+  après la connexion ; délai total tenu jusqu'aux en-têtes ; `politeness.json` illisible : aucune requête,
+  code 8, fichier non réécrit (avant : le blocage 403 était oublié et le fichier réécrit sans lui) ;
+  `fetch_log.jsonl` tourne au-delà de 10 Mo ; les PDF en double du cache HTTP sont retirés ; `live` sort en 5
+  pour un site bloqué ou un réseau en défaut (avant : 1) ; une page HTML servie avec un type PDF est lue comme
+  une page (avant : note vide) ;
+- repli pdfplumber lancé avec `python -I`, depuis le dossier temporaire et avec un environnement réduit ;
+- `python -m brvm_alpha.data.boc_download` passe par le client poli commun (quota de 200 requêtes, blocage
+  partagé) ;
 - scripts de `deploiement/` : verrou `flock` (code 4 si une autre tâche tourne, jamais 3), chemins
   relatifs refusés (code 2), TERM transmis à la commande en cours, `ionice -c 2 -n 7`, refus du site
-  seulement si `etat` le dit (code 5), pas de rapport sur un historique incomplet.
+  seulement si `etat` le dit (code 5), pas de rapport sur un historique incomplet ; l'installateur refuse
+  tout fichier de plus dans le dossier des roues.
 
 ### A.16 `serve` et le relais : non utilisés en production
 
@@ -926,6 +1047,9 @@ long sur un processeur modeste. Pour le moteur embarqué (production), voir les 
    « Prêt : oui ».
 5. Ne jamais lancer `validate` ni `backtest` sur le serveur : les résultats de la validation sont
    livrés avec le code (en mode embarqué, ces commandes sont refusées, code 8).
+6. Ne jamais faire tourner deux versions du moteur sur le même dossier de données (§ A.15 : verrous `flock`
+   contre l'ancien protocole). Pour revenir à une version d'avant le 22/11/2026 : arrêter toute commande, puis
+   supprimer les fichiers `*.lock` du dossier de données.
 
 ## 13. Désinstallation
 
@@ -948,4 +1072,5 @@ long sur un processeur modeste. Pour le moteur embarqué (production), voir les 
 | Page blanche dans le cadre d'Odoo | Le moteur n'a pas `--cadre-meme-origine`, ou un autre `X-Frame-Options` est ajouté en chemin. |
 | « Prêt : non » | La première collecte n'a pas été faite, ou `BRVM_ALPHA_DONNEES` n'est pas le même pour le service et pour les tâches. `etat` affiche les dossiers lus. |
 | Tâche qui sort avec le code 4 | Une autre tâche tient le verrou (`flock` sur `brvm-alpha.verrou` dans le dossier des journaux, ou un verrou du moteur). `fuser brvm-alpha.verrou` montre qui le tient ; il est rendu à la fin de ce processus, rien à retirer à la main. |
-| Code 8 | Configuration : en mode embarqué, `BRVM_ALPHA_DONNEES` ou `BRVM_ALPHA_RAPPORTS` absent ou relatif, ou `pdftotext` absent (installer `poppler-utils`). Le message JSON le dit. |
+| Code 8 | Configuration : en mode embarqué, `BRVM_ALPHA_DONNEES` ou `BRVM_ALPHA_RAPPORTS` absent, relatif ou inexistant ; `pdftotext` absent (installer `poppler-utils`) ; paquet Python manquant ; dossier de données non inscriptible (volume en lecture seule, droits, disque plein) ; `politeness.json` illisible. Le message JSON le dit. |
+| Code 6 | Mémoire : limite de mémoire virtuelle sous 1 Go (la relever à 3 Go), ou mémoire réellement insuffisante. |
