@@ -7,6 +7,12 @@ Sert à prouver deux choses (``tests/test_deploiement_ui.py``) :
 - **avec préfixe**, chaque lien, action de formulaire, adresse de fichier et appel JavaScript le porte.
 
 Jeton, nonce et données sont constants : le rendu ne dépend ni de l'heure ni de la machine.
+
+États « avec plan » (module « Rendement net et pertes », cahier ``docs/RENDEMENT_NET.md``, §7.1 et §9.1, exception
+X2) : carte « Mon plan » du Tableau de bord (calculée, puis absente), champs et suivi de la page Portefeuille, tableau
+de la page Validation, et les trois pages atteintes par des liens (``/plan/questions``, ``/plan/resultat``,
+``/suivi/bulletin``). Leurs données fixes sont dans ``tests/rendement_ui_jeux.py``. Les états d'avant gardent leurs
+empreintes : sans ces ajouts, les pages sortent à l'octet près comme avant.
 Pour relever de nouvelles empreintes après un changement **voulu** d'une page :
 ``python tests/ui_reference_pages.py`` (depuis ``brvm-alpha/``).
 """
@@ -22,7 +28,11 @@ import pandas as pd
 if __name__ == "__main__":  # lancement direct : le paquet est à la racine du dépôt
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import rendement_ui_jeux as RJ  # noqa: E402 - données fixes du module « Rendement net et pertes »
+
+from brvm_alpha.rendement import grille as G  # noqa: E402
 from brvm_alpha.ui import pages as P  # noqa: E402 - après l'ajustement du chemin
+from brvm_alpha.ui import rendement as RN  # noqa: E402
 
 TOKEN = "jeton-de-reference-0123456789"
 NONCE = "nonce-de-reference"
@@ -116,6 +126,7 @@ def reference_pages(prefix: str = "") -> dict[str, str]:
                {"nom": "rapport_2026-11-19.html", "modifie": "21/11/2026 18:02 UTC", "taille": "498 Ko", "perime": True}]
     fragment = ('<section class="brvm-ordre-de-bataille" lang="fr"><h1>Ordre de bataille</h1>'
                 "<p>SNTS &lt;achat&gt;</p></section>")
+    _valeurs_plan = {"capital": "10 000 000", "perte": "1000000", "taux": "3,5"}
     return {
         "tableau_de_bord": P.page_dashboard(
             ctx, last_session=DAY, validation={"etat": "exécuté", "statut_A": "REJETÉ", "principal": "A",
@@ -153,6 +164,28 @@ def reference_pages(prefix: str = "") -> dict[str, str]:
                                               "Voir [la BRVM](https://www.brvm.org/fr) et `href=\"/piege\"`.\n",
                                         attempts_md=None, s0_md="# Diagnostic S0\n\n- contaminé\n"),
         "erreur_404": P.error_page(ctx, 404, "Page introuvable", "aucune page à l'adresse /inconnue"),
+        # États « avec plan » (exception X2) : liens et formulaires POST nouveaux, aucun formulaire GET nouveau.
+        "tableau_de_bord_plan": P.page_dashboard(
+            ctx, last_session=DAY, validation={"etat": "exécuté", "statut_A": "REJETÉ", "principal": "A",
+                                               "statut_principal": "REJETÉ"},
+            choice={"variante": "REF", "motif": "A est REJETÉ sur S1"}, reports=reports[:1], job=None,
+            recent_notes=[_note()], plan_card=RN.carte_mon_plan(ctx, RJ.etat_carte_avec_plan())),
+        "tableau_de_bord_sans_plan": P.page_dashboard(ctx, last_session=None, validation=None, choice=None, reports=[],
+                                                      job=None, recent_notes=[],
+                                                      plan_card=RN.carte_mon_plan(ctx, RJ.etat_carte_sans_plan())),
+        "portefeuille_plan": P.page_portfolio(
+            ctx, values=_valeurs_plan, job=None, fragment=None, job_id=None,
+            rendement={"champs": RN.champs_portefeuille(_valeurs_plan, RJ.etat_portefeuille()),
+                       "section": RN.section_suivi(ctx, RJ.etat_portefeuille())}),
+        "validation_suivi": P.page_validation(ctx, s1={"etat": "exécuté", "statut_A": "REJETÉ", "principal": "A",
+                                                       "statut_principal": "REJETÉ", "dossier": "reports/validation_S1",
+                                                       "avertissements": []},
+                                              s1_md="# Validation S1\n\n| Var. | Statut |\n|---|---|\n| A | REJETÉ |\n",
+                                              attempts_md=None, s0_md=None,
+                                              suivi=RN.tableau_validation(RJ.etat_validation())),
+        "plan_questions": RN.page_questions(ctx, G.questions()),
+        "plan_resultat": RN.page_resultat(ctx, RJ.etat_resultat()),
+        "suivi_bulletin": RN.page_bulletin(ctx, RJ.etat_bulletin()),
     }
 
 
