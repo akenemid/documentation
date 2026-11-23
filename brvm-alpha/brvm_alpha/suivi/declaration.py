@@ -737,13 +737,18 @@ def _inscrire(d: Path, p: Path, base: str) -> list[str]:
         return []
     neuf = pd.concat([avant.astype(object), pd.DataFrame(rows, columns=list(REGISTRY_COLUMNS)).astype(object)],
                      ignore_index=True)
+    from brvm_alpha import demarrage
+
     tmp = p.with_name(p.name + ".inscription.tmp")
     try:
-        TrialRegistry(tmp, neuf).save(tmp)
-        relu = pd.read_parquet(tmp)
-        if len(relu) != n_avant + len(rows) or empreinte_lignes(relu, n_avant) != emp_avant:
-            raise RuntimeError("inscription annulée : les lignes existantes du registre auraient changé")
-        os.replace(tmp, p)
+        # TERM et SIGXCPU reportés pendant l'inscription : le registre est remplacé d'un bloc, ou pas du tout.
+        with demarrage.ecriture_protegee():
+            TrialRegistry(tmp, neuf).save(tmp)
+            relu = pd.read_parquet(tmp)
+            if len(relu) != n_avant + len(rows) or empreinte_lignes(relu, n_avant) != emp_avant:
+                raise RuntimeError("inscription annulée : les lignes existantes du registre auraient changé")
+            demarrage.point_de_non_retour()
+            os.replace(tmp, p)
     finally:
         if tmp.exists():
             tmp.unlink()

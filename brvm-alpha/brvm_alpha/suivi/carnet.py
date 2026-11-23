@@ -10,7 +10,8 @@ Mouvements : ``mandat``, ``apport``, ``retrait``, ``ordre``, ``execution``, ``ex
 
 Prix de revient par ligne : coût moyen pondéré, frais facturés compris, ``PR = Σ(titres × prix + frais) ÷ Σ titres``.
 Une vente ne change pas PR ; résultat réalisé = titres × (prix − PR) − frais. Division : titres × rapport, PR ÷ rapport.
-Refus : saisie en double, vente de plus de titres que détenus, date de l'échantillon S1 (≤ 16/11/2022).
+Refus : saisie en double, vente de plus de titres que détenus, retrait de plus que les liquidités, revue d'un code
+d'alerte inconnu, date de l'échantillon S1 (≤ 16/11/2022).
 
 Aucune écriture hors du dossier du portefeuille ; jamais sous ``reports/``. Performance passée ≠ garantie. Aucun gain
 n'est garanti.
@@ -46,6 +47,11 @@ def _f(x: Any, defaut: float = 0.0) -> float:
     except (TypeError, ValueError):
         return defaut
     return v if math.isfinite(v) else defaut
+
+
+def _fcfa(x: float) -> str:
+    """Montant en FCFA au franc, chiffres groupés par une espace fine (« 10 000 000 »)."""
+    return f"{x:,.0f}".replace(",", " ")
 
 
 def _frais_total(fr: Mapping[str, Any] | None) -> float:
@@ -114,8 +120,10 @@ class Carnet:
         """Ajoute un mouvement à la fin du carnet (jamais de réécriture) et le rend, numéroté et chaîné.
 
         Refus (``ValueError``) : type inconnu ; date absente ou de l'échantillon S1 ; saisie en double (même contenu
-        qu'un mouvement actif, sauf ``autoriser_double``) ; vente de plus de titres que détenus ; division sans rapport
-        positif ; correction d'un mouvement absent ; chaîne déjà rompue."""
+        qu'un mouvement actif, sauf ``autoriser_double``) ; vente de plus de titres que détenus ; retrait de plus que les
+        liquidités du carnet à sa date ; revue d'un code d'alerte inconnu
+        (:func:`brvm_alpha.rendement.alertes.cible_de_revue`) ; division sans rapport positif ; correction d'un mouvement
+        absent ; chaîne déjà rompue."""
         return self.ajouter_plusieurs([mouvement], maintenant=maintenant, autoriser_double=autoriser_double)[0]
 
     def ajouter_plusieurs(self, mouvements: Sequence[Mapping[str, Any]], *, maintenant: Any = None,
@@ -186,6 +194,18 @@ class Carnet:
                                      "détenus")
         if ty in ("apport", "retrait") and _f(m.get("montant")) <= 0 and int(_f(m.get("titres"))) <= 0:
             raise ValueError(f"{ty} : montant positif (ou titres apportés)")
+        if ty == "retrait" and _f(m.get("montant")) > 0:
+            # Le carnet est en ajout seul : un retrait plus grand que les liquidités y resterait pour toujours. Refus
+            # avant toute écriture ; un retrait égal aux liquidités reste accepté (à un demi-franc près).
+            ops = operations_depuis_mouvements([x for x in deja if pd.Timestamp(x["date"]).normalize() <= d])
+            liq = float(ops["montant_net"].sum()) if len(ops) else 0.0
+            if _f(m["montant"]) > liq + 0.5:
+                raise ValueError(f"retrait refusé : {_fcfa(_f(m['montant']))} FCFA demandés pour {_fcfa(liq)} FCFA de "
+                                 f"liquidités au carnet « {self.nom} » le {d:%d/%m/%Y} (rien n'est écrit)")
+        if ty == "revue":
+            from brvm_alpha.rendement import alertes as _al
+
+            m["alerte"] = _al.cible_de_revue(m.get("alerte"))  # code inconnu (« W99 ») : refusé, codes connus cités
         if ty == "apport" and int(_f(m.get("titres"))) > 0 and (not m.get("symbole") or _f(m.get("cours")) <= 0):
             raise ValueError("apport de titres : symbole et cours de clôture du jour d'apport obligatoires")
         if ty == "division" and _f(m.get("rapport")) <= 0:

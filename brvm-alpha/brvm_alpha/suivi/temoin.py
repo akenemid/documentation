@@ -297,18 +297,21 @@ def _ecrire_csv_ajout(p: Path, df: pd.DataFrame, cle_date: str, jusqu_a: pd.Time
     textes = [(str(rec[j]), _texte_csv([_fmt_csv(v) for v in rec])) for rec in df.itertuples(index=False)]
     from brvm_alpha import fichiers
 
+    from brvm_alpha import demarrage
+
     if not p.exists():
-        fichiers.ecrire_atomique(p, ",".join(df.columns) + "\n")
+        with demarrage.ecriture_protegee():
+            fichiers.ecrire_atomique(p, ",".join(df.columns) + "\n")
     deja = p.read_text(encoding="utf-8").splitlines()[1:]
     derniere = max((next(csv.reader([x]))[j] for x in deja), default="")
     anciens = sorted(t for d, t in textes if d <= derniere)
     nouveaux = [t for d, t in textes if d > derniere]
     if nouveaux:
-        with p.open("a", encoding="utf-8") as fh:
-            for t in nouveaux:
-                fh.write(t + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        with demarrage.ecriture_protegee():  # TERM et SIGXCPU reportés : jamais une ligne coupée
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write("".join(t + "\n" for t in nouveaux))
+                fh.flush()
+                os.fsync(fh.fileno())
     return {"ajoutees": len(nouveaux), "passe_a_change": anciens != sorted(deja)}
 
 

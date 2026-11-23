@@ -230,9 +230,13 @@ def enregistrer(grille: GrilleSGI, dossier: str | Path | None = None) -> Path:
     contenu.pop("statut_global", None)
     entete = ("# Grille du courtier (BRVM Alpha, module « Rendement net et pertes »). Donnée de l'installation :\n"
               "# jamais dans le dépôt. Statuts : supposé, grille écrite, avis d'opéré.\n")
-    tmp = p.with_suffix(".yaml.tmp")
-    tmp.write_text(entete + yaml.safe_dump(contenu, allow_unicode=True, sort_keys=False), encoding="utf-8")
-    tmp.replace(p)
+    from brvm_alpha import demarrage, fichiers
+
+    texte = entete + yaml.safe_dump(contenu, allow_unicode=True, sort_keys=False)
+    # Écriture atomique (fichier temporaire, fsync, renommage) ; TERM et SIGXCPU reportés pendant l'écriture : la
+    # grille est toujours complète et lisible, jamais à moitié écrite.
+    with demarrage.ecriture_protegee():
+        fichiers.ecrire_atomique(p, texte)
     return p
 
 

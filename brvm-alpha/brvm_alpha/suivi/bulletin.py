@@ -294,24 +294,28 @@ def _ecrire_semaines(nom: str, lignes: Sequence[Mapping[str, Any]], dossier: str
             continue  # une semaine antérieure à la dernière écrite ne s'insère pas : le fichier est en ajout seul
         nouvelles.append(txt)
         existants[cle] = txt
-    if not p.exists():
-        fichiers.ecrire_atomique(p, ",".join(COLONNES) + "\n")
-    if nouvelles:
-        with p.open("a", encoding="utf-8") as fh:
-            for txt in nouvelles:
-                fh.write(txt + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        chaine = v["derniere_chaine"]
-        emp = []
-        n0 = v["n"]
-        for i, txt in enumerate(nouvelles, start=1):
-            h = _s.empreinte_texte(txt)
-            chaine = _s.empreinte_texte(chaine + h)
-            emp.append({"n": n0 + i, "vendredi": next(csv.reader([txt]))[1], "ligne": h, "chaine": chaine})
-        _s.ajouter_jsonl(d / "empreintes.jsonl", emp)
-    if anomalies:
-        _s.ajouter_jsonl(d / "anomalies.jsonl", anomalies)
+    emp = []
+    chaine = v["derniere_chaine"]
+    for i, txt in enumerate(nouvelles, start=1):
+        h = _s.empreinte_texte(txt)
+        chaine = _s.empreinte_texte(chaine + h)
+        emp.append({"n": v["n"] + i, "vendredi": next(csv.reader([txt]))[1], "ligne": h, "chaine": chaine})
+    from brvm_alpha import demarrage
+
+    # Semaines et leurs empreintes écrites d'un bloc : TERM et SIGXCPU reportés jusqu'à la fin (jamais une semaine
+    # sans son empreinte, ce qui romprait la chaîne).
+    with demarrage.ecriture_protegee():
+        if not p.exists():
+            fichiers.ecrire_atomique(p, ",".join(COLONNES) + "\n")
+        if nouvelles:
+            demarrage.point_de_non_retour()
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write("".join(txt + "\n" for txt in nouvelles))
+                fh.flush()
+                os.fsync(fh.fileno())
+            _s.ajouter_jsonl(d / "empreintes.jsonl", emp)
+        if anomalies:
+            _s.ajouter_jsonl(d / "anomalies.jsonl", anomalies)
     toutes = [o for _t, o in _s.lire_jsonl(d / "anomalies.jsonl") if o]
     return {"ajoutees": len(nouvelles), "identiques": identiques, "anomalies": anomalies,
             "passe_a_change": bool(toutes), "chaine": verifier_semaines(nom, dossier)}

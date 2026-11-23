@@ -25,6 +25,7 @@ import re
 import textwrap
 from typing import Any, Mapping, Sequence
 
+from brvm_alpha.rendement import perte as _pe
 from brvm_alpha.rendement import reglages as _rg
 from brvm_alpha.rendement.reglages import ESTIMATION, FAIT, HYPOTHESE, arrondi_ecran, fcfa
 
@@ -326,7 +327,7 @@ def _bloc_reserve(L: list, rn: Mapping[str, Any]) -> None:
     if _ok(r) and r.get("masque"):
         return False  # §F5 : réserve nulle, bloc masqué
     connu = _ok(r) and r.get("taux_connu")
-    etiq = f"taux saisi : {_rg.pct(r['taux'], 2)} [{r['mot_statut']}]" if connu else "taux inconnu : compté à 0 %"
+    etiq = _pe.etiquette_taux(r if _ok(r) else None)  # le même libellé que « L'essentiel » et le rapport
     _titre(L, "reserve", "3. OÙ DORT LE RESTE, ET À QUEL TAUX", etiq)
     if not _ok(r):
         _L(L, "reserve", "   Réserve : non calculé.")

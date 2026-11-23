@@ -25,7 +25,8 @@ chargement échoue :
 - **écriture finale** : pour une commande dont l'écriture durable est la dernière étape (``notes add``, ``notes
   archive``, ``recommend --sortie``, ``report``, ``notes export``), TERM et ``SIGXCPU`` sont reportés dès le point de
   non-retour de cette écriture jusqu'à la fin de la commande (:func:`reporter_apres_ecriture`,
-  :func:`point_de_non_retour`) : une note enregistrée n'est jamais annoncée perdue ;
+  :func:`point_de_non_retour`) : une note enregistrée n'est jamais annoncée perdue. Les écritures de ``plan``, ``plan
+  grille`` et ``suivi`` sont aussi protégées (:func:`ecriture_protegee`) : l'écriture se termine toujours ;
 - le code de sortie est toujours un code de la table (:data:`brvm_alpha.erreurs.CODES`), **jamais 3**.
 """
 
@@ -182,6 +183,25 @@ def point_de_non_retour() -> None:
     if _ETAT["arme"] > 0 and not _ETAT["arme_actif"] and _fil_principal():
         _ETAT["arme_actif"] = True
         _ETAT["report"] += 1
+
+
+@contextlib.contextmanager
+def ecriture_protegee() -> Iterator[None]:
+    """Écriture d'un fichier des données qui ne doit jamais être coupée (``plan`` : plan.json, plan_cache.json ; ``plan
+    grille`` : grille_sgi.yaml ; ``suivi`` : carnet, journaux, déclaration, copie des journaux) : TERM et ``SIGXCPU``
+    reçus pendant le bloc sont **reportés** à sa fin, et l'écriture se termine (fichier complet et valide).
+
+    À la fin du bloc : si la commande a encore à faire (``plan --enregistrer`` avant son calcul, ``plan grille
+    --comparer``, ``suivi maj`` entre deux portefeuilles), le premier signal reçu l'arrête comme d'habitude (130, ou 8
+    pour ``SIGXCPU``, un seul objet JSON) ; si l'écriture était la dernière étape de la commande (bloc
+    :func:`reporter_apres_ecriture` dont le point de non-retour est franchi), la commande finit et rend son vrai
+    résultat, comme ``notes add``. Un bloc sorti par une erreur garde l'erreur comme réponse. Fil principal seulement :
+    ailleurs (fils du serveur de l'interface), sans effet."""
+    if not _fil_principal():
+        yield
+        return
+    with signaux_reportes():
+        yield
 
 
 def ecrire_objet(flux: Any, texte: str, code: int) -> None:
@@ -438,5 +458,5 @@ def lancer(argv: Sequence[str] | None = None) -> int:
 
 __all__ = ["BANDEAU", "SEUIL_MEMOIRE_MO", "ENV_MEMOIRE_MIN", "SEUIL_CPU_S", "ENV_CPU_MIN", "MESSAGE_TERM",
            "json_demande", "marquer_json_emis", "json_emis", "code_emis", "signaux_reportes", "reporter_apres_ecriture",
-           "point_de_non_retour", "ecrire_objet", "seuil_memoire", "controle_memoire", "seuil_cpu", "temps_consomme",
-           "controle_cpu", "message_xcpu", "echec", "lancer"]
+           "point_de_non_retour", "ecriture_protegee", "ecrire_objet", "seuil_memoire", "controle_memoire", "seuil_cpu",
+           "temps_consomme", "controle_cpu", "message_xcpu", "echec", "lancer"]

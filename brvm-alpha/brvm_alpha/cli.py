@@ -2857,7 +2857,9 @@ def _term_as_interruption() -> Iterator[None]:
 def _ecriture_finale(args: argparse.Namespace) -> bool:
     """Commande dont l'écriture durable est la dernière étape : ``notes add``, ``notes archive``, ``notes export``,
     ``recommend --sortie`` et ``report``. Dès le point de non-retour de l'écriture, TERM et ``SIGXCPU`` sont reportés
-    jusqu'à la fin de la commande (:func:`brvm_alpha.demarrage.reporter_apres_ecriture`)."""
+    jusqu'à la fin de la commande (:func:`brvm_alpha.demarrage.reporter_apres_ecriture`). ``plan``, ``plan grille`` et
+    ``suivi`` posent ce bloc eux-mêmes, autour de leur seule dernière étape (:mod:`brvm_alpha.cli_rendement`) : leurs
+    écritures intermédiaires (``plan --enregistrer`` avant le calcul) se terminent, puis le signal arrête la commande."""
     if args.command == "notes":
         return getattr(args, "notes_cmd", None) in ("add", "archive", "export")
     if args.command == "recommend":

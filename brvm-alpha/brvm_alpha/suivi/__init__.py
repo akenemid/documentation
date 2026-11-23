@@ -179,16 +179,21 @@ def ajouter_jsonl(chemin: str | Path, objets: Iterable[Mapping[str, Any]], *, ho
 
     ``hors_reports`` (défaut) : refus sous ``reports/``. Seule la déclaration signée par l'humain
     (``reports/suivi_S2/declaration.jsonl``, commande explicite) passe ``hors_reports=False``."""
+    from brvm_alpha import demarrage
+
     p = verifier_hors_reports(chemin) if hors_reports else Path(chemin)
     p.parent.mkdir(parents=True, exist_ok=True)
     lignes = [ligne_json(o) for o in objets]
     if not lignes:
         return []
-    with p.open("a", encoding="utf-8") as fh:
-        for ligne in lignes:
-            fh.write(ligne + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
+    # TERM et SIGXCPU reportés pendant l'ajout : toutes les lignes sont écrites, ou aucune n'a commencé (jamais un
+    # mandat sans son apport, jamais une ligne coupée). L'ajout est le point de non-retour de la commande.
+    with demarrage.ecriture_protegee():
+        demarrage.point_de_non_retour()
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write("".join(ligne + "\n" for ligne in lignes))
+            fh.flush()
+            os.fsync(fh.fileno())
     return lignes
 
 

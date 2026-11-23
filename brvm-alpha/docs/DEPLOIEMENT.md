@@ -330,7 +330,9 @@ plus le code de sortie : c'est celui de l'objet. Pour `notes add`, `notes archiv
 --sortie` et `report`, dont l'écriture est la dernière étape, TERM et `SIGXCPU` sont aussi reportés du dernier instant
 de l'écriture (ligne ajoutée au journal, renommage du fichier) jusqu'à l'objet : une note enregistrée sort en 0 avec son
 objet, jamais en 8 « arrêtée » (avant : 3 fois en 40 essais). Avant cet instant, TERM arrête la commande comme avant (130),
-y compris pendant l'attente d'un verrou. Si la sortie standard est un tube que personne ne lit, le moteur reste bloqué
+y compris pendant l'attente d'un verrou. Les écritures de `plan`, `plan grille` et `suivi` (§ A.17) ne sont jamais
+coupées non plus : l'écriture se termine, puis la commande rend son résultat si c'était sa dernière étape, ou s'arrête
+en 130 (8 pour `SIGXCPU`) si elle avait encore à faire. Si la sortie standard est un tube que personne ne lit, le moteur reste bloqué
 sur l'écriture, et seul `KILL` l'arrête : d'où la règle du § A.6 (sorties dans des fichiers). Succès : `{"ok": true, …, "bandeau": "…"}`.
 Erreur : `{"ok": false, "code": N, "erreur": "<type>", "message": "<texte français>", "bandeau": "…"}`,
 parfois avec un bilan en plus (`update`, `notes research`, `report`). Une erreur d'arguments donne aussi
@@ -775,7 +777,7 @@ des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent 
 
 | Commande | Durée | Nature | Écrit | Codes |
 |---|---|---|---|---|
-| `plan [--capital K] [--grille ma_sgi\|central\|FICHIER] [--taux-reserve T]` | 10,6 s | court | `profil/plan_cache.json` | 0 ; 1 panel absent ou historique incomplet ; 2 saisie (taux de la réserve hors de 0 à 15 %, perte acceptée au-delà du capital) |
+| `plan [--capital K] [--grille ma_sgi\|central\|FICHIER] [--taux-reserve T]` | 10,6 s | court | `profil/plan_cache.json` | 0 ; 1 panel absent ou historique incomplet ; 2 saisie (taux de la réserve hors de 0 à 15 %, perte acceptée au-delà du capital, `--grille` vide) |
 | `plan --perte-toleree 1000000` | 17,8 s | court | idem | idem |
 | `plan … --enregistrer [--besoin-dans MOIS]` | 11,6 s | court | idem et `profil/plan.json` | idem |
 | `plan grille` (lecture) ; `plan grille --comparer` (lignes du cache) | 0,4 s | court | rien | 0 |
@@ -785,9 +787,9 @@ des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent 
 | `suivi bulletin [--nom NOM]` | 3,6 s | court | rien | 0 |
 | `suivi verifier` | 0,4 s | court | rien | 0 ; 1 chaîne rompue |
 | `suivi demarrer --nom MOI [--capital K] [--mode papier\|reel]` | 0,4 s | court | `suivi/MOI/carnet.jsonl` | 0 ; 2 déjà démarré ; 4 journal tenu |
-| `suivi saisir --nom MOI --apport M \| --retrait M \| --fichier avis.csv [--confirmer-grille]` | 0,4 s | court | carnet ; grille si l'avis concorde, ou confirmée | 0 ; 1 carnet absent ; 2 saisie, doublon ; 4 journal tenu |
-| `suivi revue --nom MOI --alerte ID --decision garder\|ne-plus-acheter\|reduire --texte "…"` | 0,4 s | court | carnet | 0 ; 1 carnet absent ; 4 journal tenu |
-| `suivi exporter --sortie DOSSIER [--avec-moi]` | 0,4 s | court | `<rapports>/DOSSIER` (d'un bloc) | 0 ; 1 rien à copier (MOI seul, sans `--avec-moi`), aucun dossier créé ; 2 dossier non vide |
+| `suivi saisir --nom MOI --apport M \| --retrait M \| --fichier avis.csv [--confirmer-grille]` | 0,4 s | court | carnet ; grille si l'avis concorde, ou confirmée | 0 ; 1 carnet absent ; 2 saisie, doublon, retrait plus grand que les liquidités du carnet ; 4 journal tenu |
+| `suivi revue --nom MOI --alerte ID --decision garder\|ne-plus-acheter\|reduire --texte "…"` | 0,4 s | court | carnet | 0 ; 1 carnet absent ; 2 code d'alerte inconnu (ID : W1 à W9, perte, fuites, donnees, ou le symbole d'une ligne) ; 4 journal tenu |
+| `suivi exporter --sortie DOSSIER [--avec-moi]` | 0,4 s | court | `<rapports>/DOSSIER` (d'un bloc) | 0 ; 1 rien à copier (MOI seul, sans `--avec-moi`), aucun dossier créé ; 2 dossier non vide, `--sortie` vide |
 | `suivi declarer …` | 0,4 s | — | rien | **2 toujours** sur l'installation |
 | `recommend --capital 10000000 --perte-toleree 1000000` | 21,6 s | court | rien, ou `--sortie` | 0 ; 2 saisie, refusée avant le calcul (`--arrondi restes` sur un tarif supposé sans `--forcer`, taux ou perte hors plage) |
 | `report --capital 10000000 [--sortie nom.html]` | 16,9 s | long | rapport | 0 |
@@ -818,6 +820,19 @@ des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent 
   temps de son exécution sur papier et de ses écritures ; le calcul du moteur du témoin reste hors du verrou.
   Fichiers d'état (`controles.json`, état de l'exécution sur papier, en-têtes des CSV) : écriture atomique ;
   lignes ajoutées : `fsync`.
+- **TERM et `SIGXCPU` pendant une écriture** (`profil/plan.json`, `profil/plan_cache.json`, `profil/grille_sgi.yaml`,
+  carnet, semaines, déclaration, registre, copie de `suivi exporter`) : ils sont reportés jusqu'à la fin de
+  l'écriture, qui n'est jamais coupée (fichier complet et valide ; un mandat n'est jamais écrit sans son apport).
+  Ensuite : si l'écriture était la dernière étape (`plan` après son calcul, `plan grille` sans `--comparer`, `suivi
+  demarrer`, `saisir`, `revue`, `declarer`, `exporter`, `bulletin --sortie`), la commande rend son vrai résultat
+  (0 et son objet), comme `notes add` (§ A.8) ; sinon (`plan --enregistrer` avant le calcul, `plan grille
+  --comparer`, `suivi maj` entre deux portefeuilles), elle s'arrête en 130 (8 pour `SIGXCPU`), un seul objet JSON.
+  Avant l'écriture (attente d'un verrou, calcul), TERM arrête la commande comme avant, sans rien écrire.
+- **Saisies refusées** (code 2, rien n'est écrit) : un retrait plus grand que les liquidités du carnet (un retrait
+  égal reste accepté ; l'interface répond 400 avec le même message) ; une revue d'un code d'alerte inconnu (par
+  exemple W99 : le message cite les codes connus) ; `--grille` vide ou faite d'espaces (`plan`, `recommend`,
+  `report`) ; `suivi exporter --sortie` vide ou faite d'espaces (avant : code 7). Un taux saisi « 0,7 » est
+  enregistré 0,007 exactement (avant : 0,006999999999999999 ; montants arrondis inchangés).
 - **Ordre du montant en actions** (`--perte-toleree`) : la vérification reprend le mode de l'appel (notes,
   grille, arrondi, continuité), mais ni `--suivi` (mémoire), ni `--apport`, ni `--completer`, ni `--reinvestir`,
   ni la comparaison des variantes ; l'évaluation des indices est celle de l'ordre du capital total (même date,

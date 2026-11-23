@@ -32,6 +32,7 @@ import os
 import shutil
 import tempfile
 import warnings
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -76,13 +77,15 @@ def parse_taux(value: Any) -> float:
     """Taux en pourcentage, virgule ou point : « 0,5 » ou « 0,5 % » → 0,005 (``ValueError`` sinon)."""
     s = str(value or "").strip().replace(" ", "").replace("\xa0", "").replace(" ", "")
     s = s[:-1] if s.endswith("%") else s
+    # Division par 100 en décimal : « 0,7 » donne exactement 0,007 (avant, en virgule flottante : 0,006999999999999999,
+    # écrit tel quel dans grille_sgi.yaml).
     try:
-        x = float(s.replace(",", "."))
-    except ValueError:
+        x = Decimal(s.replace(",", "."))
+    except (InvalidOperation, ValueError):
         raise ValueError(f"taux invalide : {value!r} (en pourcentage : 0,5 pour 0,5 %)") from None
-    if not (x == x) or x < 0 or x > 100:
+    if not x.is_finite() or x < 0 or x > 100:
         raise ValueError(f"taux invalide : {value!r} (de 0 à 100, en pourcentage)")
-    return x / 100.0
+    return float(x / 100)
 
 
 def parse_taux_reserve(value: Any) -> float:
@@ -191,22 +194,22 @@ def _aujourd_hui() -> pd.Timestamp:
 
 
 def _ecrire_json(chemin: Path, obj: Any) -> Path:
-    from brvm_alpha import fichiers
-
+    """Écriture atomique d'un fichier JSON des données (plan.json, plan_cache.json) ; TERM et ``SIGXCPU`` reportés
+    pendant l'écriture (:func:`brvm_alpha.demarrage.ecriture_protegee`) : le fichier est toujours complet et valide."""
     cli = _cli()
-    paths.verifier_ecriture(chemin)
-    chemin.parent.mkdir(parents=True, exist_ok=True)
     texte = json.dumps(cli.to_jsonable(obj), ensure_ascii=False, indent=1) + "\n"
-    return fichiers.ecrire_atomique(chemin, texte)
+    return _ecrire_texte(chemin, texte)
 
 
 def _ecrire_texte(chemin: str | Path, texte: str) -> Path:
-    from brvm_alpha import fichiers
+    """Écriture atomique (fichier temporaire, fsync, renommage), TERM et ``SIGXCPU`` reportés pendant l'écriture."""
+    from brvm_alpha import demarrage, fichiers
 
     p = Path(chemin)
     paths.verifier_ecriture(p)
     p.parent.mkdir(parents=True, exist_ok=True)
-    return fichiers.ecrire_atomique(p, texte)
+    with demarrage.ecriture_protegee():
+        return fichiers.ecrire_atomique(p, texte)
 
 
 def lire_plan(dossier: str | Path | None = None) -> dict[str, Any]:
@@ -317,12 +320,21 @@ def ajouter_options(p: argparse.ArgumentParser, commande: str) -> None:
                    help="portefeuille suivi (carnet <données>/suivi/NOM) : titres, liquidités et mémoire de la règle")
 
 
+def _refuser_grille_vide(value: Any) -> None:
+    """``--grille ''`` ou ``--grille ' '`` : refus (code 2), jamais le tarif par défaut pris sans le dire."""
+    if value is not None and not str(value).strip():
+        raise SaisieInvalide("refusé : --grille vide ou faite seulement d'espaces : ma_sgi (grille enregistrée), central "
+                             "(tarif supposé) ou un fichier YAML de grille ; sans l'option, le tarif par défaut est pris")
+
+
 def _grille_option(value: Any) -> str:
-    """Option ``--grille`` contrôlée avant le calcul : grille enregistrée présente et lisible, ou fichier lisible."""
+    """Option ``--grille`` contrôlée avant le calcul : grille enregistrée présente et lisible, ou fichier lisible ;
+    valeur vide ou faite d'espaces : refus (code 2)."""
     from brvm_alpha.rendement import grille as G
 
-    v = str(value or "").strip()
-    if v in ("", "central"):
+    _refuser_grille_vide(value)
+    v = str(value).strip()
+    if v == "central":
         return "central"
     if v == "ma_sgi":
         if not G.enregistree():
@@ -340,7 +352,7 @@ def _grille_option(value: Any) -> str:
 def options_recommend(args: argparse.Namespace, commande: str = "recommend") -> dict[str, Any]:
     """Paramètres nommés de ``recommend`` pour les options du module ; ``{}`` sans option (appel inchangé)."""
     kw: dict[str, Any] = {}
-    if getattr(args, "grille", None) not in (None, ""):
+    if getattr(args, "grille", None) is not None:
         kw["grille"] = _grille_option(args.grille)
     if getattr(args, "perte_toleree", None) is not None:
         controler_perte(args.perte_toleree, getattr(args, "capital", None))
@@ -577,7 +589,9 @@ def ajouter_parseurs(sub: Any) -> None:
                                    "aucun ordre : « reduire » se fait, si vous le décidez, par ordres à cours limité sur "
                                    "plusieurs séances, saisis par vous.")
     r.add_argument("--nom", required=True, metavar="NOM", help="portefeuille (carnet)")
-    r.add_argument("--alerte", required=True, metavar="ID", help="identifiant de l'alerte ou du feu")
+    r.add_argument("--alerte", required=True, metavar="ID",
+                   help="ce qui est revu : code de l'alerte (W1 à W9), feu (perte, fuites, donnees) ou symbole de la "
+                        "ligne (par exemple SNTS) ; un autre code est refusé")
     r.add_argument("--decision", required=True, choices=DECISIONS, help="garder, ne-plus-acheter ou reduire")
     r.add_argument("--texte", required=True, metavar="TEXTE", help="réponses aux questions de la revue")
     fmt(r)
@@ -613,10 +627,22 @@ def ajouter_parseurs(sub: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _ecriture_finale(finale: bool) -> Any:
+    """Bloc de la dernière étape d'une commande (écriture durable, puis résultat) : dès le point de non-retour de
+    l'écriture, TERM et ``SIGXCPU`` sont reportés jusqu'à la fin, et la commande rend son vrai résultat, comme ``notes
+    add`` (:func:`brvm_alpha.demarrage.reporter_apres_ecriture`). Sans effet si ``finale`` est faux : une écriture qui
+    n'est pas la dernière étape (``plan --enregistrer`` avant le calcul, ``plan grille --comparer``) se termine, puis
+    le signal arrête la commande (130, ou 8)."""
+    from brvm_alpha import demarrage
+
+    return demarrage.reporter_apres_ecriture() if finale else contextlib.nullcontext()
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     sc = getattr(args, "plan_cmd", None)
     if sc == "grille":
-        return _plan_grille(args)
+        with _ecriture_finale(not getattr(args, "comparer", False)):
+            return _plan_grille(args)
     if sc == "questions":
         return _plan_questions(args)
     return _plan_ecran(args)
@@ -645,7 +671,7 @@ def _plan_saisi(args: argparse.Namespace, capital: float) -> dict[str, Any]:
                         "date_taux": _aujourd_hui().date().isoformat()})
     if args.besoin_dans is not None:
         nouveau["besoin_dans_mois"] = int(args.besoin_dans)
-    if args.grille not in (None, ""):
+    if args.grille is not None:
         nouveau["grille"] = "ma_sgi" if args.grille == "ma_sgi" else ("central" if args.grille == "central" else "fichier")
     return nouveau
 
@@ -676,9 +702,9 @@ def cache_du_plan(o: Any, *, t: Any, capital: float, grille: str, perte_toleree:
 def _plan_ecran(args: argparse.Namespace) -> int:
     from brvm_alpha.portfolio import recommend as rec
     from brvm_alpha.rendement import grille as G
-    from brvm_alpha.rendement import plan as PL
 
     cli = _cli()
+    _refuser_grille_vide(args.grille)  # avant toute lecture du panel et toute écriture
     t = cli._decision_date(args.date, args.panel_dir)
     if cli.in_s1(t):
         raise SaisieInvalide(cli.s1_refusal(t, "l'écran « Mon plan »"))
@@ -689,11 +715,10 @@ def _plan_ecran(args: argparse.Namespace) -> int:
     pe = lire_plan()
     capital = float(args.capital or pe.get("capital") or CAPITAL_DEFAUT)
     controler_perte(args.perte_toleree, capital)
-    opt_g = args.grille if args.grille not in (None, "") else (pe.get("grille") if pe.get("grille") in ("ma_sgi",)
-                                                                else None)
+    opt_g = args.grille if args.grille is not None else (pe.get("grille") if pe.get("grille") in ("ma_sgi",) else None)
     if opt_g is None and G.enregistree():
         opt_g = "ma_sgi"
-    grille_kw = _grille_option(opt_g) if opt_g not in (None, "") else "central"
+    grille_kw = _grille_option(opt_g) if opt_g is not None else "central"
     chemin_plan = None
     if args.enregistrer:
         pe = {**pe, **_plan_saisi(args, capital), "version": 1, "enregistre_utc": cli.now_utc().isoformat(),
@@ -723,6 +748,15 @@ def _plan_ecran(args: argparse.Namespace) -> int:
                  "mention": "Durée : non calculée dans cette version (F14) ; votre besoin est gardé dans le plan."}
     cache = cache_du_plan(o, t=t, capital=capital, grille=opt_g or "central",
                           perte_toleree=args.perte_toleree if args.perte_toleree is not None else pe.get("perte_toleree"))
+    with _ecriture_finale(True):  # cache, puis l'écran : la dernière étape
+        return _plan_sortie(args, rn, od, t, capital, opt_g, cache, chemin_plan, duree, hist)
+
+
+def _plan_sortie(args: argparse.Namespace, rn: Mapping[str, Any], od: Mapping[str, Any], t: Any, capital: float,
+                 opt_g: Any, cache: Mapping[str, Any], chemin_plan: Any, duree: Any, hist: Mapping[str, Any]) -> int:
+    from brvm_alpha.rendement import plan as PL
+
+    cli = _cli()
     chemin_cache = _ecrire_json(dossier_profil() / "plan_cache.json", cache)
     meta = {"date": str(od.get("asof") or t)[:10], "capital": capital, "grille": opt_g or "central",
             "plan_cache": str(chemin_cache), "plan_enregistre": str(chemin_plan) if chemin_plan else None,
@@ -886,11 +920,18 @@ def _plan_questions(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: Actions du suivi dont l'écriture durable est la dernière étape (carnet, déclaration, copie des journaux).
+_SUIVI_ECRITURE_FINALE = ("demarrer", "saisir", "revue", "declarer", "exporter")
+
+
 def cmd_suivi(args: argparse.Namespace) -> int:
     fn = {"demarrer": _suivi_demarrer, "maj": _suivi_maj, "bulletin": _suivi_bulletin, "saisir": _suivi_saisir,
           "revue": _suivi_revue, "declarer": _suivi_declarer, "verifier": _suivi_verifier,
           "exporter": _suivi_exporter}[args.suivi_cmd]
-    return fn(args)
+    finale = args.suivi_cmd in _SUIVI_ECRITURE_FINALE or (args.suivi_cmd == "bulletin" and bool(getattr(args, "sortie",
+                                                                                                         None)))
+    with _ecriture_finale(finale):
+        return fn(args)
 
 
 def _sortie_simple(args: argparse.Namespace, payload: Mapping[str, Any], lignes: list[str]) -> int:
@@ -1291,7 +1332,7 @@ def _suivi_revue(args: argparse.Namespace) -> int:
         m = c.ajouter({"type": "revue", "date": jour, "alerte": str(args.alerte), "decision": args.decision,
                        "texte": str(args.texte)})
     return _sortie_simple(args, {"nom": c.nom, "mouvement": m, "phrase": RG.PH_REVUE},
-                          [f"Revue consignée au carnet « {c.nom} » le {jour} : alerte {args.alerte}, décision "
+                          [f"Revue consignée au carnet « {c.nom} » le {jour} : alerte {m['alerte']}, décision "
                            f"« {args.decision} ». Aucun ordre n'est créé.", RG.PH_REVUE])
 
 
@@ -1402,7 +1443,13 @@ def _suivi_verifier(args: argparse.Namespace) -> int:
 
 
 def _suivi_exporter(args: argparse.Namespace) -> int:
-    cli = _cli()
+    from brvm_alpha import demarrage
+
+    if args.dossier_sortie is None or not str(args.dossier_sortie).strip():
+        # « --sortie ' ' » échappe au contrôle commun des chemins (dest="dossier_sortie") : refus ici, dans les deux
+        # modes, avant toute écriture (avant : code 7, TypeError).
+        raise SaisieInvalide("refusé : --sortie vide ou fait seulement d'espaces : donner le dossier de destination "
+                             "(nouveau, ou vide) ; rien n'est écrit")
     D = dossier_suivi()
     if not D.is_dir() or not any(D.iterdir()):
         raise DonneesAbsentes(f"échec : aucun journal du suivi à copier ({D})")
@@ -1438,10 +1485,14 @@ def _suivi_exporter(args: argparse.Namespace) -> int:
     if tmp.exists():
         shutil.rmtree(tmp)
     try:
-        shutil.copytree(D, tmp, ignore=ignorer)
-        if dest.exists():
-            dest.rmdir()
-        os.replace(tmp, dest)
+        # Copie d'un bloc : TERM et SIGXCPU reportés pendant la copie et le renommage (jamais de copie à moitié) ;
+        # le renommage est le point de non-retour (dernière étape de « suivi exporter »).
+        with demarrage.ecriture_protegee():
+            shutil.copytree(D, tmp, ignore=ignorer)
+            if dest.exists():
+                dest.rmdir()
+            demarrage.point_de_non_retour()
+            os.replace(tmp, dest)
     finally:
         if tmp.exists():
             shutil.rmtree(tmp, ignore_errors=True)

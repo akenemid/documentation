@@ -31,10 +31,12 @@ from brvm_alpha.rendement import grille as _gr
 from brvm_alpha.rendement import reglages as _rg
 from brvm_alpha.rendement.reglages import ESTIMATION, FAIT, HYPOTHESE, R
 
-__all__ = ["choc_ref_publie", "chocs", "montant_actions", "poche", "reserve", "table_de_choix", "verifier_par_ordre",
-           "MESSAGE_ARRET", "MESSAGE_AUCUNE", "MESSAGE_DETENU", "MESSAGE_VENTES"]
+__all__ = ["choc_ref_publie", "chocs", "etiquette_taux", "montant_actions", "poche", "reserve", "table_de_choix",
+           "verifier_par_ordre", "MESSAGE_ARRET", "MESSAGE_AUCUNE", "MESSAGE_DETENU", "MESSAGE_VENTES", "TAUX_INCONNU"]
 
 MESSAGE_ARRET = "vérification arrêtée après {n} ordres : montant en actions à confirmer"
+#: Étiquette d'un taux de réserve non saisi (le même libellé partout : écran, « L'essentiel », rapport, JSON).
+TAUX_INCONNU = "taux inconnu : compté à 0 %"
 MESSAGE_VENTES = ("l'ordre de vérification propose des ventes ({ventes}) : aucune vente n'est proposée ; il sert seulement "
                   "à vérifier la perte estimée")
 MESSAGE_DETENU = ("Titres déjà détenus pour {detenu} FCFA, soit {ecart} FCFA de plus que le montant en actions : aucune "
@@ -516,6 +518,15 @@ def _avec_detenu(o: Mapping[str, Any], r: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def etiquette_taux(r: Mapping[str, Any] | None) -> str:
+    """Étiquette du taux de la réserve ``r`` (bloc de :func:`reserve`), la même partout : écran « Mon plan » (titre du
+    bloc 3), bloc « L'essentiel » et section « Où dort le reste » de l'ordre et du rapport, clé JSON
+    ``rendement_net.reserve.etiquette`` : :data:`TAUX_INCONNU`, ou « taux saisi : 3,00 % [supposé] »."""
+    if isinstance(r, Mapping) and r.get("taux_connu") and r.get("taux") is not None:
+        return f"taux saisi : {_rg.pct(r['taux'], 2)} [{r.get('mot_statut') or _rg.mot_statut(HYPOTHESE)}]"
+    return TAUX_INCONNU
+
+
 def reserve(K: float, A: float, r: float | None = None, statut: str | None = None, *,
             reglages: Mapping[str, Any] | None = None, support: str = "") -> dict[str, Any]:
     """Réserve = K − A (§F5). Valeur d'un point de taux = réserve × 0,01 par an ; intérêts attendus = r × réserve.
@@ -533,9 +544,14 @@ def reserve(K: float, A: float, r: float | None = None, statut: str | None = Non
     phrases = [_rg.PH_INTERETS]
     if rr > 0 and not releve:
         phrases.insert(0, _rg.PH_RESERVE)
-    return {"montant": int(round(res)), "taux": None if r is None else rr, "taux_connu": r is not None,
-            "statut": st_int, "mot_statut": _rg.mot_statut(st_int), "statut_valeur_d_un_point": FAIT,
-            "statut_taux": statut or ("supposé" if r is not None else "inconnu"),
-            "support": support, "interets": int(R.round_fcfa(rr * res)), "valeur_d_un_point": int(R.round_fcfa(0.01 * res)),
-            "deduit_de_la_perte": False, "masque": res <= 0, "phrases": phrases,
-            "mention": "taux inconnu : compté à 0 %" if r is None else ""}
+    # Réserve = capital entier : sa valeur d'un point est comptée ; à côté d'une poche en actions (montant estimé), elle
+    # est estimée, comme sur l'écran « Mon plan ».
+    st_pt = FAIT if res >= float(K) - 0.5 else ESTIMATION
+    out = {"montant": int(round(res)), "taux": None if r is None else rr, "taux_connu": r is not None,
+           "statut": st_int, "mot_statut": _rg.mot_statut(st_int), "statut_valeur_d_un_point": st_pt,
+           "statut_taux": statut or ("supposé" if r is not None else "inconnu"),
+           "support": support, "interets": int(R.round_fcfa(rr * res)), "valeur_d_un_point": int(R.round_fcfa(0.01 * res)),
+           "deduit_de_la_perte": False, "masque": res <= 0, "phrases": phrases,
+           "mention": TAUX_INCONNU if r is None else ""}
+    out["etiquette"] = etiquette_taux(out)
+    return out

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import re
+import unicodedata
 from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
@@ -25,8 +27,9 @@ from brvm_alpha.rendement import grille as _gr
 from brvm_alpha.rendement import reglages as _rg
 from brvm_alpha.rendement.reglages import R
 
-__all__ = ["AVERTISSEMENT_SEUILS", "PRIORITE", "QUESTIONS_REVUE", "alertes_fuite", "avertissements", "clore", "feux",
-           "lignes_a_revoir", "marquer_revue", "ouvrir", "prix_des_decisions", "ventes_ineligibles"]
+__all__ = ["AVERTISSEMENT_SEUILS", "CODES_ALERTES", "FEUX", "PRIORITE", "QUESTIONS_REVUE", "alertes_fuite", "avertissements",
+           "cible_de_revue", "clore", "feux", "lignes_a_revoir", "marquer_revue", "ouvrir", "prix_des_decisions",
+           "ventes_ineligibles"]
 
 FUITE, VERIFIER = "FUITE", "À VÉRIFIER"
 AVERTISSEMENT_SEUILS = ("Seuils choisis après lecture de la période 2022-2026, sans base statistique. Leur utilité est "
@@ -41,6 +44,32 @@ QUESTIONS_REVUE = [
     "5. Décision : garder ; ne plus acheter ; réduire par ordres à cours limité sur plusieurs séances.",
 ]
 QUESTION_PERTE_ROUGE = "Ce que vous acceptez de risquer est-il toujours le bon montant ?"
+#: Codes des alertes de l'ordre (§F8) et feux du bulletin (§F11) : ce qu'une revue peut viser, avec le symbole d'une
+#: ligne (« à revoir, pas à vendre »).
+CODES_ALERTES = tuple(f"W{i}" for i in range(1, 10))
+FEUX = ("perte", "fuites", "donnees")
+_CODES_CONNUS = (f"codes connus : {', '.join(CODES_ALERTES)} (alertes de l'ordre), perte, fuites, données (feux du "
+                 "bulletin), ou le symbole d'une ligne (par exemple SNTS)")
+
+
+def cible_de_revue(valeur: Any) -> str:
+    """Ce que vise une revue consignée au carnet (``suivi revue --alerte``, formulaire de l'interface) : un code
+    d'alerte connu (W1 à W9, rendu en majuscules), un feu (``perte``, ``fuites``, ``donnees`` ; « données » accepté)
+    ou le symbole d'une ligne (lettres et chiffres, rendu en majuscules). Un code inconnu (« W99 ») ou un texte libre :
+    ``ValueError`` qui cite les codes connus (rien n'est écrit)."""
+    v = str(valeur if valeur is not None else "").strip()
+    if not v:
+        raise ValueError(f"revue : préciser l'alerte ou la ligne revue ({_CODES_CONNUS})")
+    if re.fullmatch(r"[Ww]\d+\w*", v):
+        if v.upper() in CODES_ALERTES:
+            return v.upper()
+        raise ValueError(f"alerte inconnue : « {v[:40]} » ; {_CODES_CONNUS}")
+    sans_accent = "".join(c for c in unicodedata.normalize("NFD", v.lower()) if unicodedata.category(c) != "Mn")
+    if sans_accent in FEUX:
+        return sans_accent
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,11}", v):
+        return v.upper()
+    raise ValueError(f"alerte inconnue : « {v[:40]} » ; {_CODES_CONNUS}")
 
 
 def _a(code: str, niveau: str, prefixe: str | None, texte: str, cause: str = "", **valeurs: Any) -> dict[str, Any]:

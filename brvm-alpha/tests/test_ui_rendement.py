@@ -400,6 +400,39 @@ def test_review_is_written_to_the_book_and_creates_no_order(ui):
     assert RG.PH_REVUE in html.unescape(body)
 
 
+def test_a_withdrawal_above_the_cash_is_refused_by_the_interface_too(ui):
+    # Avant : retrait de 999 999 999 999 FCFA consigné (200), pour toujours (carnet en ajout seul).
+    c = demarrer(ui)  # 1 000 000 FCFA en liquidités
+    brut = c.fichier.read_bytes()
+    status, _, body = post(ui, "/suivi/saisir", {"nom": "MOI", "quoi": "retrait", "montant": "999 999 999 999"})
+    t = html.unescape(body)
+    assert status == 400 and "Saisie refusée" in t and "retrait refusé" in t and "liquidités" in t
+    assert c.fichier.read_bytes() == brut
+    status, _, body = post(ui, "/suivi/saisir", {"nom": "MOI", "quoi": "retrait", "montant": "1 000 000"})
+    assert status == 200 and [m["montant"] for m in c.mouvements(types=("retrait",))] == [1_000_000.0]  # égal : accepté
+    assert post(ui, "/suivi/saisir", {"nom": "MOI", "quoi": "retrait", "montant": "1"})[0] == 400
+    assert c.liquidites() == 0.0 and c.verifier()["chaine_ok"]
+
+
+def test_a_review_of_an_unknown_alert_code_is_refused_by_the_interface_too(ui):
+    c = demarrer(ui)
+    brut = c.fichier.read_bytes()
+    status, _, body = post(ui, "/suivi/revue", {"nom": "MOI", "alerte": "W99", "decision": "garder", "texte": "x"})
+    t = html.unescape(body)
+    assert status == 400 and "alerte inconnue" in t and "W1" in t and "W9" in t and "perte" in t  # avant : 200
+    assert c.fichier.read_bytes() == brut
+    status, _, _ = post(ui, "/suivi/revue", {"nom": "MOI", "alerte": "w4", "decision": "garder", "texte": "x"})
+    assert status == 200 and c.mouvements(types=("revue",))[-1]["alerte"] == "W4"
+
+
+def test_a_rate_typed_0_7_is_saved_as_0_007(ui, recommend_simule):
+    status, _, _ = post(ui, "/plan/grille", {"courtage": "0,7", "statut": "supposé"})
+    assert status == 303
+    texte_grille = (profil(ui) / "grille_sgi.yaml").read_text(encoding="utf-8")
+    assert "valeur: 0.007\n" in texte_grille and "0.00699" not in texte_grille  # avant : 0.006999999999999999
+    assert G.charger(profil(ui)).valeur("courtage") == 0.007
+
+
 def test_entries_apport_retrait_and_avis_on_paper_refused(ui):
     c = demarrer(ui)
     status, _, body = post(ui, "/suivi/saisir", {"nom": "MOI", "quoi": "apport", "montant": "250 000"})

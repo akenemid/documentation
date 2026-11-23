@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
+from brvm_alpha.rendement import perte as _pe
 from brvm_alpha.rendement import reglages as _rg
 from brvm_alpha.rendement.reglages import BANNER, R, fcfa, pct
 
@@ -68,6 +69,15 @@ def _ligne_choix(r: Mapping[str, Any]) -> str:
             f"année ordinaire (prudente) {_s(ordi)} [estimé]")
 
 
+def _etiquette_reserve(rn: Mapping[str, Any], r: Mapping[str, Any]) -> str:
+    """Statut de la ligne de la réserve, le même que sur l'écran « Mon plan » : l'étiquette du taux (« taux inconnu :
+    compté à 0 % », ou « taux saisi : 3,00 % [supposé] »), précédée de « estimé » quand la réserve est le reste d'une
+    poche en actions (montant estimé). Avant : « [compté] » dans « L'essentiel », quel que soit le cas."""
+    K = float((rn.get("contexte") or {}).get("capital") or 0)
+    etiq = _pe.etiquette_taux(r)
+    return f"estimé ; {etiq}" if K and float(r.get("montant") or 0) < K - 0.5 else etiq
+
+
 def bloc_essentiel(rn: Mapping[str, Any]) -> list[Bloc]:
     """Bloc « L'essentiel » (§7.3) : 14 lignes au plus, montants au franc. ``PH_SEANCE`` ; frais de la 1re année et
     part supposée ou estimée des frais ; le premier geste ; les lignes de la table de choix (ou la ligne retenue),
@@ -99,7 +109,7 @@ def bloc_essentiel(rn: Mapping[str, Any]) -> list[Bloc]:
     r = rn.get("reserve")
     if _ok(r):
         items.append(f"Réserve {fcfa(r['montant'])} : un point d'intérêt vaut {fcfa(r['valeur_d_un_point'])} par an "
-                     f"[compté]. {_rg.PH_INTERETS}")
+                     f"[{_etiquette_reserve(rn, r)}]. {_rg.PH_INTERETS}")
     fx = ((rn.get("suivi") or {}).get("feux") if isinstance(rn.get("suivi"), Mapping) else None) or {}
     if fx.get("suivi_commence"):
         items.append(f"Trois feux : perte {fx['perte']['affichage']} ; fuites {fx['fuites']['affichage']} ; données "
@@ -260,7 +270,7 @@ def blocs_section(rn: Mapping[str, Any]) -> list[Bloc]:
     B.append(("h3", SOUS_PARTIES[4]))
     r = rn.get("reserve")
     if _ok(r):
-        B.append(("ul", [f"Réserve {fcfa(r['montant'])} ; taux {pct(r['taux'], 2) if r.get('taux') is not None else 'inconnu : compté à 0 %'} ; "
+        B.append(("ul", [f"Réserve {fcfa(r['montant'])} ; {_pe.etiquette_taux(r)} ; "
                          f"un point d'intérêt vaut {fcfa(r['valeur_d_un_point'])} par an ; intérêts attendus "
                          f"{fcfa(r['interets'])} [{r['mot_statut']}], montrés à part"] + list(r.get("phrases") or [])))
     else:
