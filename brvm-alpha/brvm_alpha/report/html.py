@@ -3077,6 +3077,19 @@ _JS = r"""
 """
 
 
+def _rn_sous_bloc(ctx: _Ctx, section: str) -> H:
+    """Sous-bloc du module « Rendement net et pertes » à la fin d'une section (§7.2) ; vide s'il échoue (la section
+    garde son statut)."""
+    try:
+        from brvm_alpha.report import rendement_net as _rnr
+
+        return H(_rnr.sous_bloc(ctx, section))
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
+    except Exception:  # noqa: BLE001 - la section garde son statut « ok »
+        return H("")
+
+
 def render_report(asof: Any, capital: float, *, panels: Mapping[str, Any] | None = None,
                   panel_dir: str | Path | None = "data/panel", notes_root: str | Path | None = "data/notes",
                   validation_dir: str | Path | None = "reports/validation_S1",
@@ -3119,11 +3132,13 @@ def render_report(asof: Any, capital: float, *, panels: Mapping[str, Any] | None
         "methode": "Ce que la plate-forme ne peut pas promettre, limites des données et hypothèses.",
     }
     fns: dict[str, Callable[[], Any]] = {
-        "bandeau": lambda: _sec_bandeau(ctx), "marche": lambda: _sec_marche(ctx), "s1": lambda: _sec_s1(ctx),
-        "ordre": lambda: _sec_ordre(ctx), "revenus": lambda: _sec_revenus(ctx),
-        "distribution": lambda: _sec_distribution(ctx), "indices": lambda: _sec_indices(ctx),
-        "notes": lambda: _sec_notes(ctx), "risques": lambda: _sec_risques(ctx), "univers": lambda: _sec_univers(ctx),
-        "methode": lambda: _sec_methode(ctx),
+        "bandeau": lambda: H(_sec_bandeau(ctx) + _rn_sous_bloc(ctx, "bandeau")), "marche": lambda: _sec_marche(ctx),
+        "s1": lambda: _sec_s1(ctx), "ordre": lambda: H(_sec_ordre(ctx) + _rn_sous_bloc(ctx, "ordre")),
+        "revenus": lambda: H(_sec_revenus(ctx) + _rn_sous_bloc(ctx, "revenus")),
+        "distribution": lambda: H(_sec_distribution(ctx) + _rn_sous_bloc(ctx, "distribution")),
+        "indices": lambda: _sec_indices(ctx), "notes": lambda: _sec_notes(ctx),
+        "risques": lambda: H(_sec_risques(ctx) + _rn_sous_bloc(ctx, "risques")), "univers": lambda: _sec_univers(ctx),
+        "methode": lambda: H(_sec_methode(ctx) + _rn_sous_bloc(ctx, "methode")),
     }
     body = []
     for sid, title in SECTIONS:

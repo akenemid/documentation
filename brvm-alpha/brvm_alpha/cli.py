@@ -34,7 +34,8 @@ Analyse et décision
   ``recommend --capital K`` : ordre de bataille complet (Markdown, JSON ou HTML) ; ``report --capital
   K`` : rapport HTML autonome ; ``serve`` : interface web locale (127.0.0.1 uniquement par défaut ;
   ``--prefixe``, ``--origine-relais`` et ``--cadre-meme-origine`` pour la placer derrière un relais
-  authentifié, voir ``docs/DEPLOIEMENT.md``).
+  authentifié, voir ``docs/DEPLOIEMENT.md``) ; ``plan`` : écran « Mon plan » (frais, ce que j'accepte de risquer,
+  réserve) ; ``suivi`` : suivi sur papier S2 (journaux, bulletin, déclaration) : :mod:`brvm_alpha.cli_rendement`.
 
 Validation
   ``backtest`` (toute période qui recoupe l'échantillon vierge S1, 2017-01-02 → 2022-11-16, est
@@ -1123,6 +1124,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_notes_root(rp)
     _add_notes_au(rp)
     rp.add_argument("--panel-dir", default=None, metavar="DOSSIER", help="panel (défaut : data/panel)")
+
+    # -- rendement net et pertes : options de recommend et report, commandes plan et suivi (§6) ----------------
+    from brvm_alpha import cli_rendement as _rc
+
+    _rc.ajouter_options(r, "recommend")
+    _rc.ajouter_options(rp, "report")
+    _rc.ajouter_parseurs(sub)
 
     sv = sub.add_parser("serve", help="interface web locale (http://127.0.0.1:8765)",
                         description="Interface web locale en français (tableau de bord, notes, recherche, indices, "
@@ -2292,7 +2300,7 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
         o = rec.recommend(t, args.capital, holdings=holdings, cash=args.cash, variant=args.variante,
                           costs=args.couts, n_boot=args.tirages, seed=args.graine, notes_store=store,
                           panel_dir=args.panel_dir, index_evaluation=not args.sans_indices,
-                          notes_known_at=known, today=now_utc())
+                          notes_known_at=known, today=now_utc(), **_options_rendement(args))
     warn = hist.get("avertissement")
     if warn:
         _say(f"⚠ {warn}")
@@ -2349,6 +2357,9 @@ def _cmd_report(args: argparse.Namespace) -> int:
     if args.panel_dir:
         kw["panel_dir"] = args.panel_dir
     kw["notes_known_at"] = notes_instant(args.date, getattr(args, "notes_au", None), args.panel_dir)
+    rn_kw = _options_rendement(args, "report")  # options du module (§6) ; vide sans option : appel inchangé
+    if rn_kw:
+        kw["recommend_kwargs"] = rn_kw
     rendu: list[Any] = []
     kw["historique"] = hist
     kw["rendu"] = rendu
@@ -2441,6 +2452,25 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _options_rendement(args: argparse.Namespace, commande: str = "recommend") -> dict[str, Any]:
+    """Paramètres nommés de ``recommend`` pour les options du module « Rendement net et pertes » ; ``{}`` sans option."""
+    from brvm_alpha import cli_rendement
+
+    return cli_rendement.options_recommend(args, commande)
+
+
+def _cmd_plan(args: argparse.Namespace) -> int:
+    from brvm_alpha import cli_rendement
+
+    return cli_rendement.cmd_plan(args)
+
+
+def _cmd_suivi(args: argparse.Namespace) -> int:
+    from brvm_alpha import cli_rendement
+
+    return cli_rendement.cmd_suivi(args)
+
+
 # ---------------------------------------------------------------------------
 # Point d'entrée
 # ---------------------------------------------------------------------------
@@ -2458,6 +2488,8 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "validate": _cmd_validate,
     "recommend": _cmd_recommend,
     "report": _cmd_report,
+    "plan": _cmd_plan,
+    "suivi": _cmd_suivi,
     "serve": _cmd_serve,
 }
 
