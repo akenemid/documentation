@@ -734,6 +734,13 @@ MAX_CHAINED_SLOTS = 6
 #: Attente maximale (s), en plus de deux délais, d'une requête d'une autre session encore en cours vers le même site
 #: (verrou d'envoi) : sa durée est bornée par le délai total d'un PDF (:data:`brvm_alpha.net.DELAI_PDF_MAX`).
 ENVOI_ATTENTE_S = _net.DELAI_PDF_MAX + 120.0
+#: Marge (s) après une requête qui ne s'est pas terminée normalement, c'est-à-dire sans réponse complète lue ni erreur
+#: HTTP reçue (TERM du lanceur, Ctrl+C, ``SIGXCPU``, ``MemoryError``, erreur du transport, délai dépassé) : le site ne
+#: voit la coupure qu'à sa prochaine écriture sur la connexion (mesuré : 0,1 à 2 s plus tard). Une telle requête compte
+#: comme finie ``MARGE_COUPURE_S`` après sa coupure (clé ``fin_coupee`` de ``politeness.json``), et une marque « envoi
+#: en cours » orpheline (processus tué par ``KILL``) fait attendre un délai plus cette marge. Une requête terminée
+#: normalement garde exactement un délai.
+MARGE_COUPURE_S = 2.0
 
 
 def _envoi_path(cache_dir: str | Path, key: str) -> Path:
@@ -752,17 +759,25 @@ def _date_etat(value: Any) -> dt.datetime:
     return d
 
 
-def _attente_apres_fin(fin: Any, now: dt.datetime, delay: float) -> float:
-    """Attente (s) pour partir un délai après ``fin`` (fin d'une requête, date ISO), comptée depuis ``now`` : entre 0
-    et un délai. Une fin datée dans le futur (horloge recalée) ou illisible (``"NaT"``, ``"nan"``, nombre, texte)
-    coûte un délai, jamais plus, jamais moins."""
+def _attente_apres_fin(fin: Any, now: dt.datetime, delay: float, marge: float = 0.0) -> float:
+    """Attente (s) pour partir un délai (plus ``marge`` : requête coupée, :data:`MARGE_COUPURE_S`) après ``fin`` (fin
+    d'une requête, date ISO), comptée depuis ``now`` : entre 0 et un délai plus la marge. Une fin datée dans le futur
+    (horloge recalée) ou illisible (``"NaT"``, ``"nan"``, nombre, texte) coûte un délai plus la marge, jamais plus,
+    jamais moins."""
+    total = float(delay) + max(0.0, float(marge))
     try:
-        wait = (_date_etat(fin) - now).total_seconds() + delay
+        wait = (_date_etat(fin) - now).total_seconds() + total
     except (TypeError, ValueError, OverflowError):
-        return float(delay)
+        return total
     if not math.isfinite(wait):
-        return float(delay)
-    return min(max(wait, 0.0), float(delay))
+        return total
+    return min(max(wait, 0.0), total)
+
+
+def _marge_fin(entry: Mapping[str, Any]) -> float:
+    """Marge à ajouter au délai après la fin notée dans ``entry`` : :data:`MARGE_COUPURE_S` si la requête a été coupée
+    (clé ``fin_coupee`` présente et non fausse, valeur illisible comprise), 0 sinon."""
+    return MARGE_COUPURE_S if entry.get("fin_coupee") not in (None, False) else 0.0
 
 
 class PolitesseNonGarantie(_err.ConfigurationError):
@@ -1194,9 +1209,11 @@ class PoliteSession:
                     else:
                         slot = max(slot, prev_t + dt.timedelta(seconds=delay))
             fin, fin_by = entry.get("fin"), entry.get("fin_session")
-            jeton["fin_vue"] = [fin, fin_by]
-            if fin and fin_by != sid:  # fin d'une vraie requête d'une autre session : un délai après elle
-                slot = max(slot, now + dt.timedelta(seconds=_attente_apres_fin(fin, now, delay)))
+            marge = _marge_fin(entry)
+            jeton["fin_vue"] = [fin, fin_by, marge]
+            if fin and fin_by != sid:  # fin d'une vraie requête d'une autre session : un délai après elle (plus la
+                # marge si elle a été coupée)
+                slot = max(slot, now + dt.timedelta(seconds=_attente_apres_fin(fin, now, delay, marge)))
             wait_s = min(max((slot - now).total_seconds(), 0.0), cap)
             entry["last"] = (now + dt.timedelta(seconds=wait_s)).isoformat()
             entry["session"] = sid
@@ -1251,8 +1268,11 @@ class PoliteSession:
           ``debut``, ``session``) ;
         - à la sortie du bloc, **quelle qu'elle soit** (fin normale, erreur, TERM ou Ctrl+C, ``SIGXCPU``,
           ``MemoryError``…), la fin est notée (:meth:`_record_done`) et la marque retirée, avant de rendre le
-          verrou. Le bloc reçoit ``{"partie": True}`` : ``False`` pour un refus constaté à la connexion (rien n'est
-          parti vers le site) ; seule la marque est alors retirée, la réservation reste.
+          verrou. Le bloc reçoit ``{"partie": True, "complete": False}`` : ``partie`` à ``False`` pour un refus
+          constaté à la connexion (rien n'est parti vers le site) ; seule la marque est alors retirée, la réservation
+          reste. ``complete`` passe à ``True`` quand la réponse a été lue en entier (erreur HTTP comprise) ; sinon la
+          requête a été coupée, et elle compte comme finie :data:`MARGE_COUPURE_S` après la coupure, pour cette
+          session comme pour les autres (clé ``fin_coupee``).
 
         Verrou ou marque impossibles à écrire alors que ``politeness.json`` s'écrit : rien n'est envoyé
         (:class:`PolitesseNonGarantie`, code 8, noté dans ``fetch_log.jsonl``). Si ``politeness.json`` lui-même ne
@@ -1276,15 +1296,18 @@ class PoliteSession:
             self._attendre_fin_des_autres(url, key, delay, jeton)
             self._refuser_si_bloque(url)  # 403/429 reçu pendant le complément d'attente : rien ne part
             self._marquer_envoi(url, host, jeton)
-            envoi = {"partie": True}
+            envoi = {"partie": True, "complete": False}
             try:
                 yield envoi
             finally:
                 # Toute sortie du bloc note la fin, verrou tenu : une interruption (TERM du lanceur, Ctrl+C, SIGXCPU,
-                # MemoryError, erreur de configuration) ne laisse jamais partir la session suivante sans délai.
-                self._last_request[key] = self.clock()
+                # MemoryError, erreur du transport ou de configuration) ne laisse jamais partir la session suivante
+                # sans délai ; une requête coupée (réponse non lue en entier) compte comme finie MARGE_COUPURE_S plus
+                # tard : le site ne voit la coupure qu'à sa prochaine écriture.
+                coupee = bool(envoi["partie"]) and not envoi["complete"]
+                self._last_request[key] = self.clock() + (MARGE_COUPURE_S if coupee else 0.0)
                 if envoi["partie"]:
-                    self._record_done(host)
+                    self._record_done(host, coupee=coupee)
                 else:
                     self._effacer_marque(host)
 
@@ -1306,7 +1329,7 @@ class PoliteSession:
     def _marquer_envoi(self, url: str, host: str, jeton: dict[str, Any] | None) -> None:
         """Marque « envoi en cours » de cette session (clé ``envoi`` : ``debut``, ``session``), écrite verrou d'envoi
         tenu, juste avant l'envoi ; retirée avec la fin (:meth:`_record_done`). Si le processus meurt pendant la
-        requête (``KILL``), elle reste : la session suivante attend un délai entier."""
+        requête (``KILL``), elle reste : la session suivante attend un délai entier plus :data:`MARGE_COUPURE_S`."""
         now = to_utc(self.now())
         sid = self.session_id
 
@@ -1337,10 +1360,11 @@ class PoliteSession:
         """Verrou d'envoi tenu (aucune autre requête n'est en cours vers ce site) :
 
         - marque « envoi en cours » d'une autre session encore présente : cette requête s'est terminée sans que sa fin
-          soit notée (processus tué : ``KILL``, panne), à un instant inconnu mais passé : un délai **entier** est
-          attendu à partir de maintenant ;
+          soit notée (processus tué : ``KILL``, panne), à un instant inconnu mais passé : un délai **entier** plus la
+          marge de coupure (:data:`MARGE_COUPURE_S`) est attendu à partir de maintenant ;
         - sinon, si une autre session a noté la fin d'une requête vers ce site depuis la réservation (ou si la
-          réservation n'a pas pu être écrite), attente jusqu'à un délai après cette fin (au plus un délai)."""
+          réservation n'a pas pu être écrite), attente jusqu'à un délai après cette fin (au plus un délai), plus la
+          marge si cette requête a été coupée (``fin_coupee``)."""
         try:
             hosts = _state_load(_state_path(self.cache_dir), strict=True).get("hosts", {})
         except OSError as exc:
@@ -1352,26 +1376,31 @@ class PoliteSession:
         marque = entry.get("envoi")
         if marque and not (isinstance(marque, dict) and marque.get("session") == self.session_id):
             debut = marque.get("debut") if isinstance(marque, dict) else marque
-            self._log(event="attente", url=url, wait_s=round(float(delay), 3), envoi_sans_fin=str(debut)[:40],
-                      raison="requête d'une autre session interrompue sans fin notée : un délai entier")
-            self.sleep(float(delay))
+            attente = float(delay) + MARGE_COUPURE_S
+            self._log(event="attente", url=url, wait_s=round(attente, 3), envoi_sans_fin=str(debut)[:40],
+                      raison="requête d'une autre session interrompue sans fin notée : un délai entier, plus la marge "
+                             "de coupure")
+            self.sleep(attente)
             return
         fin, fin_by = entry.get("fin"), entry.get("fin_session")
         if not fin or fin_by == self.session_id:
             return
-        if jeton is not None and list(jeton.get("fin_vue") or [None, None]) == [fin, fin_by]:
+        marge = _marge_fin(entry)
+        if jeton is not None and list(jeton.get("fin_vue") or [None, None, None]) == [fin, fin_by, marge]:
             return  # déjà comptée dans le créneau réservé
-        wait = _attente_apres_fin(fin, to_utc(self.now()), delay)
+        wait = _attente_apres_fin(fin, to_utc(self.now()), delay, marge)
         if wait > 0:
             self._log(event="attente", url=url, wait_s=round(wait, 3),
                       raison="fin récente d'une requête d'une autre session vers ce site")
             self.sleep(wait)
 
-    def _record_done(self, host: str) -> None:
+    def _record_done(self, host: str, coupee: bool = False) -> None:
         """Fin d'une vraie requête : notée **toujours** dans ``fin`` (même si une réservation plus tardive d'une autre
         session existe), et dans ``last`` si elle est plus tardive que la dernière réservation ; la marque « envoi en
         cours » de cette session est retirée dans la même écriture. Appelée par :meth:`_depart` à toute sortie du bloc
-        d'envoi (interruption comprise)."""
+        d'envoi (interruption comprise). ``coupee`` : la réponse n'a pas été lue en entier ; ``fin_coupee`` est posée
+        (les autres sessions attendent alors :data:`MARGE_COUPURE_S` de plus), et retirée par une fin normale. ``fin``
+        reste l'instant réel de la coupure."""
         now = to_utc(self.now())
         sid = self.session_id
 
@@ -1392,6 +1421,10 @@ class PoliteSession:
             # une session qui a réservé pendant cette requête attend un délai après elle avant de partir (_depart).
             entry["fin"] = now.isoformat()
             entry["fin_session"] = sid
+            if coupee:
+                entry["fin_coupee"] = True
+            else:
+                entry.pop("fin_coupee", None)
             m = entry.get("envoi")
             if isinstance(m, dict) and m.get("session") == sid:
                 entry.pop("envoi", None)
@@ -1399,7 +1432,8 @@ class PoliteSession:
         try:
             self._state_update(host, done)
         except (OSError, ResearchError, _err.VerrouOccupe, _err.ConfigurationError) as exc:
-            # Fin non notée : la marque « envoi en cours » reste, la session suivante attend un délai entier.
+            # Fin non notée : la marque « envoi en cours » reste, la session suivante attend un délai entier plus la
+            # marge de coupure.
             log.warning("état de politesse non écrit : %s", exc)
 
     def _record_block(self, host: str, url: str, status: int) -> None:
@@ -1476,6 +1510,7 @@ class PoliteSession:
                     content = bytes(resp.content or b"")
                     rheaders = {str(k): str(v) for k, v in dict(getattr(resp, "headers", {}) or {}).items()}
                     final_url = str(getattr(resp, "url", None) or url)
+                    envoi["complete"] = True  # réponse lue en entier (erreur HTTP comprise) : fin normale
                     error = None
                     if len(content) > cap:
                         raise _net.ReponseTropGrosse(f"{url} : réponse de {len(content)} octets, plafond {cap} "

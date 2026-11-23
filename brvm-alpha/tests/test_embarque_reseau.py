@@ -499,7 +499,7 @@ def test_blocked_403_is_kept_when_the_state_lock_is_contended(tmp_path):
         sess = polite(tmp_path, lambda u, h, t: _resp(403, b"", None, u))
         sess._robots["https://www.brvm.org"] = None
         sess._wait_turn = lambda url: None  # le créneau n'est pas l'objet de l'essai
-        sess._record_done = lambda host: None
+        sess._record_done = lambda host, coupee=False: None
         with pytest.raises(rs.AccessBlocked):
             sess._network_get("https://www.brvm.org/fr/x", {})
         assert rs.blocked_hosts(cache).get("www.brvm.org", {}).get("status") == 403  # attendu, pas perdu

@@ -21,7 +21,10 @@ Chaque essai reproduit un constat du contrôle final (il échouait avant la corr
   Revu encore (contrôle de 1a1fd28) : une requête interrompue (TERM, Ctrl+C, SIGXCPU, KILL) ne notait pas sa fin, et
   la session qui attendait partait aussitôt ; désormais la fin est notée à toute sortie, et une marque « envoi en
   cours » restée sans fin (KILL) coûte un délai entier ; verrou d'envoi impossible alors que politeness.json s'écrit :
-  rien ne part (code 8) ; date illisible : un délai ; 403 d'une autre session : arrêt dès la prise du verrou ;
+  rien ne part (code 8) ; date illisible : un délai ; 403 d'une autre session : arrêt dès la prise du verrou.
+  Marge de coupure ensuite (après d99bbbc) : une requête qui ne s'est pas terminée normalement compte comme finie 2 s
+  après sa coupure, et une marque orpheline coûte un délai plus 2 s (le site ne voit la coupure qu'à sa prochaine
+  écriture) ; une fin normale garde exactement un délai ;
 - P7 ``recommend`` sur un panel de 7 séances sortait en 7 (``TypeError`` dans l'évaluation des indices).
 
 Hors ligne : dossiers temporaires, doublures, aucune requête vers l'extérieur. Le code 3 n'est jamais attendu.
@@ -832,8 +835,9 @@ def test_an_interrupted_request_still_notes_its_end_and_the_next_session_waits_t
                                                                                                   interruption):
     """Requête interrompue pendant l'envoi (TERM du lanceur : ``ArretDemande`` ; Ctrl+C ; ``SIGXCPU`` ;
     ``MemoryError`` ; erreur venue du transport) : la fin est notée quand même, la marque « envoi en cours » est
-    retirée, et la session suivante part 10 s après l'interruption. Avant : aucune fin notée, la session qui
-    attendait partait 0,06 s après le TERM (pendant que le site servait encore la réponse)."""
+    retirée, et la session suivante part 10 s après l'interruption, plus la marge de coupure de 2 s (la requête n'a pas
+    fini normalement : ``fin_coupee``). Avant 1a1fd28 : aucune fin notée, la session qui attendait partait 0,06 s après
+    le TERM (pendant que le site servait encore la réponse) ; avant la marge : 10 s après l'interruption."""
     from brvm_alpha.notes import research as rs
 
     cache = tmp_path / "cache"
@@ -850,9 +854,104 @@ def test_an_interrupted_request_still_notes_its_end_and_the_next_session_waits_t
     with pytest.raises(interruption):
         sess.get(URL_BOC)
     entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
-    assert entry["fin_session"] == sess.session_id and rs.to_utc(entry["fin"]) == h.now()
-    assert "envoi" not in entry
-    assert _attente_avant_premier_envoi(cache, h.t + 1.0) == pytest.approx(9.0)  # avant : 5 s (début + 10 s)
+    assert entry["fin_session"] == sess.session_id and rs.to_utc(entry["fin"]) == h.now()  # instant réel de la coupure
+    assert "envoi" not in entry and entry["fin_coupee"] is True
+    # 1 s après la coupure : 11 s d'attente, soit 12 s après la coupure (avant la marge : 9 s ; avant 1a1fd28 : 5 s)
+    assert _attente_avant_premier_envoi(cache, h.t + 1.0) == pytest.approx(10.0 + rs.MARGE_COUPURE_S - 1.0)
+
+
+@pytest.mark.parametrize("fin", ["reponse_200", "erreur_http_404", "erreur_http_503", "erreur_transport",
+                                 "delai_depasse", "connexion_impossible"])
+def test_only_a_request_that_did_not_end_normally_costs_the_cut_margin(tmp_path, fin):
+    """Marge de coupure : une requête terminée normalement (réponse lue en entier, ou erreur HTTP reçue) garde
+    exactement un délai (10 s) ; une requête coupée par le transport (erreur, délai dépassé, connexion impossible)
+    compte comme finie 2 s après sa coupure : la suivante part 12 s après. ``fin`` reste l'instant réel."""
+    from brvm_alpha import net
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    h = _Horloge()
+
+    def tr(url, headers, timeout):
+        if url.endswith("robots.txt"):
+            return _R(404, b"", None, url)
+        h.t += 3.0  # 3 s de requête
+        if fin == "erreur_transport":
+            raise OSError("connexion remise à zéro par le pair")
+        if fin == "delai_depasse":
+            raise net.DelaiDepasse("délai total dépassé")
+        if fin == "connexion_impossible":
+            raise net.ConnexionImpossible("connexion impossible")
+        return _R({"reponse_200": 200, "erreur_http_404": 404, "erreur_http_503": 503}[fin], b"%PDF-1.4 x", None, url)
+
+    sess = rs.PoliteSession(transport=tr, clock=h, sleep=h.sleep, now=h.now, cache_dir=cache,
+                            log_path=tmp_path / "fetch_log.jsonl", delay_s=10.0, max_retries=1)
+    try:
+        sess.get(URL_BOC)
+    except (rs.ResearchError, rs.ServerUnavailable):
+        pass
+    entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
+    normale = fin.startswith(("reponse", "erreur_http"))
+    assert rs.to_utc(entry["fin"]) == h.now() and ("fin_coupee" in entry) is (not normale), entry
+    attendu = 10.0 if normale else 10.0 + rs.MARGE_COUPURE_S
+    copie = tmp_path / "copie" / "cache"  # chaque sonde écrit sa propre requête : une copie de l'état pour la seconde
+    shutil.copytree(cache, copie)
+    assert _attente_avant_premier_envoi(cache, h.t) == pytest.approx(attendu)
+    assert _attente_avant_premier_envoi(copie, h.t + 4.0) == pytest.approx(attendu - 4.0)
+
+
+def test_the_cut_margin_also_holds_for_the_same_session_and_a_normal_end_clears_it(tmp_path):
+    """Même session : après une requête coupée (erreur du transport), son nouvel essai part 12 s après la coupure
+    (attente d'essai comprise) ; une fin normale suivante retire ``fin_coupee`` : de nouveau 10 s."""
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    h = _Horloge()
+    envois: list[float] = []
+    coupure: list[float] = []
+
+    def tr(url, headers, timeout):
+        if url.endswith("robots.txt"):
+            return _R(404, b"", None, url)
+        envois.append(h.t)
+        if len(envois) == 1:
+            h.t += 1.0
+            coupure.append(h.t)
+            raise OSError("connexion coupée")
+        return _R(200, b"%PDF-1.4 x", None, url)
+
+    sess = rs.PoliteSession(transport=tr, clock=h, sleep=h.sleep, now=h.now, cache_dir=cache,
+                            log_path=tmp_path / "fetch_log.jsonl", delay_s=10.0, max_retries=2, backoff_s=1.0)
+    sess.get(URL_BOC)
+    assert len(envois) == 2 and envois[1] - coupure[0] == pytest.approx(10.0 + rs.MARGE_COUPURE_S)
+    entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
+    assert "fin_coupee" not in entry and rs.to_utc(entry["fin"]) == h.now()
+    assert _attente_avant_premier_envoi(cache, h.t) == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("etat", ["marque_orpheline", "fin_illisible_coupee", "fin_future_coupee",
+                                  "fin_coupee_illisible"])
+def test_an_orphan_mark_or_a_cut_end_costs_the_delay_plus_the_margin_never_more(tmp_path, etat):
+    """Marque « envoi en cours » d'une autre session restée sans fin (KILL) : délai plus marge (12 s) depuis la prise
+    du verrou ; fin coupée illisible ou datée dans le futur : 12 s, jamais plus ; valeur illisible de ``fin_coupee`` :
+    la marge compte (prudent)."""
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    entry = {"orphelin": {"envoi": {"debut": (_NOW - dt.timedelta(seconds=30)).isoformat(), "session": "tuée"}},
+             "fin_illisible_coupee": {"fin": "NaT", "fin_session": "autre", "fin_coupee": True},
+             "fin_future_coupee": {"fin": (_NOW + dt.timedelta(days=3)).isoformat(), "fin_session": "autre",
+                                   "fin_coupee": True},
+             "fin_coupee_illisible": {"fin": _NOW.isoformat(), "fin_session": "autre", "fin_coupee": "oui ?"},
+             }[etat.replace("marque_orpheline", "orphelin")]
+    (cache / rs.POLITENESS_STATE).write_text(json.dumps({"hosts": {"www.brvm.org": entry}}), encoding="utf-8")
+    assert _attente_avant_premier_envoi(cache, 1000.0) == pytest.approx(10.0 + rs.MARGE_COUPURE_S)
+    if etat == "marque_orpheline":
+        journal = [json.loads(x) for x in (tmp_path / "fetch_log.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert [e["wait_s"] for e in journal if e.get("envoi_sans_fin")] == [10.0 + rs.MARGE_COUPURE_S]
 
 
 _ENVOI_INTERROMPU = r'''
@@ -890,9 +989,10 @@ except KeyboardInterrupt:
 def test_a_session_killed_during_its_request_never_lets_the_next_one_leave_within_the_delay(tmp_path, sig, moment):
     """Deux vrais processus (constat majeur du contrôle de 1a1fd28) : K envoie une requête longue ; B, lancée 0,2 s
     après, attend son tour ; K est tué (KILL) ou reçoit TERM pendant sa requête, alors que B attend le verrou
-    d'envoi, ou avant le créneau de B. B ne part jamais moins d'un délai après le signal : TERM note la fin ; après
-    KILL, la marque « envoi en cours » restée sans fin coûte un délai entier. Avant : B partait 0,03 s après le
-    signal (B attendait le verrou), ou à son créneau, 0,6 s après la coupure."""
+    d'envoi, ou avant le créneau de B. B ne part jamais moins d'un délai plus la marge de coupure (2 s) après le
+    signal : TERM note la fin, requête coupée ; après KILL, la marque « envoi en cours » restée sans fin coûte un délai
+    entier plus la marge. Avant : B partait 0,03 s après le signal (B attendait le verrou), ou à son créneau, 0,6 s
+    après la coupure ; avant la marge, un délai après le signal."""
     import threading
 
     from brvm_alpha.notes import research as rs
@@ -936,7 +1036,9 @@ def test_a_session_killed_during_its_request_never_lets_the_next_one_leave_withi
             k.kill()
             k.wait(timeout=10)
     assert k.returncode == (-9 if sig == "SIGKILL" else 130)
-    assert ev["B envoi"] - ev["signal"] >= D - 2e-3, ev  # avant : 0,03 s (verrou) ou 0,6 s (créneau)
+    # délai plus la marge de coupure (avant la marge : D ; avant 1a1fd28 : 0,03 s au verrou, 0,6 s au créneau), sans
+    # attente de trop
+    assert D + rs.MARGE_COUPURE_S - 2e-3 <= ev["B envoi"] - ev["signal"] <= D + rs.MARGE_COUPURE_S + 1.5, ev
     entry = _etat_politesse(cache)["hosts"]["exemple.test"]
     assert "envoi" not in entry and entry["fin_session"] == b.session_id  # marque retirée par la fin de B
     journal = [json.loads(x) for x in (tmp_path / "b.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -1054,6 +1156,14 @@ def test_deployment_doc_lists_the_send_lock_of_every_online_command_and_its_limi
             debut
     a14 = doc[doc.index("### A.14 "):doc.index("### A.15 ")]
     assert "une seule machine" in a14 and "disque réseau" in a14
+    # marge de coupure : décrite, chiffrée (§ A.14) et listée dans les changements (§ A.15)
+    from brvm_alpha.notes import research as rs
+
+    a14p = " ".join(a14.split()).replace("**", "")
+    assert rs.MARGE_COUPURE_S == 2.0 and "marge de coupure de 2 s" in a14p and "un délai entier plus 2 s" in a14p
+    assert "12,02 à 12,03 s après le signal" in a14p and "Fin normale : 10,02 s" in a14p
+    a15 = " ".join(doc[doc.index("### A.15 "):doc.index("### A.16 ")].split()).replace("**", "")
+    assert "marge de coupure" in a15 and "fin_coupee" in a15 and "garde exactement 10 s" in a15
 
 
 # ---------------------------------------------------------------------------
