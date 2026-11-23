@@ -7,6 +7,8 @@
 #   brvm_alpha/                                 le code (sans __pycache__ ni fichier caché)
 #   configs/                                    paramètres figés de la stratégie
 #   reports/validation_S1/, reports/diagnostic_S0*/, reports/trials.parquet   résultats livrés de la validation
+#   reports/suivi_S2/                           déclaration signée du suivi sur papier, si elle existe (lue par
+#                                               « suivi verifier », le bulletin et l'ordre de bataille)
 #   deploiement/requirements-moteur-py311.txt   jeu minimal des paquets (Python 3.11)
 # Rien d'autre : ni tests, ni documentation (docs/research et ses scripts d'étude compris), ni données, ni
 # scripts de déploiement. Puis écrit DOSSIER/VERSION : commit court (suivi de « +modifie » si le code diffère
@@ -59,7 +61,7 @@ trap 'rm -f "$LISTE" "$LISTE.tri"' EXIT
 COMMIT=inconnu
 COMMIT_LONG=inconnu
 MODIF=non
-set -- brvm_alpha configs reports/validation_S1 'reports/diagnostic_S0*' reports/trials.parquet \
+set -- brvm_alpha configs reports/validation_S1 'reports/diagnostic_S0*' reports/trials.parquet reports/suivi_S2 \
     deploiement/requirements-moteur-py311.txt
 if command -v git >/dev/null 2>&1 && git -C "$CODE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git -C "$CODE" -c core.quotepath=off ls-files --cached --others --exclude-standard -- "$@" >"$LISTE"
@@ -67,8 +69,11 @@ if command -v git >/dev/null 2>&1 && git -C "$CODE" rev-parse --is-inside-work-t
     COMMIT_LONG=$(git -C "$CODE" rev-parse HEAD)
     if [ -n "$(git -C "$CODE" status --porcelain --untracked-files=normal -- "$@")" ]; then MODIF=oui; fi
 else
+    SUIVI_S2=""  # la déclaration signée n'existe qu'après la signature : find échouerait sur un dossier absent
+    if [ -d "$CODE/reports/suivi_S2" ]; then SUIVI_S2=reports/suivi_S2; fi
+    # shellcheck disable=SC2086 # SUIVI_S2 vide : aucun argument
     (cd "$CODE" && find brvm_alpha configs reports/validation_S1 reports/diagnostic_S0* reports/trials.parquet \
-        deploiement/requirements-moteur-py311.txt -type f) >"$LISTE"
+        $SUIVI_S2 deploiement/requirements-moteur-py311.txt -type f) >"$LISTE"
 fi
 # Jamais de cache Python ni de fichier caché ; chaque fichier une seule fois.
 grep -v -e '/__pycache__/' -e '\.pyc$' -e '/\.' -e '^\.' "$LISTE" | sort -u >"$LISTE.tri" || true

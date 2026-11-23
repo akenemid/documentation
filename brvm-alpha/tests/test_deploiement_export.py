@@ -68,7 +68,8 @@ def test_export_contains_only_what_the_engine_reads_and_a_version_file(exported)
     assert sorted(p.name for p in (dest / "deploiement").iterdir()) == ["requirements-moteur-py311.txt"]
     reports = sorted(p.name for p in (dest / "reports").iterdir())
     assert "validation_S1" in reports and "trials.parquet" in reports
-    assert all(n in ("validation_S1", "trials.parquet") or n.startswith("diagnostic_S0") for n in reports), reports
+    assert all(n in ("validation_S1", "trials.parquet", "suivi_S2") or n.startswith("diagnostic_S0")
+               for n in reports), reports
     files = [p for p in dest.rglob("*") if p.is_file()]
     assert not [p for p in files if "__pycache__" in p.parts or p.suffix == ".pyc" or p.name.startswith(".")]
     assert not (dest / "tests").exists() and not (dest / "docs").exists() and not (dest / "data").exists()

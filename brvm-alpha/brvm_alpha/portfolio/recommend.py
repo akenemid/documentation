@@ -1344,6 +1344,7 @@ class OrdreDeBataille:
     messages_modele: list[str]
     meta: dict[str, Any] = field(default_factory=dict)
     bandeau: str = BANNER
+    rendement_net: dict[str, Any] = field(default_factory=dict)
 
     # ------------------------------------------------------------- accès
     @property
@@ -1371,6 +1372,7 @@ class OrdreDeBataille:
             "explications": self.explications, "comparaison": self.comparaison, "faits": self.faits,
             "estimations": self.estimations, "hypotheses": self.hypotheses, "avertissements": self.avertissements,
             "messages_modele": self.messages_modele, "meta": self.meta,
+            "rendement_net": self.rendement_net,
         }
         return _jsonable(d)
 
@@ -1384,14 +1386,22 @@ class OrdreDeBataille:
 
     # ------------------------------------------------------------- contenu
     def _blocks(self) -> list[tuple[str, Any]]:
+        from brvm_alpha.rendement import rendu as _rd
+
+        rn = self.rendement_net or {}
         B: list[tuple[str, Any]] = []
         c = self.choix
         B.append(("h1", f"Ordre de bataille BRVM Alpha au {_d(self.asof)}"))
         B.append(("banner", f"{self.bandeau} Statut : {self.statut}."))
+        e = _rn_safe(lambda: _rd.ligne_entete_poche(rn)) if rn else None
+        if e:
+            B.append(("strong", e))
         if self.phrase_etude:
             B.append(("strong", self.phrase_etude[0].upper() + self.phrase_etude[1:] + "."))
         for w in self.avertissements:
             B.append(("warn", w))
+        if rn:
+            B.extend(_rn_safe(lambda: _rd.bloc_essentiel(rn)) or [])
         B.append(("p", f"Décision à la clôture du BOC du {_d(self.asof)} ; exécution à partir du "
                        f"{_d(self.execution.get('premiere_seance'))}. Capital {_fcfa(self.capital)} ; valeur du "
                        f"portefeuille avant ordres {_fcfa(self.valeur_portefeuille)}, dont liquidités "
@@ -1407,6 +1417,8 @@ class OrdreDeBataille:
                          f"Variante en comparaison : {c.get('comparaison') or 'aucune'}"]))
         # 2. ordres
         B.append(("h2", "2. Ordres (au titre et au franc près)"))
+        if rn and self.statut == "REJETÉ":
+            B.append(_rd.ligne_ne_pas_transmettre())
         L = self.lignes
         rows = []
         for r in L.itertuples(index=False):
@@ -1479,7 +1491,7 @@ class OrdreDeBataille:
             "supérieur. Aucun achat si le titre cote à la borne haute, aucune vente à la borne basse : ordre reporté "
             f"(au plus {MAX_CARRY_SESSIONS} séances, puis réévaluation)",
             "Jour ex et jour de division : la BRVM annule les ordres en attente ; les ressaisir le jour même",
-            ex.get("calendrier", "")]))
+            ex.get("calendrier", "")] + ([x for x in [_rn_safe(lambda: _rd.ligne_execution(rn))] if x] if rn else [])))
         if ex.get("au_dela_report"):
             B.append(("warn", "Ordres de plus de 10 séances (au-delà du report maximal) : "
                               + ", ".join(ex["au_dela_report"]) + " ; à réévaluer au rebalancement suivant."))
@@ -1506,6 +1518,8 @@ class OrdreDeBataille:
                        f"({_pct(rv['rendement_net_investi'])} de l'investi). Dernier dividende reconduit : hypothèse, "
                        "pas une promesse ; un dividende n'est acquis que si les titres sont détenus la veille du "
                        "détachement."))
+        if rn:
+            B.extend(_rn_safe(lambda: _rd.blocs_section(rn)) or [])  # h2 « Rendement net et pertes »
         # 5-6. distribution et stress (stress d'abord si le marché est « cher », §4.5)
         dist_blocks = self._dist_blocks()
         stress_blocks = self._stress_blocks()
@@ -1595,14 +1609,18 @@ class OrdreDeBataille:
             ["P10", f"{_pct(D['p10'], 1, True)} ({_fcfa(nav * (1 + D['p10']))})", _pct(D['tr_p10'], 1, True)],
             ["P90", f"{_pct(D['p90'], 1, True)} ({_fcfa(nav * (1 + D['p90']))})", _pct(D['tr_p90'], 1, True)],
             ["P(perte)", _pct(D['p_perte'], 1), "—"],
-            ["P(battre le TR)", _pct(D['p_battre_tr'], 1) + (" (fréquence historique aux poids actuels)"
-                                                             if rs1.get("texte") else ""),
+            [_libelle_p_battre_tr(), _pct(D['p_battre_tr'], 1) + (" (fréquence historique aux poids actuels)"
+                                                                  if rs1.get("texte") else ""),
              rs1.get("court", "—")],
             ["Rendement des dividendes (net)", _pct(self.revenus.get('rendement_net'), 2), "inclus dans le TR"],
             ["Rendement annualisé du TR sur la fenêtre (fait)", "— (poids actuels : biais rétrospectif)",
              _pct(D['tr_rendement_annualise_fenetre'], 1, True)],
             ["Volatilité annualisée (hebdo)", _pct(D['vol_annuelle'], 1), _pct(D['tr_vol_annuelle'], 1)],
             [f"β hebdomadaire contre le TR ({_d(D['debut'])} → {_d(D['fin'])})", _num(D['beta_hebdo']), "1"]])))
+        if self.rendement_net:
+            from brvm_alpha.rendement import rendu as _rd
+
+            B.extend(_rn_safe(lambda: _rd.blocs_distribution(self.rendement_net)) or [])
         return B
 
     def _stress_blocks(self) -> list[tuple[str, Any]]:
@@ -1704,8 +1722,42 @@ class OrdreDeBataille:
             ["P10 / P90", f"{_pct(main.get('p10'), 1, True)} / {_pct(main.get('p90'), 1, True)}",
              f"{_pct(D.get('p10'), 1, True)} / {_pct(D.get('p90'), 1, True)}"],
             ["P(perte)", _pct(main.get("p_perte"), 1), _pct(D.get("p_perte"), 1)],
-            ["P(battre le TR)", _pct(main.get("p_battre_tr"), 1), _pct(D.get("p_battre_tr"), 1)]])))
+            [_libelle_p_battre_tr(), _pct(main.get("p_battre_tr"), 1), _pct(D.get("p_battre_tr"), 1)]])))
         return B
+
+
+def _rn_safe(fn: Any) -> Any:
+    """Blocs du module « Rendement net et pertes » : une erreur du module ne fait jamais tomber l'ordre."""
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001 - bloc d'information seulement
+        return None
+
+
+def _achetable(dec: Any, sym: str) -> bool:
+    """Titre éligible, sans veto ni blocage des achats dans la décision du modèle (option ``completer``)."""
+    uni, risk = dec.universe, dec.risk
+    if sym not in uni.index or not bool(uni.loc[sym, "eligible"]):
+        return False
+    return not (sym in risk.index and any(bool(risk.loc[sym, c]) for c in ("veto", "block_buys") if c in risk.columns))
+
+
+def _raccord() -> Any:
+    """Raccords du module « Rendement net et pertes » (options du §F13, journal REF-S2) : import tardif, seulement
+    quand ils servent."""
+    from brvm_alpha.rendement import raccord
+
+    return raccord
+
+
+def _libelle_p_battre_tr() -> str:
+    """Libellé de « P(battre le TR) » réécrit (§F6, point 7) ; la clé JSON ``p_battre_tr`` ne change pas."""
+    try:
+        from brvm_alpha.rendement import risque as _rq
+
+        return str(_rq.LIBELLE_P_BATTRE_TR)
+    except Exception:  # noqa: BLE001 - module absent : ancien libellé
+        return "P(battre le TR)"
 
 
 _SECTION_NO_RX = re.compile(r"^\d+\.\s+")
@@ -1874,20 +1926,30 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
                 window: dict[str, Any], tolerance: float, max_participation: float, mean_block: float,
                 cfg: Mapping[str, Any], prebuilt: tuple[Any, Any] | None = None,
                 exec_after: pd.Timestamp | None = None, blocked: Mapping[str, Any] | None = None,
-                notes_known_at: Any = None) -> _Plan:
+                notes_known_at: Any = None, options: Mapping[str, Any] | None = None) -> _Plan:
+    """Plan d'une variante. ``options`` (module « Rendement net et pertes », §F13, toutes absentes par défaut :
+    le plan est alors celui de la règle testée, à l'identique) : ``memoire_ref`` (état annuel de REF repris du
+    carnet, passé au modèle), ``sans_bande_achats`` (apport, compléter : pas de bande de 2 points pour un achat),
+    ``manque`` (compléter : titres de l'ordre d'origine non servis), ``cibles`` (arrondi « plus forts restes » :
+    quantités cibles calculées par ``rendement.liquidites.arrondi_restes``), ``reinvestir`` (fin de mois, une
+    ligne, aucune vente), ``continuite`` (``{"sessions": table date/available, "fenetre": 126}`` : aucune vente
+    pour une inéligibilité calculée sur une fenêtre où des bulletins manquent)."""
     from brvm_alpha.strategy import BrvmAlpha
 
+    opts: Mapping[str, Any] = options or {}
     held_w = pd.Series({s: q * float(close[s]) / nav for s, q in held_q.items() if q > 0}, dtype=float)
     if prebuilt is not None:  # même décision, autres hypothèses de coûts ou de participation (ST6, ST7)
         model, dec = prebuilt
     else:
-        model = BrvmAlpha(variant=variant, capital=nav, notes=notes_arg, notes_known_at=notes_known_at)
+        kw_m: dict[str, Any] = {"memoire_ref": opts["memoire_ref"]} if opts.get("memoire_ref") else {}
+        model = BrvmAlpha(variant=variant, capital=nav, notes=notes_arg, notes_known_at=notes_known_at, **kw_m)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             dec = model.decide(t, panels, held_w if len(held_w) else None)
     w = dec.weights.astype(float).fillna(0.0)
     uni = dec.universe
-    syms = sorted(set(w[w > 0].index) | {s for s, q in held_q.items() if q > 0})
+    manque = {str(k).upper(): int(v) for k, v in (opts.get("manque") or {}).items() if int(v) > 0}
+    syms = sorted(set(w[w > 0].index) | {s for s, q in held_q.items() if q > 0} | set(manque))
     # Première séance d'exécution : après la décision ET pas avant aujourd'hui (panel en retard : jamais
     # d'ordre daté dans le passé).
     fut = future_sessions(max(t, exec_after) if exec_after is not None else t, 400, calendar_past)
@@ -1900,6 +1962,8 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
     msgs: list[str] = []
     #: lignes détenues sans ordre possible (suspendues, hors BOC) : part de la valeur au-delà de leur poids cible
     frozen: dict[str, float] = {}
+    sans_bande = bool(opts.get("sans_bande_achats"))
+    garde_continuite = _raccord().symboles_continuite(opts["continuite"], dec, t) if opts.get("continuite") else {}
     for s in syms:
         c = float(close.get(s, np.nan))
         if not np.isfinite(c) or c <= 0:
@@ -1912,9 +1976,18 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
         tgt = int(math.floor(wt * nav / c + 1e-9)) if wt > 0 else 0
         w_cur = cur * c / nav
         note = ref_note
-        if cur > 0 and tgt > 0 and abs(wt - w_cur) < band:
+        if cur > 0 and tgt > 0 and abs(wt - w_cur) < band and not (sans_bande and tgt > cur):
             tgt = cur
             note = (note + " ; " if note else "") + f"écart < {_pct(band, 0)} : bande de non-transaction (§6)"
+        if manque.get(s) and cur + manque[s] > tgt and (wt > 0 or (cur == 0 and _achetable(dec, s))):
+            # E-B, compléter (§F13 b) : achat du manque de l'ordre d'origine, sans la bande, limite du jour.
+            tgt = cur + manque[s]
+            note = (note + " ; " if note else "") + (f"compléter (E-B) : {_int(manque[s])} titre(s) de l'ordre "
+                                                     "d'origine non servis, achetés sans la bande")
+        if s in garde_continuite and cur > 0 and tgt < cur:
+            # E-C, continuité des données (§F13 e) : la position est gardée, aucun achat.
+            tgt = cur
+            note = (note + " ; " if note else "") + garde_continuite[s]
         suspended = status_t is not None and str(status_t.get(s, "")) == "suspended"
         if blocked and s in blocked:
             b = blocked[s]
@@ -1963,6 +2036,20 @@ def _build_plan(*, variant: str, t: pd.Timestamp, panels: Mapping[str, Any], nav
 
     def tranches_for(r: Mapping[str, Any], q: int) -> list[int]:
         return participation_schedule(q, r["cours_reference"], r["mdv63"], max_participation)
+
+    if opts.get("cibles"):
+        # E-A, arrondi « plus forts restes » (§F13 c) : un titre de plus au plus par ligne en achat, calculé par
+        # rendement.liquidites.arrondi_restes sous le contrôle du pire cas avec marge et des plafonds.
+        for r in lines:
+            q = opts["cibles"].get(r["symbole"])
+            if q is not None and r["cibles"] > r["detenus"] and int(q) == r["cibles"] + 1:
+                r["cibles"] = int(q)
+                r["note"] = (r["note"] + " ; " if r["note"] else "") + "arrondi « plus forts restes » (E-A) : +1 titre"
+    if opts.get("reinvestir"):
+        msgs.append(_raccord().reinvestir_fin_de_mois(
+            lines, opts, model=model, variant=variant, t=t, panels=panels, nav=nav, cash=cash, costs=costs, cfg=cfg,
+            dec=dec, held_w=held_w, notes_arg=notes_arg, notes_known_at=notes_known_at, calendar_past=calendar_past,
+            max_participation=max_participation, blocked=blocked or {}, status_t=status_t))
 
     def worst_buy(r: Mapping[str, Any], q: int) -> int:
         return _worst_case(tranches_for(r, q), r["limite_achat"], costs, "achat") if q > 0 else 0
@@ -2092,6 +2179,7 @@ def _cost_summary(L: pd.DataFrame, nav: float, cash: float, costs: CostModel, na
             "total": tot, "total_pct": tot / nav if nav > 0 else 0.0,
             "garde_annuelle": round_fcfa(costs.annual_custody * invested), "taux_garde": float(costs.annual_custody),
             "tenue_compte_annuelle": round_fcfa(costs.account_fee_per_line_fcfa * n_lines),
+            "forfait_compte_annuel": round_fcfa(getattr(costs, "account_fee_fixed_fcfa", 0.0)),
             "frais_par_ligne": float(costs.account_fee_per_line_fcfa), "n_lignes": n_lines,
             "investi_apres": round_fcfa(invested), "investi_pct": invested / nav if nav > 0 else 0.0,
             "cible_investie": round_fcfa(target_val), "cible_pct": target_val / nav if nav > 0 else 0.0,
@@ -2162,7 +2250,8 @@ def _distribution_for(plan: _Plan, panels: Mapping[str, Any], nav: float, costs_
         return {"disponible": False, "motif": "indices TR (tr_index, market_tr) absents des panels"}, None
     weekly = weekly_tr_returns(tr, mtr, list(weights), window["debut"], window["fin"])
     h_weeks = int(round(WEEKS_PER_YEAR * horizon_months / 12))
-    fixed = (costs_sum["garde_annuelle"] + costs_sum["tenue_compte_annuelle"]) * horizon_months / 12.0
+    fixed = (costs_sum["garde_annuelle"] + costs_sum["tenue_compte_annuelle"]
+             + costs_sum.get("forfait_compte_annuel", 0)) * horizon_months / 12.0
     drag = (costs_sum["total"] + fixed) / nav if nav > 0 else 0.0
     if not weights:
         return {"disponible": False, "motif": "aucune ligne détenue après ordres"}, weekly
@@ -2338,6 +2427,7 @@ def _triggers(plan: _Plan, t: pd.Timestamp, panels: Mapping[str, Any], div: pd.D
     else:
         dd_txt = ("Drawdown relatif contre le TR : aucun historique de suivi réel (mesuré depuis le premier jour investi, "
                   "D5) ; seuils à surveiller : −10 % alerte, −15 % exposition active ÷ 2, −20 % arrêt et indice discipliné")
+        dd_txt = _rn_safe(lambda: _raccord().etat_journal_ref_s2()) or dd_txt  # journal du suivi sur papier REF-S2
     # Notes de l'analyste.
     nd = dec.diagnostics.get("notes") or {}
     veto = dict(nd.get("veto") or {})
@@ -2811,6 +2901,19 @@ def recommend(
     today: Any = None,
     notes_known_at: Any = None,
     index_note: str | None = None,
+    grille: Any = None,
+    arrondi: str = "bas",
+    forcer: bool = False,
+    apport: float | None = None,
+    completer: bool = False,
+    reinvestir: bool = False,
+    continuite: bool = False,
+    memoire: Mapping[str, Any] | None = None,
+    perte_toleree: Any = None,
+    taux_reserve: float | None = None,
+    plan_enregistre: Mapping[str, Any] | None = None,
+    suivi: Any = None,
+    rendement: bool = True,
 ) -> OrdreDeBataille:
     """Ordre de bataille à la date ``asof`` pour un capital ``capital`` (FCFA).
 
@@ -2864,8 +2967,51 @@ def recommend(
     index_note
         Phrase écrite à la place de l'évaluation des indices quand ``index_evaluation=False`` (le
         rapport, qui a sa propre section Indices, y renvoie au lieu d'écrire « non demandée »).
+    grille
+        Grille du courtier (module « Rendement net et pertes », cahier ``docs/RENDEMENT_NET.md``, §F2) :
+        ``None`` ou ``"central"`` (défaut : le tarif de ``costs``), ``"ma_sgi"`` (grille enregistrée)
+        ou un fichier YAML. Elle remplace courtage, taxe, minimum par ordre, garde et tenue de compte.
+    arrondi, forcer, apport, completer, reinvestir, continuite, memoire
+        Options d'exécution du §F13, **toutes éteintes par défaut** ; chacune est un écart à la règle
+        testée, sauf ``memoire`` (état du carnet, ``carnet.memoire()`` : la règle testée sans écart).
+        ``arrondi="restes"`` : arrondi « plus forts restes » (E-A), refusé sur un tarif supposé sauf
+        ``forcer``. ``apport`` : apport d'argent frais compris dans les liquidités réelles (E-B) ;
+        ``completer`` : achat du manque d'un ordre servi en partie (E-B) ; ``reinvestir`` :
+        réinvestissement de fin de mois (essai E-D) ; ``continuite`` : aucune vente pour une
+        inéligibilité calculée sur une fenêtre où des bulletins manquent (essai E-C).
+    perte_toleree, taux_reserve, plan_enregistre, suivi
+        Ce que l'utilisateur accepte de risquer sur 12 mois (FCFA ou « 10 % ») : l'ordre rendu est
+        celui du montant en actions vérifié (§F4) ; taux de la réserve ; ``plan.json`` ; état du
+        suivi (feux). Sans eux : table de choix, ordre du capital total. La vérification reprend
+        le mode de l'appel (notes, grille, arrondi, continuité) mais ni ``memoire``, ni ``apport``,
+        ni ``completer``, ni ``reinvestir`` (ils décrivent le portefeuille réel), ni la comparaison
+        des variantes ; l'évaluation des indices (même date, mêmes notes) est reprise de l'ordre
+        du capital total. Ordre du montant en actions non obtenu : l'ordre du capital total est
+        rendu, avec un avertissement en fin de liste.
+    rendement
+        ``True`` (défaut) : clé ``rendement_net`` (§4.5), calculée après l'ordre, sans changer
+        aucune quantité, aucun prix, aucun frais ; une erreur du module donne ``{}``, jamais une
+        exception. ``False`` : ordre seul (vérification du §F4).
     """
     t0 = time.time()
+    from brvm_alpha.erreurs import SaisieInvalide as _Refus  # refus de saisie : code 2 (classe fille de ValueError)
+
+    if arrondi not in ("bas", "restes"):
+        raise _Refus(f"arrondi inconnu {arrondi!r} : « bas » (défaut) ou « restes »")
+    if memoire:
+        # Option --suivi (§F13 a) : titres et liquidités réelles du carnet, sauf s'ils sont donnés.
+        if holdings is None:
+            holdings = dict(memoire.get("titres") or {})
+        if cash is None and memoire.get("liquidites") is not None:
+            cash = float(memoire["liquidites"])
+    if apport is not None:
+        if float(apport) <= 0:
+            raise _Refus("apport : un montant positif est attendu")
+        if cash is None:
+            raise _Refus("apport : liquidités réelles nécessaires (--cash, qui comprend l'apport, ou --suivi)")
+        if float(cash) + 1.0 < float(apport):
+            raise _Refus(f"apport ({_fcfa(apport)}) supérieur aux liquidités réelles ({_fcfa(cash)}) : "
+                             "--cash doit comprendre l'apport")
     if capital is None or float(capital) <= 0:
         raise _err.SaisieInvalide("capital doit être > 0")
     pdir = Path(panel_dir) if panel_dir is not None else (DEFAULT_PANEL_DIR if panels is None else None)
@@ -2886,6 +3032,14 @@ def recommend(
         sessions = close_any.index
     cfg = settings.load_strategy_config()
     cm, cost_name = _cost_model(costs, cfg)
+    g = None
+    if grille is not None:
+        from brvm_alpha.rendement import grille as _gr
+
+        g = _gr.resoudre(grille)  # None, « central » -> None ; « ma_sgi » -> grille du profil ; ou un fichier
+        if g is not None:
+            cm, _forfait = _gr.vers_cost_model(g, cm)
+            cost_name = f"{cost_name} + {g.nom}"
     taxes = TaxModel()
     close_df = _wide_upto(panels, "close_raw", t)
     close_df = close_df if close_df is not None and len(close_df) else _wide_upto(panels, "close", t)
@@ -2985,7 +3139,18 @@ def recommend(
                   n_boot=n_boot, seed=seed, window=window, tolerance=tolerance, max_participation=max_participation,
                   mean_block=mean_block_weeks, cfg=cfg, exec_after=exec_after, blocked=blocked_off_boc,
                   notes_known_at=notes_known_at)
-    plan = _build_plan(variant=choice["variante"], **common)
+    # Options d'exécution du §F13 (module « Rendement net et pertes ») : toutes éteintes par défaut (opts vide).
+    opts: dict[str, Any] = {}
+    if memoire or apport is not None or completer or reinvestir or continuite or arrondi == "restes":
+        opts, ecarts = _raccord().options_execution(memoire=memoire, apport=apport, completer=completer,
+                                                    reinvestir=reinvestir, continuite=continuite, arrondi=arrondi,
+                                                    sessions=sessions, pdir=pdir)
+        warn += [_raccord().mention_ecart(e, today if today is not None else t) for e in ecarts]
+    plan = _build_plan(variant=choice["variante"], **common, options=opts or None)
+    if arrondi == "restes":
+        plan = _raccord().plan_arrondi_restes(plan, common, opts, variant=choice["variante"], nav=nav, cash=cash_v,
+                                              costs=cm, cost_name=cost_name, grille_sgi=g, forcer=forcer,
+                                              max_participation=max_participation)
     L = plan.lines
     # Notes de l'analyste : état daté (deux instants) et effet sur les poids cibles. Calendrier des
     # séances du panel (lacunes de BOC comprises) s'il est sur disque, comme l'évaluation des indices.
@@ -3035,10 +3200,10 @@ def recommend(
             pre = (plan.model, plan.decision)
             p6 = _build_plan(variant=choice["variante"], **{**common, "costs": liq,
                                                              "max_participation": max_participation / 2},
-                             prebuilt=pre)
+                             prebuilt=pre, options=opts or None)
             extra["ST6"] = max(int(_cost_summary(p6.lines, nav, cash_v, liq, "liquidité")["total"]) - csum["total"], 0)
             sev = settings.cost_scenario("severe", cfg)
-            p7 = _build_plan(variant=choice["variante"], **{**common, "costs": sev}, prebuilt=pre)
+            p7 = _build_plan(variant=choice["variante"], **{**common, "costs": sev}, prebuilt=pre, options=opts or None)
             extra["ST7"] = max(int(_cost_summary(p7.lines, nav, cash_v, sev, "sévère")["total"]) - csum["total"], 0)
         except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
             raise
@@ -3158,13 +3323,85 @@ def recommend(
             "notes_mode": (notes_state or {}).get("mode") if notes_state and not notes_state.get("erreur") else None,
             "empreinte_config": settings.config_fingerprint(cfg), "modele": repr(plan.model),
             "s1_lu": bool(window["s1_utilise"])}
-    return OrdreDeBataille(
+    ordre = OrdreDeBataille(
         asof=t, asof_demande=t_req, capital=float(capital), valeur_portefeuille=nav, liquidites_initiales=cash_v,
         variante=choice["variante"], choix=choice, lignes=L, tranches=tr_tab, execution=exec_info, couts=csum,
         dividendes=div, revenus=rev, distribution=dist, stress=stress, declencheurs=trig, explications=expl,
         comparaison=comp, faits=faits, estimations=estimations, hypotheses=hypotheses,
         avertissements=_dedup(warn), messages_modele=[fr_texte(m) for m in list(plan.decision.messages) + plan.messages if m],
         meta=meta)
+    if rendement:
+        try:
+            from brvm_alpha import rendement as _rn
+
+            # W7 lit la colonne « available » ; la table lue plus haut n'a que « date ».
+            sess_av = sessions if isinstance(sessions, pd.DataFrame) and "available" in sessions.columns else None
+            try:
+                if sess_av is None and pdir is not None and (pdir / "sessions.parquet").exists():
+                    sess_av = pd.read_parquet(pdir / "sessions.parquet", columns=["date", "available"])
+            except Exception:  # noqa: BLE001 - table des séances illisible : W7 dit « non vérifiable »
+                sess_av = None
+            carnet_cl = None
+            try:
+                carnet_cl = _rn.liquidites.carnet_de_cloture(pdir, t) if pdir is not None else None
+            except Exception:  # noqa: BLE001 - carnet illisible : consigne 7 sans compte
+                carnet_cl = None
+            today_v = today if today is not None else (None if panels_given else pd.Timestamp.now(tz="UTC"))
+
+            def verifier(A: float) -> "OrdreDeBataille":
+                # Même mode que l'ordre de K (§F4 étapes 1 et 6) : tous les paramètres qui fixent le mode.
+                kw_h: dict[str, Any] = {}
+                if hold and held_value <= A:
+                    kw_h = {"holdings": hold, "cash": float(A) - held_value}
+                # Titres détenus pour plus que A : premier achat sur A, sans les titres (§F4, cas 4 : aucune vente).
+                return recommend(asof, float(A), panels=panels, variant=variant, costs=cm, notes_store=notes_store,
+                                 validation_dir=validation_dir, horizon_months=horizon_months, n_boot=n_boot,
+                                 seed=seed, registry_path=registry_path, panel_dir=pdir, sessions=sessions,
+                                 tolerance=tolerance, max_participation=max_participation,
+                                 mean_block_weeks=mean_block_weeks, comparison=False, explanations=True,
+                                 index_evaluation=False, today=today_v, notes_known_at=notes_known_at,
+                                 index_note=index_note, arrondi=arrondi, forcer=forcer, continuite=continuite,
+                                 rendement=False, **kw_h)
+
+            memo: dict[str, Any] = {}
+            kw_rn = dict(panels=panels, asof=t, costs=cm, grille_sgi=g, taux_reserve=taux_reserve,
+                         plan_enregistre=plan_enregistre, suivi=suivi, validation_dir=validation_dir,
+                         sessions=sess_av, carnet_cloture=carnet_cl, holdings_fournis=bool(hold),
+                         cash_fourni=cash is not None, memoire=memoire, completer=bool(completer),
+                         forced_exits=(plan.decision.diagnostics.get("index") or {}).get("forced_exits"),
+                         grille_enregistree_non_employee=(g is None and _rn.grille.enregistree()),
+                         aujourd_hui=today)
+            rn = _rn.construire(ordre, capital=capital, perte_toleree=perte_toleree, verifier=verifier,
+                                memo=memo, **kw_rn)
+            o_aff = ordre
+            sans_poche: list[str] = []
+            if perte_toleree is not None and memo.get("ordre_poche") is not None:
+                o_aff = memo["ordre_poche"]  # ordre affiché : celui de la poche (§F4)
+                rn = _rn.pour_ordre_poche(rn, o_aff, **kw_rn)  # bilan, provision, alertes recalculés sur O_A
+                if index_evaluation:  # indices : même date, mêmes notes que l'ordre du capital total
+                    o_aff.declencheurs = {**(o_aff.declencheurs or {}),
+                                          "indices": (ordre.declencheurs or {}).get("indices") or [],
+                                          "indices_message": (ordre.declencheurs or {}).get("indices_message", "")}
+            elif perte_toleree is not None:
+                ch_p = (rn.get("perte") or {}).get("choix") if isinstance(rn.get("perte"), Mapping) else None
+                if float((ch_p or {}).get("en_actions") or 0) < math.floor(float(capital)):
+                    motif = (ch_p or {}).get("message") or (rn.get("perte") or {}).get("erreur") or rn.get("erreur")
+                    sans_poche = [AVERT_SANS_POCHE + (f" ({motif})" if motif else "")]
+            av = list(o_aff.avertissements) + [
+                a for a in (rn.get("avertissements_a_ajouter") or []) if a not in o_aff.avertissements] + sans_poche
+            o_aff.rendement_net = rn
+            o_aff.avertissements = av
+            ordre = o_aff
+        except Exception:  # noqa: BLE001 - le module ne fait jamais tomber l'ordre
+            ordre.rendement_net = {}
+            if perte_toleree is not None:
+                ordre.avertissements = list(ordre.avertissements) + [AVERT_SANS_POCHE]
+    return ordre
+
+
+#: Avertissement de fin de liste quand ``perte_toleree`` est donnée mais que l'ordre du montant en
+#: actions n'a pas été obtenu (module en échec, vérification arrêtée, aucune poche possible).
+AVERT_SANS_POCHE = "ordre du montant en actions non calculé : ordre du capital total affiché"
 
 
 def replace_costs(costs: CostModel, **changes: Any) -> CostModel:

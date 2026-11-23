@@ -558,6 +558,11 @@ class BrvmAlpha:
         date de connaissance), ``symbol``, ``detachment_date`` (détachement des droits),
         ``kind`` (``"cash"`` : numéraire, bloque les achats de l'annonce à la veille du
         détachement ; ``"bonus"`` : attribution gratuite, information seulement).
+    memoire_ref
+        État de la poche annuelle de REF repris d'un carnet (``{"annee": int, "date": date}``,
+        option ``recommend --suivi``) : amorce ``_sleeves["ref"]`` comme le moteur l'aurait laissé
+        après cette décision. ``None`` (défaut) : comportement inchangé. N'entre pas dans
+        l'empreinte de configuration ; ``reset_state()`` l'oublie.
     """
 
     def __init__(
@@ -580,6 +585,7 @@ class BrvmAlpha:
         validation_s1: bool = False,
         capital_increases: pd.DataFrame | Iterable[Mapping[str, Any]] | None = None,
         cfg: PlatformConfig | Mapping[str, Any] | None = None,
+        memoire_ref: Mapping[str, Any] | None = None,
     ) -> None:
         # Contrat de l'additif v1.1 : ``cfg`` = ``PlatformConfig`` (alias de ``config``) ou dictionnaire
         # de paramètres de stratégie (alias de ``params`` : surcharges du YAML, validées).
@@ -653,6 +659,8 @@ class BrvmAlpha:
                                             "index_year": None}
         #: état des poches annuelles : REF (``ref``), cœur de I (``core``), côté A de I (``a``)
         self._sleeves: dict[str, Any] = {"ref": None, "core": None, "a": None}
+        if memoire_ref:
+            self._sleeves["ref"] = {"year": int(memoire_ref["annee"]), "t": pd.Timestamp(memoire_ref["date"])}
         self._state_rev = 0
         self._mode_override: str | None = None
         self._cache: OrderedDict[tuple[Any, ...], AlphaDecision] = OrderedDict()

@@ -49,6 +49,16 @@ GOLDEN = {
     "expliquer": "115db9092e540f1f57514acecdc043e917a5fb85bfc50bc710025d436dc6a372",
     "validation": "36dfe69a982df7e7fc2231e2d05a41ca9da883aa3781c974bd02f9a6c7040890",
     "erreur_404": "e0c891cdc09c2e33be74d6eba0099a9aa90fb12d3659b31b5c53a6b8fef210f0",
+    # États « avec plan » (module « Rendement net et pertes », exception X1 du cahier, §9.1), relevés sur le
+    # commit 8ddf707 (pages de référence, exception X2). Les 15 empreintes ci-dessus n'ont pas changé.
+    # tableau_de_bord_plan et tableau_de_bord_sans_plan : relevées à nouveau sur 908f8c2 (champs de la grille vides).
+    "tableau_de_bord_plan": "263de1ab9e351ab410fe722fcee46d05c4de6390b99d778077447b0e3abff8d4",
+    "tableau_de_bord_sans_plan": "74472f235ee89faf7f789c29b4d2acb42f5125e2977a53f2dc1e2d908d656d37",
+    "portefeuille_plan": "a96e65b47b60c8a540f62b0e50b92ad74e21722c6e0046dbdc57b3a49be7b591",
+    "validation_suivi": "8443444aaa64923b8be6be363e29aabbd87f4a7f84b7e619929eaf55e79de467",
+    "plan_questions": "ae1cceb1e53e95dd3ac8769a97df9cef73ceeedfbbff640920d0d75f99c94d79",
+    "plan_resultat": "c3b62fe42578ad2dad1e31fe749026d94c960cd09c1a09203866689ba00318a2",
+    "suivi_bulletin": "70be94397ade567c847a514767a0ff593883d3124e25d58d54d6d89d1decf9cd",
 }
 
 #: Attributs HTML qui portent une adresse.

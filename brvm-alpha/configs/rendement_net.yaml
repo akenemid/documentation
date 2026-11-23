@@ -1,0 +1,106 @@
+# Paramètres du module « Rendement net et pertes » (paquet brvm_alpha.rendement).
+# Cahier des charges : docs/RENDEMENT_NET.md, §4.4.
+# Performance passée ≠ garantie. Aucun gain n'est garanti.
+#
+# Ce fichier n'entre pas dans configs/strategy_v1.yaml : il ne change aucune règle testée.
+# Statut de chaque valeur : Fait (recalculable), Estimation (méthode citée), Hypothèse (supposé).
+# Les seuils marqués « Hypothèse » ont été choisis sans base statistique ; leur utilité est inconnue.
+
+version: 1
+
+dates:
+  debut_suivi: 2026-12-01                    # Fait : YAML de stratégie, S2_live_from
+  premiere_decision_argent_reel: 2027-06-01  # Fait : spécification §8.1 (6 mois de suivi)
+  affirmation_performance: 2029-12-01        # Fait : spécification §8.1 (36 mois)
+
+frais:
+  irvm_verifies: [CI, SN]                    # Fait : taux vérifiés ; BF, BJ, TG, GW non vérifiés
+  seuils_frais_annuels_sur_dividendes: [0.15, 0.50, 1.00]   # Hypothèse : orange, rouge, critique (W1)
+  seuil_frais_annuels_sur_capital: 0.01      # Hypothèse : règle existante quand les dividendes sont nuls
+  chutes_dividendes: [0.075, 0.20]           # Estimation : −7,5 % en 2020 ; une baisse sur dix par titre −18 %
+  rotation_basse_mensuelle: 0.0087           # Estimation : diagnostic S0 contaminé
+  remise_a_niveau_haute: 0.0123              # Estimation : S1 publié, 0,66 + 0,57 point par an
+  horizon_ans: 3                             # Hypothèse : choix d'affichage
+  grilles_exemple:                           # Fait pour les fourchettes homologuées ; Hypothèse pour l'utilisateur
+    central:
+      nom: "Tarif supposé (central)"
+      courtage: 0.008
+      taxe_courtage: 0.18
+      garde: 0.0025
+      tenue_par_ligne: 5000
+      forfait_compte: 0
+    sans_frais_par_ligne:
+      nom: "Grille connue sans frais par ligne (FGI aux plafonds)"
+      courtage: 0.010
+      taxe_courtage: 0.18
+      garde: 0.0025
+      tenue_par_ligne: 0
+      forfait_compte: 4000
+    bas_de_fourchette:
+      nom: "Bas de fourchette avec frais par ligne (BICI Bourse)"
+      courtage: 0.004
+      taxe_courtage: 0.18
+      garde: 0.001
+      tenue_par_ligne: 5000
+      forfait_compte: 0
+    borne_non_attestee:
+      nom: "Borne non attestée (aucune grille lue ne cumule ces avantages)"
+      courtage: 0.005
+      taxe_courtage: 0.18
+      garde: 0.0025
+      tenue_par_ligne: 0
+      forfait_compte: 4000
+
+perte:
+  pas_fcfa: 100000                           # Hypothèse : choix d'affichage
+  choc_2018_ref_publie: 0.2932               # Estimation : valeur de repli seulement (mesurée à chaque appel)
+  choix_parts: [0.05, 0.10, 0.20]            # Hypothèse : lignes de la table de choix
+  verification_appels_max: 10                # Fait du cahier : boucle de l'étape 6 bornée
+
+reserve:
+  taux: null                                 # Hypothèse : saisi par l'utilisateur ; vide = compté à 0
+  taux_max: 0.15                             # au-delà : refusé
+
+risque:
+  blocs_semaines: [8, 26, 52]                # Estimation : 8 = spécification ; 26 et 52 = sensibilité
+  graines: 20                                # Hypothèse : graines 0 à 19 ; médiane affichée ; graine 0 pour la recette
+  tirages: 5000                              # Fait : nombre de tirages de l'ordre existant
+  choc_titre: 0.30                           # Hypothèse : stress ST8 existant
+  seuil_concentration: 0.05                  # Hypothèse : toute ligne de plus de 5 % est montrée
+
+affichage:
+  pas_petit_fcfa: 1000                       # Hypothèse : règle 10 du §1
+  pas_grand_fcfa: 10000
+  seuil_grand_pas_fcfa: 100000
+  lignes_max: 45
+  colonnes_max: 100
+  mots_par_phrase_max: 25
+
+liquidites:
+  trimestres_reserve: [2, 3]                 # Hypothèse : deux prélèvements avant les dividendes de mai
+  seuil_argent_qui_dort_fcfa: 100000         # Hypothèse : choisi sans base statistique
+  delai_argent_qui_dort_seances: 20          # Hypothèse
+  marge_arrondi_trimestres: 2                # Hypothèse
+  surcout_courtage_test: 0.002               # Hypothèse : alerte de marge du pire cas (W5)
+  part_reserve_regle: 0.02                   # Fait : réserve de 2 % de la spécification (cash_buffer)
+  seuil_reinvestissement_fcfa: 100000        # Hypothèse : seuil S de F13d (information seulement)
+
+feux:
+  fenetre_trou_seances: 126                  # Fait : plus longue fenêtre des filtres D1 (W7)
+  perte_paliers: [0.5, 1.0, 1.5, 2.0]        # Hypothèse : choisis après lecture de S0
+  perte_sans_choix: [0.10, 0.20]             # Hypothèse : part de l'argent engagé en actions
+  ligne_baisse_paliers: [0.25, 0.35, 0.45]   # Hypothèse : baisse depuis l'achat, dividendes compris
+  ligne_part_perte: 0.10                     # Hypothèse : part de ce que j'accepte de risquer
+  ligne_part_perte_sans_choix: 0.01          # Hypothèse : part de la valeur
+  frais_ecart_fcfa: 1000                     # Hypothèse
+  frais_ecart_part: 0.05                     # Hypothèse
+  argent_qui_dort_ecart_fcfa: 100000         # Hypothèse
+  bulletins_manquants: {orange: 1, rouge: 3} # Hypothèse
+  retard_journal_jours: 9                    # Hypothèse
+  dividende_non_recu_jours: 30               # Hypothèse
+  rappel_rouge_jours: 14                     # Hypothèse
+
+suivi:
+  capital_temoin_fcfa: 10000000              # Fait : capital de référence de la spécification
+  validite_ordre_seances: 10                 # Fait : spécification §7.1.1
+  participation_volume: 0.10                 # Fait : spécification §7.1.2

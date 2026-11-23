@@ -317,7 +317,7 @@ def test_daily_task_runs_the_four_steps_in_order_at_low_priority(stub):
     r = stub.run("quotidien.sh")
     assert r.returncode == 0, r.stdout + r.stderr
     assert [c for c in stub.calls() if not c.startswith("etat")] == [
-        "update --sans-panel", "panel", "notes research --pdf 20", "report --capital 10000000"]
+        "update --sans-panel", "panel", "suivi maj", "notes research --pdf 20", "report --capital 10000000"]
     assert "tâche quotidienne : fin, tout s'est bien passé." in stub.log("quotidien")
     text = (DEPLOY / "commun.sh").read_text(encoding="utf-8")
     assert "nice -n 19" in text and "ionice -c 2 -n 7" in text and "command -v ionice" in text
@@ -327,7 +327,7 @@ def test_daily_task_skips_network_steps_after_a_refusal(stub):
     stub.set(pret="true", cache=12, refus_au_lancement=1)
     r = stub.run("quotidien.sh")
     assert r.returncode == 5
-    assert [c for c in stub.calls() if not c.startswith("etat")] == ["update --sans-panel", "panel",
+    assert [c for c in stub.calls() if not c.startswith("etat")] == ["update --sans-panel", "panel", "suivi maj",
                                                                      "report --capital 10000000"]
     assert "www.brvm.org a refusé l'accès : aucune autre requête cette nuit." in stub.log("quotidien")
 
