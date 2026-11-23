@@ -353,26 +353,26 @@ def options_recommend(args: argparse.Namespace, commande: str = "recommend") -> 
     return kw
 
 
-def _carnet_existant(nom: str) -> Any:
+def _carnet_existant(nom: str, D: Path | None = None) -> Any:
     from brvm_alpha.suivi import carnet as cn
 
     if nom in NOMS_MOTEUR:
         raise SaisieInvalide(f"refusé : {nom} est tenu par le moteur (journal du témoin, sans carnet) ; les carnets "
                              "sont ceux de PLAN, MOI, E-C et E-D")
     with _saisie("portefeuille"):
-        c = cn.ouvrir(nom, dossier_suivi(), creer=False)
+        c = cn.ouvrir(nom, D if D is not None else dossier_suivi(), creer=False)
     if not c.fichier.exists():
         raise DonneesAbsentes(f"échec : portefeuille suivi « {nom} » introuvable ({c.fichier}) : le démarrer avec "
                               f"python -m brvm_alpha suivi demarrer --nom {nom}")
     return c
 
 
-def _grille_du_mandat(mandat: Mapping[str, Any] | None) -> Any:
+def _grille_du_mandat(mandat: Mapping[str, Any] | None, profil: Path | None = None) -> Any:
     from brvm_alpha.rendement import grille as G
 
-    if (mandat or {}).get("grille") == "ma_sgi" and G.enregistree():
+    if (mandat or {}).get("grille") == "ma_sgi" and G.enregistree(profil):
         with _saisie("grille enregistrée"):
-            return G.charger()
+            return G.charger(profil)
     return G.defaut()
 
 
@@ -625,6 +625,22 @@ def _empreinte_ordre(od: Mapping[str, Any]) -> str:
                             for l in (od.get("lignes") or [])])
 
 
+def cache_du_plan(o: Any, *, t: Any, capital: float, grille: str, perte_toleree: Any,
+                  maintenant: Any = None) -> dict[str, Any]:
+    """Contenu de ``<données>/profil/plan_cache.json`` pour l'ordre ``o`` (clé ``rendement_net`` calculée) : écran
+    « Mon plan », ``rendement_net``, ordre sans sa clé ``rendement_net``, date du bulletin et empreinte de l'ordre. Sert
+    à la commande ``plan`` et au calcul lancé depuis l'interface (carte « Mon plan » du Tableau de bord)."""
+    rn = getattr(o, "rendement_net", None) or {}
+    od = o.to_dict() if hasattr(o, "to_dict") else {}
+    calcule = pd.Timestamp(maintenant) if maintenant is not None else _cli().now_utc()
+    return {"version": 1, "bandeau": BANNER, "calcule_utc": calcule.isoformat(),
+            "asof": str(od.get("asof") or t)[:10], "capital": float(capital),
+            "capital_ordre": float(od.get("valeur_portefeuille") or od.get("capital") or capital),
+            "grille": grille or "central", "perte_toleree": perte_toleree,
+            "empreinte_ordre": _empreinte_ordre(od), "plan": rn.get("plan"), "rendement_net": rn,
+            "ordre": {k: v for k, v in od.items() if k != "rendement_net"}}
+
+
 def _plan_ecran(args: argparse.Namespace) -> int:
     from brvm_alpha.portfolio import recommend as rec
     from brvm_alpha.rendement import grille as G
@@ -672,13 +688,8 @@ def _plan_ecran(args: argparse.Namespace) -> int:
     if besoin is not None:
         duree = {"besoin_dans_mois": int(besoin), "statut": "non calculé",
                  "mention": "Durée : non calculée dans cette version (F14) ; votre besoin est gardé dans le plan."}
-    cache = {"version": 1, "bandeau": BANNER, "calcule_utc": cli.now_utc().isoformat(),
-             "asof": str(od.get("asof") or t)[:10], "capital": capital,
-             "capital_ordre": float(od.get("valeur_portefeuille") or od.get("capital") or capital),
-             "grille": opt_g or "central",
-             "perte_toleree": args.perte_toleree if args.perte_toleree is not None else pe.get("perte_toleree"),
-             "empreinte_ordre": _empreinte_ordre(od), "plan": rn["plan"], "rendement_net": rn,
-             "ordre": {k: v for k, v in od.items() if k != "rendement_net"}}
+    cache = cache_du_plan(o, t=t, capital=capital, grille=opt_g or "central",
+                          perte_toleree=args.perte_toleree if args.perte_toleree is not None else pe.get("perte_toleree"))
     chemin_cache = _ecrire_json(dossier_profil() / "plan_cache.json", cache)
     meta = {"date": str(od.get("asof") or t)[:10], "capital": capital, "grille": opt_g or "central",
             "plan_cache": str(chemin_cache), "plan_enregistre": str(chemin_plan) if chemin_plan else None,
@@ -1052,41 +1063,55 @@ def _detaches(ops: pd.DataFrame | None, P: Mapping[str, Any] | None) -> pd.DataF
 
 
 def _suivi_bulletin(args: argparse.Namespace) -> int:
-    from brvm_alpha import suivi as S
-    from brvm_alpha.suivi import bulletin as BU
-    from brvm_alpha.suivi import declaration as DE
-
-    cli = _cli()
     nom = str(args.nom or "REF-S2").strip()
-    D = dossier_suivi()
-    with _saisie("portefeuille"):
-        d = S.dossier_portefeuille(nom, D)
-    jour = _aujourd_hui()
     try:
         P: Mapping[str, Any] | None = _panels(args.panel_dir)
     except DonneesAbsentes:
         P = None  # le bulletin sort quand même, sans les prochains rendez-vous
+    b = bulletin_portefeuille(nom, dossier_suivi(), panels=P)
+    return _sortir_bulletin(args, b, nom)
+
+
+def bulletin_portefeuille(nom: str, D: Path, *, profil: Path | None = None, panels: Mapping[str, Any] | None = None,
+                          jour: Any = None) -> dict[str, Any]:
+    """Bulletin de la semaine du portefeuille ``nom`` (journal ``D/<nom>``) : prochains rendez-vous (si ``panels``),
+    trois feux, déclaration en vigueur. ``profil`` : dossier du plan enregistré et de la grille (défaut : celui de
+    l'installation). Lecture seule ; sert à ``suivi bulletin`` et à l'interface (page Portefeuille)."""
+    from brvm_alpha import suivi as S
+    from brvm_alpha.suivi import bulletin as BU
+    from brvm_alpha.suivi import declaration as DE
+
+    with _saisie("portefeuille"):
+        d = S.dossier_portefeuille(nom, D)
+    jour = pd.Timestamp(jour).normalize() if jour is not None else _aujourd_hui()
+    P = panels
     lignes = BU.semaines_du_journal(nom, D)
     date_rv = pd.Timestamp(lignes[-1]["date"]) if lignes else jour
     T = float(lignes[-1].get("valeur_titres") or 0) if lignes else 0.0
     if nom in NOMS_MOTEUR:
         ops = pd.read_csv(d / "operations.csv", dtype={"symbole": str}) if (d / "operations.csv").exists() else None
         titres = _positions_csv(d)
-        cm, forfait = _cost_model(_grille_du_mandat(None))
+        cm, forfait = _cost_model(_grille_du_mandat(None, profil))
         papier = True
         kw_rv: dict[str, Any] = {"rythme": "semaine"}
     else:
-        c = _carnet_existant(nom)
+        c = _carnet_existant(nom, D)
         ops = c.operations()
         titres = {k: int(v["titres"]) for k, v in c.positions().items()}
         mandat = c.mandat() or {}
-        cm, forfait = _cost_model(_grille_du_mandat(mandat))
+        cm, forfait = _cost_model(_grille_du_mandat(mandat, profil))
         papier = mandat.get("mode") != "reel"
         kw_rv = {"rythme": "trimestre", "dernier_prelevement": _dernier_prelevement(c)}
     rv = BU.rendez_vous(titres, P, date_rv, costs=cm, valeur_titres=T, forfait=forfait, **kw_rv) if P is not None else None
-    b = BU.depuis_journal(nom, D, plan=lire_plan() or None,
-                          declaration=DE.verifier(dossier_declaration(), registre=_registre_si_present()),
-                          papier=papier, aujourd_hui=jour, rendez_vous=rv, detaches=_detaches(ops, P), operations=ops)
+    return BU.depuis_journal(nom, D, plan=lire_plan(profil) or None,
+                             declaration=DE.verifier(dossier_declaration(), registre=_registre_si_present()),
+                             papier=papier, aujourd_hui=jour, rendez_vous=rv, detaches=_detaches(ops, P), operations=ops)
+
+
+def _sortir_bulletin(args: argparse.Namespace, b: Mapping[str, Any], nom: str) -> int:
+    from brvm_alpha.suivi import bulletin as BU
+
+    cli = _cli()
     fmt = args.format if args.format in ("texte", "md", "json") else "texte"
     out = BU.rendre(b, fmt)
     if fmt != "json" and BANNER not in out:
@@ -1108,7 +1133,13 @@ def _suivi_bulletin(args: argparse.Namespace) -> int:
 
 def lire_avis(chemin: Path) -> list[dict[str, Any]]:
     """Lignes d'un avis d'opéré (CSV, séparateur « , » ou « ; », virgule décimale acceptée)."""
-    texte = chemin.read_text(encoding="utf-8-sig")
+    return lire_avis_texte(chemin.read_text(encoding="utf-8-sig"), str(chemin))
+
+
+def lire_avis_texte(texte: str, origine: str = "avis d'opéré") -> list[dict[str, Any]]:
+    """Lignes d'un avis d'opéré écrit en CSV (fichier lu, ou texte collé dans l'interface) ; ``origine`` nomme la
+    saisie dans le message de refus."""
+    texte = str(texte or "").lstrip("\ufeff")
     premiere = texte.splitlines()[0] if texte.strip() else ""
     sep = ";" if premiere.count(";") > premiere.count(",") else ","
     num = {"titres", "prix", "courtage", "taxe", "commissions", "brvm", "dcbr", "autres_frais", "total",
@@ -1135,13 +1166,11 @@ def lire_avis(chemin: Path) -> list[dict[str, Any]]:
         ligne["symbole"] = str(ligne["symbole"]).upper()
         out.append(ligne)
     if not out:
-        raise SaisieInvalide(f"refusé : avis d'opéré vide : {chemin}")
+        raise SaisieInvalide(f"refusé : avis d'opéré vide : {origine}")
     return out
 
 
 def _suivi_saisir(args: argparse.Namespace) -> int:
-    from brvm_alpha.rendement import grille as G
-
     cli = _cli()
     c = _carnet_existant(str(args.nom).strip())
     paths.verifier_ecriture(c.fichier)
@@ -1158,30 +1187,10 @@ def _suivi_saisir(args: argparse.Namespace) -> int:
         raise SaisieInvalide("refusé : un avis d'opéré ne se saisit que dans un portefeuille réel (suivi demarrer --mode "
                              "reel) ; un portefeuille sur papier est exécuté par « suivi maj »")
     lignes = lire_avis(_fichier_lu(args.fichier, "--fichier"))
-    with _saisie("avis d'opéré"):
-        g0 = G.charger()
-        r = c.saisir_avis(lignes, g0)
-    chemin = None
-    if r["concorde"]:
-        paths.verifier_ecriture(dossier_profil() / "grille_sgi.yaml")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            chemin = G.enregistrer(r["grille"])
-    elif r.get("grille_proposee") is not None and args.confirmer_grille:
-        gp = r["grille_proposee"]
-        gp.champs["courtage"].statut = G.AVIS
-        gp.champs["courtage"].source = f"avis d'opéré saisi le {jour}"
-        gp.champs["courtage"].date = jour
-        paths.verifier_ecriture(dossier_profil() / "grille_sgi.yaml")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            chemin = G.enregistrer(gp)
-    ecarts = [{"symbole": x["symbole"], "date": x["date"], "ecarts_fcfa": x["ecarts_fcfa"], "concorde": x["concorde"]}
-              for x in r["lignes"]]
-    payload = {"nom": c.nom, "concorde": r["concorde"], "lignes": ecarts, "postes_nouveaux": r["postes_nouveaux"],
-               "grille_enregistree": str(chemin) if chemin else None,
-               "grille_proposee": r["grille_proposee"].to_dict() if r.get("grille_proposee") is not None else None,
-               "texte": r["texte"]}
+    payload = saisir_avis_au_carnet(c, lignes, confirmer_grille=bool(args.confirmer_grille), jour=jour)
+    r = {"texte": payload["texte"], "grille_proposee": payload["grille_proposee"]}
+    chemin = payload["grille_enregistree"]
+    ecarts = payload["lignes"]
     txt = [f"{len(lignes)} exécution(s) de l'avis d'opéré consignée(s) au carnet « {c.nom} ».", r["texte"]]
     for x in ecarts:
         if not x["concorde"]:
@@ -1192,6 +1201,42 @@ def _suivi_saisir(args: argparse.Namespace) -> int:
     if chemin:
         txt.append(f"Grille enregistrée : {chemin}.")
     return _sortie_simple(args, payload, txt)
+
+
+def saisir_avis_au_carnet(c: Any, lignes: list[dict[str, Any]], *, confirmer_grille: bool = False, jour: str | None = None,
+                          profil: Path | None = None) -> dict[str, Any]:
+    """Consigne les lignes d'un avis d'opéré au carnet ``c`` (portefeuille réel) et compare ses frais à la grille du
+    profil (``profil``, défaut : celui de l'installation). Si tout concorde, la grille passe au statut « avis d'opéré » ;
+    sinon une grille corrigée est proposée et n'est enregistrée qu'avec ``confirmer_grille``. Sert à ``suivi saisir`` et
+    à l'interface (page Portefeuille)."""
+    from brvm_alpha.rendement import grille as G
+
+    jour = jour or _aujourd_hui().date().isoformat()
+    prof = profil if profil is not None else dossier_profil()
+    with _saisie("avis d'opéré"):
+        g0 = G.charger(prof)
+        r = c.saisir_avis(lignes, g0)
+    chemin = None
+    if r["concorde"]:
+        paths.verifier_ecriture(prof / "grille_sgi.yaml")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            chemin = G.enregistrer(r["grille"], prof)
+    elif r.get("grille_proposee") is not None and confirmer_grille:
+        gp = r["grille_proposee"]
+        gp.champs["courtage"].statut = G.AVIS
+        gp.champs["courtage"].source = f"avis d'opéré saisi le {jour}"
+        gp.champs["courtage"].date = jour
+        paths.verifier_ecriture(prof / "grille_sgi.yaml")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            chemin = G.enregistrer(gp, prof)
+    ecarts = [{"symbole": x["symbole"], "date": x["date"], "ecarts_fcfa": x["ecarts_fcfa"], "concorde": x["concorde"]}
+              for x in r["lignes"]]
+    return {"nom": c.nom, "concorde": r["concorde"], "lignes": ecarts, "postes_nouveaux": r["postes_nouveaux"],
+            "grille_enregistree": str(chemin) if chemin else None,
+            "grille_proposee": r["grille_proposee"].to_dict() if r.get("grille_proposee") is not None else None,
+            "texte": r["texte"]}
 
 
 def _suivi_revue(args: argparse.Namespace) -> int:
@@ -1344,6 +1389,10 @@ def _suivi_exporter(args: argparse.Namespace) -> int:
                           + ([f"Non copié (privé) : {', '.join(exclus)} ; --avec-moi pour le copier."] if exclus else []))
 
 
-__all__ = ["BANNER", "CAPITAL_DEFAUT", "NOMS_MOTEUR", "ajouter_options", "ajouter_parseurs", "cmd_plan", "cmd_suivi",
-           "dossier_declaration", "dossier_profil", "dossier_suivi", "lire_avis", "lire_plan", "options_recommend",
-           "parse_montant", "parse_perte", "parse_taux", "registre_des_essais"]
+#: Écriture atomique d'un fichier JSON des données (refusée dans l'arbre du code en mode embarqué).
+ecrire_json = _ecrire_json
+
+__all__ = ["BANNER", "CAPITAL_DEFAUT", "NOMS_MOTEUR", "ajouter_options", "ajouter_parseurs", "bulletin_portefeuille",
+           "cache_du_plan", "cmd_plan", "cmd_suivi", "dossier_declaration", "dossier_profil", "dossier_suivi",
+           "ecrire_json", "lire_avis", "lire_avis_texte", "lire_plan", "options_recommend", "parse_montant",
+           "parse_perte", "parse_taux", "registre_des_essais", "saisir_avis_au_carnet"]

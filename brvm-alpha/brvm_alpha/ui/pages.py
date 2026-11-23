@@ -758,7 +758,9 @@ def page_dashboard(ctx: PageContext, *, last_session: Any, validation: Mapping[s
                    choice: Mapping[str, Any] | None, reports: Sequence[Mapping[str, Any]],
                    job: Mapping[str, Any] | None, recent_notes: Sequence[Mapping[str, Any]],
                    default_capital: float = 10_000_000, flash: Any = None,
-                   notes_status: Mapping[str, Any] | None = None) -> str:
+                   notes_status: Mapping[str, Any] | None = None, plan_card: Any = None) -> str:
+    """Tableau de bord ; ``plan_card`` : carte « Mon plan » en tête (``ui.rendement.carte_mon_plan``), absente par
+    défaut (page inchangée à l'octet près)."""
     facts = [("Données au", fr_date(last_session) if last_session is not None else "panel introuvable")]
     if validation:
         facts.append(("Test S1", f"{validation.get('etat')} ; statut de A : {validation.get('statut_A') or 'n.d.'}"))
@@ -796,6 +798,7 @@ def page_dashboard(ctx: PageContext, *, last_session: Any, validation: Mapping[s
     notes_rows = [[fr_date(n.get("published_at")), link(f"/notes/fiche?id={q(n.get('note_id'))}", n.get("title") or "(sans titre)"),
                    ", ".join(n.get("all_targets") or []) or "—", fr_num(n.get("score"), 2, True)] for n in recent_notes]
     body = join([
+        plan_card if plan_card is not None else Safe(""),
         Safe('<section class="card"><h2>État (faits)</h2>'), state,
         box("hypothesis", "Tant que rien n'est PROMU, toute recommandation est à titre d'étude : suivi réel (paper "
                           "trading) requis avant tout engagement d'argent réel."),
@@ -1194,7 +1197,10 @@ VARIANT_CHOICES = (("", "automatique (d'après le test S1)"),) + tuple(
 
 def page_portfolio(ctx: PageContext, *, values: Mapping[str, Any] | None, job: Mapping[str, Any] | None,
                    fragment: str | None, error: Any = None, job_id: str | None = None,
-                   notes_status: Mapping[str, Any] | None = None) -> str:
+                   notes_status: Mapping[str, Any] | None = None, rendement: Mapping[str, Any] | None = None) -> str:
+    """Page Portefeuille ; ``rendement`` (``{"champs": …, "section": …}``, ``ui.rendement``) : champs du module dans le
+    formulaire et section « Suivi sur papier » ; absent par défaut (page inchangée à l'octet près)."""
+    rn = rendement or {}
     v = {"capital": "10 000 000", "portefeuille": "", "cash": "", "variante": "", "date": "", "tirages": "5000"} \
         | {k: ("" if x is None else x) for k, x in dict(values or {}).items()}
     busy = bool(job and job.get("statut") in ("en cours", "en attente"))
@@ -1216,6 +1222,7 @@ def page_portfolio(ctx: PageContext, *, values: Mapping[str, Any] | None, job: M
         + f'<div class="wide"><label for="p-portefeuille">Portefeuille actuel (une ligne « symbole,titres »)</label>'
           f'<textarea id="p-portefeuille" name="portefeuille" placeholder="SNTS,120&#10;ORAC,15">{esc(v["portefeuille"])}'
           "</textarea></div>"
+        + str(rn.get("champs") or "")
         + f'<div class="wide"><button type="submit"{" disabled" if busy else ""}>Calculer l\'ordre de bataille</button>'
           '<div class="hint">Calcul long (bootstrap, stress) : exécuté dans un fil de travail, une opération à la fois.'
           "</div></div></form>")
@@ -1243,6 +1250,7 @@ def page_portfolio(ctx: PageContext, *, values: Mapping[str, Any] | None, job: M
         Safe('<p class="muted">Un achat bloqué par une note est écrit en clair dans l\'ordre de bataille (règle, '
              "note, fin du blocage) ; pour le lever, archiver la note depuis sa fiche. "
              f'{link("/notes", "Notes en vigueur")}</p></section>'),
+        rn.get("section") or Safe(""),
     ])
     return layout(ctx, "Portefeuille — ordre de bataille", body, active="portefeuille", flash=flash)
 
@@ -1355,7 +1363,9 @@ def page_explain(ctx: PageContext, *, values: Mapping[str, Any], explanation: Ma
 
 
 def page_validation(ctx: PageContext, *, s1: Mapping[str, Any] | None, s1_md: str | None,
-                    attempts_md: str | None, s0_md: str | None) -> str:
+                    attempts_md: str | None, s0_md: str | None, suivi: Any = None) -> str:
+    """Page Validation ; ``suivi`` : tableau « Suivi sur papier : ce qui est déclaré » (``ui.rendement``), placé après
+    le test S1 ; absent par défaut (page inchangée à l'octet près)."""
     parts: list[Any] = [Safe('<section class="card"><h2>Test unique S1 (faits lus, jamais recalculés)</h2>')]
     if s1:
         parts.append(dl([("État", s1.get("etat")), ("Statut de A", s1.get("statut_A") or "n.d."),
@@ -1368,6 +1378,8 @@ def page_validation(ctx: PageContext, *, s1: Mapping[str, Any] | None, s1_md: st
                              "paramètres figés avant l'exécution (additif v1.1). Cette page lit les résultats ; elle ne "
                              "relance aucun calcul."))
     parts.append(Safe("</section>"))
+    if suivi is not None:
+        parts.append(suivi)
     if s1_md:
         parts += [Safe('<section class="card"><h2>Résultats S1 (resultats.md)</h2>'), md_to_html(s1_md), Safe("</section>")]
     else:

@@ -421,7 +421,10 @@ class Services:
                                   notes_known_at=self.notes_instant(asof))
 
     def recommend(self, *, asof: Any, capital: float, holdings: Mapping[str, int] | None, cash: float | None,
-                  variant: str | None, n_boot: int, log: Callable[[str], None]) -> Any:
+                  variant: str | None, n_boot: int, log: Callable[[str], None],
+                  options: Mapping[str, Any] | None = None) -> Any:
+        """Ordre de bataille ; ``options`` : paramètres du module « Rendement net et pertes » (``ui.rendement``),
+        absents par défaut (appel inchangé)."""
         from brvm_alpha.portfolio import recommend as rec
 
         log(f"ordre de bataille au {cli.fr_date(asof)} pour {cli.fr_num(capital, 0)} FCFA ({n_boot} tirages)…")
@@ -431,7 +434,7 @@ class Services:
         return rec.recommend(asof, capital, holdings=holdings or None, cash=cash, variant=variant, n_boot=n_boot,
                              notes_store=self.notes_store() if self.notes_root else None,
                              panel_dir=self.panel_dir, validation_dir=self.validation_dir, notes_known_at=known,
-                             today=self.clock())
+                             today=self.clock(), **dict(options or {}))
 
     def report_target(self, asof: Any) -> Path:
         """Chemin du rapport régénéré : construit à partir de la date (jamais d'une saisie)."""
@@ -977,6 +980,13 @@ def _records(df: pd.DataFrame | None) -> list[dict[str, Any]]:
 
 
 def get_dashboard(h: Handler, qs: Mapping[str, list[str]]) -> None:
+    _render_dashboard(h, 200, qs)
+
+
+def _render_dashboard(h: Handler, status: int, qs: Mapping[str, list[str]], **carte: Any) -> None:
+    """Tableau de bord ; ``carte`` : saisie et erreur des formulaires de la carte « Mon plan » (``ui.rendement``)."""
+    from brvm_alpha.ui import rendement as RN
+
     s = h.server.services
     store = s.notes_store()
     df = store.list(status="active")
@@ -985,10 +995,12 @@ def get_dashboard(h: Handler, qs: Mapping[str, list[str]]) -> None:
     flash = None
     if _qv(qs, "lance"):
         flash = ("info", "Régénération du rapport lancée : suivi ci-dessous.")
-    status = _safe(s.notes_status)
-    h._page(200, lambda ctx: P.page_dashboard(
+    nstatus = _safe(s.notes_status)
+    etat = RN.etat_carte(s, h.server.jobs, qs=qs, **carte)
+    h._page(status, lambda ctx: P.page_dashboard(
         ctx, last_session=s.last_session(), validation=s.read_validation(), choice=s.choose_variant(),
-        reports=s.list_reports(), job=_job_view(job), recent_notes=recent, flash=flash, notes_status=status))
+        reports=s.list_reports(), job=_job_view(job), recent_notes=recent, flash=flash, notes_status=nstatus,
+        plan_card=RN.carte_ou_erreur(ctx, etat)))
 
 
 def _safe(fn: Callable[..., Any], *args: Any) -> Any:
@@ -1147,7 +1159,11 @@ def get_portfolio(h: Handler, qs: Mapping[str, list[str]]) -> None:
 
 
 def _render_portfolio(h: Handler, status: int, *, qs: Mapping[str, list[str]] | None = None,
-                      values: Mapping[str, Any] | None = None, error: Any = None) -> None:
+                      values: Mapping[str, Any] | None = None, error: Any = None,
+                      suivi: Mapping[str, Any] | None = None) -> None:
+    """Page Portefeuille ; ``suivi`` : message, saisie et erreur de la revue ou de la saisie (``ui.rendement``)."""
+    from brvm_alpha.ui import rendement as RN
+
     jid = _qv(qs or {}, "travail")
     job = h.server.jobs.get(jid) if _JOB_RE.match(jid or "") else h.server.jobs.latest("portefeuille")
     if job is not None and job.kind != "portefeuille":
@@ -1160,8 +1176,11 @@ def _render_portfolio(h: Handler, status: int, *, qs: Mapping[str, list[str]] | 
         if job.finished_ok and job.result is not None:
             fragment = job.result.to_html_fragment()
     nstatus = _safe(h.server.services.notes_status)
+    etat = RN.etat_portefeuille(h.server.services, **dict(suivi or {}))
     h._page(status, lambda ctx: P.page_portfolio(ctx, values=vals, job=_job_view(job), fragment=fragment, error=error,
-                                                 job_id=job.id if job is not None else None, notes_status=nstatus))
+                                                 job_id=job.id if job is not None else None, notes_status=nstatus,
+                                                 rendement={"champs": RN.champs_portefeuille(vals, etat),
+                                                            "section": RN.section_ou_erreur(ctx, etat)}))
 
 
 def get_portfolio_result(h: Handler, qs: Mapping[str, list[str]]) -> None:
@@ -1203,8 +1222,12 @@ def get_explain(h: Handler, qs: Mapping[str, list[str]]) -> None:
 
 def get_validation(h: Handler, qs: Mapping[str, list[str]]) -> None:
     s = h.server.services
+    from brvm_alpha.ui import rendement as RN
+
+    etat = RN.etat_validation(s)
     h._page(200, lambda ctx: P.page_validation(ctx, s1=s.read_validation(), s1_md=s.read_text("s1"),
-                                               attempts_md=s.read_text("tentatives"), s0_md=s.read_text("s0")))
+                                               attempts_md=s.read_text("tentatives"), s0_md=s.read_text("s0"),
+                                               suivi=RN.tableau_ou_erreur(etat)))
 
 
 def get_job(h: Handler, qs: Mapping[str, list[str]]) -> None:
@@ -1222,6 +1245,18 @@ def get_state(h: Handler, qs: Mapping[str, list[str]]) -> None:
             "application/json; charset=utf-8")
 
 
+def _rn(nom: str) -> Callable[[Handler, Mapping[str, list[str]]], None]:
+    """Route du module « Rendement net et pertes » (``ui/rendement.py``), importée à l'appel."""
+
+    def route(h: Handler, data: Mapping[str, list[str]]) -> None:
+        from brvm_alpha.ui import rendement as RN
+
+        getattr(RN, nom)(h, data)
+
+    route.__name__ = nom
+    return route
+
+
 GET_ROUTES: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
     "/": get_dashboard,
     "/etat.json": get_state,
@@ -1236,6 +1271,10 @@ GET_ROUTES: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
     "/expliquer": get_explain,
     "/validation": get_validation,
     "/api/travail": get_job,
+    # Module « Rendement net et pertes » (ui/rendement.py) : pages atteintes par des liens, jamais par un formulaire GET.
+    "/plan/questions": _rn("get_plan_questions"),
+    "/plan/resultat": _rn("get_plan_resultat"),
+    "/suivi/bulletin": _rn("get_suivi_bulletin"),
 }
 
 
@@ -1386,7 +1425,10 @@ def post_report(h: Handler, form: Mapping[str, list[str]]) -> None:
 
 def post_portfolio(h: Handler, form: Mapping[str, list[str]]) -> None:
     s = h.server.services
+    from brvm_alpha.ui import rendement as RN
+
     v = {k: _first(form, k) for k in ("capital", "portefeuille", "cash", "variante", "date", "tirages")}
+    v.update({k: _first(form, k).strip()[:200] for k in RN.CHAMPS_PORTEFEUILLE if k in form})
     try:
         capital = cli.parse_capital(v["capital"])
         cash = cli.parse_capital(v["cash"]) if v["cash"].strip() else None
@@ -1402,13 +1444,15 @@ def post_portfolio(h: Handler, form: Mapping[str, list[str]]) -> None:
             raise ValueError("panel introuvable : " + cli.PANEL_HINT)
         if cli.in_s1(asof):
             raise ValueError(cli.s1_refusal(asof, "l'ordre de bataille"))
+        opts = RN.options_portefeuille(v, s, cash)
     except ValueError as exc:
         _render_portfolio(h, 400, values=v, error=str(exc))
         return
+    extra: dict[str, Any] = {"options": opts} if opts else {}  # sans option du module : appel inchangé
     try:
         job = h.server.jobs.start("portefeuille", f"ordre de bataille ({cli.fr_num(capital, 0)} FCFA)",
                                   lambda job: s.recommend(asof=asof, capital=capital, holdings=holdings, cash=cash,
-                                                          variant=variant, n_boot=n_boot, log=job.log))
+                                                          variant=variant, n_boot=n_boot, log=job.log, **extra))
     except JobBusy as exc:
         _render_portfolio(h, 409, values=v, error=str(exc))
         return
@@ -1428,7 +1472,10 @@ def stale_note_form(h: Handler, form: Mapping[str, list[str]]) -> None:
 
 def stale_portfolio_form(h: Handler, form: Mapping[str, list[str]]) -> None:
     """Jeton invalide sur le calcul de l'ordre de bataille : formulaire réaffiché avec la saisie (403)."""
+    from brvm_alpha.ui import rendement as RN
+
     v = {k: _first(form, k)[:20000] for k in ("capital", "cash", "variante", "date", "tirages", "portefeuille")}
+    v.update({k: _first(form, k)[:200] for k in RN.CHAMPS_PORTEFEUILLE if k in form})
     _render_portfolio(h, 403, values=v, error=STALE_TOKEN_MSG)
 
 
@@ -1436,6 +1483,10 @@ def stale_portfolio_form(h: Handler, form: Mapping[str, list[str]]) -> None:
 STALE_TOKEN_FORMS: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
     "/notes/ajouter": stale_note_form,
     "/portefeuille/calculer": stale_portfolio_form,
+    "/plan/enregistrer": _rn("stale_plan_form"),
+    "/plan/grille": _rn("stale_plan_form"),
+    "/suivi/revue": _rn("stale_suivi_form"),
+    "/suivi/saisir": _rn("stale_suivi_form"),
 }
 
 POST_ROUTES: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
@@ -1444,6 +1495,11 @@ POST_ROUTES: dict[str, Callable[[Handler, Mapping[str, list[str]]], None]] = {
     "/recherche/lancer": post_research,
     "/rapport/regenerer": post_report,
     "/portefeuille/calculer": post_portfolio,
+    # Module « Rendement net et pertes » (ui/rendement.py) : jeton anti-CSRF exigé, comme partout.
+    "/plan/enregistrer": _rn("post_plan_enregistrer"),
+    "/plan/grille": _rn("post_plan_grille"),
+    "/suivi/revue": _rn("post_suivi_revue"),
+    "/suivi/saisir": _rn("post_suivi_saisir"),
 }
 
 
