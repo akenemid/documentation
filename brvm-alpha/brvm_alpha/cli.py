@@ -335,15 +335,83 @@ def parse_holdings(text: str) -> dict[str, int]:
 
 
 def _lire_fichier_saisi(path: str | Path, what: str) -> str:
-    """Texte d'un fichier donné par l'utilisateur ; illisible (absent, dossier, droits, pas de l'UTF-8) :
-    :class:`SaisieInvalide` (code 2), jamais une erreur interne."""
+    """Texte d'un fichier donné par l'utilisateur ; illisible (absent, dossier, tube, droits, pas de l'UTF-8, trop
+    volumineux, lien symbolique en mode embarqué) : :class:`SaisieInvalide` (code 2), jamais une erreur interne."""
+    return lire_fichier_borne(path, what, FICHIER_SAISI_MAX_OCTETS, message_absent=f"{what} illisible : {path} "
+                                                                                   "(fichier introuvable)")
+
+
+#: Taille d'un fichier de saisie (``--portefeuille``, avis d'opéré, déclaration), contrôlée avant toute lecture.
+FICHIER_SAISI_MAX_OCTETS = 1_000_000
+
+
+def lire_fichier_borne(path: str | Path | None, option: str, max_octets: int, *, refuser_lien: bool | None = None,
+                       absent: type[Exception] | None = None, message_absent: str | None = None) -> str:
+    """Texte d'un fichier donné en option (``--fichier``, ``--portefeuille``, ``--grille``, ``--titre-fichier``…),
+    lu sans jamais être suivi d'une erreur interne.
+
+    Règles (toute faute : :class:`SaisieInvalide`, code 2, rien n'est lu au-delà) : chemin vide ou fait d'espaces
+    refusé ; dossier, tube ou périphérique refusés (jamais de lecture bloquante) ; lien symbolique en dernière place
+    refusé si ``refuser_lien`` (défaut : en mode embarqué, où le chemin réel a déjà été borné aux dossiers permis) ;
+    taille bornée à ``max_octets`` avant la lecture (et lecture d'au plus ce nombre d'octets plus un) ; UTF-8 strict
+    (une marque d'ordre en tête est retirée). Fichier absent : ``absent`` (défaut :class:`SaisieInvalide`) avec
+    ``message_absent``. Le texte est rendu tel quel (bords compris)."""
+    import stat
+
+    if refuser_lien is None:
+        refuser_lien = paths.est_embarque()
+    if path is None or str(path).strip() == "":
+        raise SaisieInvalide(f"refusé : {option} vide ou fait seulement d'espaces ; donner le chemin d'un fichier "
+                             "texte (UTF-8).")
     p = Path(path)
     try:
-        return p.read_text(encoding="utf-8-sig")
-    except UnicodeDecodeError:
-        raise SaisieInvalide(f"{what} illisible : {p} n'est pas un texte UTF-8") from None
+        st = os.lstat(p)
+        if not refuser_lien and stat.S_ISLNK(st.st_mode):
+            st = os.stat(p)
+    except FileNotFoundError:
+        raise (absent or SaisieInvalide)(message_absent or f"refusé : {option} {p} : fichier introuvable.") from None
     except OSError as exc:
-        raise SaisieInvalide(f"{what} illisible : {p} ({exc.strerror or exc})") from None
+        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc}).") from None
+    if stat.S_ISLNK(st.st_mode):
+        raise SaisieInvalide(f"refusé : {option} {p} est un lien symbolique ; donner le fichier lui-même.")
+    if not stat.S_ISREG(st.st_mode):
+        raise SaisieInvalide(f"refusé : {option} {p} n'est pas un fichier ordinaire (dossier, tube ou périphérique).")
+    trop = f"refusé : {option} {p} : fichier trop volumineux (plus de {max_octets} octets)."
+    if st.st_size > max_octets:
+        raise SaisieInvalide(trop)
+    drapeaux = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    if refuser_lien:
+        drapeaux |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(p, drapeaux)
+    except OSError as exc:  # ELOOP : remplacé par un lien depuis le contrôle
+        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc}"
+                             + (" ; lien symbolique refusé" if refuser_lien else "") + ").") from None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise SaisieInvalide(f"refusé : {option} {p} n'est pas un fichier ordinaire.")
+        if st.st_size > max_octets:
+            raise SaisieInvalide(trop)
+        morceaux: list[bytes] = []
+        reste = max_octets + 1
+        while reste > 0:
+            bloc = os.read(fd, reste)
+            if not bloc:
+                break
+            morceaux.append(bloc)
+            reste -= len(bloc)
+    except OSError as exc:
+        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc}).") from None
+    finally:
+        os.close(fd)
+    brut = b"".join(morceaux)
+    if len(brut) > max_octets:  # grossi depuis le contrôle (fichier en cours d'écriture)
+        raise SaisieInvalide(trop)
+    try:
+        return brut.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise SaisieInvalide(f"refusé : {option} {p} n'est pas un texte UTF-8.") from None
 
 
 def read_holdings(path: str | Path) -> dict[str, int]:
@@ -1634,12 +1702,9 @@ def run_enrich(store: Any, *, max_docs: int, targets: Sequence[str] | None = Non
 
 
 def _read_text_file(path: str) -> str:
-    p = Path(path)
-    if not p.is_file():
-        raise SaisieInvalide(f"fichier introuvable : {path}")
-    if p.stat().st_size > 2_000_000:
-        raise SaisieInvalide("fichier trop volumineux (plus de 2 Mo)")
-    return _lire_fichier_saisi(p, "fichier")
+    """Texte d'une note lu par ``--fichier`` : 2 Mo au plus ; dossier, tube, texte non UTF-8 et, en mode embarqué,
+    lien symbolique refusés (code 2, :func:`lire_fichier_borne`)."""
+    return lire_fichier_borne(path, "--fichier", 2_000_000, message_absent=f"fichier introuvable : {path}")
 
 
 #: Titre d'une note : 500 caractères au plus, blancs répétés ramenés à une espace (:func:`make_manual_note`), qu'il
@@ -1657,64 +1722,15 @@ def lire_valeur_fichier(path: str | None, option: str, max_caracteres: int | Non
     """Valeur d'une option lue dans un fichier (``--titre-fichier``, ``--motif-fichier``) : Odoo n'a pas à passer un
     texte libre en argument de la ligne de commande.
 
-    Règles (toute faute : :class:`SaisieInvalide`, code 2, rien n'est lu au-delà ni écrit) : chemin vide ou fait
-    d'espaces refusé ; lien symbolique refusé (``O_NOFOLLOW``), dossier, tube ou périphérique refusés ; taille bornée
-    à :data:`VALEUR_FICHIER_MAX_OCTETS` avant la lecture (et lecture d'au plus ce nombre d'octets plus un) ; UTF-8
-    strict (une marque d'ordre en tête est retirée) ; caractère nul refusé (impossible dans un argument) ; bords
-    retirés ; résultat vide ou fait de blancs refusé ; au plus ``max_caracteres`` caractères s'il est donné. Le
-    texte rendu est ensuite traité exactement comme la valeur de ``--titre`` ou ``--motif``. En mode embarqué, le
-    chemin a déjà été résolu et borné aux dossiers permis (:func:`_resolve_path_options`)."""
-    import stat
-
-    if path is None or str(path).strip() == "":
-        raise SaisieInvalide(f"refusé : {option} vide ou fait seulement d'espaces ; donner le chemin d'un fichier "
-                             "texte (UTF-8).")
-    p = Path(path)
-    try:
-        st = os.lstat(p)
-    except FileNotFoundError:
-        raise SaisieInvalide(f"refusé : {option} {p} : fichier introuvable.") from None
-    except OSError as exc:
-        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc}).") from None
-    if stat.S_ISLNK(st.st_mode):
-        raise SaisieInvalide(f"refusé : {option} {p} est un lien symbolique ; donner le fichier lui-même.")
-    if not stat.S_ISREG(st.st_mode):
-        raise SaisieInvalide(f"refusé : {option} {p} n'est pas un fichier ordinaire (dossier, tube ou périphérique).")
-    trop = (f"refusé : {option} {p} : fichier trop volumineux (plus de {VALEUR_FICHIER_MAX_OCTETS} octets ; "
-            f"{option} attend un texte court).")
-    if st.st_size > VALEUR_FICHIER_MAX_OCTETS:
-        raise SaisieInvalide(trop)
-    drapeaux = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
-    try:
-        fd = os.open(p, drapeaux)
-    except OSError as exc:  # ELOOP : remplacé par un lien depuis le contrôle
-        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc} ; lien symbolique refusé).") \
-            from None
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise SaisieInvalide(f"refusé : {option} {p} n'est pas un fichier ordinaire.")
-        if st.st_size > VALEUR_FICHIER_MAX_OCTETS:
-            raise SaisieInvalide(trop)
-        morceaux: list[bytes] = []
-        reste = VALEUR_FICHIER_MAX_OCTETS + 1
-        while reste > 0:
-            bloc = os.read(fd, reste)
-            if not bloc:
-                break
-            morceaux.append(bloc)
-            reste -= len(bloc)
-    except OSError as exc:
-        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc}).") from None
-    finally:
-        os.close(fd)
-    brut = b"".join(morceaux)
-    if len(brut) > VALEUR_FICHIER_MAX_OCTETS:  # grossi depuis le contrôle (fichier en cours d'écriture)
-        raise SaisieInvalide(trop)
-    try:
-        texte = brut.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise SaisieInvalide(f"refusé : {option} {p} n'est pas un texte UTF-8.") from None
+    Règles (toute faute : :class:`SaisieInvalide`, code 2, rien n'est lu au-delà ni écrit) : celles de
+    :func:`lire_fichier_borne` (chemin vide refusé ; lien symbolique refusé dans les deux modes, ``O_NOFOLLOW`` ;
+    dossier, tube ou périphérique refusés ; taille bornée à :data:`VALEUR_FICHIER_MAX_OCTETS` avant la lecture ; UTF-8
+    strict, marque d'ordre en tête retirée) ; caractère nul refusé (impossible dans un argument) ; bords retirés ;
+    résultat vide ou fait de blancs refusé ; au plus ``max_caracteres`` caractères s'il est donné. Le texte rendu est
+    ensuite traité exactement comme la valeur de ``--titre`` ou ``--motif``. En mode embarqué, le chemin a déjà été
+    résolu et borné aux dossiers permis (:func:`_resolve_path_options`)."""
+    texte = lire_fichier_borne(path, option, VALEUR_FICHIER_MAX_OCTETS, refuser_lien=True)
+    p = Path(str(path))
     if "\x00" in texte:
         raise SaisieInvalide(f"refusé : {option} {p} contient un caractère nul.")
     texte = texte.strip()
@@ -2772,8 +2788,7 @@ def _resolve_path_options(args: argparse.Namespace) -> None:
                 _check_embedded_output(resolved)
         elif attr in _READ_OPTIONS and embarque:
             _check_embedded_input(resolved, attr)
-            if attr in _VALUE_FILE_OPTIONS:
-                _check_embedded_input_real(resolved, attr)
+            _check_embedded_input_real(resolved, attr)
         elif attr in _DATA_DIR_OPTIONS and embarque:
             _check_embedded_data_dir(resolved, attr)
         setattr(args, attr, str(resolved))
@@ -2781,8 +2796,10 @@ def _resolve_path_options(args: argparse.Namespace) -> None:
 
 #: Options qui désignent un fichier LU (contrôlé en mode embarqué).
 _READ_OPTIONS = ("portefeuille", "fichier", "titre_fichier", "motif_fichier")
-#: Fichiers qui portent la valeur d'une option (:func:`lire_valeur_fichier`) : en mode embarqué, le chemin réel (liens
-#: symboliques et « .. » résolus) doit aussi rester dans les dossiers permis.
+#: Fichiers qui portent la valeur d'une option (:func:`lire_valeur_fichier`). En mode embarqué, pour ces options comme
+#: pour ``--fichier`` et ``--portefeuille``, le chemin réel (liens symboliques et « .. » résolus) doit aussi rester dans
+#: les dossiers permis, et un lien symbolique en dernière place est refusé à la lecture (:func:`lire_fichier_borne`) ;
+#: avant, ``--fichier`` suivait un lien de ``<D>`` vers un fichier extérieur et recopiait son contenu dans la note.
 _VALUE_FILE_OPTIONS = ("titre_fichier", "motif_fichier")
 #: Options qui désignent un dossier de données (journal des notes, panel, BOC) : en mode embarqué, toujours un
 #: sous-dossier de ``BRVM_ALPHA_DONNEES``.
@@ -2806,17 +2823,21 @@ def _sous(path: Path, base: Path) -> bool:
 def _check_embedded_output(path: Path) -> None:
     """Mode embarqué : ``--sortie`` seulement dans le dossier des rapports ou celui des fichiers temporaires du
     système, jamais sur un fichier du moteur (``notes/``, ``panel/``, ``boc_text/`` des données) : un chemin relayé ne
-    peut ni écraser le journal des notes ni un autre fichier du compte. :class:`SaisieInvalide` sinon."""
+    peut ni écraser le journal des notes ni un autre fichier du compte. Le chemin **réel** compte (liens symboliques
+    et « .. » résolus des deux côtés) : un lien placé dans ``<R>`` vers un dossier ou un fichier extérieur est refusé
+    (avant : ``recommend``, ``report``, ``plan`` et ``suivi bulletin`` écrivaient au bout du lien). :class:`SaisieInvalide`
+    sinon."""
     import tempfile
 
     for sub in _ENGINE_DIRS:
         if _sous(path, paths.DATA_DIR / sub):
             raise SaisieInvalide(f"refusé : --sortie {path} désigne un fichier du moteur ({paths.DATA_DIR / sub}) ; "
                                  f"écrire dans le dossier des rapports ({paths.REPORTS_DIR}).")
-    if any(_sous(path, base) for base in (paths.REPORTS_DIR, Path(tempfile.gettempdir()))):
+    if any(_dans_reel(path, base) for base in (paths.REPORTS_DIR, Path(tempfile.gettempdir()))):
         return
     raise SaisieInvalide(f"refusé : --sortie {path} est hors des dossiers permis en mode embarqué (rapports "
-                         f"{paths.REPORTS_DIR}, fichiers temporaires {tempfile.gettempdir()}).")
+                         f"{paths.REPORTS_DIR}, fichiers temporaires {tempfile.gettempdir()} ; liens symboliques et "
+                         "« .. » résolus).")
 
 
 def _dans_reel(path: Path, base: Path) -> bool:
@@ -2861,9 +2882,10 @@ def _check_embedded_input(path: Path, attr: str) -> None:
 
 
 def _check_embedded_input_real(path: Path, attr: str) -> None:
-    """Mode embarqué, ``--titre-fichier`` et ``--motif-fichier`` : le chemin **réel** (liens symboliques et « .. »
-    résolus des deux côtés) reste dans les données, les rapports ou les fichiers temporaires ; un lien symbolique en
-    dernière place est refusé à la lecture (:func:`lire_valeur_fichier`). :class:`SaisieInvalide` sinon."""
+    """Mode embarqué, fichiers lus (``--fichier``, ``--portefeuille``, ``--titre-fichier``, ``--motif-fichier``,
+    ``--grille FICHIER``) : le chemin **réel** (liens symboliques et « .. » résolus des deux côtés) reste dans les
+    données, les rapports ou les fichiers temporaires ; un lien symbolique en dernière place est refusé à la lecture
+    (:func:`lire_fichier_borne`). :class:`SaisieInvalide` sinon."""
     import tempfile
 
     if any(_dans_reel(path, base) for base in (paths.DATA_DIR, paths.REPORTS_DIR, Path(tempfile.gettempdir()))):

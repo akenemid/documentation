@@ -29,6 +29,7 @@ import csv
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import warnings
@@ -73,10 +74,20 @@ def _cli() -> Any:
 # ---------------------------------------------------------------------------
 
 
+#: Écriture acceptée d'un taux : des chiffres, au plus une virgule ou un point, puis un « % » facultatif (« 0,7 »,
+#: « 0.7 % », « 12 », « ,5 »). Refusés : signe, exposant (« 1e-1 »), soulignés (« 0_7 »), « nan », « inf », chiffres
+#: d'autres écritures.
+_TAUX_ECRIT = re.compile(r"(?:[0-9]+(?:[.,][0-9]*)?|[.,][0-9]+)")
+
+
 def parse_taux(value: Any) -> float:
-    """Taux en pourcentage, virgule ou point : « 0,5 » ou « 0,5 % » → 0,005 (``ValueError`` sinon)."""
+    """Taux en pourcentage, virgule ou point : « 0,5 » ou « 0,5 % » → 0,005 (``ValueError`` sinon). Seuls des chiffres,
+    au plus une virgule ou un point et un « % » final sont acceptés (avant : la syntaxe des nombres de Python passait,
+    « 1e-1 » valait 0,1 %, « 0_7 » 7 %, et « -0 » était écrit -0.0)."""
     s = str(value or "").strip().replace(" ", "").replace("\xa0", "").replace(" ", "")
     s = s[:-1] if s.endswith("%") else s
+    if not _TAUX_ECRIT.fullmatch(s):
+        raise ValueError(f"taux invalide : {value!r} (en pourcentage, chiffres et une virgule : 0,5 pour 0,5 %)")
     # Division par 100 en décimal : « 0,7 » donne exactement 0,007 (avant, en virgule flottante : 0,006999999999999999,
     # écrit tel quel dans grille_sgi.yaml).
     try:
@@ -212,6 +223,19 @@ def _ecrire_texte(chemin: str | Path, texte: str) -> Path:
         return fichiers.ecrire_atomique(p, texte)
 
 
+def verrou_profil(dossier: str | Path | None = None, *, quoi: str = "profil") -> Any:
+    """Verrou exclusif du profil (``<données>/profil``), à tenir autour de la lecture, de la fusion et de l'écriture de
+    ``grille_sgi.yaml`` ou de ``plan.json`` : deux saisies lancées au même instant (ligne de commande, interface) ne
+    perdent jamais une valeur confirmée ; la seconde attend, ou sort en code 4 au-delà du délai
+    (``BRVM_ALPHA_ATTENTE_VERROU``). Le verrou porte sur le dossier lui-même (``flock``) : aucun fichier n'est ajouté
+    au profil (créé au besoin, puisqu'une écriture suit)."""
+    from brvm_alpha import fichiers
+
+    d = paths.verifier_ecriture(Path(dossier) if dossier is not None else dossier_profil())
+    d.mkdir(parents=True, exist_ok=True)
+    return fichiers.verrou(d, quoi=quoi, creer=False)
+
+
 def lire_plan(dossier: str | Path | None = None) -> dict[str, Any]:
     """Plan enregistré (``<données>/profil/plan.json``) ; ``{}`` s'il n'existe pas ; ``SaisieInvalide`` s'il est
     illisible (aucun calcul silencieux)."""
@@ -271,17 +295,31 @@ def _dans(p: Path, base: Path) -> bool:
     return False
 
 
+#: Taille d'une grille du courtier lue par ``--grille FICHIER`` (quelques centaines d'octets en pratique), contrôlée
+#: avant toute lecture (avant : aucune borne, un YAML de 300 Mo occupait recommend 5 minutes).
+GRILLE_MAX_OCTETS = 65_536
+
+
 def _fichier_lu(value: Any, quoi: str) -> Path:
     """Fichier donné en option et lu par la commande : chemin résolu (mode embarqué : depuis les données, et seulement
-    dans les dossiers de données, de rapports ou temporaire) ; absent : :class:`DonneesAbsentes`."""
+    dans les dossiers de données, de rapports ou temporaire, chemin réel compris) ; absent : :class:`DonneesAbsentes`."""
     p = Path(os.path.abspath(paths.resoudre_chemin_option(value, base="donnees")))
-    if paths.est_embarque() and not any(_dans(p, b) for b in (paths.DATA_DIR, paths.REPORTS_DIR,
-                                                              Path(tempfile.gettempdir()))):
-        raise SaisieInvalide(f"refusé : {quoi} {p} est hors des dossiers permis en mode embarqué (données "
-                             f"{paths.DATA_DIR}, rapports {paths.REPORTS_DIR}, fichiers temporaires).")
-    if not p.is_file():
+    if paths.est_embarque():
+        if not any(_dans(p, b) for b in (paths.DATA_DIR, paths.REPORTS_DIR, Path(tempfile.gettempdir()))):
+            raise SaisieInvalide(f"refusé : {quoi} {p} est hors des dossiers permis en mode embarqué (données "
+                                 f"{paths.DATA_DIR}, rapports {paths.REPORTS_DIR}, fichiers temporaires).")
+        _cli()._check_embedded_input_real(p, quoi.lstrip("-").replace("-", "_"))  # liens et « .. » résolus
+    if not os.path.lexists(p):
         raise DonneesAbsentes(f"échec : {quoi} introuvable : {p}")
     return p
+
+
+def _texte_lu(value: Any, quoi: str, max_octets: int) -> tuple[Path, str]:
+    """Fichier de :func:`_fichier_lu`, puis son texte (:func:`brvm_alpha.cli.lire_fichier_borne`) : dossier, tube,
+    texte non UTF-8, fichier trop volumineux et, en mode embarqué, lien symbolique : refus (code 2, jamais 7 ni 1)."""
+    p = _fichier_lu(value, quoi)
+    return p, _cli().lire_fichier_borne(p, quoi, max_octets, absent=DonneesAbsentes,
+                                        message_absent=f"échec : {quoi} introuvable : {p}")
 
 
 # ---------------------------------------------------------------------------
@@ -343,9 +381,9 @@ def _grille_option(value: Any) -> str:
         with _saisie("--grille ma_sgi"):
             G.charger()
         return v
-    p = _fichier_lu(v, "--grille")
+    p, texte = _texte_lu(v, "--grille", GRILLE_MAX_OCTETS)
     with _saisie("--grille"):
-        G.lire_fichier(p)
+        G.lire_texte(texte, p)
     return str(p)
 
 
@@ -374,7 +412,7 @@ def options_recommend(args: argparse.Namespace, commande: str = "recommend") -> 
         kw["forcer"] = True
     if getattr(args, "apport", None) is not None:
         cash = getattr(args, "cash", None)
-        if cash is None and not getattr(args, "suivi", None):
+        if cash is None and getattr(args, "suivi", None) is None:
             raise SaisieInvalide("refusé : --apport : liquidités réelles nécessaires (--cash, qui comprend l'apport, "
                                  "ou --suivi)")
         if cash is not None and float(cash) + 1.0 < float(args.apport):
@@ -392,9 +430,23 @@ def options_recommend(args: argparse.Namespace, commande: str = "recommend") -> 
         if G.statut_global(gr) == G.SUPPOSE:
             raise SaisieInvalide("refusé : --arrondi restes : la grille du courtier est supposée (grille absente, tarif "
                                  "central ou statut « supposé ») ; option --forcer pour un emploi sur papier")
-    if getattr(args, "suivi", None):
-        kw.update(_options_suivi(str(args.suivi), getattr(args, "panel_dir", None)))
+    suivi = _nom_saisi(getattr(args, "suivi", None), "--suivi")
+    if suivi is not None:
+        kw.update(_options_suivi(suivi, getattr(args, "panel_dir", None)))
     return kw
+
+
+def _nom_saisi(value: Any, option: str = "--nom") -> str | None:
+    """Nom de portefeuille donné en option : ``None`` si l'option est absente ; vide ou fait d'espaces : refus (code 2),
+    jamais le défaut pris sans le dire (avant : ``suivi maj --nom ''`` mettait à jour tous les portefeuilles,
+    ``suivi bulletin --nom ''`` donnait le bulletin de REF-S2, ``recommend --suivi ''`` ignorait l'option)."""
+    if value is None:
+        return None
+    v = str(value).strip()
+    if not v:
+        raise SaisieInvalide(f"refusé : {option} vide ou fait seulement d'espaces : donner le nom du portefeuille "
+                             "(MOI, PLAN…), ou retirer l'option ; rien n'est écrit")
+    return v
 
 
 def _carnet_existant(nom: str, D: Path | None = None) -> Any:
@@ -591,9 +643,11 @@ def ajouter_parseurs(sub: Any) -> None:
     r.add_argument("--nom", required=True, metavar="NOM", help="portefeuille (carnet)")
     r.add_argument("--alerte", required=True, metavar="ID",
                    help="ce qui est revu : code de l'alerte (W1 à W9), feu (perte, fuites, donnees) ou symbole de la "
-                        "ligne (par exemple SNTS) ; un autre code est refusé")
+                        "ligne (par exemple SNTS ; seul le format est contrôlé : 2 à 12 lettres ou chiffres, une "
+                        "lettre en tête, la ligne peut n'être pas détenue) ; un autre code est refusé")
     r.add_argument("--decision", required=True, choices=DECISIONS, help="garder, ne-plus-acheter ou reduire")
-    r.add_argument("--texte", required=True, metavar="TEXTE", help="réponses aux questions de la revue")
+    r.add_argument("--texte", required=True, metavar="TEXTE",
+                   help="réponses aux questions de la revue (décision écrite : un texte vide est refusé)")
     fmt(r)
     dc = svs.add_parser("declarer", help="déclaration du suivi : modèle, signature, registre (dépôt de développement)",
                         description="Déclaration du suivi sur papier (§8) : --modele donne le projet à remplir ; "
@@ -721,9 +775,12 @@ def _plan_ecran(args: argparse.Namespace) -> int:
     grille_kw = _grille_option(opt_g) if opt_g is not None else "central"
     chemin_plan = None
     if args.enregistrer:
-        pe = {**pe, **_plan_saisi(args, capital), "version": 1, "enregistre_utc": cli.now_utc().isoformat(),
-              "bandeau": BANNER}
-        chemin_plan = _ecrire_json(dossier_profil() / "plan.json", pe)
+        # Lecture, fusion et écriture de plan.json sous le verrou du profil : une saisie lancée en même temps n'est
+        # jamais perdue (avant : la dernière écriture effaçait la valeur de l'autre, les deux sortaient en 0).
+        with verrou_profil(quoi="enregistrement du plan (plan.json)"):
+            pe = {**lire_plan(), **_plan_saisi(args, capital), "version": 1, "enregistre_utc": cli.now_utc().isoformat(),
+                  "bandeau": BANNER}
+            chemin_plan = _ecrire_json(dossier_profil() / "plan.json", pe)
     store, known = _notes(args)
     kw: dict[str, Any] = {"grille": grille_kw, "plan_enregistre": pe or None}
     if args.perte_toleree is not None:
@@ -823,16 +880,26 @@ def _ordre_pour_comparer(capital: float, args: argparse.Namespace) -> Mapping[st
 
 
 def _plan_grille(args: argparse.Namespace) -> int:
-    from brvm_alpha.rendement import grille as G
-    from brvm_alpha.rendement import reglages as RG
-
-    cli = _cli()
     champs = {champ: getattr(args, "g_" + opt) for opt, champ, _n in CHAMPS_GRILLE if getattr(args, "g_" + opt) is not None}
+    saisie = bool(champs or args.investisseur or args.pays is not None)
+    # Saisie : lecture, fusion et écriture de grille_sgi.yaml sous le verrou du profil (une saisie lancée en même temps
+    # attend, ou sort en 4 ; avant : l'une des deux valeurs confirmées en 0 était perdue).
+    if saisie:  # saisie contrôlée d'abord, sans rien créer : un refus n'écrit rien (pas même le dossier du profil)
+        _plan_grille_saisie(args, champs, saisie, ecrire=False)
+    with (verrou_profil(quoi="saisie de la grille (grille_sgi.yaml)") if saisie else contextlib.nullcontext()):
+        avant, chemin, avertissements = _plan_grille_saisie(args, champs, saisie)
+    return _plan_grille_suite(args, avant, chemin, avertissements)
+
+
+def _plan_grille_saisie(args: argparse.Namespace, champs: Mapping[str, Any], saisie: bool, *,
+                        ecrire: bool = True) -> tuple[Any, Any, list[str]]:
+    from brvm_alpha.rendement import grille as G
+
     with _saisie("grille enregistrée"):
         avant = G.charger()
     chemin = None
     avertissements: list[str] = []
-    if champs or args.investisseur or args.pays is not None:
+    if saisie:
         statut = STATUTS_GRILLE[args.statut] if args.statut else (G.ECRITE if args.source else G.SUPPOSE)
         g = copy.deepcopy(avant).avec(**champs)
         jour = _aujourd_hui().date().isoformat()
@@ -851,6 +918,8 @@ def _plan_grille(args: argparse.Namespace) -> int:
             raise SaisieInvalide("refusé : " + " ; ".join(c["erreurs"]) + " (rien n'est enregistré)")
         avertissements = list(c["avertissements"])
         paths.verifier_ecriture(dossier_profil() / "grille_sgi.yaml")
+        if not ecrire:
+            return avant, None, avertissements
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             chemin = G.enregistrer(g)
@@ -858,6 +927,14 @@ def _plan_grille(args: argparse.Namespace) -> int:
     elif args.statut or args.source:
         raise SaisieInvalide("refusé : --statut et --source s'appliquent aux valeurs saisies dans la même commande "
                              "(par exemple --courtage 0,8 --statut ecrit --source « grille 2026 »)")
+    return avant, chemin, avertissements
+
+
+def _plan_grille_suite(args: argparse.Namespace, avant: Any, chemin: Any, avertissements: list[str]) -> int:
+    from brvm_alpha.rendement import grille as G
+    from brvm_alpha.rendement import reglages as RG
+
+    cli = _cli()
     comparaison = None
     if args.comparer:
         capital = float(getattr(args, "capital", None) or lire_plan().get("capital") or CAPITAL_DEFAUT)
@@ -966,8 +1043,15 @@ def _suivi_demarrer(args: argparse.Namespace) -> int:
               "grille": "ma_sgi" if G.enregistree() else "central", "perte_toleree": pe.get("perte_toleree"),
               "taux_reserve": pe.get("taux_reserve"), "options_execution": []}
     c = cn.ouvrir(nom, D, creer=True)
-    with _saisie("carnet"):
-        ecrits = c.ajouter_plusieurs([mandat, {"type": "apport", "date": jour, "montant": capital}])
+    # Contrôle « déjà démarré » refait sous le verrou du portefeuille, juste avant l'ajout : deux « suivi demarrer »
+    # lancés au même instant n'inscrivent jamais deux mandats ni deux apports (le second sort en 2, ou en 4 si le
+    # verrou reste tenu ; avant : liquidités cumulées).
+    with S.verrou_ecriture(c.dossier, quoi=f"démarrage du portefeuille {nom}"):
+        if c.fichier.exists() and c.mandat():
+            raise SaisieInvalide(f"refusé : le portefeuille « {nom} » est déjà démarré (mandat du "
+                                 f"{c.mandat()['date']}) ; rien n'est écrit")
+        with _saisie("carnet"):
+            ecrits = c.ajouter_plusieurs([mandat, {"type": "apport", "date": jour, "montant": capital}])
     return _sortie_simple(args, {"nom": nom, "carnet": str(c.fichier), "mouvements": ecrits, "mode": args.mode,
                                  "capital": capital},
                           [f"Portefeuille « {nom} » démarré le {jour} ({'sur papier' if args.mode == 'papier' else 'réel'}) "
@@ -1063,6 +1147,7 @@ def _suivi_maj(args: argparse.Namespace) -> int:
     D = dossier_suivi()
     paths.verifier_ecriture(D)
     jour = _aujourd_hui()
+    args.nom = _nom_saisi(args.nom)
     if args.nom:
         from brvm_alpha import suivi as S
 
@@ -1146,7 +1231,7 @@ def _detaches(ops: pd.DataFrame | None, P: Mapping[str, Any] | None) -> pd.DataF
 
 
 def _suivi_bulletin(args: argparse.Namespace) -> int:
-    nom = str(args.nom or "REF-S2").strip()
+    nom = _nom_saisi(args.nom) or "REF-S2"
     try:
         P: Mapping[str, Any] | None = _panels(args.panel_dir)
     except DonneesAbsentes:
@@ -1215,8 +1300,10 @@ def _sortir_bulletin(args: argparse.Namespace, b: Mapping[str, Any], nom: str) -
 
 
 def lire_avis(chemin: Path) -> list[dict[str, Any]]:
-    """Lignes d'un avis d'opéré (CSV, séparateur « , » ou « ; », virgule décimale acceptée)."""
-    return lire_avis_texte(chemin.read_text(encoding="utf-8-sig"), str(chemin))
+    """Lignes d'un avis d'opéré (CSV, séparateur « , » ou « ; », virgule décimale acceptée) ; fichier illisible
+    (dossier, tube, texte non UTF-8, trop volumineux) : refus (code 2)."""
+    return lire_avis_texte(_cli().lire_fichier_borne(chemin, "avis d'opéré", _cli().FICHIER_SAISI_MAX_OCTETS),
+                           str(chemin))
 
 
 def lire_avis_texte(texte: str, origine: str = "avis d'opéré") -> list[dict[str, Any]]:
@@ -1269,7 +1356,8 @@ def _suivi_saisir(args: argparse.Namespace) -> int:
     if (c.mandat() or {}).get("mode") != "reel":
         raise SaisieInvalide("refusé : un avis d'opéré ne se saisit que dans un portefeuille réel (suivi demarrer --mode "
                              "reel) ; un portefeuille sur papier est exécuté par « suivi maj »")
-    lignes = lire_avis(_fichier_lu(args.fichier, "--fichier"))
+    p_avis, texte_avis = _texte_lu(args.fichier, "--fichier", _cli().FICHIER_SAISI_MAX_OCTETS)
+    lignes = lire_avis_texte(texte_avis, str(p_avis))
     payload = saisir_avis_au_carnet(c, lignes, confirmer_grille=bool(args.confirmer_grille), jour=jour)
     r = {"texte": payload["texte"], "grille_proposee": payload["grille_proposee"]}
     chemin = payload["grille_enregistree"]
@@ -1373,7 +1461,7 @@ def _suivi_declarer(args: argparse.Namespace) -> int:
     inscrits: list[str] = []
     try:
         if args.fichier:
-            brut = json.loads(_fichier_lu(args.fichier, "--fichier").read_text(encoding="utf-8"))
+            brut = json.loads(_texte_lu(args.fichier, "--fichier", _cli().FICHIER_SAISI_MAX_OCTETS)[1])
             arts = brut.get("articles") if isinstance(brut, Mapping) else brut
             if not isinstance(arts, list):
                 raise ValueError("articles : une liste JSON est attendue (sortie de --modele, réponses remplies)")
@@ -1455,9 +1543,19 @@ def _suivi_exporter(args: argparse.Namespace) -> int:
         raise DonneesAbsentes(f"échec : aucun journal du suivi à copier ({D})")
     dest = Path(os.path.abspath(paths.resoudre_chemin_option(args.dossier_sortie, base="rapports")))
     paths.verifier_ecriture(dest)
-    if paths.est_embarque() and not any(_dans(dest, b) for b in (paths.REPORTS_DIR, Path(tempfile.gettempdir()))):
+    if os.path.islink(dest):  # avant : lien vers un dossier vide, code 7 (NotADirectoryError), ou copie hors de <R>
+        raise SaisieInvalide(f"refusé : --sortie {dest} est un lien symbolique ; donner un dossier nouveau (ou vide) "
+                             "lui-même ; rien n'est écrit")
+    reel = os.path.realpath(dest)
+    for nom_d, base in (("des rapports", paths.REPORTS_DIR), ("des fichiers temporaires", Path(tempfile.gettempdir())),
+                        ("des données", paths.DATA_DIR)):
+        if reel == os.path.realpath(base):  # avant : le dossier lui-même était remplacé, copie temporaire dans son parent
+            raise SaisieInvalide(f"refusé : --sortie {dest} est le dossier {nom_d} lui-même ; donner un sous-dossier "
+                                 "nouveau (par exemple journaux_suivi) ; rien n'est écrit")
+    if paths.est_embarque() and not any(_cli()._dans_reel(dest, b) for b in (paths.REPORTS_DIR,
+                                                                              Path(tempfile.gettempdir()))):
         raise SaisieInvalide(f"refusé : --sortie {dest} est hors des dossiers permis en mode embarqué (rapports "
-                             f"{paths.REPORTS_DIR}, fichiers temporaires).")
+                             f"{paths.REPORTS_DIR}, fichiers temporaires ; liens symboliques et « .. » résolus).")
     if _dans(dest, D) or _dans(D, dest):
         raise SaisieInvalide(f"refusé : --sortie {dest} recouvre le dossier du suivi ({D})")
     publies = paths.REPO_ROOT / "reports"

@@ -122,7 +122,7 @@ class Carnet:
         Refus (``ValueError``) : type inconnu ; date absente ou de l'échantillon S1 ; saisie en double (même contenu
         qu'un mouvement actif, sauf ``autoriser_double``) ; vente de plus de titres que détenus ; retrait de plus que les
         liquidités du carnet à sa date ; revue d'un code d'alerte inconnu
-        (:func:`brvm_alpha.rendement.alertes.cible_de_revue`) ; division sans rapport positif ; correction d'un mouvement
+        (:func:`brvm_alpha.rendement.alertes.cible_de_revue`) ou sans texte ; division sans rapport positif ; correction d'un mouvement
         absent ; chaîne déjà rompue."""
         return self.ajouter_plusieurs([mouvement], maintenant=maintenant, autoriser_double=autoriser_double)[0]
 
@@ -206,6 +206,8 @@ class Carnet:
             from brvm_alpha.rendement import alertes as _al
 
             m["alerte"] = _al.cible_de_revue(m.get("alerte"))  # code inconnu (« W99 ») : refusé, codes connus cités
+            if not str(m.get("texte") or "").strip():  # la revue consigne une décision écrite, pour toujours
+                raise ValueError("revue : texte vide ; écrire les réponses aux questions de la revue (rien n'est écrit)")
         if ty == "apport" and int(_f(m.get("titres"))) > 0 and (not m.get("symbole") or _f(m.get("cours")) <= 0):
             raise ValueError("apport de titres : symbole et cours de clôture du jour d'apport obligatoires")
         if ty == "division" and _f(m.get("rapport")) <= 0:

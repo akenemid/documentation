@@ -32,8 +32,8 @@ from brvm_alpha.rendement.reglages import FAIT, HYPOTHESE, R
 
 __all__ = ["CHAMPS", "PRINCIPAUX", "STATUTS", "Champ", "GrilleSGI", "GrilleHorsFourchette", "charger", "comparer",
            "controler", "cost_model_de", "couts_recalcules", "defaut", "depuis_cost_model", "enregistree", "enregistrer",
-           "exemples", "frais_explicites", "frais_hors_modele", "lire_fichier", "questions", "resoudre", "statut_champ",
-           "statut_global", "vers_cost_model"]
+           "exemples", "frais_explicites", "frais_hors_modele", "lire_fichier", "lire_texte", "questions", "resoudre",
+           "statut_champ", "statut_global", "vers_cost_model"]
 
 #: Origines possibles d'une valeur.
 SUPPOSE, ECRITE, AVIS = "supposé", "grille écrite", "avis d'opéré"
@@ -240,23 +240,48 @@ def enregistrer(grille: GrilleSGI, dossier: str | Path | None = None) -> Path:
     return p
 
 
+#: Taille d'un fichier de grille (``--grille FICHIER``), contrôlée avant la lecture : une grille fait quelques
+#: centaines d'octets (avant : aucune borne).
+FICHIER_MAX_OCTETS = 65_536
+
+
 def lire_fichier(chemin: str | Path) -> GrilleSGI:
-    """Grille lue dans un fichier YAML donné (option ``--grille FICHIER``) ; illisible : ``ValueError`` avec le chemin."""
+    """Grille lue dans un fichier YAML donné (option ``--grille FICHIER``) ; illisible, trop volumineux (plus de
+    :data:`FICHIER_MAX_OCTETS` octets) ou vide : ``ValueError`` avec le chemin."""
     p = Path(chemin)
+    try:
+        taille = p.stat().st_size
+        if taille > FICHIER_MAX_OCTETS:
+            raise ValueError(f"fichier trop volumineux ({taille} octets, {FICHIER_MAX_OCTETS} au plus)")
+        texte = p.read_text(encoding="utf-8")
+    except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"grille du courtier illisible : {p} ({exc})") from exc
+    return lire_texte(texte, p)
+
+
+def lire_texte(texte: str, origine: str | Path = "grille") -> GrilleSGI:
+    """Grille lue dans le texte YAML d'un fichier (``origine`` : son chemin, pour le message). Texte vide, fait de
+    commentaires ou dictionnaire vide : ``ValueError`` « grille vide » (avant : tarif par défaut pris sous le nom « Ma
+    grille », sans le dire) ; illisible : ``ValueError`` avec le chemin."""
     try:
         import yaml
 
-        brut = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        brut = yaml.safe_load(texte)
+        if brut is None or (isinstance(brut, Mapping) and not brut):
+            raise ValueError("grille vide : le fichier ne contient aucune valeur (YAML de « plan grille », ou les "
+                             "champs courtage, taxe…) ; sans l'option, le tarif par défaut est pris")
         if not isinstance(brut, Mapping):
             raise ValueError("un dictionnaire est attendu")
         g = GrilleSGI.from_dict(brut)
     except MemoryError:  # mémoire insuffisante : la commande s'arrête (code 6)
         raise
     except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"grille du courtier illisible : {p} ({exc})") from exc
+        raise ValueError(f"grille du courtier illisible : {origine} ({exc})") from exc
     c = controler(g)
     if c["erreurs"]:
-        raise ValueError(f"grille du courtier illisible : {p} (" + " ; ".join(c["erreurs"]) + ")")
+        raise ValueError(f"grille du courtier illisible : {origine} (" + " ; ".join(c["erreurs"]) + ")")
     return g
 
 

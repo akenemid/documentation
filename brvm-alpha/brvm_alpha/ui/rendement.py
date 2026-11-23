@@ -829,11 +829,16 @@ def post_plan_grille(h: Any, form: Mapping[str, list[str]]) -> None:
         avant, _enr, err = lire_grille(profil)
         if err:
             raise ValueError(err)
-        g = grille_depuis_formulaire(v, avant, jour)
+        grille_depuis_formulaire(v, avant, jour)  # saisie contrôlée d'abord : un refus ne crée rien
         paths.verifier_ecriture(profil / "grille_sgi.yaml")
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            G.enregistrer(g, profil)
+        with _cr().verrou_profil(profil, quoi="saisie de la grille (grille_sgi.yaml)"):  # lecture, fusion, écriture
+            avant, _enr, err = lire_grille(profil)
+            if err:
+                raise ValueError(err)
+            g = grille_depuis_formulaire(v, avant, jour)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                G.enregistrer(g, profil)
     except (ValueError, ErreurMoteur, OSError) as exc:
         _dashboard(h, 400, erreur_grille=str(exc), valeurs_grille=v)
         return
@@ -853,8 +858,13 @@ def post_plan_enregistrer(h: Any, form: Mapping[str, list[str]]) -> None:
             avant, err = lire_plan(profil)
             if err:
                 raise ValueError(err)
-            pe = plan_depuis_formulaire(v, avant, s.clock())
-            _cr().ecrire_json(profil / "plan.json", pe)
+            plan_depuis_formulaire(v, avant, s.clock())  # saisie contrôlée d'abord : un refus ne crée rien
+            with _cr().verrou_profil(profil, quoi="enregistrement du plan (plan.json)"):  # lecture, fusion, écriture
+                avant, err = lire_plan(profil)
+                if err:
+                    raise ValueError(err)
+                pe = plan_depuis_formulaire(v, avant, s.clock())
+                _cr().ecrire_json(profil / "plan.json", pe)
         except (ValueError, ErreurMoteur, OSError) as exc:
             _dashboard(h, 400, erreur_plan=str(exc), valeurs_plan=v)
             return

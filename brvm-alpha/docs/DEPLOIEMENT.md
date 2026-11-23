@@ -45,11 +45,15 @@ fonction le décide : `brvm_alpha.paths.est_embarque()`. Alors :
   `--fichier`, `--titre-fichier`, `--motif-fichier`) s'entend depuis `BRVM_ALPHA_DONNEES` (un `data/` de tête est
   retiré) ; `--sortie` depuis `BRVM_ALPHA_RAPPORTS` ; « .. » est refusé (code 2). `--sortie` doit rester dans le
   dossier des rapports ou celui des fichiers temporaires du système, et jamais sur un fichier du moteur (`notes/`,
-  `panel/`, `boc_text/` des données) ; `--fichier`, `--portefeuille`, `--titre-fichier` et `--motif-fichier` ne
-  lisent que dans les dossiers de données, de rapports ou temporaire (code 2 sinon) ; pour `--titre-fichier` et
-  `--motif-fichier`, le chemin **réel** (liens symboliques et « .. » résolus) doit aussi y rester, et un lien
-  symbolique en dernière place est refusé, même vers un fichier permis (§ A.9). Côté Odoo, la règle reste : chemins
-  fabriqués par le module seul ;
+  `panel/`, `boc_text/` des données), chemin **réel** compris (liens symboliques et « .. » résolus : un lien placé
+  dans les rapports vers un dossier extérieur est refusé, avant : `recommend`, `report`, `plan`, `suivi bulletin` et
+  `suivi exporter` écrivaient au bout du lien) ; `--fichier`, `--portefeuille`, `--grille FICHIER`, `--titre-fichier`
+  et `--motif-fichier` ne lisent que dans les dossiers de données, de rapports ou temporaire, chemin **réel** compris,
+  et un lien symbolique en dernière place est refusé, même vers un fichier permis (code 2 ; avant : `--fichier` et
+  `--grille` suivaient un lien de `<D>` vers un fichier extérieur, `notes add` en recopiait le texte dans la note,
+  `suivi saisir` l'inscrivait au carnet ; § A.9). Un fichier lu qui est un dossier, un tube, un texte non UTF-8 ou
+  trop volumineux (grille : 64 Kio ; avis d'opéré, déclaration, `--portefeuille` : 1 Mo ; texte d'une note : 2 Mo) est
+  refusé en code 2, jamais en 7 ni en 1. Côté Odoo, la règle reste : chemins fabriqués par le module seul ;
 - `--racine`, `--panel-dir` et `--boc-dir` désignent toujours un **sous-dossier** de `BRVM_ALPHA_DONNEES`,
   liens symboliques et « .. » résolus : un chemin absolu qui en sort (ou un lien qui mène ailleurs) est refusé en
   code 2, avant toute écriture (avant : `notes add --racine /ailleurs` y créait un journal). `--panel-dir` ne
@@ -941,8 +945,8 @@ des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent 
 | `suivi verifier` | 0,4 s | court | rien | 0 ; 1 chaîne rompue |
 | `suivi demarrer --nom MOI [--capital K] [--mode papier\|reel]` | 0,4 s | court | `suivi/MOI/carnet.jsonl` | 0 ; 2 déjà démarré ; 4 journal tenu |
 | `suivi saisir --nom MOI --apport M \| --retrait M \| --fichier avis.csv [--confirmer-grille]` | 0,4 s | court | carnet ; grille si l'avis concorde, ou confirmée | 0 ; 1 carnet absent ; 2 saisie, doublon, retrait plus grand que les liquidités du carnet ; 4 journal tenu |
-| `suivi revue --nom MOI --alerte ID --decision garder\|ne-plus-acheter\|reduire --texte "…"` | 0,4 s | court | carnet | 0 ; 1 carnet absent ; 2 code d'alerte inconnu (ID : W1 à W9, perte, fuites, donnees, ou le symbole d'une ligne) ; 4 journal tenu |
-| `suivi exporter --sortie DOSSIER [--avec-moi]` | 0,4 s | court | `<rapports>/DOSSIER` (d'un bloc) | 0 ; 1 rien à copier (MOI seul, sans `--avec-moi`), aucun dossier créé ; 2 dossier non vide, `--sortie` vide |
+| `suivi revue --nom MOI --alerte ID --decision garder\|ne-plus-acheter\|reduire --texte "…"` | 0,4 s | court | carnet | 0 ; 1 carnet absent ; 2 code d'alerte inconnu (ID : W1 à W9, perte, fuites, donnees, ou le symbole d'une ligne), texte vide ; 4 journal tenu |
+| `suivi exporter --sortie DOSSIER [--avec-moi]` | 0,4 s | court | `<rapports>/DOSSIER` (d'un bloc) | 0 ; 1 rien à copier (MOI seul, sans `--avec-moi`), aucun dossier créé ; 2 dossier non vide, `--sortie` vide, lien symbolique, dossier des rapports, temporaire ou des données lui-même |
 | `suivi declarer …` | 0,4 s | — | rien | **2 toujours** sur l'installation |
 | `recommend --capital 10000000 --perte-toleree 1000000` | 21,6 s | court | rien, ou `--sortie` | 0 ; 2 saisie, refusée avant le calcul (`--arrondi restes` sur un tarif supposé sans `--forcer`, taux ou perte hors plage) |
 | `report --capital 10000000 [--sortie nom.html]` | 16,9 s | long | rapport | 0 |
@@ -951,9 +955,25 @@ des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent 
   distribution qu'avant ; s'ajoutent la clé `rendement_net` (environ 1 s de calcul) et des blocs d'affichage.
   Options : `--grille ma_sgi|central|FICHIER`, `--perte-toleree MONTANT|P%` (l'ordre rendu est celui du montant
   en actions ; une vérification relance l'ordre complet, 10 fois au plus), `--taux-reserve T` (en %),
-  `--sans-rendement` (sans la clé, plus court) ; `recommend` seulement : `--arrondi bas|restes [--forcer]`,
-  `--apport M`, `--completer`, `--reinvestir`, `--continuite`, `--suivi NOM`. Taux en pourcentage, virgule ou
-  point (« 0,5 » = 0,5 %).
+  `--sans-rendement` (sans la clé, plus court ; avant `a58b4c8` compris, une clé vide `{}` était écrite) ;
+  `recommend` seulement : `--arrondi bas|restes [--forcer]`, `--apport M`, `--completer`, `--reinvestir`,
+  `--continuite`, `--suivi NOM`. Taux en pourcentage : des chiffres, une virgule ou un point, un « % » facultatif
+  (« 0,5 » = 0,5 %) ; signe, exposant (« 1e-1 ») ou soulignés (« 0_7 ») : code 2. Une grille donnée en fichier
+  vide, faite de commentaires ou de plus de 64 Kio : code 2 (avant : tarif par défaut pris sous le nom « Ma
+  grille »). Un nom vide (`--suivi ''`, `suivi maj --nom ''`, `suivi bulletin --nom ''`) : code 2, jamais le
+  défaut (avant : `suivi maj --nom ''` mettait à jour tous les portefeuilles).
+- Saisies simultanées : `plan grille` et `plan --enregistrer` lisent, fusionnent et écrivent `profil/grille_sgi.yaml`
+  et `profil/plan.json` sous un verrou du profil (`flock` sur le dossier lui-même, aucun fichier ajouté) ; une
+  saisie lancée en même temps attend, ou sort en 4, et aucune valeur confirmée en 0 n'est perdue. `suivi demarrer`
+  refait son contrôle « déjà démarré » sous le verrou du portefeuille : deux démarrages simultanés n'inscrivent
+  jamais deux mandats (le second sort en 2). `suivi maj` écrit chaque séance d'un bloc (mouvements, puis
+  `papier.json`) : TERM ou SIGXCPU reçus pendant une séance attendent sa fin ; après un arrêt brutal (KILL, panne),
+  la relance reconnaît les mouvements déjà inscrits pour la séance en cours (clé `en_cours` de `papier.json`) et
+  n'inscrit que ce qui manque (avant : une division, un dividende ou des frais pouvaient être inscrits deux fois).
+- `suivi exporter --sortie` : le dossier des rapports, le dossier temporaire ou celui des données eux-mêmes, et un
+  lien symbolique, sont refusés en code 2 (avant : le dossier des rapports était remplacé par la copie, ou code 7
+  pour un lien). `suivi revue --texte ''` (ou fait d'espaces) : code 2 ; pour `--alerte SYMBOLE`, seul le format est
+  contrôlé (la ligne peut n'être pas détenue : « ne-plus-acheter » vise aussi une ligne proposée par l'ordre).
 - `plan` sans `--capital` reprend le capital de `profil/plan.json`, sinon 10 000 000 FCFA ; sans `--grille`,
   la grille enregistrée si elle existe, sinon le tarif supposé « central ». `--tranches` (entrée en plusieurs
   fois) n'est pas disponible : seule la valeur 1 est acceptée (code 2 sinon). `--besoin-dans` est gardé dans le
