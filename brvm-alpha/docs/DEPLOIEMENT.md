@@ -508,6 +508,123 @@ commande. La partie B décrit ce mode pour mémoire. Si un jour il revenait, pr�
 - et les points de la partie B : origine exigée sur tout POST avec `--origine-relais`, chemins retirés de
   `/etat.json`, dernier calcul du portefeuille visible de tout le groupe.
 
+### A.17 Rendement net et pertes : commandes `plan` et `suivi`
+
+Le module « Rendement net et pertes » (`docs/RENDEMENT_NET.md`) ajoute deux commandes et des options à
+`recommend` et `report`. Elles suivent le même contrat (codes du § A.7, un objet JSON du § A.8, écritures
+atomiques, mode embarqué). Étude seulement : aucune ne passe d'ordre, aucune ne promet un gain. Le suivi sur
+papier (sans argent réel) commence le mardi 01/12/2026.
+
+Durées mesurées le 23/11/2026 sur la machine de développement (4 processeurs) : CPython 3.11 (environnement
+virtuel de test, code du dépôt, pas l'export), mode embarqué (`BRVM_ALPHA_EMBARQUE=1`, `env -i`, `-B`), copie
+des données réelles (2 334 bulletins, 861 notes). Toutes les lignes finissent par `--format json`. Les chemins
+écrits s'entendent dans `BRVM_ALPHA_DONNEES` (`<rapports>` : `BRVM_ALPHA_RAPPORTS`).
+
+| Commande | Durée | Nature | Écrit | Codes |
+|---|---|---|---|---|
+| `plan [--capital K] [--grille ma_sgi\|central\|FICHIER] [--taux-reserve T]` | 10,6 s | court | `profil/plan_cache.json` | 0 ; 1 panel absent ou historique incomplet ; 2 saisie |
+| `plan --perte-toleree 1000000` | 17,8 s | court | idem | idem |
+| `plan … --enregistrer [--besoin-dans MOIS]` | 11,6 s | court | idem et `profil/plan.json` | idem |
+| `plan grille` (lecture) ; `plan grille --comparer` (lignes du cache) | 0,4 s | court | rien | 0 |
+| `plan grille --courtage T --taxe T --par-ligne M --forfait M [--source TEXTE] [--statut ecrit\|avis]` | 0,4 s | court | `profil/grille_sgi.yaml` | 0 ; 2 valeur hors plage, statut écrit sans source |
+| `plan questions` | 0,4 s | court | rien | 0 |
+| `suivi maj` | 3,2 s (semaine 0) | long (tâche de nuit) | `suivi/<nom>/` (ajout seul) | 0 ; 1 panel absent ; code du premier portefeuille en échec |
+| `suivi bulletin [--nom NOM]` | 3,6 s | court | rien | 0 |
+| `suivi verifier` | 0,4 s | court | rien | 0 ; 1 chaîne rompue |
+| `suivi demarrer --nom MOI [--capital K] [--mode papier\|reel]` | 0,4 s | court | `suivi/MOI/carnet.jsonl` | 0 ; 2 déjà démarré |
+| `suivi saisir --nom MOI --apport M \| --retrait M \| --fichier avis.csv [--confirmer-grille]` | 0,4 s | court | carnet ; grille si l'avis concorde, ou confirmée | 0 ; 1 carnet absent ; 2 saisie, doublon |
+| `suivi revue --nom MOI --alerte ID --decision garder\|ne-plus-acheter\|reduire --texte "…"` | 0,4 s | court | carnet | 0 ; 1 carnet absent |
+| `suivi exporter --sortie DOSSIER [--avec-moi]` | 0,4 s | court | `<rapports>/DOSSIER` (d'un bloc) | 0 ; 1 rien à copier ; 2 dossier non vide |
+| `suivi declarer …` | 0,4 s | — | rien | **2 toujours** sur l'installation |
+| `recommend --capital 10000000 --perte-toleree 1000000` | 21,6 s | court | rien, ou `--sortie` | 0 |
+| `report --capital 10000000 [--sortie nom.html]` | 16,9 s | long | rapport | 0 |
+
+- **Sans option nouvelle**, `recommend` et `report` rendent les mêmes titres, quantités, prix limites, frais et
+  distribution qu'avant ; s'ajoutent la clé `rendement_net` (environ 1 s de calcul) et des blocs d'affichage.
+  Options : `--grille ma_sgi|central|FICHIER`, `--perte-toleree MONTANT|P%` (l'ordre rendu est celui du montant
+  en actions ; une vérification relance l'ordre complet, 10 fois au plus), `--taux-reserve T` (en %),
+  `--sans-rendement` (sans la clé, plus court) ; `recommend` seulement : `--arrondi bas|restes [--forcer]`,
+  `--apport M`, `--completer`, `--reinvestir`, `--continuite`, `--suivi NOM`. Taux en pourcentage, virgule ou
+  point (« 0,5 » = 0,5 %).
+- `plan` sans `--capital` reprend le capital de `profil/plan.json`, sinon 10 000 000 FCFA ; sans `--grille`,
+  la grille enregistrée si elle existe, sinon le tarif supposé « central ». `--tranches` (entrée en plusieurs
+  fois) n'est pas disponible : seule la valeur 1 est acceptée (code 2 sinon). `--besoin-dans` est gardé dans le
+  plan ; la durée n'est pas encore calculée (`duree.statut` : « non calculé »).
+- **Carte « Mon plan » dans Odoo** : lire `profil/plan_cache.json` (clés `plan`, `capital`, `asof`,
+  `calcule_utc`, `ordre`, `rendement_net`, `bandeau`), sans relancer le calcul ; le rafraîchir par `plan`
+  (travail détaché). Le rapport de nuit ne l'écrit pas.
+- **Tâche de nuit** (§ A.12) : après `panel`, lancer `suivi maj --format json`. Un échec n'arrête pas la suite
+  (notes, puis rapport). Rien n'est écrit tant que le bulletin du 30/11/2026 (première décision du panier de
+  référence) n'est pas dans le panel. Au-delà, chaque mise à jour rejoue le moteur depuis le départ : durée non
+  mesurée, à suivre.
+- **Déclaration du suivi** : `suivi declarer` ne sert que dans le dépôt de développement ; sur l'installation
+  il sort toujours en code 2. La déclaration signée est livrée par l'export (`reports/suivi_S2/`, § A.4) ;
+  `suivi verifier`, le bulletin et l'ordre la lisent en lecture seule.
+
+**Clés JSON** (exemples réels du 23/11/2026, abrégés ; toutes les sorties portent `ok` et `bandeau`) :
+
+- `plan` : `date`, `capital`, `grille`, `plan_cache`, `plan_enregistre`, `duree`, `historique_complet`,
+  `avertissement_historique`, `rendement_net` {`version`, `contexte`, `etude`, `grille`, `bilan`, `risque`,
+  `perte`, `reserve`, `liquidites`, `leviers`, `passer_l_ordre`, `alertes`, `avertissements_a_ajouter`, `suivi`,
+  `plan` {`lignes` [{`bloc`, `type`, `texte`, `texte_detail`, `montant`, `montant_ecran`, `statut`…}],
+  `une_chose`, `feux`}, `duree_s`}. Montants au franc (`montant`) et arrondis pour l'écran (`montant_ecran`) ;
+  chaque montant porte son statut (`compté`, `estimé`, `supposé`). Environ 50 ko.
+
+  ```json
+  {"ok": true, "date": "2026-11-20", "capital": 10000000.0, "grille": "central",
+   "plan_cache": "<données>/profil/plan_cache.json", "plan_enregistre": null, "duree": null,
+   "historique_complet": true, "avertissement_historique": null,
+   "rendement_net": {"version": 1,
+     "contexte": {"capital": 10000000.0, "asof": "2026-11-20", "variante": "REF", "statut": "REJETÉ",
+                  "panel_en_retard": null, "n_lignes_cibles": 20},
+     "bilan": {"totaux": {"frais_an1": 284714, "annuels": 124126, "reste_an1": 151274, "reste_suivant": 311862,
+                          "supposee_fcfa": 311289, "…": "…"}, "…": "…"},
+     "reserve": {"montant": 10000000, "taux": null, "valeur_d_un_point": 100000, "deduit_de_la_perte": false,
+                 "mention": "taux inconnu : compté à 0 %", "…": "…"},
+     "plan": {"lignes": [{"bloc": "courtier", "type": "paragraphe",
+                          "texte": "Si vous achetiez tout : environ 290 000 FCFA de frais la 1re année, puis 130 000 par an.",
+                          "montant": 284714, "montant_ecran": "290 000 FCFA de frais", "statut": "supposé"}, "…"],
+              "une_chose": "envoyez les 8 questions à votre courtier.", "feux": {"suivi_commence": false}},
+     "duree_s": 0.56, "…": "…"},
+   "bandeau": "Performance passée ≠ garantie. Aucun gain n'est garanti."}
+  ```
+
+- `plan grille` : `grille` {`nom`, `investisseur`, `pays_residence`, `statut_global`, `champs` {`courtage`,
+  `taxe_courtage`, `garde`, `tenue_par_ligne`, `forfait_compte`, … : {`valeur`, `statut`, `source`, `date`}}},
+  `enregistree`, `chemin`, `avertissements`, `comparaison` (avec `--comparer` : `capital`, `capital_ordre`,
+  `source`, `lignes` [{`cle`, `nom`, `statut`, `frais_achat`, `frais_annuels`, `premiere_annee`,
+  `ecart_premiere_annee`, `sens_ecart`, `provision_pire_cas`, `marge`, `mention`}], `phrases`), `questions`.
+  `plan questions` : `questions` (8 textes).
+- `suivi maj` : `date`, `dossier`, `portefeuilles` [{`nom`, `ok`, `ecrit`, `semaine_0`, `mention`, `ajoutees`,
+  `identiques`, `passe_a_change`, `derniere_semaine` ; en échec : `code`, `message`}], `en_echec`.
+
+  ```json
+  {"ok": true, "date": "2026-11-23", "dossier": "<données>/suivi",
+   "portefeuilles": [{"nom": "REF-S2", "ok": true, "ecrit": false, "semaine_0": true,
+     "mention": "semaine 0 : le bulletin du 30/11/2026 (première décision) n'est pas encore dans le panel ; rien n'est écrit",
+     "ajoutees": 0, "identiques": 0, "passe_a_change": false, "derniere_semaine": null}],
+   "en_echec": [], "bandeau": "Performance passée ≠ garantie. Aucun gain n'est garanti."}
+  ```
+
+- `suivi bulletin` : `nom`, `semaine`, `vendredi`, `lignes` (texte du bulletin, 100 colonnes au plus), `valeurs`
+  (ligne du journal), `feux` {`perte`, `fuites`, `donnees` : {`etat`, `affichage`, `phrase`, `conditions`},
+  `suivi_commence`}, `a_revoir`, `rendez_vous`, `papier`, `ecart_au_marche`. Aujourd'hui : semaine 0, feux
+  « — » (« le suivi n'a pas commencé »).
+- `suivi verifier` : `declaration` {`fichier`, `existe`, `n_lignes`, `chaine_ok`, `anomalies`, `mention`},
+  `portefeuilles` [{`nom`, `semaines`, `carnet`, `ok`}], `rompues`. Une chaîne rompue : code 1, objet d'erreur
+  avec les mêmes clés.
+- `suivi demarrer` : `nom`, `carnet`, `mouvements`, `mode`, `capital` ; `suivi saisir` : `nom`, `mouvement`
+  (apport, retrait) ou `concorde`, `lignes`, `postes_nouveaux`, `grille_enregistree`, `grille_proposee`
+  (avis d'opéré) ; `suivi revue` : `nom`, `mouvement`, `phrase` ; `suivi exporter` : `chemin`, `fichiers`,
+  `exclus` (MOI, privé, sans `--avec-moi`).
+- `suivi declarer` sur l'installation (exemple réel) :
+
+  ```json
+  {"ok": false, "code": 2, "erreur": "saisie_invalide",
+   "message": "refusé : La déclaration se signe dans le dépôt de développement, puis se livre par un commit.",
+   "bandeau": "Performance passée ≠ garantie. Aucun gain n'est garanti."}
+  ```
+
 ---
 
 ## Partie B — Moteur à part, interface web derrière un relais (non utilisée en production)
