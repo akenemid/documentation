@@ -42,19 +42,22 @@ fonction le décide : `brvm_alpha.paths.est_embarque()`. Alors :
   verrous et fichiers temporaires vont dans les dossiers de données et de rapports, ou dans le dossier
   temporaire du système ; les fichiers `.pyc` ne sont pas écrits (`-B`, et `sys.dont_write_bytecode`) ;
 - un chemin **relatif** donné en option (`--panel-dir`, `--boc-dir`, `--racine`, `--portefeuille`,
-  `--fichier`) s'entend depuis `BRVM_ALPHA_DONNEES` (un `data/` de tête est retiré) ; `--sortie` depuis
-  `BRVM_ALPHA_RAPPORTS` ; « .. » est refusé (code 2). `--sortie` doit rester dans le dossier des rapports ou
-  celui des fichiers temporaires du système, et jamais sur un fichier du moteur (`notes/`, `panel/`,
-  `boc_text/` des données) ; `--fichier` et `--portefeuille` ne lisent que dans les dossiers de données, de
-  rapports ou temporaire (code 2 sinon). Côté Odoo, la règle reste : chemins fabriqués par le module seul ;
+  `--fichier`, `--titre-fichier`, `--motif-fichier`) s'entend depuis `BRVM_ALPHA_DONNEES` (un `data/` de tête est
+  retiré) ; `--sortie` depuis `BRVM_ALPHA_RAPPORTS` ; « .. » est refusé (code 2). `--sortie` doit rester dans le
+  dossier des rapports ou celui des fichiers temporaires du système, et jamais sur un fichier du moteur (`notes/`,
+  `panel/`, `boc_text/` des données) ; `--fichier`, `--portefeuille`, `--titre-fichier` et `--motif-fichier` ne
+  lisent que dans les dossiers de données, de rapports ou temporaire (code 2 sinon) ; pour `--titre-fichier` et
+  `--motif-fichier`, le chemin **réel** (liens symboliques et « .. » résolus) doit aussi y rester, et un lien
+  symbolique en dernière place est refusé, même vers un fichier permis (§ A.9). Côté Odoo, la règle reste : chemins
+  fabriqués par le module seul ;
 - `--racine`, `--panel-dir` et `--boc-dir` désignent toujours un **sous-dossier** de `BRVM_ALPHA_DONNEES`,
   liens symboliques et « .. » résolus : un chemin absolu qui en sort (ou un lien qui mène ailleurs) est refusé en
   code 2, avant toute écriture (avant : `notes add --racine /ailleurs` y créait un journal). `--panel-dir` ne
   recouvre ni `notes/` ni `boc_text/`, car le panel est remplacé d'un bloc à chaque construction. **Odoo ne
   passe jamais ces trois options** : les dossiers par défaut (`<données>/notes`, `panel`, `boc_text`) suffisent.
   Hors mode embarqué, rien ne change ;
-- une option de chemin (`--racine`, `--panel-dir`, `--boc-dir`, `--fichier`, `--portefeuille`, `--sortie`) **vide ou
-  faite seulement d'espaces** est refusée en code 2, avant toute écriture (avant : `--racine ' '` désignait le dossier
+- une option de chemin (`--racine`, `--panel-dir`, `--boc-dir`, `--fichier`, `--portefeuille`, `--titre-fichier`,
+  `--motif-fichier`, `--sortie`) **vide ou faite seulement d'espaces** est refusée en code 2, avant toute écriture (avant : `--racine ' '` désignait le dossier
   courant, et `notes add` y créait un journal). `--sortie -` ne veut dire « sortie standard » que pour `notes export` :
   pour `recommend` et `report`, `-` est un nom de fichier, écrit dans le dossier des rapports (avant : dans le dossier
   courant). Hors mode embarqué, rien ne change ;
@@ -364,10 +367,10 @@ détaché.
 | Commande | Durée | Nature | Écrit | Verrous |
 |---|---|---|---|---|
 | `etat` | 1,9 s | court | rien | panel partagé (5 s) |
-| `notes add --cible SNTS --titre … --texte … [--avis] [--conviction] [--publie-le] [--veto]` | 1,1 s | court | `notes/notes.jsonl` (ajout d'une ligne, fsync) | `notes/notes.jsonl.lock` |
+| `notes add --cible SNTS --titre-fichier <T>/titre.txt --fichier <T>/texte.txt [--avis] [--conviction] [--publie-le] [--veto]` (ou `--titre …`, `--texte …`) | 1,1 s | court | `notes/notes.jsonl` (ajout d'une ligne, fsync) | `notes/notes.jsonl.lock` |
 | `notes list [--cible] [--depuis] [--statut] [--limite]` | 0,6 s | court | rien | — |
 | `notes show ID` | 0,5 s | court | rien | — |
-| `notes archive ID [--motif]` | 0,7 s | court | `notes/notes.jsonl` (nouvelle version) | `notes/notes.jsonl.lock` |
+| `notes archive ID [--motif-fichier <T>/motif.txt]` (ou `--motif …`) | 0,7 s | court | `notes/notes.jsonl` (nouvelle version) | `notes/notes.jsonl.lock` |
 | `indices` | 4,9 s | court | rien | — |
 | `indices dossier IDX:BRVM-30` | 3,8 s | court | rien | — |
 | `explain SNTS` | 6,8 s | court | rien | — |
@@ -433,6 +436,24 @@ remplacé, le temps du panel, par `/tmp`).
   sort en code 0 avec `cree: false` (`--forcer` l'enregistre quand même). `--publie-le` est gardé tel
   quel. Saisie invalide : code 2, y compris une note dont **aucune** cible n'est reconnue (`--cible ZZZZ`,
   `--cible ""` : elle n'aurait aucun effet) ou sans titre ni texte.
+
+  **Titre et motif lus dans un fichier** (pour qu'Odoo ne passe aucun texte libre en argument) :
+  `notes add --titre-fichier CHEMIN` remplace `--titre`, `notes archive --motif-fichier CHEMIN` remplace `--motif`
+  (le texte de la note se lit déjà par `--fichier`). Le module écrit le texte saisi dans un fichier de son `TMPDIR`
+  dédié (ou des données), passe le chemin, puis le supprime. Règles, en mode normal comme embarqué (code 2 pour
+  chacune, rien n'est écrit) :
+  - lecture en **UTF-8 strict** (octets invalides refusés ; une marque d'ordre en tête est retirée) ; caractère nul
+    refusé ; **bords retirés** (espaces, tabulations, sauts de ligne) ; contenu vide ou fait de blancs refusé ;
+  - même borne que `--titre` : **500 caractères**, une fois les blancs répétés ramenés à une espace ; pour le motif,
+    **200 caractères** (borne du formulaire de l'interface ; `--motif` lui-même n'en a pas, inchangé) ; fichier de
+    **8 Kio** (8 192 octets) au plus, refusé avant d'être lu ;
+  - chemin vide ou fait d'espaces refusé ; **lien symbolique**, dossier, tube ou périphérique refusés ; en mode
+    embarqué, mêmes dossiers que `--fichier` (données, rapports, `TMPDIR`), chemin relatif compté depuis les données,
+    et chemin réel contrôlé (§ A.2) ;
+  - `--titre` avec `--titre-fichier`, ou `--motif` avec `--motif-fichier` : refusé (même `--titre ""`) ; aucune des
+    deux n'est obligatoire (une note sans titre garde un texte ; un archivage peut se passer de motif) ;
+  - la valeur lue suit ensuite **exactement** le chemin de `--titre` ou `--motif` (mêmes contrôles, même note : une
+    saisie par fichier identique à une saisie par `--titre` est reconnue comme doublon). Objets JSON inchangés.
 
   ```json
   {"ok": true, "note_id": "a23383a04d2d12c10c0fe6328f2b2009a457d0c3", "cree": true, "doublon_id": null,
@@ -650,6 +671,10 @@ distribution) sont inchangées.
   limite de mémoire virtuelle sous 1 Go : code 6 au démarrage ;
 - `notes add` refuse une note dont aucune cible n'est reconnue, ou une cible vide (code 2 ; avant : note
   enregistrée sans effet, sans avertissement) ; nouvelle clé `note_id_saisie` ;
+- nouvelles options `notes add --titre-fichier` et `notes archive --motif-fichier` (demande de l'intégrateur Odoo,
+  23/11/2026) : titre ou motif lus dans un fichier UTF-8 de 8 Kio au plus, bords retirés, vide refusé, lien
+  symbolique et dossier refusés, exclusives de `--titre` et `--motif` (règles au § A.9). Rien ne change pour
+  `--titre` et `--motif`, sauf l'aide (`--titre` y annonce sa borne de 500 caractères) ;
 - `--format json` : objet `{"ok": …}` toujours, erreurs comprises (échec au démarrage et `--help` compris) ;
   nouvelles options `--format` pour `update`, `panel`, `report`, `notes archive`, `notes research`,
   `notes lire` ; `update --workers` ; une sortie fermée par le lecteur (`| head`) donne 1 en JSON (avant : 0) ;

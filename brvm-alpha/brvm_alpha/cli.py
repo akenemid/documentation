@@ -953,12 +953,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     na = nsub.add_parser("add", help="ajoute une note (analysée et enregistrée)",
                          description="Ajoute une note de l'analyste ; elle est analysée (type, ton, chiffres, "
-                                     "matérialité, filtres de risque, lecture) puis enregistrée.")
+                                     "matérialité, filtres de risque, lecture) puis enregistrée. Titre et texte "
+                                     "peuvent être lus dans des fichiers (--titre-fichier, --fichier) plutôt que "
+                                     "passés en argument.")
     _add_notes_root(na)
     na.add_argument("--cible", action="append", default=None, metavar="CODE",
                     help="cible (répétable ou séparée par des virgules) : SNTS, IDX:BRVM-30, PAYS:CI, SECT:FIN, "
                          "THEME:CACAO, MARCHE ; noms acceptés (« Sonatel », « BRVM 30 »)")
-    na.add_argument("--titre", default="", help="titre de la note")
+    gt = na.add_mutually_exclusive_group()
+    gt.add_argument("--titre", default=None, help="titre de la note (500 caractères au plus)")
+    gt.add_argument("--titre-fichier", dest="titre_fichier", default=None, metavar="CHEMIN",
+                    help="fichier texte (UTF-8 strict, 8 Kio au plus) qui contient le titre, à la place de --titre : "
+                         "bords retirés, puis mêmes contrôles que --titre ; vide, lien symbolique ou dossier refusés "
+                         "(code 2)")
     g = na.add_mutually_exclusive_group()
     g.add_argument("--texte", default=None, help="texte de la note")
     g.add_argument("--fichier", default=None, metavar="CHEMIN", help="fichier texte (UTF-8) contenant la note")
@@ -1001,10 +1008,17 @@ def build_parser() -> argparse.ArgumentParser:
     ns.add_argument("--format", choices=("texte", "json"), default="texte",
                     help="format de sortie (défaut : texte)")
 
-    nr = nsub.add_parser("archive", help="archive une note (nouvelle version, historique conservé)")
+    nr = nsub.add_parser("archive", help="archive une note (nouvelle version, historique conservé)",
+                         description="Archive une note : nouvelle version au statut « archivée », l'historique est "
+                                     "conservé. Le motif peut être lu dans un fichier (--motif-fichier) plutôt que "
+                                     "passé en argument.")
     _add_notes_root(nr)
     nr.add_argument("id", metavar="ID", help="identifiant (préfixe unique)")
-    nr.add_argument("--motif", default=None, help="motif de l'archivage")
+    gm = nr.add_mutually_exclusive_group()
+    gm.add_argument("--motif", default=None, help="motif de l'archivage")
+    gm.add_argument("--motif-fichier", dest="motif_fichier", default=None, metavar="CHEMIN",
+                    help="fichier texte (UTF-8 strict, 8 Kio au plus) qui contient le motif, à la place de --motif : "
+                         "bords retirés, 200 caractères au plus ; vide, lien symbolique ou dossier refusés (code 2)")
     nr.add_argument("--format", choices=("texte", "json"), default="texte", help="format de sortie (défaut : texte)")
 
     ne = nsub.add_parser("export", help="exporte les notes en Markdown")
@@ -1628,6 +1642,89 @@ def _read_text_file(path: str) -> str:
     return _lire_fichier_saisi(p, "fichier")
 
 
+#: Titre d'une note : 500 caractères au plus, blancs répétés ramenés à une espace (:func:`make_manual_note`), qu'il
+#: vienne de ``--titre`` ou de ``--titre-fichier``.
+TITRE_MAX_CARACTERES = 500
+#: Motif d'archivage lu par ``--motif-fichier`` : 200 caractères au plus, la borne du formulaire de l'interface
+#: (``--motif`` lui-même n'en a pas, inchangé).
+MOTIF_MAX_CARACTERES = 200
+#: Taille d'un fichier de ``--titre-fichier`` ou ``--motif-fichier``, contrôlée avant toute lecture : 8 Kio (quatre
+#: fois les 500 caractères d'un titre écrits en UTF-8, et de la place pour les blancs).
+VALEUR_FICHIER_MAX_OCTETS = 8192
+
+
+def lire_valeur_fichier(path: str | None, option: str, max_caracteres: int | None = None) -> str:
+    """Valeur d'une option lue dans un fichier (``--titre-fichier``, ``--motif-fichier``) : Odoo n'a pas à passer un
+    texte libre en argument de la ligne de commande.
+
+    Règles (toute faute : :class:`SaisieInvalide`, code 2, rien n'est lu au-delà ni écrit) : chemin vide ou fait
+    d'espaces refusé ; lien symbolique refusé (``O_NOFOLLOW``), dossier, tube ou périphérique refusés ; taille bornée
+    à :data:`VALEUR_FICHIER_MAX_OCTETS` avant la lecture (et lecture d'au plus ce nombre d'octets plus un) ; UTF-8
+    strict (une marque d'ordre en tête est retirée) ; caractère nul refusé (impossible dans un argument) ; bords
+    retirés ; résultat vide ou fait de blancs refusé ; au plus ``max_caracteres`` caractères s'il est donné. Le
+    texte rendu est ensuite traité exactement comme la valeur de ``--titre`` ou ``--motif``. En mode embarqué, le
+    chemin a déjà été résolu et borné aux dossiers permis (:func:`_resolve_path_options`)."""
+    import stat
+
+    if path is None or str(path).strip() == "":
+        raise SaisieInvalide(f"refusé : {option} vide ou fait seulement d'espaces ; donner le chemin d'un fichier "
+                             "texte (UTF-8).")
+    p = Path(path)
+    try:
+        st = os.lstat(p)
+    except FileNotFoundError:
+        raise SaisieInvalide(f"refusé : {option} {p} : fichier introuvable.") from None
+    except OSError as exc:
+        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc}).") from None
+    if stat.S_ISLNK(st.st_mode):
+        raise SaisieInvalide(f"refusé : {option} {p} est un lien symbolique ; donner le fichier lui-même.")
+    if not stat.S_ISREG(st.st_mode):
+        raise SaisieInvalide(f"refusé : {option} {p} n'est pas un fichier ordinaire (dossier, tube ou périphérique).")
+    trop = (f"refusé : {option} {p} : fichier trop volumineux (plus de {VALEUR_FICHIER_MAX_OCTETS} octets ; "
+            f"{option} attend un texte court).")
+    if st.st_size > VALEUR_FICHIER_MAX_OCTETS:
+        raise SaisieInvalide(trop)
+    drapeaux = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(p, drapeaux)
+    except OSError as exc:  # ELOOP : remplacé par un lien depuis le contrôle
+        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc} ; lien symbolique refusé).") \
+            from None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise SaisieInvalide(f"refusé : {option} {p} n'est pas un fichier ordinaire.")
+        if st.st_size > VALEUR_FICHIER_MAX_OCTETS:
+            raise SaisieInvalide(trop)
+        morceaux: list[bytes] = []
+        reste = VALEUR_FICHIER_MAX_OCTETS + 1
+        while reste > 0:
+            bloc = os.read(fd, reste)
+            if not bloc:
+                break
+            morceaux.append(bloc)
+            reste -= len(bloc)
+    except OSError as exc:
+        raise SaisieInvalide(f"refusé : {option} {p} illisible ({exc.strerror or exc}).") from None
+    finally:
+        os.close(fd)
+    brut = b"".join(morceaux)
+    if len(brut) > VALEUR_FICHIER_MAX_OCTETS:  # grossi depuis le contrôle (fichier en cours d'écriture)
+        raise SaisieInvalide(trop)
+    try:
+        texte = brut.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise SaisieInvalide(f"refusé : {option} {p} n'est pas un texte UTF-8.") from None
+    if "\x00" in texte:
+        raise SaisieInvalide(f"refusé : {option} {p} contient un caractère nul.")
+    texte = texte.strip()
+    if not texte:
+        raise SaisieInvalide(f"refusé : {option} {p} est vide ou fait seulement de blancs.")
+    if max_caracteres is not None and len(texte) > max_caracteres:
+        raise SaisieInvalide(f"refusé : {option} {p} : {len(texte)} caractères, {max_caracteres} au plus.")
+    return texte
+
+
 def _split_targets(values: Sequence[str] | None) -> list[str]:
     out: list[str] = []
     for v in values or []:
@@ -1657,8 +1754,8 @@ def make_manual_note(*, targets: Sequence[str] | None = None, title: str = "", t
     text = str(text or "")
     if not title and not text.strip():
         raise SaisieInvalide("une note doit avoir un titre ou un texte")
-    if len(title) > 500:
-        raise SaisieInvalide("titre trop long (500 caractères au plus)")
+    if len(title) > TITRE_MAX_CARACTERES:
+        raise SaisieInvalide(f"titre trop long ({TITRE_MAX_CARACTERES} caractères au plus)")
     given = _split_targets(targets)
     if targets is not None and any(str(t).strip() == "" for t in targets) and not given:
         raise SaisieInvalide("cible vide : donner un titre de la cote (SNTS), un indice (IDX:BRVM-30), un pays "
@@ -1861,6 +1958,12 @@ def _cmd_notes(args: argparse.Namespace) -> int:
         print("\n".join(_analysis_lines(an)))
         print(BANNER)
         return 0
+    # Titre ou motif lus dans un fichier : avant tout accès au journal ; la valeur lue suit ensuite le même chemin que
+    # --titre ou --motif.
+    if cmd == "add" and getattr(args, "titre_fichier", None) is not None:
+        args.titre = lire_valeur_fichier(args.titre_fichier, "--titre-fichier")
+    if cmd == "archive" and getattr(args, "motif_fichier", None) is not None:
+        args.motif = lire_valeur_fichier(args.motif_fichier, "--motif-fichier", MOTIF_MAX_CARACTERES)
     if cmd in ("list", "show", "archive", "export", "lire"):
         notes_root_arg(args.racine)
     store = _notes_store(args.racine)
@@ -2618,7 +2721,8 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
 #: Options de chemin et dossier de référence de leurs chemins relatifs en mode embarqué
 #: (:func:`brvm_alpha.paths.resoudre_chemin_option`) ; ``sortie`` est une écriture, contrôlée dès le départ.
 _PATH_OPTIONS = (("panel_dir", "donnees"), ("boc_dir", "donnees"), ("racine", "donnees"), ("portefeuille", "donnees"),
-                 ("fichier", "donnees"), ("sortie", "rapports"))
+                 ("fichier", "donnees"), ("titre_fichier", "donnees"), ("motif_fichier", "donnees"),
+                 ("sortie", "rapports"))
 #: Commandes non livrées dans le module Odoo : refusées en mode embarqué (code 8). ``serve`` : aucun serveur web du
 #: moteur en production (docs/DEPLOIEMENT.md § A.16).
 EMBEDDED_REFUSED = ("validate", "backtest", "serve")
@@ -2668,13 +2772,18 @@ def _resolve_path_options(args: argparse.Namespace) -> None:
                 _check_embedded_output(resolved)
         elif attr in _READ_OPTIONS and embarque:
             _check_embedded_input(resolved, attr)
+            if attr in _VALUE_FILE_OPTIONS:
+                _check_embedded_input_real(resolved, attr)
         elif attr in _DATA_DIR_OPTIONS and embarque:
             _check_embedded_data_dir(resolved, attr)
         setattr(args, attr, str(resolved))
 
 
 #: Options qui désignent un fichier LU (contrôlé en mode embarqué).
-_READ_OPTIONS = ("portefeuille", "fichier")
+_READ_OPTIONS = ("portefeuille", "fichier", "titre_fichier", "motif_fichier")
+#: Fichiers qui portent la valeur d'une option (:func:`lire_valeur_fichier`) : en mode embarqué, le chemin réel (liens
+#: symboliques et « .. » résolus) doit aussi rester dans les dossiers permis.
+_VALUE_FILE_OPTIONS = ("titre_fichier", "motif_fichier")
 #: Options qui désignent un dossier de données (journal des notes, panel, BOC) : en mode embarqué, toujours un
 #: sous-dossier de ``BRVM_ALPHA_DONNEES``.
 _DATA_DIR_OPTIONS = ("racine", "panel_dir", "boc_dir")
@@ -2746,9 +2855,22 @@ def _check_embedded_input(path: Path, attr: str) -> None:
 
     if any(_sous(path, base) for base in (paths.DATA_DIR, paths.REPORTS_DIR, Path(tempfile.gettempdir()))):
         return
-    raise SaisieInvalide(f"refusé : --{attr} {path} est hors des dossiers permis en mode embarqué (données "
-                         f"{paths.DATA_DIR}, rapports {paths.REPORTS_DIR}, fichiers temporaires "
+    raise SaisieInvalide(f"refusé : --{attr.replace('_', '-')} {path} est hors des dossiers permis en mode embarqué "
+                         f"(données {paths.DATA_DIR}, rapports {paths.REPORTS_DIR}, fichiers temporaires "
                          f"{tempfile.gettempdir()}).")
+
+
+def _check_embedded_input_real(path: Path, attr: str) -> None:
+    """Mode embarqué, ``--titre-fichier`` et ``--motif-fichier`` : le chemin **réel** (liens symboliques et « .. »
+    résolus des deux côtés) reste dans les données, les rapports ou les fichiers temporaires ; un lien symbolique en
+    dernière place est refusé à la lecture (:func:`lire_valeur_fichier`). :class:`SaisieInvalide` sinon."""
+    import tempfile
+
+    if any(_dans_reel(path, base) for base in (paths.DATA_DIR, paths.REPORTS_DIR, Path(tempfile.gettempdir()))):
+        return
+    raise SaisieInvalide(f"refusé : --{attr.replace('_', '-')} {path} mène hors des dossiers permis en mode embarqué "
+                         f"(chemin réel {os.path.realpath(path)} ; données {paths.DATA_DIR}, rapports "
+                         f"{paths.REPORTS_DIR}, fichiers temporaires {tempfile.gettempdir()}).")
 
 
 def startup_checks(args: argparse.Namespace) -> None:

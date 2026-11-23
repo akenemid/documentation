@@ -490,13 +490,15 @@ Modèle v1 + additif v1.1 (SPECIFICATION_STRATEGIE.md §1.5, §2-§6, §8.4, §9
   [--format]` (`store.build_panel`, workers par défaut `min(2, processeurs)`, dossier temporaire court pour
   les processus de travail : `short_tempdir_for_workers`) ; `live [--format texte|json] [--symbole]
   [--hors-ligne]` (page publique, une requête polie, cache 60 s).
-- Notes (`--racine` : journal, défaut `data/notes`) : `notes add --cible … --titre --texte|--fichier --avis
+- Notes (`--racine` : journal, défaut `data/notes`) : `notes add --cible … --titre|--titre-fichier --texte|--fichier --avis
   haussier|baissier|neutre --conviction 1-5 --horizon --source --url --publie-le --type --etiquette`
   (`make_manual_note` : source libre en étiquette `source:…`, URL http(s) seulement, date future refusée ;
   `NoteStore.add_unique(analyze=True, force=--forcer)` : doublon cherché et note écrite sous le même verrou ;
   un doublon sort en code 0 avec `cree: false` et `doublon_id` ; JSON : `note_effect`), `notes list [--cible]
   [--depuis] [--jusqu-au] [--statut]`, `notes show ID`
-  et `notes archive ID [--motif]` (préfixe unique d'identifiant, `resolve_note_id`), `notes export [--sortie
+  et `notes archive ID [--motif|--motif-fichier]` (préfixe unique d'identifiant, `resolve_note_id` ; titre et motif
+  lus dans un fichier par `lire_valeur_fichier` : UTF-8 strict, 8 Kio au plus, bords retirés, vide, lien symbolique
+  et dossier refusés, puis même chemin que `--titre` et `--motif`), `notes export [--sortie
   chemin|-]`, `notes research [--cibles] [--hors-ligne] [--max-requetes] [--depuis] [--simulation] [--pdf N]`
   (`run_research`, règles de politesse affichées ; puis lecture du contenu d'au plus `N` documents récents,
   défaut 20, `0` = aucun, non lancée si la collecte en ligne a été arrêtée), `notes lire [--max N]
