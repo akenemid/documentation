@@ -480,9 +480,13 @@ python -m pytest -q -p no:cacheprovider tests/test_report_html.py
 
 Les tests n'envoient **aucune requête réseau**. Ils utilisent des données synthétiques, des extraits de
 BOC et des pages de brvm.org enregistrées (`tests/fixtures/`), ou la période S0. **Aucun backtest,
-aucune performance et aucun IC n'est évalué sur S1** dans les tests. Le 22/11/2026, la suite complète
-compte 1 661 tests, tous verts : dont 36 pour le mode direct des notes (`tests/test_notes_direct.py`), 44
-pour la lecture du contenu des publications (`tests/test_notes_lecture.py`), 11 pour leur assemblage
+aucune performance et aucun IC n'est évalué sur S1** dans les tests. Le 23/11/2026, la suite complète
+compte 1 813 tests, tous verts sous Python 3.13 et sous Python 3.11 (deux tests de garde sans objet sous
+3.11 y sont sautés) ; jeu de test 3.11 : `deploiement/requirements-tests-py311.txt`. Parmi eux : le contrat
+de la ligne de commande et le mode embarqué (`tests/test_contrat_cli.py`), l'export lancé en lecture seule
+comme Odoo le fera (`tests/test_deploiement_export.py`), les couches internes du moteur embarqué
+(`tests/test_embarque_donnees.py`, `tests/test_embarque_reseau.py`) ; et, depuis le 22/11/2026 : 36 pour
+le mode direct des notes (`tests/test_notes_direct.py`), 44 pour la lecture du contenu des publications (`tests/test_notes_lecture.py`), 11 pour leur assemblage
 avec la ligne de commande, l'interface et l'ordre de bataille (`tests/test_notes_integration.py`,
 `tests/test_ui_notes_integration.py`), 134 tests de régression de la recette finale, au moins un par
 constat corrigé (`tests/test_recette_notes.py`, `tests/test_recette_ui.py`,
