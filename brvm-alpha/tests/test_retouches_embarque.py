@@ -864,8 +864,10 @@ def test_an_interrupted_request_still_notes_its_end_and_the_next_session_waits_t
                                  "delai_depasse", "connexion_impossible"])
 def test_only_a_request_that_did_not_end_normally_costs_the_cut_margin(tmp_path, fin):
     """Marge de coupure : une requête terminée normalement (réponse lue en entier, ou erreur HTTP reçue) garde
-    exactement un délai (10 s) ; une requête coupée par le transport (erreur, délai dépassé, connexion impossible)
-    compte comme finie 2 s après sa coupure : la suivante part 12 s après. ``fin`` reste l'instant réel."""
+    exactement un délai (10 s) ; une requête coupée par le transport (erreur, connexion impossible) compte comme finie
+    la marge de coupure (10 s ; 2 s avant le contrôle de a58b4c8) après sa coupure ; un délai dépassé (site plus lent que
+    le délai de lecture, constat 33 du contrôle de a58b4c8) compte comme fini le délai de lecture après sa coupure,
+    borné à 50 s : la suivante part 60 s après. ``fin`` reste l'instant réel."""
     from brvm_alpha import net
     from brvm_alpha.notes import research as rs
 
@@ -894,7 +896,9 @@ def test_only_a_request_that_did_not_end_normally_costs_the_cut_margin(tmp_path,
     entry = _etat_politesse(cache)["hosts"]["www.brvm.org"]
     normale = fin.startswith(("reponse", "erreur_http"))
     assert rs.to_utc(entry["fin"]) == h.now() and ("fin_coupee" in entry) is (not normale), entry
-    attendu = 10.0 if normale else 10.0 + rs.MARGE_COUPURE_S
+    attendu = 10.0 if normale else 10.0 + (rs.MARGE_DELAI_DEPASSE_MAX_S if fin == "delai_depasse" else rs.MARGE_COUPURE_S)
+    if fin == "delai_depasse":
+        assert entry["fin_coupee"] == rs.MARGE_DELAI_DEPASSE_MAX_S == 50.0
     copie = tmp_path / "copie" / "cache"  # chaque sonde écrit sa propre requête : une copie de l'état pour la seconde
     shutil.copytree(cache, copie)
     assert _attente_avant_premier_envoi(cache, h.t) == pytest.approx(attendu)
@@ -952,6 +956,131 @@ def test_an_orphan_mark_or_a_cut_end_costs_the_delay_plus_the_margin_never_more(
     if etat == "marque_orpheline":
         journal = [json.loads(x) for x in (tmp_path / "fetch_log.jsonl").read_text(encoding="utf-8").splitlines()]
         assert [e["wait_s"] for e in journal if e.get("envoi_sans_fin")] == [10.0 + rs.MARGE_COUPURE_S]
+
+
+@pytest.mark.parametrize("etat,attendu", [
+    ({"fin": "", "fin_session": "autre"}, "delai"), ({"fin": 0, "fin_session": "autre"}, "delai"),
+    ({"fin": False, "fin_session": "autre"}, "delai"), ({"fin": {}, "fin_session": "autre"}, "delai"),
+    ({"last": "", "session": "autre"}, "delai"), ({"last": 0, "session": "autre"}, "delai"),
+    ({"last": False, "session": "autre"}, "delai"),
+    ({"fin": "MAINTENANT", "fin_session": "autre", "fin_coupee": 0}, "marge"),
+    ({"fin": "MAINTENANT", "fin_session": "autre", "fin_coupee": ""}, "marge"),
+    ({"envoi": {}}, "marge"), ({"envoi": ""}, "marge"),
+], ids=["fin_vide", "fin_0", "fin_false", "fin_dict", "last_vide", "last_0", "last_false", "fin_coupee_0",
+        "fin_coupee_vide", "envoi_dict", "envoi_vide"])
+def test_a_falsy_value_in_the_politeness_state_costs_a_delay_never_nothing(tmp_path, etat, attendu):
+    """Contrôle de a58b4c8, constat 35 : une valeur « fausse » pour Python (« "" », 0, false, {}) posée à la main dans
+    politeness.json était ignorée, sans aucune attente (``fin_coupee`` à 0 : fin normale). Clé présente : un délai, plus
+    la marge pour ``fin_coupee`` et la marque « envoi en cours » ; jamais aucune attente."""
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    entry = {k: (_NOW.isoformat() if v == "MAINTENANT" else v) for k, v in etat.items()}
+    (cache / rs.POLITENESS_STATE).write_text(json.dumps({"hosts": {"www.brvm.org": entry}}), encoding="utf-8")
+    attente = _attente_avant_premier_envoi(cache, 1000.0)
+    assert attente == pytest.approx(10.0 + (rs.MARGE_COUPURE_S if attendu == "marge" else 0.0)), entry
+
+
+@pytest.mark.parametrize("erreur", ["disque_plein", "lecture_seule"])
+def test_an_unwritable_politeness_state_sends_nothing_and_exits_8(tmp_path, monkeypatch, erreur):
+    """Contrôle de a58b4c8, constat 32 : politeness.json ou son verrou ne s'écrivent pas (disque plein, cache en
+    lecture seule). Avant : mode dégradé, la requête partait avec le seul délai de la session ; deux sessions
+    partaient sans délai, voire ensemble. Rien n'est envoyé : PolitesseNonGarantie, code 8, message qui le dit."""
+    import errno
+
+    from brvm_alpha import erreurs, fichiers
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    envois: list[str] = []
+
+    def tr(url, headers, timeout):
+        envois.append(url)
+        return _R(404 if url.endswith("robots.txt") else 200, b"%PDF-1.4 x", None, url)
+
+    if erreur == "disque_plein":
+        def plein(*a, **k):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(rs, "_state_save", plein)
+    else:
+        vrai = fichiers.verrou
+
+        def ro(path, *a, **k):
+            if str(path).endswith("politeness.json.lock"):
+                raise OSError(errno.EROFS, "Read-only file system", str(path))
+            return vrai(path, *a, **k)
+
+        monkeypatch.setattr(fichiers, "verrou", ro)
+    h = _Horloge()
+    with pytest.raises(rs.PolitesseNonGarantie) as exc:
+        _session(cache, tr, h).get(URL_BOC)
+    assert envois == [] and h.attentes == []
+    assert erreurs.code_retour(exc.value) == 8 and "aucune requête n'est envoyée" in str(exc.value)
+    assert "disque non plein" in str(exc.value)
+
+
+def test_disk_full_without_a_file_name_is_a_configuration_error_not_an_internal_one():
+    """Contrôle de a58b4c8, constat 34 : « live » sur un disque plein sortait en 7 « erreur interne : OSError : [Errno 28]
+    No space left on device » (erreur levée au flush ou au close d'une écriture atomique, sans nom de fichier). Disque
+    plein, quota ou volume en lecture seule : code 8, message qui invite à vérifier le disque ; les autres erreurs sans
+    nom de fichier gardent leur code."""
+    import errno
+
+    from brvm_alpha import cli, erreurs
+
+    for e in (errno.ENOSPC, errno.EDQUOT, errno.EROFS):
+        exc = OSError(e, os.strerror(e))
+        assert erreurs.code_retour(exc) == 8, e
+        assert "disque n'est pas plein" in cli._error_message(exc) and "(None)" not in cli._error_message(exc)
+    assert erreurs.code_retour(OSError(errno.EACCES, "Permission denied")) == 7  # sans fichier : inchangé
+    assert erreurs.code_retour(OSError(errno.EIO, "Input/output error")) == 7
+
+
+def test_a_timed_out_request_counts_as_ended_the_read_timeout_later_for_every_session(tmp_path):
+    """Contrôle de a58b4c8, constat 33 : après un délai dépassé (site muet plus longtemps que le délai de lecture), la
+    session suivante partait 12 s après la coupure, alors que le site servait encore la première réponse. La requête
+    compte maintenant comme finie le délai de lecture après la coupure (borné à 50 s) : nouvel essai de la même
+    session comme autre session."""
+    from brvm_alpha import net
+    from brvm_alpha.notes import research as rs
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    h = _Horloge()
+    envois: list[float] = []
+    coupure: list[float] = []
+
+    def tr(url, headers, timeout):
+        if url.endswith("robots.txt"):
+            return _R(404, b"", None, url)
+        envois.append(h.t)
+        if len(envois) == 1:
+            h.t += 60.0
+            coupure.append(h.t)
+            raise net.DelaiDepasse("délai de lecture dépassé")
+        return _R(200, b"%PDF-1.4 x", None, url)
+
+    page = "https://www.brvm.org/fr/actualites"
+    sess = rs.PoliteSession(transport=tr, clock=h, sleep=h.sleep, now=h.now, cache_dir=cache,
+                            log_path=tmp_path / "fetch_log.jsonl", delay_s=10.0, max_retries=2, backoff_s=1.0)
+    sess.get(page)
+    assert len(envois) == 2 and envois[1] - coupure[0] == pytest.approx(10.0 + 50.0)  # même session (nouvel essai)
+    # autre session : un seul essai, coupé ; la suivante attend aussi 60 s après la coupure
+    cache2 = tmp_path / "cache2"
+    cache2.mkdir()
+    envois.clear()
+    coupure.clear()
+    sess2 = rs.PoliteSession(transport=tr, clock=h, sleep=h.sleep, now=h.now, cache_dir=cache2,
+                             log_path=tmp_path / "fetch_log2.jsonl", delay_s=10.0, max_retries=1)
+    with pytest.raises(rs.ServerUnavailable):
+        sess2.get(page)
+    entry = _etat_politesse(cache2)["hosts"]["www.brvm.org"]
+    assert entry["fin_coupee"] == 50.0 and rs.to_utc(entry["fin"]) == h.now()
+    assert _attente_avant_premier_envoi(cache2, h.t) == pytest.approx(60.0)
+    assert "fin_coupee" not in _etat_politesse(cache)["hosts"]["www.brvm.org"]  # fin normale ensuite : retirée
 
 
 _ENVOI_INTERROMPU = r'''
@@ -1160,10 +1289,12 @@ def test_deployment_doc_lists_the_send_lock_of_every_online_command_and_its_limi
     from brvm_alpha.notes import research as rs
 
     a14p = " ".join(a14.split()).replace("**", "")
-    assert rs.MARGE_COUPURE_S == 2.0 and "marge de coupure de 2 s" in a14p and "un délai entier plus 2 s" in a14p
-    assert "12,02 à 12,03 s après le signal" in a14p and "Fin normale : 10,02 s" in a14p
+    assert rs.MARGE_COUPURE_S == 10.0 and "marge de coupure de 10 s" in a14p and "un délai entier plus 10 s" in a14p
+    assert "20,00 à 20,04 s après le signal" in a14p and "Fin normale : 10,00 à 10,03 s" in a14p
+    assert rs.MARGE_DELAI_DEPASSE_MAX_S == 50.0 and "50 s après" in a14p
     a15 = " ".join(doc[doc.index("### A.15 "):doc.index("### A.16 ")].split()).replace("**", "")
     assert "marge de coupure" in a15 and "fin_coupee" in a15 and "garde exactement 10 s" in a15
+    assert "rien n'est envoyé, code 8, avant toute requête" in a15 and "présence de la clé" in a15
 
 
 # ---------------------------------------------------------------------------

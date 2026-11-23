@@ -412,7 +412,7 @@ bibliothèque devient 7.
 | 5 | `acces_refuse` | accès refusé ou réseau | HTTP 403 ou 429, site bloqué, liste blanche, délai dépassé |
 | 6 | `memoire` | mémoire insuffisante | `MemoryError` (jamais avalée : aucun résultat dégradé en code 0) ; bibliothèque compilée impossible à charger faute de mémoire (« failed to map segment ») ; processus de travail du panel tué par `SIGKILL` sous une limite de mémoire, ou mort sans cause connue sous cette limite (le message dit « cause inconnue ») ; limite `RLIMIT_AS` sous 1 Go (refus au démarrage) |
 | 7 | `interne` | erreur interne (exception non prévue) ; trace sur la sortie d'erreur | défaut du moteur ; `ValueError` ou `KeyError` d'une bibliothèque ; processus de travail du panel tué par `SIGSEGV`, `SIGABRT` ou un autre signal qui n'est pas un manque de mémoire |
-| 8 | `configuration` | configuration manquante ou invalide | dossiers absents, relatifs ou inexistants en mode embarqué, pdftotext absent, paquet Python manquant, dossier de données ou de rapports non inscriptible (lecture seule, droits, disque plein), état de politesse illisible, verrou d'envoi `politeness.envoi.<site>.lock` ou marque « envoi en cours » impossibles à écrire alors que `politeness.json` s'écrit (rien n'est envoyé, § A.15), `validate`, `backtest` ou `serve` en mode embarqué ; limite de temps de calcul (`RLIMIT_CPU`) trop basse au démarrage, ou atteinte en cours de commande (`SIGXCPU`), processus de travail du panel compris (« temps de calcul ») |
+| 8 | `configuration` | configuration manquante ou invalide | dossiers absents, relatifs ou inexistants en mode embarqué, pdftotext absent, paquet Python manquant, dossier de données ou de rapports non inscriptible (lecture seule, droits, disque plein), état de politesse illisible, `politeness.json`, son verrou, le verrou d'envoi `politeness.envoi.<site>.lock` ou la marque « envoi en cours » impossibles à écrire (disque plein, lecture seule, droits : rien n'est envoyé, § A.15), disque plein ou volume en lecture seule même sans nom de fichier dans l'erreur (avant : 7), `validate`, `backtest` ou `serve` en mode embarqué ; limite de temps de calcul (`RLIMIT_CPU`) trop basse au démarrage, ou atteinte en cours de commande (`SIGXCPU`), processus de travail du panel compris (« temps de calcul ») |
 | 130 | `interruption` | interruption : Ctrl+C ou signal TERM | délai du lanceur dépassé |
 
 Le moteur ramène tout autre code à 7 (un `SystemExit(259)` sortirait sinon en 3, car le statut d'un
@@ -777,20 +777,27 @@ fait la même boucle hors Odoo.
 - **limites de la politesse entre sessions** (§ A.15, P6) : le verrou d'envoi `politeness.envoi.<site>.lock` est un
   `flock` local, qui ne vaut que sur **une seule machine** : un dossier de données partagé entre deux machines
   (disque réseau, NFS) n'est pas protégé, et ne doit pas servir à deux moteurs à la fois ; si
-  `politeness.json` lui-même ne s'écrit pas (dossier du cache en lecture seule), seul le délai
-  propre à chaque session est tenu (mode dégradé d'avant, avec un avertissement) ; une session tuée pendant une
-  requête (`KILL`) laisse sa marque « envoi en cours », et la suivante attend alors un délai entier **plus 2 s** à
+  `politeness.json` lui-même ne s'écrit pas (disque plein, dossier du cache en lecture seule), **rien n'est envoyé**
+  (code 8, depuis le contrôle de `a58b4c8` ; avant : mode dégradé, seul le délai propre à chaque session était tenu,
+  et deux sessions partaient sans délai, voire ensemble) ; une session tuée pendant une
+  requête (`KILL`) laisse sa marque « envoi en cours », et la suivante attend alors un délai entier **plus 10 s** à
   partir de la prise du verrou : l'instant exact de la coupure n'est pas connu ; le délai est compté depuis la
-  coupure faite par le moteur (connexion fermée, puis fin notée), mais le site ne voit la coupure qu'à sa prochaine
-  écriture sur la connexion : 0,12 à 0,16 s plus tard avec un faux site qui écrit toutes les 0,1 s, 1 à 2 s plus tard
-  avec un faux site qui écrit une fois par seconde (essais du contrôle de `1a1fd28`, et de nouveau ci-dessous). D'où la **marge de coupure** de 2 s (§ A.15) : une requête qui ne
-  s'est pas terminée normalement compte comme finie 2 s après sa coupure. Mesuré le 23/11/2026 (espace réseau privé,
-  faux www.brvm.org en TLS de recette qui écrit une fois par seconde, deux vrais processus, CPython 3.13) : la
-  requête suivante part 12,02 à 12,03 s après le signal (TERM, Ctrl+C, `KILL`, et `update` arrêté par TERM au groupe :
-  12,02 s), et le site voit 10,02 à 11,01 s entre la coupure qu'il constate (1 à 2 s après le signal) et la requête
-  suivante (avant la marge : 10,01 à 10,07 s après le signal, 8,0 à 9,9 s vus par le site). Fin normale : 10,02 s,
-  inchangée. Une coupure vue par le site plus de 2 s après le signal (site plus lent encore, mandataire) réduirait
-  encore l'écart : non vérifié avec le vrai site ; un `Crawl-delay` supérieur à 10 s n'est pas transmis d'une session
+  coupure faite par le moteur (connexion fermée, puis fin notée), mais le site ne voit la coupure qu'à sa deuxième
+  écriture sur la connexion fermée : 0,12 à 0,16 s plus tard avec un faux site qui écrit toutes les 0,1 s, 1 à 2 s
+  avec un faux site qui écrit une fois par seconde, 6 s avec un faux site qui écrit toutes les 3 s. D'où la **marge
+  de coupure** de 10 s (un délai entier, § A.15) : une requête qui ne s'est pas terminée normalement compte comme
+  finie 10 s après sa coupure ; un délai de lecture dépassé (site muet), 50 s après. Historique : la marge de 2 s
+  (après `d99bbbc`) faisait partir la suivante 12,02 à 12,03 s après le signal, mais ne laissait que 0,02 s de réserve
+  avec un site qui écrit une fois par seconde ; un site qui écrit toutes les 3 s ne voyait que 6,0 à 7,5 s, et après
+  un délai de lecture dépassé (site muet 75 s) la requête suivante chevauchait de 2,9 s la réponse encore servie
+  (contrôle de `a58b4c8`). Mesuré le 23/11/2026 avec la marge de coupure de 10 s (espace réseau privé, faux
+  www.brvm.org en TLS de recette, vrais processus, CPython 3.13) : la requête suivante part 20,00 à 20,04 s après le
+  signal (TERM, Ctrl+C, `KILL`, et `update` arrêté par TERM : 20,00 s), et le site voit 18,02 à 18,59 s (site qui
+  écrit une fois par seconde), 14,03 à 15,51 s (toutes les 3 s), entre la coupure qu'il constate et la requête
+  suivante ; aucun chevauchement. Site muet 75 s, délai de lecture de 60 s (essai fait avec une marge de coupure de
+  5 s ; la marge d'un délai dépassé, 50 s, ne dépend pas d'elle) : la requête suivante arrive au site 45 s après la
+  fin de la réponse qu'il servait (avant : chevauchement de 2,9 s). Fin normale : 10,00 à 10,03 s, inchangée ; le site voit au moins 10,01 s. Un site qui écrit moins d'une
+  fois toutes les 5 s, ou un mandataire, réduirait l'écart : non vérifié avec le vrai site ; un `Crawl-delay` supérieur à 10 s n'est pas transmis d'une session
   à l'autre (sans effet aujourd'hui : brvm.org annonce 10 s, qui est aussi le plancher).
 
 ### A.15 Changements visibles hors mode embarqué
@@ -896,17 +903,21 @@ distribution) sont inchangées.
   aussitôt, 0,02 à 0,07 s après le signal, pendant que le site servait encore la réponse coupée. Mesuré dans
   l'espace réseau privé (faux www.brvm.org en TLS de recette), sur deux vrais processus : la suivante part 10,0 à
   10,1 s après TERM, Ctrl+C ou `KILL` (voir § A.14 pour l'écart vu par le site) ;
-- **marge de coupure** (demande de l'intégrateur, 23/11/2026, après `d99bbbc`) : une requête qui ne s'est **pas
-  terminée normalement** (ni réponse lue en entier, ni erreur HTTP reçue : TERM du lanceur, Ctrl+C, `SIGXCPU`,
-  `MemoryError`, erreur du transport, délai dépassé, connexion impossible) compte comme finie **2 s après sa
-  coupure** : `politeness.json` note l'instant réel dans `fin` et la clé `fin_coupee` (retirée par la fin normale
-  suivante), et toute session, la même comprise (nouvel essai après une erreur), part au plus tôt 12 s après la
-  coupure ; une marque « envoi en cours » orpheline (`KILL`) fait attendre un délai plus 2 s (12 s) depuis la prise
-  du verrou. Une requête terminée normalement garde **exactement** 10 s. Une valeur illisible de `fin_coupee`
-  compte comme une coupure ; une fin coupée illisible ou datée dans le futur coûte 12 s, jamais plus. Raison : le
-  site ne voit la coupure qu'à sa prochaine écriture (jusqu'à 2 s plus tard dans l'essai), et l'écart qu'il voyait
-  tombait à 8,0 à 9,9 s. Mesuré (§ A.14) : la suivante part 12,02 à 12,03 s après TERM, Ctrl+C ou `KILL`, et le site
-  voit au moins 10,02 s ; fin normale : 10,02 s. Rien ne change dans les codes de sortie ni dans le lanceur ;
+- **marge de coupure** (demande de l'intégrateur, 23/11/2026, après `d99bbbc` ; portée de 2 s à 10 s par le
+  contrôle de `a58b4c8`) : une requête qui ne s'est **pas terminée normalement** (ni réponse lue en entier, ni
+  erreur HTTP reçue : TERM du lanceur, Ctrl+C, `SIGXCPU`, `MemoryError`, erreur du transport, connexion impossible)
+  compte comme finie **10 s après sa coupure** : `politeness.json` note l'instant réel dans `fin` et la clé
+  `fin_coupee` (retirée par la fin normale suivante), et toute session, la même comprise (nouvel essai après une
+  erreur), part au plus tôt 20 s après la coupure ; une marque « envoi en cours » orpheline (`KILL`) fait attendre un
+  délai plus 10 s (20 s) depuis la prise du verrou. Un **délai dépassé** (site muet plus longtemps que le délai de
+  lecture, ou réponse plus lente que le délai total) compte comme fini le délai de lecture après la coupure, borné à
+  50 s (`fin_coupee` porte alors ce nombre de secondes) : la suivante part 60 s après. Une requête terminée
+  normalement garde **exactement** 10 s. Une valeur illisible de `fin_coupee` compte comme une coupure ; une fin
+  coupée illisible ou datée dans le futur coûte un délai plus la marge, jamais plus. Raison : le site ne voit la
+  coupure qu'à sa deuxième écriture sur la connexion fermée (jusqu'à 6 s plus tard pour un site qui écrit toutes les
+  3 s), et un site muet ne la voit qu'en reprenant ses écritures. Mesuré (§ A.14) : la suivante part 20,00 à 20,04 s
+  après TERM, Ctrl+C ou `KILL`, et le site voit au moins 14,03 s ; fin normale : 10,00 à 10,03 s. Rien ne change
+  dans les codes de sortie ni dans le lanceur ;
 - un blocage 403/429 noté par une autre session pendant l'attente est relu **dès la prise du verrou d'envoi** : la
   session qui attendait s'arrête aussitôt, sans attendre encore jusqu'à un délai (avant : jusqu'à 10 s de plus, sans
   rien envoyer) ;
@@ -916,7 +927,15 @@ distribution) sont inchangées.
   chevaucher, seul un avertissement sur la sortie d'erreur le disait) ;
 - une date illisible dans `politeness.json` (`"NaT"`, `"nan"`, texte, nombre, pour `fin` comme pour `last`) coûte un
   délai d'attente (avant : `fin` à `"NaT"` ou `"nan"` faisait sortir toute commande réseau en 7, « cannot convert
-  float NaN to integer » ; une réservation `last` illisible était ignorée, sans aucune attente) ;
+  float NaN to integer » ; une réservation `last` illisible était ignorée, sans aucune attente). Depuis le contrôle
+  de `a58b4c8`, la **présence** de la clé compte, quelle que soit sa valeur : `fin`, `last` ou `envoi` posés à la main
+  à `""`, `0`, `false` ou `{}` coûtent un délai (plus la marge pour `envoi`), et `fin_coupee` à `0` compte comme une
+  coupure (avant : ces valeurs « fausses » pour Python étaient ignorées, sans aucune attente) ;
+- `politeness.json` (ou son verrou) impossible à écrire : disque plein, cache en lecture seule, droits : **rien n'est
+  envoyé**, code 8, avant toute requête (contrôle de `a58b4c8` ; avant : mode dégradé, la requête partait avec le
+  seul délai de la session, et deux sessions partaient à 0,01 s d'écart, ou en même temps). Disque plein, quota ou
+  volume en lecture seule donnent 8 même quand l'erreur ne porte pas de nom de fichier (avant : `live` sur un disque
+  plein sortait en 7, « erreur interne : OSError ») ;
 - repli pdfplumber lancé avec `python -I`, depuis le dossier temporaire et avec un environnement réduit ;
 - `python -m brvm_alpha.data.boc_download` passe par le client poli commun (quota de 200 requêtes, blocage
   partagé) ;

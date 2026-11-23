@@ -735,12 +735,20 @@ MAX_CHAINED_SLOTS = 6
 #: (verrou d'envoi) : sa durée est bornée par le délai total d'un PDF (:data:`brvm_alpha.net.DELAI_PDF_MAX`).
 ENVOI_ATTENTE_S = _net.DELAI_PDF_MAX + 120.0
 #: Marge (s) après une requête qui ne s'est pas terminée normalement, c'est-à-dire sans réponse complète lue ni erreur
-#: HTTP reçue (TERM du lanceur, Ctrl+C, ``SIGXCPU``, ``MemoryError``, erreur du transport, délai dépassé) : le site ne
-#: voit la coupure qu'à sa prochaine écriture sur la connexion (mesuré : 0,1 à 2 s plus tard). Une telle requête compte
-#: comme finie ``MARGE_COUPURE_S`` après sa coupure (clé ``fin_coupee`` de ``politeness.json``), et une marque « envoi
-#: en cours » orpheline (processus tué par ``KILL``) fait attendre un délai plus cette marge. Une requête terminée
-#: normalement garde exactement un délai.
-MARGE_COUPURE_S = 2.0
+#: HTTP reçue (TERM du lanceur, Ctrl+C, ``SIGXCPU``, ``MemoryError``, erreur du transport) : le site ne voit la coupure
+#: qu'à sa deuxième écriture sur la connexion fermée (mesuré : 0,1 à 2 s plus tard pour un site qui écrit une fois par
+#: seconde, 6 s pour un site qui écrit toutes les 3 s). Une telle requête compte comme finie ``MARGE_COUPURE_S`` après
+#: sa coupure (clé ``fin_coupee`` de ``politeness.json``), et une marque « envoi en cours » orpheline (processus tué par
+#: ``KILL``) fait attendre un délai plus cette marge. Une requête terminée normalement garde exactement un délai. 10 s
+#: (un délai entier) depuis le contrôle de ``a58b4c8`` : avant, 2 s ne laissaient que 0,02 s de réserve avec un site
+#: qui écrit une fois par seconde, et un site qui écrit toutes les 3 s voyait 6 s ; 5 s laissaient encore 9,0 s vus par
+#: ce dernier. 10 s couvrent un site qui écrit au moins toutes les 5 s.
+MARGE_COUPURE_S = 10.0
+#: Marge (s) après un **délai dépassé** (site muet plus longtemps que le délai de lecture, ou réponse plus lente que le
+#: délai total) : le site, lent par définition, peut ne voir la coupure que bien plus tard. La requête compte comme
+#: finie le délai de lecture de la session après sa coupure (60 s par défaut), borné ici pour que l'attente totale
+#: (délai plus marge) tienne dans :data:`MAX_CHAINED_SLOTS` délais de 10 s ; jamais moins que :data:`MARGE_COUPURE_S`.
+MARGE_DELAI_DEPASSE_MAX_S = 50.0
 
 
 def _envoi_path(cache_dir: str | Path, key: str) -> Path:
@@ -775,16 +783,36 @@ def _attente_apres_fin(fin: Any, now: dt.datetime, delay: float, marge: float = 
 
 
 def _marge_fin(entry: Mapping[str, Any]) -> float:
-    """Marge à ajouter au délai après la fin notée dans ``entry`` : :data:`MARGE_COUPURE_S` si la requête a été coupée
-    (clé ``fin_coupee`` présente et non fausse, valeur illisible comprise), 0 sinon."""
-    return MARGE_COUPURE_S if entry.get("fin_coupee") not in (None, False) else 0.0
+    """Marge à ajouter au délai après la fin notée dans ``entry`` : 0 si la clé ``fin_coupee`` est absente (fin
+    normale) ou vaut ``false`` elle-même ; un nombre de secondes (délai dépassé) : cette marge, entre
+    :data:`MARGE_COUPURE_S` et :data:`MARGE_DELAI_DEPASSE_MAX_S` ; ``true`` et toute autre valeur, illisible ou
+    « fausse » pour Python comme ``0``, ``""`` ou ``{}`` : :data:`MARGE_COUPURE_S` (avant : ``0`` comptait comme une fin
+    normale)."""
+    if "fin_coupee" not in entry or entry["fin_coupee"] is False:
+        return 0.0
+    v = entry["fin_coupee"]
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
+        return min(max(float(v), MARGE_COUPURE_S), MARGE_DELAI_DEPASSE_MAX_S)
+    return MARGE_COUPURE_S
+
+
+def _marge_delai_depasse(delai_lecture: Any) -> float:
+    """Marge d'une requête coupée par un délai dépassé : le délai de lecture, borné (:data:`MARGE_DELAI_DEPASSE_MAX_S`),
+    jamais moins que :data:`MARGE_COUPURE_S`."""
+    try:
+        x = float(delai_lecture)
+    except (TypeError, ValueError):
+        x = MARGE_DELAI_DEPASSE_MAX_S
+    if not math.isfinite(x):
+        x = MARGE_DELAI_DEPASSE_MAX_S
+    return min(max(x, MARGE_COUPURE_S), MARGE_DELAI_DEPASSE_MAX_S)
 
 
 class PolitesseNonGarantie(_err.ConfigurationError):
-    """``politeness.json`` s'écrit, mais le verrou d'envoi du site ou la marque « envoi en cours » ne peuvent pas être
-    écrits (fichier d'un autre utilisateur, dossier à la place du fichier…) : la règle « une requête à la fois, et un
-    délai après la fin de la précédente » ne serait plus tenue entre sessions. Aucune requête n'est envoyée (code 8) ;
-    l'événement est noté dans ``fetch_log.jsonl``."""
+    """``politeness.json``, le verrou d'envoi du site ou la marque « envoi en cours » ne peuvent pas être écrits (disque
+    plein, volume en lecture seule, fichier d'un autre utilisateur, dossier à la place du fichier…) : la règle « une
+    requête à la fois, et un délai après la fin de la précédente » ne serait plus tenue entre sessions. Aucune requête
+    n'est envoyée (code 8) ; l'événement est noté dans ``fetch_log.jsonl`` s'il peut l'être."""
 
 
 @contextmanager
@@ -1168,8 +1196,8 @@ class PoliteSession:
         une fin datée dans le futur ne coûte qu'un délai ; l'attente ne dépasse jamais
         :data:`MAX_CHAINED_SLOTS` délais.
 
-        Renvoie ``{"hote", "fin_vue"}`` (la fin notée au moment de la réservation, pour :meth:`_depart`), ou
-        ``None`` si l'état partagé n'a pas pu être écrit."""
+        Renvoie ``{"hote", "fin_vue"}`` (la fin notée au moment de la réservation, pour :meth:`_depart`). État partagé
+        impossible à écrire : rien n'est envoyé (:class:`PolitesseNonGarantie`, code 8)."""
         host = url_host(url)
         delay = self.crawl_delay(url)
         wait = 0.0
@@ -1185,7 +1213,9 @@ class PoliteSession:
         def reserve(entry: dict[str, Any]) -> float:
             slot = now + dt.timedelta(seconds=own)
             prev = entry.get("last")
-            if prev and entry.get("session") != sid:
+            # Clé présente : une date est attendue ; toute autre valeur (« "" », 0, false, {}…) coûte un délai, jamais
+            # aucun (avant : une valeur « fausse » pour Python était ignorée).
+            if "last" in entry and entry.get("session") != sid:
                 try:
                     prev_t = _date_etat(prev)
                 except (TypeError, ValueError, OverflowError):
@@ -1211,7 +1241,7 @@ class PoliteSession:
             fin, fin_by = entry.get("fin"), entry.get("fin_session")
             marge = _marge_fin(entry)
             jeton["fin_vue"] = [fin, fin_by, marge]
-            if fin and fin_by != sid:  # fin d'une vraie requête d'une autre session : un délai après elle (plus la
+            if "fin" in entry and fin_by != sid:  # valeur illisible ou « fausse » : un délai plus la marge  # fin d'une vraie requête d'une autre session : un délai après elle (plus la
                 # marge si elle a été coupée)
                 slot = max(slot, now + dt.timedelta(seconds=_attente_apres_fin(fin, now, delay, marge)))
             wait_s = min(max((slot - now).total_seconds(), 0.0), cap)
@@ -1220,15 +1250,16 @@ class PoliteSession:
             entry["reserved_at"] = now.isoformat()
             return wait_s
 
-        posee = None
         try:
             wait = max(wait, self._state_update(host, reserve))
-            posee = jeton
-        except OSError as exc:  # l'état partagé est une sécurité de plus, jamais un blocage
-            log.warning("état de politesse non écrit : %s", exc)
+        except OSError as exc:
+            # politeness.json (ou son verrou) ne s'écrit pas : disque plein, volume en lecture seule, droits. Ni la fin
+            # de cette requête ni sa marque ne seraient notées, et deux sessions partiraient sans délai, voire ensemble
+            # (avant : mode dégradé, seul le délai de la session était tenu). Rien n'est envoyé (code 8).
+            self._politesse_non_garantie(url, None, "état de politesse politeness.json non écrit", exc)
         if wait > 0:
             self.sleep(wait)
-        return posee
+        return jeton
 
     def _controle_avant_envoi(self, url: str) -> None:
         """Contrôles de sûreté faits **avant** de réserver un créneau ou d'attendre : liste blanche (hôte, schéma,
@@ -1274,10 +1305,9 @@ class PoliteSession:
           requête a été coupée, et elle compte comme finie :data:`MARGE_COUPURE_S` après la coupure, pour cette
           session comme pour les autres (clé ``fin_coupee``).
 
-        Verrou ou marque impossibles à écrire alors que ``politeness.json`` s'écrit : rien n'est envoyé
-        (:class:`PolitesseNonGarantie`, code 8, noté dans ``fetch_log.jsonl``). Si ``politeness.json`` lui-même ne
-        s'écrit pas (dossier en lecture seule : ``jeton`` vaut ``None``), mode dégradé d'avant : avertissement, seul
-        le délai propre à la session est tenu."""
+        Verrou, marque ou ``politeness.json`` impossibles à écrire (disque plein, lecture seule, droits) : rien n'est
+        envoyé (:class:`PolitesseNonGarantie`, code 8, noté dans ``fetch_log.jsonl`` s'il s'écrit ; avant, sans
+        ``politeness.json`` inscriptible, un mode dégradé laissait partir la requête avec le seul délai de la session)."""
         host = url_host(url)
         key = cle_politesse(host)
         delay = self.crawl_delay(url)
@@ -1305,26 +1335,23 @@ class PoliteSession:
                 # sans délai ; une requête coupée (réponse non lue en entier) compte comme finie MARGE_COUPURE_S plus
                 # tard : le site ne voit la coupure qu'à sa prochaine écriture.
                 coupee = bool(envoi["partie"]) and not envoi["complete"]
-                self._last_request[key] = self.clock() + (MARGE_COUPURE_S if coupee else 0.0)
+                marge = float(envoi.get("marge") or MARGE_COUPURE_S) if coupee else 0.0
+                self._last_request[key] = self.clock() + marge
                 if envoi["partie"]:
-                    self._record_done(host, coupee=coupee)
+                    self._record_done(host, coupee=coupee, marge=marge)
                 else:
                     self._effacer_marque(host)
 
     def _politesse_non_garantie(self, url: str, jeton: dict[str, Any] | None, quoi: str, exc: BaseException) -> None:
-        """Verrou d'envoi ou marque « envoi en cours » impossibles à écrire. ``politeness.json`` écrit à la réservation
-        (``jeton``) : rien n'est envoyé (:class:`PolitesseNonGarantie`, code 8), et c'est noté dans le journal. Sinon
-        (état partagé lui-même non inscriptible), mode dégradé d'avant : avertissement."""
-        if jeton is None:
-            log.warning("%s : %s (état de politesse non inscriptible : seul le délai de la session est tenu)",
-                        quoi, exc)
-            return
+        """Verrou d'envoi, marque « envoi en cours » ou ``politeness.json`` impossibles à écrire (ou à relire) : rien
+        n'est envoyé (:class:`PolitesseNonGarantie`, code 8), et c'est noté dans le journal s'il s'écrit. ``jeton`` :
+        réservation faite (``None`` : ``politeness.json`` lui-même ne s'écrit pas)."""
         self._log(event="politesse_non_garantie", url=url, reason=f"{quoi} : {type(exc).__name__} : {exc}")
         raise PolitesseNonGarantie(
-            f"{quoi} ({type(exc).__name__} : {exc}) alors que politeness.json s'écrit : une seule requête à la fois "
-            "vers le site, et un délai après la fin de la précédente, ne seraient plus garantis entre sessions. Par "
-            f"prudence, aucune requête n'est envoyée : vérifier les droits de {self.cache_dir} (fichiers du même "
-            "utilisateur que le moteur, pas de dossier à la place d'un fichier).") from exc
+            f"{quoi} ({type(exc).__name__} : {exc}) : une seule requête à la fois vers le site, et un délai après la "
+            "fin de la précédente, ne seraient plus garantis entre sessions. Par prudence, aucune requête n'est "
+            f"envoyée : vérifier que {self.cache_dir} est inscriptible (disque non plein, volume en lecture et "
+            "écriture, fichiers du même utilisateur que le moteur, pas de dossier à la place d'un fichier).") from exc
 
     def _marquer_envoi(self, url: str, host: str, jeton: dict[str, Any] | None) -> None:
         """Marque « envoi en cours » de cette session (clé ``envoi`` : ``debut``, ``session``), écrite verrou d'envoi
@@ -1367,14 +1394,15 @@ class PoliteSession:
           marge si cette requête a été coupée (``fin_coupee``)."""
         try:
             hosts = _state_load(_state_path(self.cache_dir), strict=True).get("hosts", {})
-        except OSError as exc:
-            log.warning("état de politesse non lu : %s", exc)
-            return
+        except OSError as exc:  # avant : aucune attente de plus ; maintenant, rien ne part (code 8)
+            self._politesse_non_garantie(url, jeton, "état de politesse politeness.json non relu", exc)
         entry = hosts.get(key) if isinstance(hosts, dict) else None
         if not isinstance(entry, dict):
             return
         marque = entry.get("envoi")
-        if marque and not (isinstance(marque, dict) and marque.get("session") == self.session_id):
+        # Clé présente : une marque d'une autre session, quelle que soit sa valeur (« {} » ou « "" » compris : avant,
+        # une valeur « fausse » pour Python était ignorée), fait attendre un délai entier plus la marge.
+        if "envoi" in entry and not (isinstance(marque, dict) and marque.get("session") == self.session_id):
             debut = marque.get("debut") if isinstance(marque, dict) else marque
             attente = float(delay) + MARGE_COUPURE_S
             self._log(event="attente", url=url, wait_s=round(attente, 3), envoi_sans_fin=str(debut)[:40],
@@ -1383,7 +1411,7 @@ class PoliteSession:
             self.sleep(attente)
             return
         fin, fin_by = entry.get("fin"), entry.get("fin_session")
-        if not fin or fin_by == self.session_id:
+        if "fin" not in entry or fin_by == self.session_id:
             return
         marge = _marge_fin(entry)
         if jeton is not None and list(jeton.get("fin_vue") or [None, None, None]) == [fin, fin_by, marge]:
@@ -1394,13 +1422,14 @@ class PoliteSession:
                       raison="fin récente d'une requête d'une autre session vers ce site")
             self.sleep(wait)
 
-    def _record_done(self, host: str, coupee: bool = False) -> None:
+    def _record_done(self, host: str, coupee: bool = False, marge: float | None = None) -> None:
         """Fin d'une vraie requête : notée **toujours** dans ``fin`` (même si une réservation plus tardive d'une autre
         session existe), et dans ``last`` si elle est plus tardive que la dernière réservation ; la marque « envoi en
         cours » de cette session est retirée dans la même écriture. Appelée par :meth:`_depart` à toute sortie du bloc
         d'envoi (interruption comprise). ``coupee`` : la réponse n'a pas été lue en entier ; ``fin_coupee`` est posée
-        (les autres sessions attendent alors :data:`MARGE_COUPURE_S` de plus), et retirée par une fin normale. ``fin``
-        reste l'instant réel de la coupure."""
+        (les autres sessions attendent alors :data:`MARGE_COUPURE_S` de plus : ``true``), et retirée par une fin
+        normale ; ``marge`` plus longue (délai dépassé, :func:`_marge_delai_depasse`) : ``fin_coupee`` porte ce nombre de
+        secondes. ``fin`` reste l'instant réel de la coupure."""
         now = to_utc(self.now())
         sid = self.session_id
 
@@ -1422,7 +1451,8 @@ class PoliteSession:
             entry["fin"] = now.isoformat()
             entry["fin_session"] = sid
             if coupee:
-                entry["fin_coupee"] = True
+                m_ = float(marge) if marge is not None else MARGE_COUPURE_S
+                entry["fin_coupee"] = True if m_ <= MARGE_COUPURE_S else round(m_, 3)
             else:
                 entry.pop("fin_coupee", None)
             m = entry.get("envoi")
@@ -1531,6 +1561,9 @@ class PoliteSession:
                         self._stop("politique", f"adresse refusée : {exc}")
                     raise PolicyRefused(f"Requête refusée : {exc}") from exc
                 except _net.DelaiDepasse as exc:
+                    # Site plus lent que le délai : il peut ne voir la coupure que bien plus tard ; la requête compte
+                    # comme finie le délai de lecture après la coupure, pour toutes les sessions (nouvel essai compris).
+                    envoi["marge"] = _marge_delai_depasse(self.timeout)
                     if nature != "pdf":  # page, robots.txt : traité comme un 5xx (nouvel essai, puis arrêt)
                         status, content, rheaders, final_url, error = 0, b"", {}, url, f"{type(exc).__name__}: {exc}"
                     else:  # PDF trop lent pour le lien : mis de côté, sans nouvel essai ni arrêt de la session

@@ -126,6 +126,10 @@ _MOTIFS_MEMOIRE = ("failed to map segment", "cannot allocate memory", "out of me
 #: disque plein) : code 8.
 _ERRNO_CONFIGURATION = frozenset({errno.EROFS, errno.EACCES, errno.EPERM, errno.ENOSPC,
                                   getattr(errno, "EDQUOT", errno.ENOSPC)})
+#: Disque plein, quota atteint, volume en lecture seule : toujours la configuration (code 8), même quand l'erreur ne
+#: porte pas de nom de fichier (écriture refusée au ``flush`` ou au ``close`` d'un fichier atomique ; avant : code 7
+#: « erreur interne »). Le moteur n'écrit que dans ses dossiers configurés et dans son dossier temporaire.
+_ERRNO_VOLUME = frozenset({errno.EROFS, errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)})
 
 
 class ArretDemande(KeyboardInterrupt):
@@ -307,6 +311,8 @@ def est_configuration(exc: BaseException | None) -> bool:
         name = str(getattr(exc, "name", "") or "")
         return bool(name) and not name.split(".")[0] == "brvm_alpha"
     if isinstance(exc, OSError) and getattr(exc, "errno", None) in _ERRNO_CONFIGURATION:
+        if getattr(exc, "errno", None) in _ERRNO_VOLUME and not getattr(exc, "filename", None):
+            return True
         return _dossier_configure(getattr(exc, "filename", None)) or _dossier_configure(getattr(exc, "filename2", None))
     return False
 
@@ -374,8 +380,9 @@ def message_erreur(exc: BaseException) -> str:
             return (f"paquet Python manquant : {exc.name} (installer le jeu de paquets du moteur, "
                     "deploiement/requirements-moteur-py311.txt).")
         if isinstance(exc, OSError) and est_configuration(exc):
-            return (f"dossier configuré inutilisable : {exc.strerror or exc} ({exc.filename}). Vérifier que "
-                    "BRVM_ALPHA_DONNEES et BRVM_ALPHA_RAPPORTS sont inscriptibles et que le disque n'est pas plein.")
+            ou = f" ({exc.filename})" if exc.filename else ""
+            return (f"dossier configuré inutilisable : {exc.strerror or exc}{ou}. Vérifier que BRVM_ALPHA_DONNEES, "
+                    "BRVM_ALPHA_RAPPORTS et le dossier temporaire sont inscriptibles et que le disque n'est pas plein.")
         if est_panel_illisible(exc):
             return (f"panel illisible ({type(exc).__name__} : {str(exc)[:200]}) : reconstruire le panel "
                     "(python -m brvm_alpha panel --force).")
