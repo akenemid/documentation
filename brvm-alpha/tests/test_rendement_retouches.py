@@ -265,12 +265,13 @@ def test_a_known_rate_and_an_equity_pocket_keep_the_same_label_on_screen_and_in_
                               aujourd_hui=RJ.AUJOURD_HUI, carnet_cloture=RJ.carnet(), perte_toleree=1_000_000,
                               taux_reserve=0.03)
     r = rn["reserve"]
-    etiq = f"taux saisi : {RG.pct(0.03, 2)} [supposé]"
+    etiq = f"taux saisi : {RG.pct(0.03, 2)}, supposé"  # un seul niveau de crochets (contrôle de a58b4c8, constat 21)
     assert r["etiquette"] == etiq and r["montant"] < 10_000_000
     assert _ligne_reserve(rn).endswith(f"[estimé ; {etiq}]. {RG.PH_INTERETS}")  # avant : « [compté] »
     assert r["statut_valeur_d_un_point"] == "Estimation"  # comme « [estimé] » sur l'écran (avant : « Fait »)
     texte = _plat(PL.rendre_plan(rn["plan"], "texte"))
     assert f"[ {_plat(etiq)} ]" in texte and "[estimé]" in texte
+    assert "[supposé]]" not in _ligne_reserve(rn) and "[supposé] ]" not in texte
     assert PE.etiquette_taux(None) == PE.TAUX_INCONNU
 
 

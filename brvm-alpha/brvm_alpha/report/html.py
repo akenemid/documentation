@@ -293,13 +293,22 @@ def _fr_txt(texte: Any) -> str:
 
 
 def _rel(path: Any) -> str:
-    """Chemin affiché relativement à la racine du dépôt quand il s'y trouve."""
+    """Chemin affiché relativement à la racine du dépôt quand il s'y trouve. Un chemin absolu d'une autre machine qui
+    passe par ``reports/`` (résultats livrés de la validation : metrics.json garde le chemin de la machine de
+    développement) est affiché depuis ``reports/`` : jamais un chemin absolu qui n'existe pas sur l'installation
+    (avant : « /home/…/reports/validation_S1/precedent_… » dans le rapport de l'export Odoo)."""
     if path is None:
         return "n.d."
     try:
         return str(Path(path).resolve().relative_to(ROOT))
     except (ValueError, OSError):
-        return str(path)
+        pass
+    parts = Path(str(path)).parts
+    if Path(str(path)).is_absolute() and "reports" in parts:
+        i = len(parts) - 1 - parts[::-1].index("reports")
+        if i < len(parts) - 1:
+            return "/".join(parts[i:])
+    return str(path)
 
 
 def _resolve(path: str | Path | None) -> Path | None:
@@ -2407,7 +2416,11 @@ def _notes_in_force_block(ctx: _Ctx, st: Mapping[str, Any]) -> list[Any]:
                          f"<span><b>{esc(f.get('code'))}</b> {esc(f.get('libelle') or '')}</span>"),
                        [("Durée", _filter_span(f)), ("Note", _note_ref(f)),
                         ("Pour lever le filtre", f.get("lever") or "")]) for f in flt]
-        parts.append(_card(H(f"<h3>Filtres de risque actifs issus des notes ({len(flt)})</h3>"),
+        # Même compte que la ligne « … F filtre(s) de risque actif(s) » de l'ordre : un filtre par titre et par code ;
+        # plusieurs notes peuvent porter le même filtre (avant : 9 ici, 8 dans l'ordre, au même instant).
+        n_filtres = len({(f.get("symbole"), f.get("code")) for f in flt if f.get("code") != "VETO"}) or len(flt)
+        compte = f"{n_filtres}" + (f", venus de {len(flt)} notes" if len(flt) != n_filtres else "")
+        parts.append(_card(H(f"<h3>Filtres de risque actifs issus des notes ({esc(compte)})</h3>"),
                            H('<div class="grid2">' + "".join(rows) + "</div>")))
     else:
         parts.append(_box("empty", "Aucun filtre de risque actif issu des notes."))

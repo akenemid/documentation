@@ -625,7 +625,11 @@ def notes_status_block(status: Mapping[str, Any] | None, *, detail: bool = False
     if status.get("scores_message"):
         parts.append(Safe(f'<p class="muted">{esc(status["scores_message"])}</p>'))
     if detail or status.get("filters"):
-        nf = len(status.get("filters") or [])
+        flt = status.get("filters") or []
+        # Même compte que la ligne « … F filtre(s) de risque actif(s) » de l'ordre : un filtre par titre et par code,
+        # le nombre de notes en plus s'il diffère (contrôle de a58b4c8, constat 23 : 9 ici, 8 dans l'ordre).
+        n_f = len({(f.get("symbole"), f.get("code")) for f in flt if f.get("code") != "VETO"}) or len(flt)
+        nf = f"{n_f}" + (f", venus de {len(flt)} notes" if len(flt) != n_f else "")
         # Bloc repliable : ouvert sur la page Notes (``detail``), fermé ailleurs, pour que le tableau des
         # filtres (large) ne repousse pas le contenu de la page, surtout sur téléphone.
         parts.append(join([Safe(f'<details class="filters"{" open" if detail else ""}><summary>Filtres de risque '

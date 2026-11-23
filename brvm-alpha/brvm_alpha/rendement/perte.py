@@ -521,9 +521,11 @@ def _avec_detenu(o: Mapping[str, Any], r: dict[str, Any]) -> dict[str, Any]:
 def etiquette_taux(r: Mapping[str, Any] | None) -> str:
     """Étiquette du taux de la réserve ``r`` (bloc de :func:`reserve`), la même partout : écran « Mon plan » (titre du
     bloc 3), bloc « L'essentiel » et section « Où dort le reste » de l'ordre et du rapport, clé JSON
-    ``rendement_net.reserve.etiquette`` : :data:`TAUX_INCONNU`, ou « taux saisi : 3,00 % [supposé] »."""
+    ``rendement_net.reserve.etiquette`` : :data:`TAUX_INCONNU`, ou « taux saisi : 3,00 %, supposé ». Sans crochets :
+    l'étiquette est elle-même placée entre crochets (« [estimé ; taux saisi : 3,00 %, supposé] » ; avant, deux niveaux
+    de crochets, « [estimé ; taux saisi : 3,00 % [supposé]] »)."""
     if isinstance(r, Mapping) and r.get("taux_connu") and r.get("taux") is not None:
-        return f"taux saisi : {_rg.pct(r['taux'], 2)} [{r.get('mot_statut') or _rg.mot_statut(HYPOTHESE)}]"
+        return f"taux saisi : {_rg.pct(r['taux'], 2)}, {r.get('mot_statut') or _rg.mot_statut(HYPOTHESE)}"
     return TAUX_INCONNU
 
 

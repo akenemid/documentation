@@ -454,3 +454,29 @@ def test_missing_panel_gives_readable_boxes(tmp_path):
     assert st["bandeau"] == "ok" and st["methode"] == "ok" and st["s1"] == "ok"
     assert st["ordre"] == "indisponible" and st["marche"] == "indisponible"
     assert "panel introuvable" in _section(rep.html, "ordre") and BANNER_H in rep.html
+
+
+def test_paths_of_the_delivered_validation_results_never_show_another_machine():
+    """Contrôle de a58b4c8, constat 20 : hors du dépôt de développement (export Odoo), le rapport affichait le chemin
+    absolu de la machine de développement gardé par metrics.json (« /home/…/reports/validation_S1/precedent_… ») ; il
+    est affiché depuis ``reports/``, quelle que soit la racine."""
+    from brvm_alpha.report import html as H
+
+    for racine in ("/home/user/documentation/brvm-alpha", "/var/lib/odoo/addons/rz_brvm_alpha/moteur", "/ailleurs"):
+        p = f"{racine}/reports/validation_S1/precedent_20261122T121328Z"
+        assert H._rel(p) == "reports/validation_S1/precedent_20261122T121328Z", racine
+    assert H._rel(None) == "n.d." and H._rel("/var/lib/odoo/x/notes") == "/var/lib/odoo/x/notes"
+    assert H._rel(H.ROOT / "reports" / "trials.parquet") == "reports/trials.parquet"
+
+
+def test_the_filters_card_counts_filters_like_the_order_line():
+    """Contrôle de a58b4c8, constat 23 : deux notes portant le même filtre comptaient deux filtres dans la carte (9) et un
+    seul dans la ligne de l'ordre (8). Même compte partout ; le nombre de notes est donné en plus s'il diffère."""
+    from brvm_alpha.ui import pages
+
+    flt = [{"symbole": "FTSC", "code": "R10", "libelle": "x", "bloque_achats": False, "note_id": "a" * 40},
+           {"symbole": "FTSC", "code": "R10", "libelle": "x", "bloque_achats": False, "note_id": "b" * 40},
+           {"symbole": "ETIT", "code": "R2", "libelle": "y", "bloque_achats": True, "note_id": "c" * 40}]
+    bloc = str(pages.notes_status_block({"line": "…", "filters": flt}))
+    assert "Filtres de risque actifs issus des notes (2, venus de 3 notes)" in bloc
+    assert "(1)</summary>" in str(pages.notes_status_block({"line": "…", "filters": flt[2:]}))

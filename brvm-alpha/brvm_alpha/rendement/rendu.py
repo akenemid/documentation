@@ -71,7 +71,7 @@ def _ligne_choix(r: Mapping[str, Any]) -> str:
 
 def _etiquette_reserve(rn: Mapping[str, Any], r: Mapping[str, Any]) -> str:
     """Statut de la ligne de la réserve, le même que sur l'écran « Mon plan » : l'étiquette du taux (« taux inconnu :
-    compté à 0 % », ou « taux saisi : 3,00 % [supposé] »), précédée de « estimé » quand la réserve est le reste d'une
+    compté à 0 % », ou « taux saisi : 3,00 %, supposé »), précédée de « estimé » quand la réserve est le reste d'une
     poche en actions (montant estimé). Avant : « [compté] » dans « L'essentiel », quel que soit le cas."""
     K = float((rn.get("contexte") or {}).get("capital") or 0)
     etiq = _pe.etiquette_taux(r)
