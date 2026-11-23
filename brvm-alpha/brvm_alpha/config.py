@@ -25,6 +25,7 @@ class CostModel:
     half_spread_default: float = 0.0035  # demi-spread par défaut (spread médian 0,69 % en 2026)
     half_spread_mult: float = 1.0  # multiplicateur du demi-spread par titre : 1 / 1 / 1,5 / 2 (scénarios §7.2)
     account_fee_per_line_fcfa: float = 5_000.0  # tenue de compte par ligne et par an (0 chez FGI)
+    account_fee_fixed_fcfa: float = 0.0  # forfait de compte par an (FCFA), 0 par défaut
 
     def rate(self) -> float:
         """Coût proportionnel total d'un aller simple (hors impact)."""

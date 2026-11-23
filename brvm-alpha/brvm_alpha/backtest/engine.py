@@ -1632,6 +1632,8 @@ class Backtester:
     ) -> None:
         models = _dispatch_models(costs, constraints, capital, execution, taxes)
         self.costs: CostModel = models.get("costs", CostModel())
+        if float(getattr(self.costs, "account_fee_fixed_fcfa", 0.0) or 0.0) != 0.0:
+            raise NotImplementedError("forfait de compte non simulé")
         self.constraints: Constraints | None = models.get("constraints")
         self.execution: ExecutionModel = models.get("execution", ExecutionModel())
         self.taxes: TaxModel = models.get("taxes", TaxModel())
